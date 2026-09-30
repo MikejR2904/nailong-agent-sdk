@@ -1,0 +1,10 @@
+{
+  "occurrence_id": "occ-27ae92e6568a49f7848804273f9d4fae",
+  "artifact_id": "sha256:3e97b53a3222cdceaab328af8c8934b7ae5b97a17759a4acf6f72ec6e45cd8c4",
+  "relative_path": "seed_artifact_v2.md",
+  "sha256": "3e97b53a3222cdceaab328af8c8934b7ae5b97a17759a4acf6f72ec6e45cd8c4",
+  "size_bytes": 56,
+  "kind": "seed",
+  "manifest": {},
+  "written_at_utc": "2026-09-29T13:42:13.969646+00:00"
+}

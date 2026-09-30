@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-1a8f19aa9a8a4034a791d976d0aca55d",
+  "artifact_id": "sha256:cc59f798421b59350e41aa738052e34eadac61b492f1f51092e10d18f4ccc3f8",
+  "relative_path": "SURVEY_ARTS.md",
+  "sha256": "cc59f798421b59350e41aa738052e34eadac61b492f1f51092e10d18f4ccc3f8",
+  "size_bytes": 10112,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:survey_arts",
+    "task_id": "survey_arts"
+  },
+  "written_at_utc": "2026-09-29T12:17:17.582986+00:00"
+}

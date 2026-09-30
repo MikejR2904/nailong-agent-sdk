@@ -1,0 +1,57 @@
+{
+  "policy_id": "university-v1",
+  "routing_rules": {
+    "multi_agent_min_categories": 2,
+    "multi_agent_min_blast_radius": 3,
+    "multi_agent_gap_types": [
+      "traceability"
+    ]
+  },
+  "skills": [],
+  "models": [
+    {
+      "model_key": "fireworks-flash",
+      "binding": {
+        "provider": "fireworks",
+        "model": "accounts/fireworks/models/deepseek-v4p1-flash",
+        "parameters": {
+          "max_tokens": 32000,
+          "temperature": 0.2
+        },
+        "fallbacks": []
+      },
+      "allowed_tiers": [
+        "standard"
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "profile_id": "planner",
+      "stage": "plan",
+      "role": "planner",
+      "allowed_skill_ids": [],
+      "required_skill_ids": [],
+      "allowed_model_keys": [
+        "fireworks-flash"
+      ],
+      "allowed_tool_names": [
+        "read_file",
+        "write_draft"
+      ],
+      "capability_grant": {
+        "role": "planner",
+        "capabilities": [
+          "filesystem.read",
+          "draft.write"
+        ],
+        "allowed_paths": []
+      },
+      "max_instances": 12
+    }
+  ],
+  "max_total_agents": 12,
+  "max_parallel_agents": 6,
+  "max_repair_attempts": 0,
+  "multi_agent_enabled": true
+}

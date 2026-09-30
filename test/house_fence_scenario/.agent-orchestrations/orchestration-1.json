@@ -1,0 +1,369 @@
+{
+  "schema_version": "agent-sdk-orchestration-v1",
+  "orchestration_id": "orchestration-1",
+  "request": {
+    "request_id": "house-fence-request-v1",
+    "stage": "build",
+    "snapshot": {
+      "snapshot_id": "house-fence-site-v1",
+      "version": "1.0.0",
+      "content_hash": "test-house-fence-run",
+      "artifact_ids": [],
+      "read_only": true
+    },
+    "gap_metadata": {
+      "categories_touched": [
+        "site-planning",
+        "construction",
+        "fencing"
+      ],
+      "blast_radius": 1,
+      "gap_types": []
+    },
+    "plan": {
+      "plan_id": "house-fence-plan-v1",
+      "tasks": [
+        {
+          "task_id": "plan",
+          "scope": "site-plan",
+          "locked_interface": {
+            "signals": [
+              "site_plan"
+            ]
+          },
+          "instructions": "You are the site-planning agent for a new house build. These are the given\nphysical facts - not your decision, just the constraints you're working\nwithin:\n\nLot: rectangular, 18m wide (street-facing) x 25m deep.\nCoordinate system: origin (0,0) at the front-left corner of the LOT (not the\nbuildable area); x runs along the 18m street-facing width (0 to 18); y runs\nwith depth into the lot away from the street (0 to 25, y=0 at the street).\nRequired setbacks from the LOT boundary: 3m front (street side, low y),\n1.5m each side (low x and high x), 3m rear (high y).\nClient brief: a single-story house with 4 bedrooms and a 2-car garage, plus\nsome usable backyard space.\n\n\nProduce an initial site plan: the house's footprint (position and\ndimensions, as coordinates in the lot's coordinate system) and a fence line\nfollowing the property boundary inside the setbacks you judge appropriate.\nDecide the actual layout, footprint dimensions, and fence path yourself -\nnothing else defines them. Write your plan, with explicit coordinates and\nyour reasoning, to SITE_PLAN.md.\n\nReport status \"complete\" once SITE_PLAN.md is written.\n",
+          "dependencies": [],
+          "acceptance_criteria": "Write SITE_PLAN.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "plan",
+              "signal_id": "site_plan",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:site-plan-output"
+              ],
+              "scope_pointer": "plan.output"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "house",
+          "scope": "house-build",
+          "locked_interface": {
+            "signals": [
+              "site_plan",
+              "house_layout"
+            ]
+          },
+          "instructions": "You are the house-building agent. A separate planning agent has produced an\ninitial site plan at SITE_PLAN.md - read it with read_file.\n\nYour job is to actually design the house within that plan: lay out the 4\nbedrooms, 2-car garage, and whatever other rooms you judge necessary\n(kitchen, living area, bathrooms, hallways, circulation space, etc.) inside\nthe planned footprint. If, once you detail the rooms, you find the planned\nfootprint does not realistically fit what's needed, you may revise the\nfootprint's position and/or dimensions - decide this yourself based on what\nyou actually discover; nothing else tells you whether to revise or what to\nchange it to, and you are not required to change anything if the original\nplan works.\n\nWrite your final decision to HOUSE_LAYOUT.md: the footprint you are\nactually building, stated as explicit coordinates, with a clear statement\nof whether it matches SITE_PLAN.md's footprint or how and why it differs,\nplus your room layout. HOUSE_LAYOUT.md - not SITE_PLAN.md - is what the\nnext agent will need to build against, so make sure it stands on its own.\n\nread_file's limit accepts up to 2000 lines in one call; prefer a large\nlimit when you don't yet know a file's size.\n\nReport status \"complete\" once HOUSE_LAYOUT.md is written.\n",
+          "dependencies": [
+            "plan"
+          ],
+          "acceptance_criteria": "Write HOUSE_LAYOUT.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "house",
+              "signal_id": "site_plan",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:site-plan-output"
+              ],
+              "scope_pointer": "house.input"
+            },
+            {
+              "task_id": "house",
+              "signal_id": "house_layout",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:house-layout-output"
+              ],
+              "scope_pointer": "house.output"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "fence",
+          "scope": "fence-build",
+          "locked_interface": {
+            "signals": [
+              "house_layout"
+            ]
+          },
+          "instructions": "You are the fence-building agent. Read SITE_PLAN.md (the original site\nplan) and HOUSE_LAYOUT.md (the house agent's actual final footprint - read\nboth with read_file). The house may have been built exactly as originally\nplanned, or the house agent may have revised the footprint from what\nSITE_PLAN.md shows; you do not know which until you read both.\n\nDesign the property fence: a boundary line inside the legal lot line\n(18m x 25m, see either file for the setback facts) that is consistent with\nwhere the house was ACTUALLY built per HOUSE_LAYOUT.md, not the original\nplan if the two differ. Decide the exact fence path and any gates\nyourself.\n\nWrite your design to FENCE_LAYOUT.md. Explicitly state whether\nSITE_PLAN.md and HOUSE_LAYOUT.md agreed or differed, and if they differed,\nexactly what you changed in your own design because of it.\n\nread_file's limit accepts up to 2000 lines in one call; prefer a large\nlimit when you don't yet know a file's size.\n\nReport status \"complete\" once FENCE_LAYOUT.md is written.\n",
+          "dependencies": [
+            "house"
+          ],
+          "acceptance_criteria": "Write FENCE_LAYOUT.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "fence",
+              "signal_id": "house_layout",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:house-layout-output"
+              ],
+              "scope_pointer": "fence.input"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        }
+      ],
+      "dependency_proofs": [
+        {
+          "parent_task_id": "plan",
+          "child_task_id": "house",
+          "shared_signal_ids": [
+            "site_plan"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:site-plan-output"
+          ]
+        },
+        {
+          "parent_task_id": "house",
+          "child_task_id": "fence",
+          "shared_signal_ids": [
+            "house_layout"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:house-layout-output"
+          ]
+        }
+      ],
+      "max_elastic_depth": 1,
+      "max_elastic_nodes": 2
+    },
+    "selected_skill_ids": [],
+    "profile_id_by_task_id": {
+      "plan": "builder",
+      "house": "builder",
+      "fence": "builder"
+    }
+  },
+  "policy_id": "house-fence-v1",
+  "deterministic_architecture": "multi-agent",
+  "architecture": "multi-agent",
+  "routing_advice": null,
+  "execution_plan": {
+    "plan_id": "house-fence-plan-v1",
+    "tasks": [
+      {
+        "task_id": "plan",
+        "scope": "site-plan",
+        "locked_interface": {
+          "signals": [
+            "site_plan"
+          ]
+        },
+        "instructions": "You are the site-planning agent for a new house build. These are the given\nphysical facts - not your decision, just the constraints you're working\nwithin:\n\nLot: rectangular, 18m wide (street-facing) x 25m deep.\nCoordinate system: origin (0,0) at the front-left corner of the LOT (not the\nbuildable area); x runs along the 18m street-facing width (0 to 18); y runs\nwith depth into the lot away from the street (0 to 25, y=0 at the street).\nRequired setbacks from the LOT boundary: 3m front (street side, low y),\n1.5m each side (low x and high x), 3m rear (high y).\nClient brief: a single-story house with 4 bedrooms and a 2-car garage, plus\nsome usable backyard space.\n\n\nProduce an initial site plan: the house's footprint (position and\ndimensions, as coordinates in the lot's coordinate system) and a fence line\nfollowing the property boundary inside the setbacks you judge appropriate.\nDecide the actual layout, footprint dimensions, and fence path yourself -\nnothing else defines them. Write your plan, with explicit coordinates and\nyour reasoning, to SITE_PLAN.md.\n\nReport status \"complete\" once SITE_PLAN.md is written.\n",
+        "dependencies": [],
+        "acceptance_criteria": "Write SITE_PLAN.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "plan",
+            "signal_id": "site_plan",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:site-plan-output"
+            ],
+            "scope_pointer": "plan.output"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "house",
+        "scope": "house-build",
+        "locked_interface": {
+          "signals": [
+            "site_plan",
+            "house_layout"
+          ]
+        },
+        "instructions": "You are the house-building agent. A separate planning agent has produced an\ninitial site plan at SITE_PLAN.md - read it with read_file.\n\nYour job is to actually design the house within that plan: lay out the 4\nbedrooms, 2-car garage, and whatever other rooms you judge necessary\n(kitchen, living area, bathrooms, hallways, circulation space, etc.) inside\nthe planned footprint. If, once you detail the rooms, you find the planned\nfootprint does not realistically fit what's needed, you may revise the\nfootprint's position and/or dimensions - decide this yourself based on what\nyou actually discover; nothing else tells you whether to revise or what to\nchange it to, and you are not required to change anything if the original\nplan works.\n\nWrite your final decision to HOUSE_LAYOUT.md: the footprint you are\nactually building, stated as explicit coordinates, with a clear statement\nof whether it matches SITE_PLAN.md's footprint or how and why it differs,\nplus your room layout. HOUSE_LAYOUT.md - not SITE_PLAN.md - is what the\nnext agent will need to build against, so make sure it stands on its own.\n\nread_file's limit accepts up to 2000 lines in one call; prefer a large\nlimit when you don't yet know a file's size.\n\nReport status \"complete\" once HOUSE_LAYOUT.md is written.\n",
+        "dependencies": [
+          "plan"
+        ],
+        "acceptance_criteria": "Write HOUSE_LAYOUT.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "house",
+            "signal_id": "site_plan",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:site-plan-output"
+            ],
+            "scope_pointer": "house.input"
+          },
+          {
+            "task_id": "house",
+            "signal_id": "house_layout",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:house-layout-output"
+            ],
+            "scope_pointer": "house.output"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "fence",
+        "scope": "fence-build",
+        "locked_interface": {
+          "signals": [
+            "house_layout"
+          ]
+        },
+        "instructions": "You are the fence-building agent. Read SITE_PLAN.md (the original site\nplan) and HOUSE_LAYOUT.md (the house agent's actual final footprint - read\nboth with read_file). The house may have been built exactly as originally\nplanned, or the house agent may have revised the footprint from what\nSITE_PLAN.md shows; you do not know which until you read both.\n\nDesign the property fence: a boundary line inside the legal lot line\n(18m x 25m, see either file for the setback facts) that is consistent with\nwhere the house was ACTUALLY built per HOUSE_LAYOUT.md, not the original\nplan if the two differ. Decide the exact fence path and any gates\nyourself.\n\nWrite your design to FENCE_LAYOUT.md. Explicitly state whether\nSITE_PLAN.md and HOUSE_LAYOUT.md agreed or differed, and if they differed,\nexactly what you changed in your own design because of it.\n\nread_file's limit accepts up to 2000 lines in one call; prefer a large\nlimit when you don't yet know a file's size.\n\nReport status \"complete\" once FENCE_LAYOUT.md is written.\n",
+        "dependencies": [
+          "house"
+        ],
+        "acceptance_criteria": "Write FENCE_LAYOUT.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "fence",
+            "signal_id": "house_layout",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:house-layout-output"
+            ],
+            "scope_pointer": "fence.input"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      }
+    ],
+    "dependency_proofs": [
+      {
+        "parent_task_id": "plan",
+        "child_task_id": "house",
+        "shared_signal_ids": [
+          "site_plan"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:site-plan-output"
+        ]
+      },
+      {
+        "parent_task_id": "house",
+        "child_task_id": "fence",
+        "shared_signal_ids": [
+          "house_layout"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:house-layout-output"
+        ]
+      }
+    ],
+    "max_elastic_depth": 1,
+    "max_elastic_nodes": 2
+  },
+  "assignments": [
+    {
+      "node_id": "node:plan",
+      "task_id": "plan",
+      "profile_id": "builder",
+      "agent_identity": "builder:plan",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read"
+      ]
+    },
+    {
+      "node_id": "node:house",
+      "task_id": "house",
+      "profile_id": "builder",
+      "agent_identity": "builder:house",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read"
+      ]
+    },
+    {
+      "node_id": "node:fence",
+      "task_id": "fence",
+      "profile_id": "builder",
+      "agent_identity": "builder:fence",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read"
+      ]
+    }
+  ],
+  "status": "executed",
+  "controller_id": "controller-1",
+  "graph_run_id": "run-1"
+}

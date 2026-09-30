@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:1a9aa5f518450e258f4fdeba5eb380d8adc4448362cf6b6c2984267451214dc4",
+  "relative_path": "PLAN_ENGINEERING.md",
+  "sha256": "1a9aa5f518450e258f4fdeba5eb380d8adc4448362cf6b6c2984267451214dc4",
+  "size_bytes": 14625,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-live-run",
+    "node_id": "node:plan_engineering",
+    "task_id": "plan_engineering"
+  },
+  "occurrence_id": "occ-6a3794d0beed471aac2c72108b18dfd7"
+}

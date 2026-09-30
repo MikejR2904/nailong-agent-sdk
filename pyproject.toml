@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nailong-agent-sdk"
+version = "0.17.0"
+description = "Extensible Python BaseAgent runtime, grounded retrieval, governed orchestration, deterministic controller, profiling, verification gates, and MCP harness for the Agent-Assisted Design framework"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "David Michael Indraputra" }]
+keywords = ["agent", "asic", "eda", "mcp", "rtl", "verification"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+  "defusedxml>=0.7,<1",
+  "httpx>=0.27,<1",
+  "jsonschema>=4.23,<5",
+  "mcp[cli]>=2.0,<3",
+  "openpyxl>=3.1,<4",
+  "pydantic>=2.9,<3",
+  "pypdf[image]>=5.0,<6",
+  "pypdfium2>=4.30,<5",
+  "python-docx>=1.1,<2",
+  "pyyaml>=6.0,<7",
+]
+
+[project.scripts]
+nailong-agent-sdk-dev = "nailong_agent_sdk.developer_tools.cli:main"
+
+[project.optional-dependencies]
+langgraph = [
+    "langgraph>=1.2,<2",
+]
+langchain = [
+    "langchain>=1.2,<2",
+    "langchain-core>=1.4,<2",
+]
+jev = [
+    "typesafe-sdk>=0.7,<1",
+]
+redis-cache = [
+    "redis>=5,<7",
+]
+interop = [
+    "langchain>=1.2,<2",
+    "langchain-core>=1.4,<2",
+    "langgraph>=1.2,<2",
+    "typesafe-sdk>=0.7,<1",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.16.8",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = ["-q"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nailong_agent_sdk"]

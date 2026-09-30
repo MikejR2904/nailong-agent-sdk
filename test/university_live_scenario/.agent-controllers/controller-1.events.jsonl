@@ -1,0 +1,5 @@
+{"sequence":1,"phase":"planning","type":"controller-started","details":{"gap_metadata":{"categories_touched":["engineering","computing","business","law","medicine","arts"],"blast_radius":1,"gap_types":[]}}}
+{"sequence":2,"phase":"awaiting-plan-approval","type":"plan-presented","details":{"valid":true,"plan_id":"university-live-plan-v1"}}
+{"sequence":3,"phase":"dispatch-ready","type":"plan-approval-recorded","details":{"approved":true,"reason":"Test harness approval."}}
+{"sequence":4,"phase":"executing","type":"dispatch-started","details":{"architecture":"multi-agent"}}
+{"sequence":5,"phase":"executing","type":"graph-run-bound","details":{"run_id":"run-1","previous_run_id":null}}

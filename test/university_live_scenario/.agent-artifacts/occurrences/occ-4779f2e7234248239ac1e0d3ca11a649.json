@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-4779f2e7234248239ac1e0d3ca11a649",
+  "artifact_id": "sha256:0fab98158e40c826c384bef87b1c6ad42f9f00ab507bfded326633e2637cd38b",
+  "relative_path": "SURVEY_ARTS.md",
+  "sha256": "0fab98158e40c826c384bef87b1c6ad42f9f00ab507bfded326633e2637cd38b",
+  "size_bytes": 15627,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-live-run",
+    "node_id": "node:survey_arts",
+    "task_id": "survey_arts"
+  },
+  "written_at_utc": "2026-09-29T12:40:54.421212+00:00"
+}

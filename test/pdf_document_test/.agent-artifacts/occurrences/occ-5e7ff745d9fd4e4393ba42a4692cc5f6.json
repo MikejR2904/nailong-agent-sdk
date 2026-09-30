@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-5e7ff745d9fd4e4393ba42a4692cc5f6",
+  "artifact_id": "sha256:ee86525fd5a8daba060e19ca81bbad075122708a782661c68526559b024ca7fe",
+  "relative_path": "SPECULATIVE_DECODING_SUMMARY.md",
+  "sha256": "ee86525fd5a8daba060e19ca81bbad075122708a782661c68526559b024ca7fe",
+  "size_bytes": 16864,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "pdf-doc-run-speculative-decoding",
+    "node_id": "node:speculative-decoding",
+    "task_id": "pdf-doc-speculative-decoding"
+  },
+  "written_at_utc": "2026-09-29T16:03:00.302165+00:00"
+}

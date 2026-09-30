@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-5f6fe96b7f6e4db6900cf65eb283d90b",
+  "artifact_id": "sha256:45c81f0d8b09c6968bdece201ed90c95da9a5a19f67c5e08fe74b6e6b61cf240",
+  "relative_path": "PLAN_ARTS.md",
+  "sha256": "45c81f0d8b09c6968bdece201ed90c95da9a5a19f67c5e08fe74b6e6b61cf240",
+  "size_bytes": 17551,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:plan_arts",
+    "task_id": "plan_arts"
+  },
+  "written_at_utc": "2026-09-29T12:18:58.677645+00:00"
+}

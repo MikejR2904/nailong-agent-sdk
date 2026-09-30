@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-9feab34f3c9d4a55a28b1f2afb8cf019",
+  "artifact_id": "sha256:4bd020026b2777ca647a11ca95a300a92c8c4e113b697e48c4f9a482f6ae40bd",
+  "relative_path": "DESIGN.md",
+  "sha256": "4bd020026b2777ca647a11ca95a300a92c8c4e113b697e48c4f9a482f6ae40bd",
+  "size_bytes": 12639,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "monopoly-run",
+    "node_id": "architect",
+    "task_id": "monopoly-design-v1"
+  },
+  "written_at_utc": "2026-09-29T07:33:29.724103+00:00"
+}

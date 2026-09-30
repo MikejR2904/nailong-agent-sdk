@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-0ec52a2dc4b64c26960347bdd17a682d",
+  "artifact_id": "sha256:64e4dc9d06fd230a10f43b3e51cfd6a69bb09edd9cf5f1afab46c4e68c2f5488",
+  "relative_path": "FENCE_LAYOUT.md",
+  "sha256": "64e4dc9d06fd230a10f43b3e51cfd6a69bb09edd9cf5f1afab46c4e68c2f5488",
+  "size_bytes": 5766,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "house-fence-run",
+    "node_id": "node:fence",
+    "task_id": "fence"
+  },
+  "written_at_utc": "2026-09-29T11:13:25.240245+00:00"
+}

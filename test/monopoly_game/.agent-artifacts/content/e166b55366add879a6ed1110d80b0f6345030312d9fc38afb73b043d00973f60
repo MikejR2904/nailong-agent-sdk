@@ -1,0 +1,291 @@
+# Monopoly — Systems Design Document
+
+Author: monopoly-architect (design only; no game code written here)
+Target: a playable Monopoly game in Python, runnable as `python main.py`.
+
+---
+
+## 1. Goal & Constraints
+
+Deliver a **playable** Monopoly game as a Python program a person can run and
+watch. The runtime is fixed and non-negotiable:
+
+- Entry point is `main.py`, invoked as `python main.py` with **no arguments**
+  and **no stdin** (it will not be run interactively).
+- Therefore the game must be **self-driving**: it cannot block waiting for
+  human input. We satisfy "playable" by shipping a deterministic, seeded
+  **auto-play demo** driven by simple AI agents, plus a fully-formed engine
+  that a human could drive interactively if a UI were attached later.
+
+The design keeps the engine (rules) strictly separate from the driver (who
+decides moves) and the renderer (how state is shown). That separation is what
+makes the non-interactive constraint a non-issue: the same engine that an AI
+drives could be driven by a human REPL or GUI.
+
+---
+
+## 2. Rules Subset Chosen (and why)
+
+Monopoly has a large rule surface. We implement a **faithful core** that is
+unambiguously playable and winnable, and we explicitly document what is
+simplified. The guiding principle: implement everything that affects who wins,
+and simplify only bookkeeping that does not change outcomes.
+
+### Implemented
+
+- **Board**: the standard 40-space board in canonical order, with the real
+  names and prices for the US edition.
+- **Properties**: 22 colored properties across 8 color groups, 4 railroads,
+  2 utilities.
+- **Rent**:
+  - Color properties: base rent, rent with 1–4 houses, rent with hotel,
+    and **doubled base rent when the owner holds the full color group**
+    (monopoly) with no houses.
+  - Railroads: 25 / 50 / 100 / 200 by count owned.
+  - Utilities: 4× or 10× dice roll by count owned (1 or 2).
+- **Buying**: landing on an unowned property lets the player buy at list
+  price or decline (declined property stays unowned; no auction — see
+  simplifications).
+- **Building**: houses/hotels may be built on a full color group, respecting
+  **even-build** (no property may exceed another in the group by more than
+  one house) and the **house/hotel supply limits** (32 houses, 12 hotels).
+  Selling houses back to the bank at half price is supported.
+- **Mortgaging**: mortgage for half the price, unmortgage for mortgage value
+  + 10% interest. Mortgaged properties collect no rent.
+- **Jail**: three ways in (Go To Jail space, "Go to Jail" card, three
+  consecutive doubles). Three ways out (pay $50, use a Get Out of Jail Free
+  card, roll doubles). After three failed attempts, must pay $50 and move.
+- **Chance & Community Chest**: full decks with the standard card effects
+  (money, move-to, move-relative, go-to-jail, get-out-of-jail-free, pay-per-
+  house, collect-from-each-player, nearest-utility/railroad with special
+  rent multipliers).
+- **Doubles**: roll again on doubles; three doubles in a row sends you to
+  jail.
+- **Bankruptcy**: a player who cannot pay is bankrupt; their assets transfer
+  to the creditor (or to the bank if the creditor is the bank). Last player
+  standing wins.
+- **Win condition**: last non-bankrupt player, or a turn cap with the
+  richest player (net worth) declared winner (needed for the demo to
+  terminate — see §7).
+
+### Explicitly simplified (documented, not hidden)
+
+- **No auctions.** A declined property simply remains unowned. Auctions add
+  an interactive bidding loop that is awkward to auto-play and does not
+  change the core loop's playability. (Noted as a future extension.)
+- **No trading between players.** Trading requires negotiation; the AI does
+  not negotiate. This makes full color groups harder to complete, which is
+  why the turn cap exists.
+- **No Free Parking jackpot** in the *core* rules: Free Parking is a no-op
+  under the standard modern rules. (The optional "Let's Get Rich" house rule
+  in §12 layers a jackpot on top of it; the core engine is unchanged when that
+  rule is not wired in.)
+- **No "even build" enforcement across mortgaged properties** beyond the
+  basic even-build rule; edge cases around mortgaging a property in a group
+  with houses are disallowed (you must sell houses first), matching common
+  house rules.
+- **Income/Luxury Tax** use the standard fixed amounts ($200 / $100).
+
+These simplifications are chosen because each removes an *interaction* loop
+(auction, trade) rather than a *rule*, and none of them prevents a game from
+being played to a winner.
+
+---
+
+## 3. Module / File Breakdown
+
+```
+main.py                  # entry point: builds a game, runs the auto-play demo
+monopoly/
+    __init__.py          # package marker, version
+    board.py             # space definitions + Board class (lookups, groups)
+    cards.py             # Chance & Community Chest decks + card effects
+    dice.py              # Dice abstraction (seeded RNG, doubles tracking)
+    player.py            # Player state (cash, position, assets, jail status)
+    game.py              # Game engine: turn loop, movement, rent, building,
+                         #   jail, bankruptcy, win detection
+    special_rules.py     # "Let's Get Rich" house rule (shared pot helpers)
+    ai.py                # Decision policy for automated players
+    render.py            # Text rendering of board/state/turn log
+tests/
+    test_game.py         # unit tests for engine invariants
+README.md                # how to run, what to expect, rule subset summary
+```
+
+Rationale: `board`, `cards`, `dice`, `player` are pure data/state with no
+cross-dependencies beyond `player` referencing board indices. `game` is the
+only module that mutates world state and is the single place rules live.
+`ai` and `render` depend on `game`/`player` but `game` never depends on them
+(dependency inversion: the driver and view are pluggable). `main.py` wires
+them together.
+
+---
+
+## 4. Core Data Model
+
+### Space (in `board.py`)
+A `Space` is a small record with:
+- `index: int` (0–39)
+- `kind: str` — one of `go`, `property`, `railroad`, `utility`, `chance`,
+  `community_chest`, `tax`, `jail` (just visiting), `go_to_jail`,
+  `free_parking`.
+- `name: str`
+- `price: int | None`
+- `group: str | None` — color group key for properties (e.g. `"brown"`),
+  `"railroad"`, `"utility"`, or `None`.
+- `rents: list[int] | None` — for properties: `[base, 1h, 2h, 3h, 4h, hotel]`.
+
+`Board` holds the ordered list of 40 spaces plus precomputed maps:
+`group_members[group] -> [indices]`, and helpers `spaces_in_group`,
+`is_full_group(owner, group)`.
+
+### PropertyState (in `game.py`)
+Mutable per-space ownership record:
+- `owner: int | None` (player index)
+- `houses: int` (0–5; 5 == hotel)
+- `mortgaged: bool`
+
+The `Board` is immutable; a parallel `list[PropertyState]` of length 40 lives
+in the `Game` (only property/railroad/utility indices are meaningful).
+
+### Player (in `player.py`)
+- `index: int`, `name: str`
+- `cash: int` (start 1500)
+- `position: int` (0–39)
+- `in_jail: bool`, `jail_turns: int`
+- `get_out_of_jail_cards: int`
+- `bankrupt: bool`
+- Derived helpers: `net_worth(game)` = cash + sum(price of owned unmortgaged
+  properties) + house/hotel equity, used for the turn-cap winner.
+
+### Deck (in `cards.py`)
+A `Deck` is a list of `Card` objects with `shuffle(rng)` and `draw()` that
+cycles (drawn cards go to the bottom, except Get Out of Jail Free which is
+held by the player until used). Each `Card` carries a `kind` tag and
+parameters; `game.py` interprets the tag (keeps card data declarative and
+testable).
+
+### Dice (in `dice.py`)
+Wraps a seeded `random.Random`. `roll() -> (d1, d2)`, exposes `is_double`,
+and the `Game` tracks consecutive-doubles count.
+
+---
+
+## 5. Turn-by-Turn Flow
+
+`Game.play_turn(player)` executes, in order:
+
+1. **Pre-roll**: if `player.in_jail`, run the jail sub-flow (§6). If the
+   player pays/uses a card and is released, continue to roll; if they fail
+   the third attempt, they pay and move.
+2. **Roll dice** (seeded). If doubles, increment `consecutive_doubles`.
+   - If `consecutive_doubles == 3`: send to jail, end turn (no move).
+3. **Move** `sum(dice)` spaces clockwise, wrapping past GO → collect $200.
+4. **Resolve landing** by space kind:
+   - `property`/`railroad`/`utility`:
+     - unowned → AI decides buy/decline; if buy, transfer cash, set owner.
+     - owned by another, not mortgaged → compute rent (§2) and transfer;
+       if payer can't pay → bankruptcy resolution (§7).
+     - owned by self → no-op.
+   - `chance` / `community_chest` → draw card, apply effect (may move the
+     player, which re-triggers landing resolution for the new space, with a
+     recursion guard so a card cannot chain infinitely).
+   - `tax` → pay fixed amount.
+   - `go_to_jail` → move to jail, set `in_jail`.
+   - `free_parking` / `jail` (visiting) / `go` → no-op.
+5. **Post-roll management** (AI): consider building houses on full groups
+   (respecting even-build and supply limits) and unmortgaging if cash is
+   comfortable. This is where the AI converts cash into rent-generating
+   assets.
+6. **Extra turn**: if doubles and not jailed, the same player rolls again
+   (loop back to step 2); otherwise advance to the next non-bankrupt player.
+
+The `Game` exposes `step()` (one atomic action) and `run(max_turns)` (loop
+until win or cap). `main.py` calls `run`.
+
+---
+
+## 6. Jail Sub-Flow
+
+On entering jail: `in_jail=True`, `jail_turns=0`, position = jail index.
+On a jailed player's turn:
+- If they hold a Get Out of Jail Free card → use it, leave jail, roll.
+- Else if `jail_turns < 3` → roll; doubles → leave jail and move that roll;
+  non-doubles → `jail_turns += 1`, stay, end turn.
+- On the third failed attempt → pay $50, leave jail, move the roll.
+
+---
+
+## 7. Bankruptcy, Termination & Win
+
+**Bankruptcy**: when a player owes more than their cash, they first attempt
+to raise cash (AI sells houses, then mortgages properties). If still short,
+they are bankrupt. Their remaining cash and properties transfer to the
+creditor (mortgaged properties transfer mortgaged; houses are sold to the
+bank first). If the creditor is the bank, assets return to the bank.
+
+**Termination**: the game ends when only one non-bankrupt player remains
+(that player wins), **or** when `max_turns` (default 300, configurable) is
+reached. On the cap, the winner is the player with the highest net worth.
+The cap guarantees the non-interactive demo always terminates — important
+because the no-trade simplification can otherwise stall a game.
+
+---
+
+## 8. AI Policy (in `ai.py`)
+
+Deliberately simple, deterministic, and explainable:
+- **Buy**: buy if `cash - price >= reserve` (reserve ~ $100), with a bonus
+  willingness if the purchase completes a color group.
+- **Build**: build the cheapest legal house whenever `cash - cost >= reserve`
+  and the group is fully owned and unmortgaged.
+- **Unmortgage**: unmortgage when `cash - cost >= reserve * 2`.
+- **Jail**: pay the $50 if cash is healthy; otherwise try to roll out.
+- **Raise cash**: sell houses (most-built first) then mortgage (least
+  valuable first) until solvent.
+
+The policy is a pure function of `(game_state, player)` → `Action`, so it is
+unit-testable and swappable.
+
+---
+
+## 9. Rendering (in `render.py`)
+
+Text-only, deterministic output:
+- A compact board summary (each space: index, name, owner initial, houses).
+- A per-turn log line: `Turn N | Player | roll | position | action | cash`.
+- A final standings table with net worth and the declared winner.
+
+`main.py` prints the header, runs the game, and prints the log + standings.
+Output is stable for a fixed seed, which makes it diffable in tests.
+
+---
+
+## 10. How It Is Run & Verified
+
+**Run**: `python main.py` — no args, no stdin. It seeds the RNG (default
+seed constant, overridable via an env var for reproducibility), creates 4 AI
+players, runs to completion, and prints the log and final standings. Exit
+code 0 on a completed game.
+
+**Verify**:
+1. `python main.py` completes and prints a winner (manual smoke test).
+2. `python -m pytest tests/` (or `python -m unittest`) runs `test_game.py`,
+   which asserts engine invariants:
+   - board has exactly 40 spaces and 22 properties;
+   - passing GO credits $200;
+   - rent doubles on a full unmortgaged color group;
+   - even-build rule is enforced;
+   - three doubles sends a player to jail;
+   - a player who cannot pay becomes bankrupt and assets transfer;
+   - a game with a fixed seed terminates and yields exactly one winner.
+3. Determinism check: two runs with the same seed produce identical logs.
+
+---
+
+## 11. Out of Scope / Future Work
+
+Auctions, player-to-player trading, house-rule jackpots, a graphical or
+interactive UI, and save/load. The engine's separation of rules from driver
+and view is designed so any of these can be added without touching
+`game.py`'s core loop.

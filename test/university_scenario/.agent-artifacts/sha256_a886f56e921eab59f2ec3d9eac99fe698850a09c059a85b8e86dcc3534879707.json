@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:a886f56e921eab59f2ec3d9eac99fe698850a09c059a85b8e86dcc3534879707",
+  "relative_path": "PLAN_COMPUTING.md",
+  "sha256": "a886f56e921eab59f2ec3d9eac99fe698850a09c059a85b8e86dcc3534879707",
+  "size_bytes": 16907,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:plan_computing",
+    "task_id": "plan_computing"
+  },
+  "occurrence_id": "occ-60ae472ace93412187feb9eee392972e"
+}

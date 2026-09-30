@@ -1,0 +1,55 @@
+"""Rendering helpers. Pure functions over game state; no rules live here."""
+
+from board import PROPERTY_GROUPS
+
+
+def render_log(game, limit=None):
+    lines = list(game.log)
+    if limit is not None:
+        lines = lines[-limit:]
+    return "\n".join(lines)
+
+
+def render_standings(game):
+    rows = []
+    for p in sorted(game.players, key=lambda p: p.net_worth(game), reverse=True):
+        status = "BANKRUPT" if p.bankrupt else f"${p.cash}"
+        props = sum(1 for ps in game.state if ps.owner == p.index)
+        rows.append(
+            f"  {p.name:<10} cash={status:<10} properties={props:<3} "
+            f"net_worth=${p.net_worth(game)}"
+        )
+    return "\n".join(rows)
+
+
+def render_board(game):
+    """A compact one-line-per-side view of the board."""
+    out = []
+    for sp in game.board.spaces:
+        ps = game.state[sp.index]
+        if ps.owner is None:
+            owner = "-"
+        else:
+            owner = game.players[ps.owner].name
+            if ps.mortgaged:
+                owner += "(M)"
+            if ps.houses == 5:
+                owner += "[H]"
+            elif ps.houses:
+                owner += f"[{ps.houses}]"
+        out.append(f"  {sp.index:>2} {sp.name:<24} {owner}")
+    return "\n".join(out)
+
+
+def render_summary(game):
+    lines = []
+    lines.append("=" * 60)
+    lines.append("MONOPOLY — final standings")
+    lines.append("=" * 60)
+    lines.append(render_standings(game))
+    lines.append("-" * 60)
+    if game.winner is not None:
+        lines.append(f"WINNER: {game.winner.name} "
+                     f"(net worth ${game.winner.net_worth(game)})")
+    lines.append(f"Turns played: {game.turn}")
+    return "\n".join(lines)

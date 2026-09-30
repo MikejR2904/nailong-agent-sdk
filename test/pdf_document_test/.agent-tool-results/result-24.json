@@ -1,0 +1,1 @@
+{"call":{"arguments":{"image_ref":"pdf:f2caa942004db5f0:p9:page"},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-b30b09af95e09448","name":"interpret_pdf_image"},"result":{"error":"Vision provider response does not match VisionProposal.","failure":null,"output":null,"status":"failed"}}

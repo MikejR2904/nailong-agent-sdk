@@ -1,0 +1,48 @@
+"""Chance and Community Chest decks.
+
+Each card is a dict with a human-readable `text` and a machine `kind` plus
+whatever parameters that kind needs. `game.Game.apply_card` interprets them.
+"""
+
+CHANCE_CARDS = [
+    {"text": "Advance to GO (Collect $200)", "kind": "advance_to", "index": 0},
+    {"text": "Advance to Illinois Avenue", "kind": "advance_to", "index": 24},
+    {"text": "Advance to St. Charles Place", "kind": "advance_to", "index": 11},
+    {"text": "Advance to nearest Utility", "kind": "nearest", "group": "utility"},
+    {"text": "Advance to nearest Railroad", "kind": "nearest", "group": "railroad"},
+    {"text": "Advance to nearest Railroad", "kind": "nearest", "group": "railroad"},
+    {"text": "Bank pays you dividend of $50", "kind": "collect", "amount": 50},
+    {"text": "Get Out of Jail Free", "kind": "get_out_of_jail"},
+    {"text": "Go Back 3 Spaces", "kind": "move_back", "steps": 3},
+    {"text": "Go to Jail", "kind": "go_to_jail"},
+    {"text": "Make general repairs: $25 per house, $100 per hotel",
+     "kind": "pay_per_house", "per_house": 25, "per_hotel": 100},
+    {"text": "Speeding fine $15", "kind": "pay", "amount": 15},
+    {"text": "Take a trip to Reading Railroad", "kind": "advance_to", "index": 5},
+    {"text": "Advance to Boardwalk", "kind": "advance_to", "index": 39},
+    {"text": "You have been elected Chairman: pay each player $50",
+     "kind": "pay_each", "amount": 50},
+    {"text": "Your building loan matures: collect $150", "kind": "collect", "amount": 150},
+]
+
+COMMUNITY_CHEST_CARDS = [
+    {"text": "Advance to GO (Collect $200)", "kind": "advance_to", "index": 0},
+    {"text": "Bank error in your favor: collect $200", "kind": "collect", "amount": 200},
+    {"text": "Doctor's fee: pay $50", "kind": "pay", "amount": 50},
+    {"text": "From sale of stock you get $50", "kind": "collect", "amount": 50},
+    {"text": "Get Out of Jail Free", "kind": "get_out_of_jail"},
+    {"text": "Go to Jail", "kind": "go_to_jail"},
+    {"text": "Holiday fund matures: collect $100", "kind": "collect", "amount": 100},
+    {"text": "Income tax refund: collect $20", "kind": "collect", "amount": 20},
+    {"text": "It is your birthday: collect $10 from each player",
+     "kind": "collect_each", "amount": 10},
+    {"text": "Life insurance matures: collect $100", "kind": "collect", "amount": 100},
+    {"text": "Hospital fees: pay $100", "kind": "pay", "amount": 100},
+    {"text": "School fees: pay $50", "kind": "pay", "amount": 50},
+    {"text": "Receive $25 consultancy fee", "kind": "collect", "amount": 25},
+    {"text": "Street repairs: $40 per house, $115 per hotel",
+     "kind": "pay_per_house", "per_house": 40, "per_hotel": 115},
+    {"text": "You won second prize in a beauty contest: collect $10",
+     "kind": "collect", "amount": 10},
+    {"text": "You inherit $100", "kind": "collect", "amount": 100},
+]

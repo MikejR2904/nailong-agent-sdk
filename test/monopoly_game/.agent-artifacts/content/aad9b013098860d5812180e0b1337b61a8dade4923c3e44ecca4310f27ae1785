@@ -1,0 +1,43 @@
+"""Simple deterministic AI driver.
+
+The engine never imports this module; `main.py` injects an instance. A human
+driver could implement the same three methods and be swapped in unchanged.
+"""
+
+RESERVE = 100          # keep this much cash in hand when buying
+BUILD_RESERVE = 300    # only build when comfortably liquid
+
+
+class SimpleAI:
+    def decide_buy(self, game, player, space):
+        price = space.price
+        if price is None or player.cash < price:
+            return False
+        # Always complete a color group if we can.
+        if space.group in game.board.group_members:
+            members = game.board.spaces_in_group(space.group)
+            owned = sum(1 for i in members if game.state[i].owner == player.index)
+            if owned == len(members) - 1:
+                return True
+        # Otherwise buy if we can keep a reserve.
+        return player.cash - price >= RESERVE
+
+    def manage(self, game, player):
+        # Unmortgage anything we can comfortably afford.
+        for i, ps in enumerate(game.state):
+            if ps.owner == player.index and ps.mortgaged:
+                cost = int(game.board.space(i).price // 2 * 1.1)
+                if player.cash - cost >= BUILD_RESERVE:
+                    game.unmortgage(i, player)
+        # Build evenly on full groups while liquid.
+        changed = True
+        while changed:
+            changed = False
+            for i, ps in enumerate(game.state):
+                if ps.owner != player.index:
+                    continue
+                if player.cash - game.board.space(i).house_cost < BUILD_RESERVE:
+                    continue
+                if game.can_build(i, player):
+                    game.build_house(i, player)
+                    changed = True

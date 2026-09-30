@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-004f9d11a31242c1bef1f3e5b9dda7c2",
+  "artifact_id": "sha256:c71359e81cdd38e9c014df8cf4694ab4c54bb3a396273cdb8ad67d7125340853",
+  "relative_path": "PLAN_ENGINEERING.md",
+  "sha256": "c71359e81cdd38e9c014df8cf4694ab4c54bb3a396273cdb8ad67d7125340853",
+  "size_bytes": 19350,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:plan_engineering",
+    "task_id": "plan_engineering"
+  },
+  "written_at_utc": "2026-09-29T12:19:10.058854+00:00"
+}

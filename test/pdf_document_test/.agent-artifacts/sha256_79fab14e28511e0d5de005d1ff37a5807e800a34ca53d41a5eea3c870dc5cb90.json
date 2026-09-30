@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:79fab14e28511e0d5de005d1ff37a5807e800a34ca53d41a5eea3c870dc5cb90",
+  "relative_path": "TFLA_SUMMARY.md",
+  "sha256": "79fab14e28511e0d5de005d1ff37a5807e800a34ca53d41a5eea3c870dc5cb90",
+  "size_bytes": 8492,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "pdf-doc-run-tfla",
+    "node_id": "node:tfla",
+    "task_id": "pdf-doc-tfla"
+  },
+  "occurrence_id": "occ-431d9651c6e1410ba3dd22307d4898a9"
+}

@@ -1,0 +1,9 @@
+{"kind":"event","value":{"node_id":"node:plan","reason":null,"sequence":1,"status":"runnable"}}
+{"kind":"event","value":{"node_id":"node:plan","reason":null,"sequence":2,"status":"running"}}
+{"kind":"event","value":{"node_id":"node:plan","reason":null,"sequence":3,"status":"completed"}}
+{"kind":"event","value":{"node_id":"node:house","reason":null,"sequence":4,"status":"runnable"}}
+{"kind":"event","value":{"node_id":"node:house","reason":null,"sequence":5,"status":"running"}}
+{"kind":"event","value":{"node_id":"node:house","reason":null,"sequence":6,"status":"completed"}}
+{"kind":"event","value":{"node_id":"node:fence","reason":null,"sequence":7,"status":"runnable"}}
+{"kind":"event","value":{"node_id":"node:fence","reason":null,"sequence":8,"status":"running"}}
+{"kind":"event","value":{"node_id":"node:fence","reason":null,"sequence":9,"status":"completed"}}

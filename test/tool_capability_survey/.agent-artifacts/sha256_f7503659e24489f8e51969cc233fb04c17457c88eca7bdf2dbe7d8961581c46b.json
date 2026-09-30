@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:f7503659e24489f8e51969cc233fb04c17457c88eca7bdf2dbe7d8961581c46b",
+  "relative_path": "REPORT.md",
+  "sha256": "f7503659e24489f8e51969cc233fb04c17457c88eca7bdf2dbe7d8961581c46b",
+  "size_bytes": 57,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "tool-survey-run",
+    "node_id": "node:tool-survey",
+    "task_id": "tool-survey"
+  },
+  "occurrence_id": "occ-7faf6df4e5d74b15a444bcfbb2938b1a"
+}

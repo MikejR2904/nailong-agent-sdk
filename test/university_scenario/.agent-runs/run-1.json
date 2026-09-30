@@ -1,0 +1,504 @@
+{
+  "schema_version": "agent-run-v1",
+  "run_id": "run-1",
+  "plan_id": "university-plan-v1",
+  "graph": {
+    "nodes": [
+      {
+        "node_id": "node:plan_arts",
+        "kind": "agent-invocation",
+        "task_id": "plan_arts",
+        "dependencies": [
+          "node:survey_engineering",
+          "node:survey_computing",
+          "node:survey_business",
+          "node:survey_law",
+          "node:survey_medicine",
+          "node:survey_arts"
+        ],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:plan_business",
+        "kind": "agent-invocation",
+        "task_id": "plan_business",
+        "dependencies": [
+          "node:survey_engineering",
+          "node:survey_computing",
+          "node:survey_business",
+          "node:survey_law",
+          "node:survey_medicine",
+          "node:survey_arts"
+        ],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:plan_computing",
+        "kind": "agent-invocation",
+        "task_id": "plan_computing",
+        "dependencies": [
+          "node:survey_engineering",
+          "node:survey_computing",
+          "node:survey_business",
+          "node:survey_law",
+          "node:survey_medicine",
+          "node:survey_arts"
+        ],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:plan_engineering",
+        "kind": "agent-invocation",
+        "task_id": "plan_engineering",
+        "dependencies": [
+          "node:survey_engineering",
+          "node:survey_computing",
+          "node:survey_business",
+          "node:survey_law",
+          "node:survey_medicine",
+          "node:survey_arts"
+        ],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:plan_law",
+        "kind": "agent-invocation",
+        "task_id": "plan_law",
+        "dependencies": [
+          "node:survey_engineering",
+          "node:survey_computing",
+          "node:survey_business",
+          "node:survey_law",
+          "node:survey_medicine",
+          "node:survey_arts"
+        ],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:plan_medicine",
+        "kind": "agent-invocation",
+        "task_id": "plan_medicine",
+        "dependencies": [
+          "node:survey_engineering",
+          "node:survey_computing",
+          "node:survey_business",
+          "node:survey_law",
+          "node:survey_medicine",
+          "node:survey_arts"
+        ],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:survey_arts",
+        "kind": "agent-invocation",
+        "task_id": "survey_arts",
+        "dependencies": [],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:survey_business",
+        "kind": "agent-invocation",
+        "task_id": "survey_business",
+        "dependencies": [],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:survey_computing",
+        "kind": "agent-invocation",
+        "task_id": "survey_computing",
+        "dependencies": [],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:survey_engineering",
+        "kind": "agent-invocation",
+        "task_id": "survey_engineering",
+        "dependencies": [],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:survey_law",
+        "kind": "agent-invocation",
+        "task_id": "survey_law",
+        "dependencies": [],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "node_id": "node:survey_medicine",
+        "kind": "agent-invocation",
+        "task_id": "survey_medicine",
+        "dependencies": [],
+        "elastic_depth": 0,
+        "metadata": {},
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      }
+    ],
+    "edges": [],
+    "shared_state": {
+      "schema_version": "graph-shared-state-v1",
+      "substrate": {
+        "snapshot_id": "university-campus-v1",
+        "version": "1.0.0",
+        "content_hash": "test-university-run",
+        "artifact_ids": [],
+        "read_only": true
+      },
+      "discoveries": {},
+      "values": {},
+      "lateral_dependencies": {},
+      "routing_index": {
+        "requirement_postings": {},
+        "signal_postings": {},
+        "task_postings": {},
+        "schema_postings": {}
+      },
+      "route_decisions": [],
+      "conflicts": []
+    },
+    "statuses": {
+      "node:plan_arts": "completed",
+      "node:plan_business": "completed",
+      "node:plan_computing": "completed",
+      "node:plan_engineering": "completed",
+      "node:plan_law": "completed",
+      "node:plan_medicine": "completed",
+      "node:survey_arts": "completed",
+      "node:survey_business": "completed",
+      "node:survey_computing": "completed",
+      "node:survey_engineering": "completed",
+      "node:survey_law": "completed",
+      "node:survey_medicine": "completed"
+    },
+    "results": {
+      "node:plan_arts": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote PLAN_ARTS.md: finalised the Faculty of Arts building plan with footprint/zoning (compact 2–3 storey block on a 7.5 m grid, cafeteria at ground level on the public/south side, service yard north) and material choices, especially the cafeteria (RC frame with masonry/concrete walls, 60–90 min fire compartmentation, coved resin/tiled floors, hygienic tiled/clad walls, tanked wet areas, dedicated grease-filtered extract, stainless-steel fit-out). Explicitly recorded peer-survey impacts: SURVEY_COMPUTING.md changed the cafeteria fit-out (rejected lightweight drywall/vinyl in the food-service zone in favour of concrete/masonry with impervious washable finishes and inherent fire resistance); SURVEY_MEDICINE.md and SURVEY_LAW.md sharpened foundation/drainage detailing (found on a consistent bearing stratum with uniform column loads; sized on-site stormwater attenuation). Stated that SURVEY_ENGINEERING.md (hillside terracing/retaining/slope stability) did not transfer to my flat site, and that SURVEY_BUSINESS.md and SURVEY_LAW.md otherwise only confirmed existing choices."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:3",
+          "binding-hash:b2201e6291caa3dc315c57b4c55e0663a2c1d78cc31b6646892e145b3278ce2e"
+        ],
+        "provenance_hash": "f7750d0f8caf883533e5d7c9c32f21774657294c763fbe550244c644de54af19"
+      },
+      "node:plan_business": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote PLAN_BUSINESS.md: finalised footprint/zoning (compact 2–3 storey block, 7.5 m grid, cafeteria at ground level on the public side) and material choices (RC frame with masonry infill on tied pad-and-ground-beam foundations, raft fallback; cafeteria in RC/masonry with impervious coved finishes, 60–120 min compartmentation, rated grease-tight extract, tanked wet areas). Cross-faculty review recorded explicitly: Computing's soil/groundwater chemical testing (cement type and concrete cover) and Medicine's construction-stage dewatering/drier-season scheduling changed my plan; Law's raft-as-moisture-barrier point refined my raft fallback; Engineering's hillside terrace strategy did not apply to my level plot; Computing's rejection of a lightweight drywall cafeteria package corroborated rather than changed my choice; Arts' survey contained nothing new."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:3",
+          "binding-hash:d85c95067c8eb34ead8161a4d17ac7c8fa0d099cba12edd61afa4de742d91e51"
+        ],
+        "provenance_hash": "d37df2c4f414b397d7e73d77403e542746c024ab10fa5072ee446c97072ae0fb"
+      },
+      "node:plan_computing": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "PLAN_COMPUTING.md is written and complete. It finalises the Faculty of Computing building plan: a compact two-storey RC-frame/masonry block on a regular 7.5 m grid (~1,400–1,800 m² footprint, ~2,800–3,600 m² gross) with the cafeteria at ground level in the south-east corner; the lightweight drywall/vinyl cafeteria fit-out is rejected in favour of reinforced concrete and masonry with impervious, washable, coved finishes. Section 5 records the cross-survey review honestly: seven specification-level changes adopted from peers (explicit 60–120 min cafeteria compartment rating; grease-tight fire-rated extract duct with cleaning access; tanking of wet areas; stainless-steel kitchen fit-out; substructure dewatering/drier-season scheduling from Medicine; rainfall-sized stormwater attenuation from Law; raft fallback's moisture-barrier benefit), while Engineering's hillside terracing strategy was deliberately not transferred because the Computing site is flat, and footprint/zoning/massing/grid/primary structural material were confirmed rather than changed."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:5",
+          "binding-hash:f63f4afe2972e3f392201bcb466c4a9a060f27592e7d6a84c9ef3e3a2db48815"
+        ],
+        "provenance_hash": "0e6c96aa2adb22aeec3bb64b3d71b16bdc10cbb248babb4aa919a08ce9ea3976"
+      },
+      "node:plan_engineering": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote PLAN_ENGINEERING.md: finalised the terraced hillside footprint/zoning (T1 cafeteria/service at the low edge through T4 offices at the high edge) and the material choices, with the cafeteria finalised as a steel-roofed, RC-framed, fully tanked, hygienically finished space with a rated kitchen compartment. Explicitly recorded two peer-driven changes: (1) Computing's rejection of paper-faced board in food-service areas removed moisture-resistant plasterboard from my kitchen walls/ceilings (now cement-based board or masonry with tiling/cladding); (2) Law's raft-as-moisture-barrier led me to adopt a continuous RC raft under the T1 cafeteria as a combined structural raft and moisture barrier. Also stated what did NOT change: the flat-site stratified-soil cautions don't transfer to my slope, Medicine's dewatering note is adopted only as a sequencing constraint, and the peers' convergent concrete/masonry cafeteria palette is corroboration rather than a change."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:3",
+          "binding-hash:6cb7014658d648212f30ce844801afaf4638c8c9cc82c69c302e64b6087b8e26"
+        ],
+        "provenance_hash": "a27077a3e70e9a4d1c54622f9af184f51a32c61e40ce2fac1d094bf76c823a22"
+      },
+      "node:plan_law": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Read all six faculty surveys (Engineering, Computing, Business, Law, Medicine, Arts) and wrote PLAN_LAW.md: a finalized footprint/zoning concept (compact 2–3 storey RC-frame block, ~1,400–1,800 m² footprint, five-zone layout with cafeteria at ground floor) and finalized cafeteria material choices (RC frame with steel/composite for long spans, 60–120 min rated compartmentation, sprinkler + hood suppression, fire-rated grease-tight extract, coved resin/tiled floors, tiled/clad walls, moisture-resistant ceilings, stainless-steel fit-out). The plan explicitly records eight peer-survey-driven changes adopted (chemical durability testing and 300–450 mm FFL freeboard from Computing; fire-rated grease-tight extract from Business; hood suppression and drainage-first/no-ponding discipline from Engineering; tied-foundation seismic detailing and dewatering/drier-season scheduling from Medicine; acoustic separation of catering with extract routed away from windows from Arts), distinguishes these from findings that merely confirmed existing choices (RC frame, impervious coved finishes, compartmentation, compact massing, steel for long spans), and states that Engineering's hillside-specific terrace/retaining/slope-stability content does not transfer to Law's flat site."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:3",
+          "binding-hash:33e0ff094a6225697cbd8690a410a38ded248f16df719f77dbaac373d6aa36b2"
+        ],
+        "provenance_hash": "16e55ef3622833b31f1d3664d57145a7aa1f970619b0ff0d1b9e02fbc961ca6d"
+      },
+      "node:plan_medicine": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote PLAN_MEDICINE.md: finalized footprint/zoning (compact 2–3 storey L-shaped/two-bar block on a regular 7.5–9 m grid, cafeteria at the public corner with its own service access) and finalized material choices (RC frame on tied shallow foundations/raft; cafeteria in RC waffle/P-T slab by default with steel only for spans RC cannot carry economically and then fire-protected; separate 60–90 min rated kitchen compartment with rated grease-tight extract discharging to the service yard plus sprinklers and hood suppression; seamless coved epoxy/vinyl/tile floors, tiled or hygienic-clad walls, moisture-resistant washable ceilings, stainless-steel fit-out; paper-faced plasterboard, carpet and office grid ceiling tiles explicitly excluded). Read all six surveys and documented five peer-driven changes: (1) explicit kitchen suppression from Engineering, (2) steel demoted from default to exception in the dining hall from Engineering, (3) explicit exclusion of the lightweight drywall/vinyl package from Computing, (4) raft-as-moisture-barrier and sized stormwater attenuation from Law, (5) kitchen extract routed to the service yard from Arts. Also stated what did not change: Engineering's terraced/retaining/slope-stability strategy is site-specific to its hillside and was not imported, and the four flat-site peers merely corroborated my existing position rather than altering it."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:3",
+          "binding-hash:c57413f08ca4ea39aca5889af359b64423f73a5d74f0422d67a32cea370202aa"
+        ],
+        "provenance_hash": "d85ae266d773c1b768478a8d813f442f58c04760c70efd6be4f86882a1613e20"
+      },
+      "node:survey_arts": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote SURVEY_ARTS.md: an independent feasibility survey for the Faculty of Arts covering (1) terrain/site approach — flat level plot, shallow spread footings on stratified soil, ground beams for differential settlement, drainage and confirmatory geotechnical investigation; (2) a rough zoning/footprint concept — compact low-rise block with teaching wing, quiet staff office wing, ground-floor cafeteria/canteen on the public south side, central circulation spine, and north service yard; and (3) primary construction materials generally (RC frame, masonry/cladding envelope, insulated flat roof) and specifically for the cafeteria (long-span RC or fire-protected steel frame, 60–90 min fire compartmentation, tiled/resin floors and hygienic wall finishes, kitchen extract and drainage, low-maintenance finishes). Includes feasibility assessment and next steps."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:2",
+          "binding-hash:0dcf219db17bf6643f2c31179db4e871abfbb6b9bd727be80ab69817f7d2d8f2"
+        ],
+        "provenance_hash": "3948d8eaeb378ef6f79af5c3f66a6ca897b9259877d4b14a83d2fc6a36a18c00"
+      },
+      "node:survey_business": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote SURVEY_BUSINESS.md: an independent feasibility survey for the Faculty of Business covering (1) terrain/site approach — level ground, shallow spread footings with geotechnical confirmation and ground beams to handle stratified-soil differential settlement, plus deliberate drainage on a flat plot; (2) a rough zoning/footprint concept placing the cafeteria at ground level with direct external and service access, teaching spaces grouped for acoustic efficiency, offices in a quieter zone, and a central core; (3) primary materials for the building generally — reinforced concrete frame, masonry/insulated external walls, concrete or lightweight roof; and (4) a cafeteria-specific assessment addressing structural span (long-span concrete or protected steel/composite), fire rating (60–120 min compartmentation, fire-rated grease-tight extract), hygiene/moisture resistance (tiled/resin floors with coved skirting, hygienic wall cladding, tanked wet areas, stainless steel kitchen), and maintenance (durable cleanable finishes, accessible services, zoning away from academic areas)."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:2",
+          "binding-hash:04dcad4b62ad5ae85343bd092c80576116736646e23a150c571717825ea577e9"
+        ],
+        "provenance_hash": "5fb95a9259346d095c2685bad9d025f66314bed981162a6d291442232feb6ede"
+      },
+      "node:survey_computing": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote SURVEY_COMPUTING.md — an independent feasibility survey for the Faculty of Computing. It covers: (1) terrain/site approach for the flat 60m×60m plot with stratified shallow-footing-suitable soil, including a proposed ground investigation (trial pits, SPT boreholes, groundwater monitoring, chemical testing) and site-level drainage/orientation/access moves; (2) a rough zoning and footprint concept — compact two-storey block on a 7.5m grid, with entrance core, teaching wings, upper-floor offices, and a ground-floor cafeteria in the south-east corner, ~2,800–3,600 m² gross; (3) primary materials for the general building (reinforced-concrete frame, masonry infill, concrete slabs, flat roof) with reasoning; and (4) a rigorous cafeteria assessment that first considers a lightweight steel/drywall/vinyl fit-out, explicitly rejects it as functionally unsuitable for food service (moisture/hygiene, contingent fire rating, maintenance, span/vibration), and adopts instead a reinforced-concrete frame with masonry walls and impervious, washable, coved tiled/clad finishes, inherent fire compartmentation, and low long-term maintenance. Risks, assumptions, and the independence caveat are noted."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:2",
+          "binding-hash:9fbedb221777a2aa4b13d7c6cfa79c00eddfda9d0ee0e120853d5f050f2e86b8"
+        ],
+        "provenance_hash": "e32aabe63ab570768816c0be40f73828e3864fb4a1f0bddfafc1507fc77b85fb"
+      },
+      "node:survey_engineering": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote SURVEY_ENGINEERING.md: an independent feasibility survey for the Faculty of Engineering on the hillside plot. It reads the ~18 m fall as the defining constraint and proposes a 'terrace and bridge, don't flatten' approach — stepping the building down in 3–4 terraces with locally balanced cut-and-fill, reinforced-concrete retaining walls, drainage-first design (upslope cut-off drain, wall drainage blankets, positive outfall) and a slope-stability assessment before construction. Access is handled by a low-edge vehicle loop, stepped terraces/stairs plus lifts, and compliant ramps; parking sits at the low edge. Zoning places the cafeteria at the lowest terrace (T1), lecture halls at T2, classrooms/labs at T3, and staff offices/admin at T4, with a cross-slope circulation spine and courtyards. Primary structure is a reinforced-concrete frame (steel for long spans), with a masonry/concrete envelope. The cafeteria is specified as a steel portal/truss roof over RC columns (12–18 m clear span), 60–90 min fire-rated with a separately compartmented kitchen and suppression, coved seamless resin floors, full-height tiling/hygienic cladding, moisture-resistant sealed ceilings, tanking and trapped drainage, mechanical extract, and stainless-steel equipment. Risks and open questions (geotechnics, wall heights, drainage outfall, access gradients, cut/fill balance, foundations on fill, cost, code confirmation) are listed. Status reported complete."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:2",
+          "binding-hash:cf64c97e801f6236a5a1c549969ce81fdfbe4fc9a3e63b18088ed95c46e0f160"
+        ],
+        "provenance_hash": "a29f74a41e4783505da7f94ae837fa9be2c73aaf3f5c73e1cf4a57d633bed6a9"
+      },
+      "node:survey_law": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote SURVEY_LAW.md: an independent feasibility survey for the Faculty of Law covering (1) terrain/site approach — flat site, geotechnical investigation of the stratified soil, shallow pad/strip or raft foundations designed for differential settlement, drainage and moisture control; (2) a rough zoning/footprint concept — compact 2–3 storey block on ~1,400–1,800 m² with public, teaching, staff, cafeteria and core zones plus circulation/access; (3) primary materials — reinforced concrete frame with masonry infill, concrete slabs, insulated flat roof, thermally broken glazing; and (4) cafeteria-specific materials addressing long structural spans, 60–120 min fire compartmentation, hygienic/moisture-resistant floors, walls, ceilings and stainless-steel services, and low-maintenance detailing. Concludes feasibility is positive with recommended next steps."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:2",
+          "binding-hash:72f438f1233c9963c59d680be4f03b1081b6ddb9e4a84cfa151dc6c3d095e2df"
+        ],
+        "provenance_hash": "a453109138ba042b4613bdeb94cf5b4a27e41e10c56f9523f8117fd6dcf66b51"
+      },
+      "node:survey_medicine": {
+        "status": "completed",
+        "output": {
+          "status": "complete",
+          "summary": "Wrote SURVEY_MEDICINE.md: an independent feasibility survey for the Faculty of Medicine covering (1) terrain/site approach — flat ground with a confirming geotechnical investigation of the stratified soil, tied shallow spread-footing/raft foundation to control differential settlement, and positive drainage/waterproofing; (2) a zoning/footprint concept on the 60m×60m plot using an L-shaped/two-bar plan with a regular ~7.5–9m column grid, cafeteria at the public corner near service access, and academic wings separated from noisy zones; (3) primary materials — reinforced concrete frame on shallow tied foundations with structural steel for long spans, insulated masonry/rainscreen envelope; and (4) a cafeteria-specific assessment addressing structural span (RC waffle/P-T or steel composite deck), fire rating (non-combustible rated kitchen enclosure, rated extract/ducts, suppression), hygiene (tiled/washable walls, seamless coved floors, stainless fit-out), moisture resistance (tanking, moisture-resistant finishes, mechanical extract), and maintenance. Overall conclusion: site and brief are feasible with no blocking conditions."
+        },
+        "reason": null,
+        "artifact_ids": [],
+        "diagnostics": [
+          "agent-status:completed",
+          "agent-iterations:2",
+          "binding-hash:1d19bcabe83bbfdf45ea31e9146c6bcf7db331608347a984eae30f5950974b8b"
+        ],
+        "provenance_hash": "633d6d7d4da863fdcbe6acd1aa4dd747fc2da5cd58102d68f6ade302115cbbfa"
+      }
+    },
+    "events": [],
+    "max_elastic_depth": 1,
+    "max_elastic_nodes": 2
+  },
+  "plan_validation": {
+    "valid": true,
+    "errors": [],
+    "recomputed_dependencies": {
+      "plan_arts": [
+        "survey_arts",
+        "survey_business",
+        "survey_computing",
+        "survey_engineering",
+        "survey_law",
+        "survey_medicine"
+      ],
+      "plan_business": [
+        "survey_arts",
+        "survey_business",
+        "survey_computing",
+        "survey_engineering",
+        "survey_law",
+        "survey_medicine"
+      ],
+      "plan_computing": [
+        "survey_arts",
+        "survey_business",
+        "survey_computing",
+        "survey_engineering",
+        "survey_law",
+        "survey_medicine"
+      ],
+      "plan_engineering": [
+        "survey_arts",
+        "survey_business",
+        "survey_computing",
+        "survey_engineering",
+        "survey_law",
+        "survey_medicine"
+      ],
+      "plan_law": [
+        "survey_arts",
+        "survey_business",
+        "survey_computing",
+        "survey_engineering",
+        "survey_law",
+        "survey_medicine"
+      ],
+      "plan_medicine": [
+        "survey_arts",
+        "survey_business",
+        "survey_computing",
+        "survey_engineering",
+        "survey_law",
+        "survey_medicine"
+      ],
+      "survey_arts": [],
+      "survey_business": [],
+      "survey_computing": [],
+      "survey_engineering": [],
+      "survey_law": [],
+      "survey_medicine": []
+    }
+  },
+  "cancelled": false,
+  "run_hash": "9b17f4d667f0550e1c840d0464824a82c352005675d15ea93e22016c4cf8c291",
+  "history_entry_count": 36,
+  "history_integrity_hash": "b4e877f9bb201b29b1c0bd322d649e9d926cdb79995e5d5d229c5d9c4fe7e766"
+}

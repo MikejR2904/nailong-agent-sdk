@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-dd19cddb3ab44e4d801710231e484604",
+  "artifact_id": "sha256:73bad3d6a6301960ce91375a70a70bd31060ce53bdd8b17c3f4c03c5fc5ba254",
+  "relative_path": "PLAN_MEDICINE.md",
+  "sha256": "73bad3d6a6301960ce91375a70a70bd31060ce53bdd8b17c3f4c03c5fc5ba254",
+  "size_bytes": 18240,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:plan_medicine",
+    "task_id": "plan_medicine"
+  },
+  "written_at_utc": "2026-09-29T12:18:59.613013+00:00"
+}

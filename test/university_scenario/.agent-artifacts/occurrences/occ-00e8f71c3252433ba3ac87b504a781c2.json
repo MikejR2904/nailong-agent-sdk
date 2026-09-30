@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-00e8f71c3252433ba3ac87b504a781c2",
+  "artifact_id": "sha256:54c29a68686c1a44e4ec9be166001478589269d27544a1d55e7f74d37c18592b",
+  "relative_path": "SURVEY_COMPUTING.md",
+  "sha256": "54c29a68686c1a44e4ec9be166001478589269d27544a1d55e7f74d37c18592b",
+  "size_bytes": 14130,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:survey_computing",
+    "task_id": "survey_computing"
+  },
+  "written_at_utc": "2026-09-29T12:17:45.327073+00:00"
+}

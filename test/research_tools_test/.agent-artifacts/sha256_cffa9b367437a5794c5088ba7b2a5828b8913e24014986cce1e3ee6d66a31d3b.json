@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:cffa9b367437a5794c5088ba7b2a5828b8913e24014986cce1e3ee6d66a31d3b",
+  "relative_path": "SPECULATIVE_DECODING_SUMMARY.md",
+  "sha256": "cffa9b367437a5794c5088ba7b2a5828b8913e24014986cce1e3ee6d66a31d3b",
+  "size_bytes": 15885,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "research-run-speculative-decoding",
+    "node_id": "node:speculative-decoding",
+    "task_id": "research-speculative-decoding"
+  },
+  "occurrence_id": "occ-8951fb22c8794f00a7e14d95a1117a00"
+}

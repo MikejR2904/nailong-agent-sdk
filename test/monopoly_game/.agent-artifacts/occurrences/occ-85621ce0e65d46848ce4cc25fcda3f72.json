@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-85621ce0e65d46848ce4cc25fcda3f72",
+  "artifact_id": "sha256:737617fc5c2ef23778aeeb97f3991b2721a62a5245b0daafaf0a12703097d3ca",
+  "relative_path": "render.py",
+  "sha256": "737617fc5c2ef23778aeeb97f3991b2721a62a5245b0daafaf0a12703097d3ca",
+  "size_bytes": 1467,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "monopoly-run",
+    "node_id": "implementer",
+    "task_id": "monopoly-impl-v1"
+  },
+  "written_at_utc": "2026-09-29T08:13:33.619707+00:00"
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:dfbbd530be603db898809dc4652737c4e4e4d41a519eaf48ce69db0829add1aa",
+  "relative_path": "SURVEY_BUSINESS.md",
+  "sha256": "dfbbd530be603db898809dc4652737c4e4e4d41a519eaf48ce69db0829add1aa",
+  "size_bytes": 12246,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:survey_business",
+    "task_id": "survey_business"
+  },
+  "occurrence_id": "occ-d718529c2a9d425fa9e9d892bbea18b7"
+}

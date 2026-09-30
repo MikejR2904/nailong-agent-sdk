@@ -1,0 +1,1 @@
+{"call":{"arguments":{"pattern":"*.txt"},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-914fcf3c9e57107d","name":"glob"},"result":{"error":null,"failure":null,"output":{"limit":200,"matches":["seed_notes.txt"]},"status":"succeeded"}}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:0f9c180063149bc5d6e70932572e5bfe5fa82629d5e58d565bb6a101a0737080",
+  "relative_path": "SITE_PLAN.md",
+  "sha256": "0f9c180063149bc5d6e70932572e5bfe5fa82629d5e58d565bb6a101a0737080",
+  "size_bytes": 4540,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "house-fence-run",
+    "node_id": "node:plan",
+    "task_id": "plan"
+  },
+  "occurrence_id": "occ-8c1dbc901b6c4b6e959fce3f00227a72"
+}

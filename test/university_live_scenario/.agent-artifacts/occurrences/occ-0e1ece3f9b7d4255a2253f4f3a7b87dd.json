@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-0e1ece3f9b7d4255a2253f4f3a7b87dd",
+  "artifact_id": "sha256:227d9628f2cfd52d2205da482b098c887bfc919d2e889d62e7ebac2cb58adc2b",
+  "relative_path": "SURVEY_BUSINESS.md",
+  "sha256": "227d9628f2cfd52d2205da482b098c887bfc919d2e889d62e7ebac2cb58adc2b",
+  "size_bytes": 12080,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-live-run",
+    "node_id": "node:survey_business",
+    "task_id": "survey_business"
+  },
+  "written_at_utc": "2026-09-29T12:40:15.327191+00:00"
+}

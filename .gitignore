@@ -1,0 +1,8 @@
+.claude/
+.pytest_cache/
+.venv/
+benchmarks/
+examples/
+scripts/
+.env
+__pycache__/

@@ -1,0 +1,1 @@
+{"call":{"arguments":{"pointer":"tool-survey-spec"},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-94a4a8d8494c4ea6","name":"read_spec"},"result":{"error":null,"failure":null,"output":{"content":"SPEC SNAPSHOT: this is the governed specification text.","pointer":"tool-survey-spec"},"status":"succeeded"}}

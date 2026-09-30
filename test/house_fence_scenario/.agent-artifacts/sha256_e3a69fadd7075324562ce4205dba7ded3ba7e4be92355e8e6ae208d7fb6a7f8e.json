@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:e3a69fadd7075324562ce4205dba7ded3ba7e4be92355e8e6ae208d7fb6a7f8e",
+  "relative_path": "HOUSE_LAYOUT.md",
+  "sha256": "e3a69fadd7075324562ce4205dba7ded3ba7e4be92355e8e6ae208d7fb6a7f8e",
+  "size_bytes": 8227,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "house-fence-run",
+    "node_id": "node:house",
+    "task_id": "house"
+  },
+  "occurrence_id": "occ-c1c311aef9dd4ac4a1b76ce43b819d40"
+}

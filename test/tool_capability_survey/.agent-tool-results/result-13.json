@@ -1,0 +1,1 @@
+{"call":{"arguments":{"seconds":1},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-bff01989bb4b3b0a","name":"sleep"},"result":{"error":null,"failure":null,"output":{"slept_seconds":1.0},"status":"succeeded"}}

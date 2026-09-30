@@ -1,0 +1,376 @@
+"""Monopoly engine: all mutable world state and every rule lives here.
+
+The engine is deliberately independent of the driver (`ai`) and the view
+(`render`); `main.py` wires them together. `Game.run(max_turns)` plays a full
+deterministic game and returns the winner.
+"""
+
+import random
+
+import special_rules
+from board import Board, JAIL_INDEX, GO_INDEX
+from cards import CHANCE_CARDS, COMMUNITY_CHEST_CARDS
+from player import Player
+
+
+class PropertyState:
+    __slots__ = ("owner", "houses", "mortgaged")
+
+    def __init__(self):
+        self.owner = None
+        self.houses = 0
+        self.mortgaged = False
+
+
+class Game:
+    def __init__(self, seed=42, num_players=4, max_turns=300, ai=None):
+        self.board = Board()
+        self.rng = random.Random(seed)
+        self.max_turns = max_turns
+        self.ai = ai
+        self.props = [PropertyState() for _ in range(40)]
+        self.players = [
+            Player(i, f"Player {i + 1}") for i in range(num_players)
+        ]
+        self.log_lines = []
+        self.turn = 0
+        self.houses_available = 32
+        self.hotels_available = 12
+        self.winner = None
+        self.chance = self._shuffled(CHANCE_CARDS)
+        self.community = self._shuffled(COMMUNITY_CHEST_CARDS)
+        # "Let's Get Rich" special rule: a shared pot the bank seeds with a
+        # 10% match on every payment, collected by landing on Free Parking.
+        special_rules.init_pot(self)
+
+    # -- setup helpers ------------------------------------------------------
+    def _shuffled(self, cards):
+        deck = list(cards)
+        self.rng.shuffle(deck)
+        return deck
+
+    def log(self, msg):
+        self.log_lines.append(msg)
+
+    def _draw(self, deck):
+        card = deck.pop(0)
+        deck.append(card)
+        return card
+
+    # -- dice / movement ----------------------------------------------------
+    def roll_dice(self):
+        return self.rng.randint(1, 6), self.rng.randint(1, 6)
+
+    def move_to(self, player, index, collect_go=True):
+        old = player.position
+        player.position = index % 40
+        if collect_go and player.position < old:
+            player.cash += 200
+            self.log(f"    {player.name} passes GO, collects $200")
+
+    def advance(self, player, steps):
+        self.move_to(player, player.position + steps, collect_go=True)
+
+    def _next_in_group(self, pos, group):
+        members = self.board.spaces_in_group(group)
+        for i in members:
+            if i > pos:
+                return i
+        return members[0]
+
+    def send_to_jail(self, player):
+        player.position = JAIL_INDEX
+        player.in_jail = True
+        player.jail_turns = 0
+        self.log(f"    {player.name} goes to Jail")
+
+    # -- money --------------------------------------------------------------
+    def pay(self, player, amount, creditor=None):
+        """Transfer `amount` from player to creditor (or bank). Handles
+        raising cash and bankruptcy."""
+        if amount <= 0:
+            return
+        if player.cash < amount:
+            self.ai.manage_assets(self, player, amount)
+        if player.cash >= amount:
+            player.cash -= amount
+            if creditor is not None:
+                creditor.cash += amount
+            # "Let's Get Rich": the bank matches a slice of every payment into
+            # the shared pot. Funded by the bank, so the transfer above is
+            # unchanged.
+            special_rules.credit_pot(self, amount)
+            return
+        self._bankrupt(player, creditor)
+
+    def _bankrupt(self, player, creditor):
+        player.bankrupt = True
+        self.log(f"    {player.name} is BANKRUPT")
+        for i, st in enumerate(self.props):
+            if st.owner != player.index:
+                continue
+            sp = self.board.spaces[i]
+            if st.houses:
+                if st.houses == 5:
+                    self.hotels_available += 1
+                    player.cash += (sp.house_cost or 0) // 2 * 5
+                else:
+                    self.houses_available += st.houses
+                    player.cash += (sp.house_cost or 0) // 2 * st.houses
+                st.houses = 0
+        for i, st in enumerate(self.props):
+            if st.owner != player.index:
+                continue
+            if creditor is not None:
+                st.owner = creditor.index
+            else:
+                st.owner = None
+                st.mortgaged = False
+        if creditor is not None:
+            creditor.cash += player.cash
+        player.cash = 0
+
+    # -- rent ---------------------------------------------------------------
+    def rent_for(self, idx, dice_total):
+        sp = self.board.spaces[idx]
+        st = self.props[idx]
+        if st.owner is None or st.mortgaged:
+            return 0
+        owner = st.owner
+        if sp.kind == "property":
+            base = sp.rents[st.houses]
+            if st.houses == 0:
+                members = self.board.spaces_in_group(sp.group)
+                if all(self.props[i].owner == owner for i in members) and \
+                        not any(self.props[i].mortgaged for i in members):
+                    base *= 2
+            return base
+        if sp.kind == "railroad":
+            count = sum(1 for i in self.board.spaces_in_group("railroad")
+                        if self.props[i].owner == owner)
+            return 25 * (2 ** (count - 1))
+        if sp.kind == "utility":
+            count = sum(1 for i in self.board.spaces_in_group("utility")
+                        if self.props[i].owner == owner)
+            return (4 if count == 1 else 10) * dice_total
+        return 0
+
+    # -- landing resolution -------------------------------------------------
+    def resolve_landing(self, player, dice_total, depth=0):
+        if depth > 4 or player.bankrupt:
+            return
+        idx = player.position
+        sp = self.board.spaces[idx]
+        if sp.kind in ("property", "railroad", "utility"):
+            st = self.props[idx]
+            if st.owner is None:
+                if self.ai.decide_buy(self, player, idx):
+                    player.cash -= sp.price
+                    st.owner = player.index
+                    self.log(f"    {player.name} buys {sp.name} for ${sp.price}")
+                else:
+                    self.log(f"    {player.name} declines {sp.name}")
+            elif st.owner != player.index and not st.mortgaged:
+                owner = self.players[st.owner]
+                rent = self.rent_for(idx, dice_total)
+                self.log(f"    {player.name} pays ${rent} rent to {owner.name} "
+                         f"for {sp.name}")
+                self.pay(player, rent, owner)
+        elif sp.kind == "tax":
+            self.log(f"    {player.name} pays ${sp.tax} {sp.name}")
+            self.pay(player, sp.tax)
+        elif sp.kind == "go_to_jail":
+            self.send_to_jail(player)
+        elif sp.kind == "chance":
+            card = self._draw(self.chance)
+            self.log(f"    {player.name} draws Chance: {card['text']}")
+            self.apply_card(player, card, depth)
+        elif sp.kind == "community_chest":
+            card = self._draw(self.community)
+            self.log(f"    {player.name} draws Community Chest: {card['text']}")
+            self.apply_card(player, card, depth)
+
+    def apply_card(self, player, card, depth=0):
+        kind = card["kind"]
+        if kind == "advance_to":
+            self.move_to(player, card["index"], collect_go=True)
+            self.resolve_landing(player, 7, depth + 1)
+        elif kind == "nearest":
+            target = self._next_in_group(player.position, card["group"])
+            self.move_to(player, target, collect_go=True)
+            self.resolve_landing(player, 7, depth + 1)
+        elif kind == "move_back":
+            self.move_to(player, player.position - card["steps"], collect_go=False)
+            self.resolve_landing(player, 7, depth + 1)
+        elif kind == "collect":
+            player.cash += card["amount"]
+        elif kind == "pay":
+            self.pay(player, card["amount"])
+        elif kind == "get_out_of_jail":
+            player.get_out_of_jail_cards += 1
+        elif kind == "go_to_jail":
+            self.send_to_jail(player)
+        elif kind == "pay_per_house":
+            total = 0
+            for i, st in enumerate(self.props):
+                if st.owner == player.index and st.houses:
+                    if st.houses == 5:
+                        total += card["per_hotel"]
+                    else:
+                        total += card["per_house"] * st.houses
+            self.pay(player, total)
+        elif kind == "pay_each":
+            for other in self.players:
+                if other is not player and not other.bankrupt:
+                    self.pay(player, card["amount"], other)
+        elif kind == "collect_each":
+            for other in self.players:
+                if other is not player and not other.bankrupt:
+                    self.pay(other, card["amount"], player)
+
+    # -- building / mortgaging ---------------------------------------------
+    def build_house(self, player, idx):
+        sp = self.board.spaces[idx]
+        st = self.props[idx]
+        if st.owner != player.index or st.mortgaged or st.houses >= 5:
+            return False
+        members = self.board.spaces_in_group(sp.group)
+        if not all(self.props[i].owner == player.index for i in members):
+            return False
+        if any(self.props[i].mortgaged for i in members):
+            return False
+        if st.houses > min(self.props[i].houses for i in members):
+            return False
+        cost = sp.house_cost
+        if player.cash < cost:
+            return False
+        if st.houses == 4:
+            if self.hotels_available <= 0:
+                return False
+            self.hotels_available -= 1
+            self.houses_available += 4
+        else:
+            if self.houses_available <= 0:
+                return False
+            self.houses_available -= 1
+        player.cash -= cost
+        st.houses += 1
+        return True
+
+    def sell_house(self, player, idx):
+        sp = self.board.spaces[idx]
+        st = self.props[idx]
+        if st.owner != player.index or st.houses <= 0:
+            return False
+        members = self.board.spaces_in_group(sp.group)
+        if st.houses < max(self.props[i].houses for i in members):
+            return False
+        if st.houses == 5:
+            if self.houses_available < 4:
+                return False
+            self.houses_available -= 4
+            self.hotels_available += 1
+        else:
+            self.houses_available += 1
+        st.houses -= 1
+        player.cash += (sp.house_cost or 0) // 2
+        return True
+
+    def mortgage(self, player, idx):
+        sp = self.board.spaces[idx]
+        st = self.props[idx]
+        if st.owner != player.index or st.mortgaged:
+            return False
+        if sp.group and sp.group not in ("railroad", "utility"):
+            if any(self.props[i].houses for i in self.board.spaces_in_group(sp.group)):
+                return False
+        st.mortgaged = True
+        player.cash += sp.price // 2
+        return True
+
+    def unmortgage(self, player, idx):
+        sp = self.board.spaces[idx]
+        st = self.props[idx]
+        if st.owner != player.index or not st.mortgaged:
+            return False
+        cost = sp.price // 2 + (sp.price // 2) // 10
+        if player.cash < cost:
+            return False
+        player.cash -= cost
+        st.mortgaged = False
+        return True
+
+    # -- turn loop ----------------------------------------------------------
+    def take_turn(self, player):
+        self.log(f"  {player.name} (cash ${player.cash}, pos {player.position})")
+        if player.in_jail:
+            if player.get_out_of_jail_cards > 0:
+                player.get_out_of_jail_cards -= 1
+                player.in_jail = False
+                player.jail_turns = 0
+                self.log("    uses Get Out of Jail Free card")
+            else:
+                d1, d2 = self.roll_dice()
+                self.log(f"    rolls {d1}+{d2} in jail")
+                if d1 == d2:
+                    player.in_jail = False
+                    player.jail_turns = 0
+                    self.advance(player, d1 + d2)
+                    self.resolve_landing(player, d1 + d2)
+                else:
+                    player.jail_turns += 1
+                    if player.jail_turns >= 3:
+                        self.log("    third failed attempt: pays $50 and moves")
+                        self.pay(player, 50)
+                        player.in_jail = False
+                        player.jail_turns = 0
+                        self.advance(player, d1 + d2)
+                        self.resolve_landing(player, d1 + d2)
+                return
+
+        doubles = 0
+        while True:
+            d1, d2 = self.roll_dice()
+            self.log(f"    rolls {d1}+{d2}")
+            if d1 == d2:
+                doubles += 1
+            else:
+                doubles = 0
+            if doubles == 3:
+                self.log("    three doubles in a row!")
+                self.send_to_jail(player)
+                return
+            self.advance(player, d1 + d2)
+            self.resolve_landing(player, d1 + d2)
+            if player.bankrupt or player.in_jail:
+                return
+            if d1 == d2:
+                self.log("    doubles: rolls again")
+                continue
+            return
+
+    def active_players(self):
+        return [p for p in self.players if not p.bankrupt]
+
+    def run(self, max_turns=None):
+        cap = max_turns if max_turns is not None else self.max_turns
+        idx = 0
+        while self.turn < cap:
+            active = self.active_players()
+            if len(active) <= 1:
+                break
+            player = self.players[idx % len(self.players)]
+            idx += 1
+            if player.bankrupt:
+                continue
+            self.turn += 1
+            self.log(f"Turn {self.turn}:")
+            self.take_turn(player)
+            if not player.bankrupt:
+                self.ai.manage_build(self, player)
+        active = self.active_players()
+        if len(active) == 1:
+            self.winner = active[0]
+        else:
+            self.winner = max(self.players, key=lambda p: p.net_worth(self))
+        return self.winner

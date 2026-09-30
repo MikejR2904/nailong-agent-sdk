@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:42d5262eb41f4aa769f584e3042ddb03594a4a82eb70a3bf033eee0616fadba9",
+  "relative_path": "SURVEY_LAW.md",
+  "sha256": "42d5262eb41f4aa769f584e3042ddb03594a4a82eb70a3bf033eee0616fadba9",
+  "size_bytes": 9754,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:survey_law",
+    "task_id": "survey_law"
+  },
+  "occurrence_id": "occ-94d3ad07d73e4d7fa2027b753cd2c585"
+}

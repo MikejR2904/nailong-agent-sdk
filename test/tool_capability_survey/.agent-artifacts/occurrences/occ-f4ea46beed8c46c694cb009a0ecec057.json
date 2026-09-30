@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-f4ea46beed8c46c694cb009a0ecec057",
+  "artifact_id": "sha256:73f9bbe7a0efed65645c05203e7adcbd2da10278aaf2fa17b464b93e24253774",
+  "relative_path": "REPORT.md",
+  "sha256": "73f9bbe7a0efed65645c05203e7adcbd2da10278aaf2fa17b464b93e24253774",
+  "size_bytes": 3267,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "tool-survey-run",
+    "node_id": "node:tool-survey",
+    "task_id": "tool-survey"
+  },
+  "written_at_utc": "2026-09-29T13:46:07.459350+00:00"
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:ae0443afce3d98aeb7ffbdc317f16e051be111a818bfb12cfb66f5c1779a24d9",
+  "relative_path": "SURVEY_ENGINEERING.md",
+  "sha256": "ae0443afce3d98aeb7ffbdc317f16e051be111a818bfb12cfb66f5c1779a24d9",
+  "size_bytes": 14496,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-live-run",
+    "node_id": "node:survey_engineering",
+    "task_id": "survey_engineering"
+  },
+  "occurrence_id": "occ-70597fe85cca4f38b2e42ab7d5ad7eac"
+}

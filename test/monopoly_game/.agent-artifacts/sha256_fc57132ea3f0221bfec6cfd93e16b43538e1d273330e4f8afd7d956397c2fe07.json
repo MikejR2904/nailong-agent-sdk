@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:fc57132ea3f0221bfec6cfd93e16b43538e1d273330e4f8afd7d956397c2fe07",
+  "relative_path": "board.py",
+  "sha256": "fc57132ea3f0221bfec6cfd93e16b43538e1d273330e4f8afd7d956397c2fe07",
+  "size_bytes": 5176,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "monopoly-run",
+    "node_id": "implementer",
+    "task_id": "monopoly-impl-v1"
+  },
+  "occurrence_id": "occ-ac4a396b427c428388ff8f091f094083"
+}

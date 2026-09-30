@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:16c672df98226316f6e097057e07eef4e29ee1b40fbb785b59e72ac0f7f50182",
+  "relative_path": "SURVEY_MEDICINE.md",
+  "sha256": "16c672df98226316f6e097057e07eef4e29ee1b40fbb785b59e72ac0f7f50182",
+  "size_bytes": 11918,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:survey_medicine",
+    "task_id": "survey_medicine"
+  },
+  "occurrence_id": "occ-60c134af479c4c6395d1de7985099994"
+}

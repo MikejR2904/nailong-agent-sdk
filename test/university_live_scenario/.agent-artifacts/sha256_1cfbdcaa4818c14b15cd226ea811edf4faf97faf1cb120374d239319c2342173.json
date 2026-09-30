@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:1cfbdcaa4818c14b15cd226ea811edf4faf97faf1cb120374d239319c2342173",
+  "relative_path": "PLAN_LAW.md",
+  "sha256": "1cfbdcaa4818c14b15cd226ea811edf4faf97faf1cb120374d239319c2342173",
+  "size_bytes": 16267,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-live-run",
+    "node_id": "node:plan_law",
+    "task_id": "plan_law"
+  },
+  "occurrence_id": "occ-8d8a26eb42f147d0ad0c9e9481f42282"
+}

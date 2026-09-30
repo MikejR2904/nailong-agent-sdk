@@ -1,0 +1,206 @@
+# Faculty of Medicine — Initial Site / Feasibility Survey
+
+**Stage:** university-survey (early feasibility, concurrent with five peer faculties)
+**Site:** ~60 m × 60 m (≈3,600 m²), flat level ground, stratified (layered) soil
+**Brief:** lecture halls/classrooms for a mid-sized faculty, staff offices, and a
+cafeteria/canteen serving students and staff.
+
+---
+
+## 1. Terrain and site conditions — approach
+
+**Ground form.** The plot is flat and level, which is the single most useful fact
+here: no significant cut-and-fill, no retaining structures, no stepped
+foundations, and no slope-stability question. The design consequence is that the
+whole feasibility risk shifts from *earthworks* to *water*. A level site with
+layered soil drains poorly by nature, so the survey approach is:
+
+1. **Confirm the stratigraphy before anything else.** "Stratified soil, generally
+   suitable for shallow spread footings" is a green light for the foundation
+   *type*, not a substitute for the bearing check. I would require a borehole /
+   trial-pit campaign (minimum 3–4 pits across the 60 m grid, plus one at the
+   cafeteria corner) to establish: depth and thickness of each layer, the
+   bearing stratum actually selected, its allowable bearing pressure, and
+   whether any layer is shrinkable clay, loose fill, or organic.
+2. **Check for a perched water table.** Layered soils commonly hold water on top
+   of a less permeable stratum. This matters more than the regional water table:
+   it drives foundation depth, drainage design, and whether a basement or
+   semi-basement is even worth considering (my answer: no — see §3).
+3. **Differential settlement across layer boundaries.** Where the bearing
+   stratum changes depth across the footprint, footings on either side can settle
+   differently. Mitigation is cheap at this stage: keep the building on one
+   consistent founding level where possible, use a reinforced ground beam /
+   tie-beam grid to stitch pad footings together, and keep the cafeteria (the
+   heaviest, most service-dense block) on the most uniform part of the plot.
+4. **Positive drainage as a design requirement, not an afterthought.** Flat
+   ground means the building must be raised on a plinth (I would use ~450–600 mm
+   above surrounding finished level) with a perimeter apron and falls away from
+   the building. Surface water strategy: perimeter trench drains / slot drains,
+   falls on all hardstanding, and either connection to the campus storm network
+   or — if the soil permeability allows — soakaways. If the upper layer is
+   clayey, soakaways are out and attenuation/connection is in; that decision
+   follows directly from the borehole log.
+5. **Service and access check.** Confirm the incoming water main size and
+   pressure (a cafeteria kitchen is a heavy intermittent water user), the
+   electrical supply capacity, and the foul drainage invert depth at the plot
+   boundary. A cafeteria grease-laden waste stream needs a grease trap and a
+   dedicated foul run — this is a site-level constraint, not a fit-out detail.
+
+**Foundations (decision).** Standard shallow **reinforced-concrete pad footings
+under columns and strip footings under load-bearing walls**, founded on the
+verified bearing stratum, with a reinforced ground-beam grid tying the pads
+together. No piling is anticipated on the given information; I would hold piling
+in reserve only if the boreholes reveal a soft layer thicker than ~2 m beneath
+the cafeteria or a high perched water table.
+
+---
+
+## 2. Zoning and footprint concept
+
+Total plot ≈3,600 m². I would not build out the whole plot — a mid-sized faculty
+needs external circulation, daylight, and a service yard.
+
+**Indicative massing:** a two- to three-storey main academic block with a
+footprint of roughly **1,600–1,900 m²**, leaving ~45–55 % of the plot as
+hardstanding, planting, and circulation.
+
+Zoning, in plan:
+
+- **Academic block (north / quiet side):** lecture halls and classrooms stacked
+  over two or three floors. Large rooms want long spans and few columns, so this
+  block drives the structural grid. Ground floor gets the largest halls (easiest
+  for egress and for moving equipment); upper floors get smaller classrooms and
+  seminar rooms.
+- **Staff offices (adjacent to academic block, quieter edge):** cellular offices
+  and small meeting rooms, naturally ventilated where possible, on a shallower
+  span grid. Grouped so they can be compartmented and locked down separately
+  from teaching space.
+- **Cafeteria / canteen (separate wing, ground floor, own entrance):** placed at
+  the plot edge nearest the main pedestrian flow, with a **dedicated service
+  yard, delivery access, and bin/grease-trap zone** on the opposite face. It is
+  deliberately a *separate wing* rather than a room inside the academic block:
+  this isolates kitchen fire risk, grease and odour, and heavy water use from the
+  teaching environment, and lets the dining hall be a tall, column-free,
+  daylit volume.
+- **Circulation spine:** a single covered spine linking the three zones, doubling
+  as the primary escape route and as the accessible route (level thresholds
+  throughout, lift + stair core at the junction of academic and office blocks).
+- **External:** short-stay drop-off and accessible parking at the entrance edge,
+  cycle parking, and a service route that does not cross the student entrance.
+
+**Why this zoning:** it separates the three functional risk profiles — quiet
+teaching, cellular office work, and a wet, hot, greasy, high-occupancy food
+operation — so that each can be built with the materials and fire strategy it
+actually needs, instead of compromising one for the others.
+
+---
+
+## 3. Primary construction materials
+
+**General building — decision: reinforced-concrete frame with masonry infill.**
+
+- **Structure:** in-situ reinforced-concrete columns, beams, and slabs. Reasons:
+  it suits the layered-soil shallow-footing solution directly (continuous RC
+  frame ties into the ground-beam grid and tolerates minor differential
+  movement); it is inherently fire-resistant with no applied protection; it gives
+  good acoustic separation between stacked lecture halls (a real requirement —
+  impact and airborne noise between teaching rooms); and it is robust and
+  low-maintenance in a high-traffic institutional building. Long-span lecture
+  halls are handled with deeper RC beams or a ribbed/voided slab rather than by
+  changing material.
+- **External walls:** clay or concrete masonry infill with a drained and
+  ventilated rainscreen or a rendered insulated cavity. Cavity insulation +
+  masonry gives thermal mass, which helps in a hot climate and reduces peak
+  cooling load.
+- **Roof:** insulated RC slab with a waterproof membrane and a protected
+  finish, or a ventilated pitched roof over the academic block. Flat, well-drained
+  and walkable for maintenance access.
+- **Windows/glazing:** aluminium or thermally broken frames with solar-control
+  glazing on the exposed elevations; external shading to cut glare in lecture
+  halls.
+- **No basement.** On a flat, layered site with a possible perched water table,
+  a basement buys little (the plot is large enough to build at grade) and adds
+  waterproofing, dewatering, and settlement risk. I would rule it out at
+  feasibility.
+
+**Cafeteria — decision: RC frame, but a materially different envelope and
+fit-out from the rest of the building.** The cafeteria is where the brief's four
+criteria (span, fire, hygiene/moisture, maintenance) all bite at once, so it is
+specified separately.
+
+| Criterion | Decision | Reasoning |
+|---|---|---|
+| **Structural span** | RC frame with **long-span beams / ribbed slab giving ~9–12 m clear spans** in the dining hall; kitchen on a tighter grid. | A canteen needs a column-free dining floor for flexible seating and clear circulation. RC handles this without the fire-protection burden of steel. |
+| **Fire rating** | Kitchen compartmented from dining and from the rest of the building by **1–2 hour fire-rated construction** (RC walls/slab, rated doors, rated glazing where used). Kitchen hood and grease duct on a **dedicated fire-rated duct with suppression**; gas/electrical isolation at the kitchen boundary. | Cooking is the highest fire-risk activity on the site; grease ducts are a classic fire-spread path. Compartmentation is the cheapest, most reliable control. |
+| **Hygiene** | Kitchen walls: **ceramic tiling to ~2.1 m** over a smooth, washable substrate, with **stainless-steel splashbacks** behind cooking and washing lines. Floors: **slip-resistant ceramic/quarry tile with epoxy grout**, coved skirting, falls to **floor drains**, and a **grease trap** on the kitchen foul run. Ceilings: **cleanable, moisture-resistant** — suspended aluminium/metal tray or moisture-resistant board with sealed access panels. | Food-contact and food-prep surfaces must be impervious, non-absorbent, and cleanable; joints and coves are where hygiene failures actually happen. |
+| **Moisture resistance** | Kitchen is a **wet, steamy, greasy** environment: specify a **vapour-control layer and ventilated roof build-up** over the kitchen, sealed and washable wall/ceiling finishes, and **no exposed timber or moisture-sensitive board** in the kitchen or over the cooking line. Robust mechanical extract with make-up air. | Steam and grease condense on cool surfaces; the failure mode is not the surface but the substrate and the roof build-up behind it. |
+| **Maintenance** | **Stainless-steel benches, shelving, and equipment stands**; replaceable modular ceiling panels; accessible service voids and isolation valves; durable, repairable floor and wall finishes with a stocked spare-tile allowance. | A canteen is a heavy-wear, high-turnover space; the design goal is that every worn element can be cleaned or replaced without demolishing the room. |
+
+**Dining hall (as distinct from the kitchen):** same RC frame, but a lighter
+finish palette — durable, cleanable floor, hard-wearing wall finish, high
+daylight, and a tall volume for stack-effect ventilation. It shares the fire
+compartment boundary with the kitchen but not the wet-area specification.
+
+**Summary of the material logic:** one structural system (RC frame on shallow
+footings) unifies the whole building and suits the site; the *cafeteria* is then
+differentiated by its envelope, compartmentation, and finishes rather than by a
+different structure. That keeps the build simple while still meeting the
+cafeteria's specific span, fire, hygiene, moisture, and maintenance demands.
+
+---
+
+## 4. Key risks and open items for the next stage
+
+1. Borehole/trial-pit data to confirm bearing stratum depth, bearing pressure,
+   and the absence of a thick soft layer or perched water table.
+2. Soil permeability test to decide soakaway vs. connection for storm water.
+3. Confirmation of incoming water pressure/flow and foul invert depth at the
+   boundary (cafeteria-driven).
+4. Fire strategy sign-off for the kitchen compartmentation and grease-duct
+   protection.
+5. Confirmation that the flat site's external levels can achieve positive
+   drainage without importing fill.
+
+---
+
+## 5. Influence of peer findings (live open_questions)
+
+Four peer findings were live in the shared state when this survey was finalised.
+I assessed each independently against my own site and brief:
+
+- **[Faculty of Computing] Grease-laden kitchen exhaust as a fire hazard.**
+  **Influenced this survey.** My original cafeteria fire strategy named a
+  "dedicated fire-rated duct with suppression" but did not specify the duct
+  construction or its routing. I have made this explicit: a **continuously
+  welded/flanged liquid-tight grease duct** (not ordinary galvanised spiral
+  duct) with **access doors at every change of direction**, enclosed in a
+  fire-rated shaft or wrapped where it passes adjacent to other occupancies, and
+  terminated clear of air intakes, windows, and combustible roof build-up. This
+  also feeds back into §2: the duct route and its shaft now need to be reserved
+  in the zoning layout, because they drive ceiling-void depth and roof
+  penetrations. The hood/duct suppression interlock and the grease trap were
+  already in my scheme and are confirmed.
+- **[Faculty of Business] and [Faculty of Engineering] Wet-zone material
+  warnings (gypsum/drywall and timber unsuitable in kitchens).** **Confirmed,
+  not changed.** My cafeteria specification already excludes moisture-sensitive
+  board and timber from the kitchen and cooking line, and already uses tiled /
+  stainless / cementitious washable surfaces, coved skirting, falls to drains,
+  and a grease trap. These findings agree with the decision I had already made;
+  no revision was needed. They do reinforce the point that the kitchen's
+  fire-rated separation is easier to achieve in masonry/RC than in lightweight
+  drywall — which is consistent with my RC-frame-plus-masonry decision.
+- **[Faculty of Arts] Stratified-soil differential-settlement caution.**
+  **Influenced this survey.** My §1 already required a multi-point borehole grid
+  and a tied ground-beam grid, but the finding sharpened two things: (1) I have
+  stated explicitly that the borehole grid must cover the **whole footprint**,
+  not a single central hole, and must include the cafeteria corner; and (2) I
+  have made the **ground-beam/tie-beam grid** a firm part of the foundation
+  decision rather than an option, since it is the cheapest way to redistribute
+  settlement across a stratum transition. The recommendation to design
+  ground-floor slabs and drainage to tolerate small differential movement
+  (movement joints, flexible service connections) is adopted as a design note.
+
+**Net effect:** two peer findings (Computing, Arts) changed or firmed up
+specific decisions in this survey; two (Business, Engineering) independently
+agreed with decisions already made and required no change. No peer finding was
+rejected as inapplicable to this site.

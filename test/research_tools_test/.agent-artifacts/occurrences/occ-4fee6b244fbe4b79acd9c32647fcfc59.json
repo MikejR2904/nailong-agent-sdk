@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-4fee6b244fbe4b79acd9c32647fcfc59",
+  "artifact_id": "sha256:52e4881af294adffd5d81df88c5f9c91dd7b73d70561a4d72d87bea6744b5b52",
+  "relative_path": "SINGAPORE_NEWS.md",
+  "sha256": "52e4881af294adffd5d81df88c5f9c91dd7b73d70561a4d72d87bea6744b5b52",
+  "size_bytes": 3809,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "research-run-singapore-news",
+    "node_id": "node:singapore-news",
+    "task_id": "research-singapore-news"
+  },
+  "written_at_utc": "2026-09-29T14:00:57.925867+00:00"
+}

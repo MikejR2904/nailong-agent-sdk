@@ -1,0 +1,1 @@
+{"call":{"arguments":{"file_glob":"*.txt","pattern":"hello"},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-9ce4c925ad27e048","name":"grep"},"result":{"error":null,"failure":null,"output":{"matches":[{"line":1,"path":"seed_notes.txt","text":"hello from the tool capability survey"}],"scan_truncated":false,"truncated":false},"status":"succeeded"}}

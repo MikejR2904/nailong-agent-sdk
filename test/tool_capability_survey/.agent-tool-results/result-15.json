@@ -1,0 +1,1 @@
+{"call":{"arguments":{"question":"Should the survey proceed?"},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-ad5490d136f3a166","name":"ask_human_question"},"result":{"error":null,"failure":null,"output":{"answer":"(stub human responder) Yes, proceed. You asked: Should the survey proceed?","answered":true},"status":"succeeded"}}

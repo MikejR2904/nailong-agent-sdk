@@ -1,0 +1,1 @@
+{"call":{"arguments":{},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-931bd1e71909e713","name":"run_verilator"},"result":{"error":"No registered command template exists for \"verilator\".","failure":null,"output":null,"status":"failed"}}

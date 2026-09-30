@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:d4a8b0b954a48dd939fd6d60a5d40b1e3dab1568dd61d783c2bc8987bb6059c3",
+  "relative_path": "notebook.ipynb",
+  "sha256": "d4a8b0b954a48dd939fd6d60a5d40b1e3dab1568dd61d783c2bc8987bb6059c3",
+  "size_bytes": 217,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "tool-survey-run",
+    "node_id": "node:tool-survey",
+    "task_id": "tool-survey"
+  },
+  "occurrence_id": "occ-02f136223e484c57bac273e9d7ce71ae"
+}

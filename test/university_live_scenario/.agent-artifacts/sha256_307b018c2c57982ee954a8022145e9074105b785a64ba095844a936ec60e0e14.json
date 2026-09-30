@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:307b018c2c57982ee954a8022145e9074105b785a64ba095844a936ec60e0e14",
+  "relative_path": "PLAN_MEDICINE.md",
+  "sha256": "307b018c2c57982ee954a8022145e9074105b785a64ba095844a936ec60e0e14",
+  "size_bytes": 21952,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-live-run",
+    "node_id": "node:plan_medicine",
+    "task_id": "plan_medicine"
+  },
+  "occurrence_id": "occ-45a3a115cecf426ba6df4526b8fd7cba"
+}

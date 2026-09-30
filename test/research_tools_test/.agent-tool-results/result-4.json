@@ -1,0 +1,1 @@
+{"call":{"arguments":{"max_chars":20000,"url":"https://arxiv.org/pdf/2211.17192"},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-aad631856035fd80","name":"web_fetch"},"result":{"error":"web_fetch rejects non-textual content type 'application/pdf'.","failure":null,"output":null,"status":"failed"}}

@@ -1,0 +1,32 @@
+"""Player state."""
+
+from dataclasses import dataclass
+
+
+@dataclass
+class Player:
+    index: int
+    name: str
+    cash: int = 1500
+    position: int = 0
+    in_jail: bool = False
+    jail_turns: int = 0
+    get_out_of_jail_cards: int = 0
+    bankrupt: bool = False
+
+    def net_worth(self, game):
+        """Cash plus the value of owned property (houses at cost)."""
+        total = self.cash
+        for i, ps in enumerate(game.state):
+            if ps.owner != self.index:
+                continue
+            space = game.board.spaces[i]
+            if space.price is None:
+                continue
+            if ps.mortgaged:
+                total += space.price // 2
+            else:
+                total += space.price
+                if space.house_cost:
+                    total += ps.houses * space.house_cost
+        return total

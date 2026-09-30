@@ -1,0 +1,467 @@
+"""The Monopoly engine: all rules live here.
+
+`Game` owns the mutable world state (ownership, houses, mortgages, cash,
+positions) and exposes `play_turn` / `run`. It never imports `ai` or `render`;
+the driver and the view are injected, which is what makes the non-interactive
+runtime a non-issue.
+"""
+
+import random
+from dataclasses import dataclass
+
+from board import Board
+from cards import CHANCE_CARDS, COMMUNITY_CHEST_CARDS
+from player import Player
+
+START_CASH = 1500
+GO_SALARY = 200
+JAIL_INDEX = 10
+JAIL_FINE = 50
+MAX_CARD_DEPTH = 4
+
+
+@dataclass
+class PropertyState:
+    owner: int | None = None
+    houses: int = 0          # 0..5, 5 == hotel
+    mortgaged: bool = False
+
+
+class Game:
+    def __init__(self, seed=42, num_players=4, max_turns=300, ai=None):
+        self.board = Board()
+        self.rng = random.Random(seed)
+        self.max_turns = max_turns
+        self.ai = ai
+        self.players = [
+            Player(index=i, name=f"Player {i + 1}", cash=START_CASH)
+            for i in range(num_players)
+        ]
+        self.state = [PropertyState() for _ in range(len(self.board))]
+        self.houses_supply = 32
+        self.hotels_supply = 12
+        self.log = []
+        self.turn = 0
+        self.current = 0
+        self.finished = False
+        self.winner = None
+        self.chance = list(CHANCE_CARDS)
+        self.community = list(COMMUNITY_CHEST_CARDS)
+        self.rng.shuffle(self.chance)
+        self.rng.shuffle(self.community)
+        self._chance_i = 0
+        self._community_i = 0
+
+    # ---------------------------------------------------------------- helpers
+    def say(self, msg):
+        self.log.append(f"[turn {self.turn:>3}] {msg}")
+
+    def owners(self):
+        return [ps.owner for ps in self.state]
+
+    def roll(self):
+        return self.rng.randint(1, 6), self.rng.randint(1, 6)
+
+    def alive(self):
+        return [p for p in self.players if not p.bankrupt]
+
+    def draw_chance(self):
+        card = self.chance[self._chance_i % len(self.chance)]
+        self._chance_i += 1
+        return card
+
+    def draw_community(self):
+        card = self.community[self._community_i % len(self.community)]
+        self._community_i += 1
+        return card
+
+    # ------------------------------------------------------------ money moves
+    def credit(self, player, amount):
+        player.cash += amount
+
+    def pay(self, player, amount, creditor=None):
+        """Transfer `amount` from player to creditor (None == bank).
+
+        Attempts to raise cash first; if still short the player goes bankrupt.
+        Returns True if the debt was paid in full.
+        """
+        if amount <= 0:
+            return True
+        if player.cash < amount:
+            self.raise_cash(player, amount)
+        if player.cash >= amount:
+            player.cash -= amount
+            if creditor is not None:
+                self.players[creditor].cash += amount
+            return True
+        self.bankrupt(player, creditor)
+        return False
+
+    def raise_cash(self, player, needed):
+        """Sell houses then mortgage properties until cash >= needed."""
+        # 1. sell houses (cheapest first is fine; we just need liquidity)
+        for i, ps in enumerate(self.state):
+            if player.cash >= needed:
+                return
+            if ps.owner == player.index and ps.houses > 0:
+                self.sell_house(i, player, force=True)
+        # 2. mortgage properties
+        for i, ps in enumerate(self.state):
+            if player.cash >= needed:
+                return
+            if ps.owner == player.index and not ps.mortgaged and ps.houses == 0:
+                self.mortgage(i, player)
+
+    def bankrupt(self, player, creditor):
+        """Liquidate `player`; assets go to creditor (or back to the bank)."""
+        player.bankrupt = True
+        # houses are sold back to the bank first
+        for i, ps in enumerate(self.state):
+            if ps.owner == player.index and ps.houses > 0:
+                self._return_houses(i)
+                ps.houses = 0
+        for i, ps in enumerate(self.state):
+            if ps.owner != player.index:
+                continue
+            if creditor is None:
+                ps.owner = None
+                ps.mortgaged = False
+            else:
+                ps.owner = creditor
+        if creditor is not None:
+            self.players[creditor].cash += player.cash
+        player.cash = 0
+        who = "the bank" if creditor is None else self.players[creditor].name
+        self.say(f"{player.name} is BANKRUPT; assets transfer to {who}.")
+
+    # ------------------------------------------------------------- property ops
+    def _group_indices(self, group):
+        return self.board.spaces_in_group(group)
+
+    def owns_full_group(self, player, group):
+        return self.board.is_full_group(player.index, group, self.owners())
+
+    def can_build(self, idx, player):
+        space = self.board.space(idx)
+        ps = self.state[idx]
+        if space.kind != "property" or ps.owner != player.index:
+            return False
+        if ps.houses >= 5 or ps.mortgaged:
+            return False
+        if not self.owns_full_group(player, space.group):
+            return False
+        group = self._group_indices(space.group)
+        if any(self.state[i].mortgaged for i in group):
+            return False
+        # even-build: may only build on a property at the group minimum
+        if ps.houses > min(self.state[i].houses for i in group):
+            return False
+        if ps.houses < 4 and self.houses_supply <= 0:
+            return False
+        if ps.houses == 4 and self.hotels_supply <= 0:
+            return False
+        return player.cash >= space.house_cost
+
+    def build_house(self, idx, player):
+        if not self.can_build(idx, player):
+            return False
+        space = self.board.space(idx)
+        ps = self.state[idx]
+        player.cash -= space.house_cost
+        if ps.houses < 4:
+            self.houses_supply -= 1
+            ps.houses += 1
+        else:
+            self.hotels_supply -= 1
+            self.houses_supply += 4
+            ps.houses = 5
+        label = "hotel" if ps.houses == 5 else f"{ps.houses} house(s)"
+        self.say(f"{player.name} builds {label} on {space.name} for ${space.house_cost}.")
+        return True
+
+    def _return_houses(self, idx):
+        ps = self.state[idx]
+        if ps.houses == 5:
+            self.hotels_supply += 1
+            self.houses_supply -= 4
+        else:
+            self.houses_supply -= ps.houses
+
+    def sell_house(self, idx, player, force=False):
+        space = self.board.space(idx)
+        ps = self.state[idx]
+        if ps.owner != player.index or ps.houses == 0:
+            return False
+        if not force:
+            group = self._group_indices(space.group)
+            if ps.houses < max(self.state[i].houses for i in group):
+                return False
+        refund = space.house_cost // 2
+        if ps.houses == 5:
+            self.hotels_supply += 1
+            self.houses_supply -= 4
+            ps.houses = 4
+        else:
+            self.houses_supply += 1
+            ps.houses -= 1
+        player.cash += refund
+        self.say(f"{player.name} sells a house on {space.name} for ${refund}.")
+        return True
+
+    def mortgage(self, idx, player):
+        space = self.board.space(idx)
+        ps = self.state[idx]
+        if ps.owner != player.index or ps.mortgaged or ps.houses > 0:
+            return False
+        ps.mortgaged = True
+        player.cash += space.price // 2
+        self.say(f"{player.name} mortgages {space.name} for ${space.price // 2}.")
+        return True
+
+    def unmortgage(self, idx, player):
+        space = self.board.space(idx)
+        ps = self.state[idx]
+        cost = int(space.price // 2 * 1.1)
+        if ps.owner != player.index or not ps.mortgaged or player.cash < cost:
+            return False
+        player.cash -= cost
+        ps.mortgaged = False
+        self.say(f"{player.name} unmortgages {space.name} for ${cost}.")
+        return True
+
+    # ------------------------------------------------------------------ rent
+    def compute_rent(self, idx, d1, d2):
+        space = self.board.space(idx)
+        ps = self.state[idx]
+        if ps.owner is None or ps.mortgaged:
+            return 0
+        owner = ps.owner
+        if space.kind == "property":
+            if ps.houses > 0:
+                return space.rents[ps.houses]
+            base = space.rents[0]
+            if self.board.is_full_group(owner, space.group, self.owners()):
+                base *= 2
+            return base
+        if space.kind == "railroad":
+            n = sum(1 for i in self.board.spaces_in_group("railroad")
+                    if self.state[i].owner == owner)
+            return 25 * (2 ** (n - 1)) if n else 0
+        if space.kind == "utility":
+            n = sum(1 for i in self.board.spaces_in_group("utility")
+                    if self.state[i].owner == owner)
+            mult = 10 if n >= 2 else 4
+            return mult * (d1 + d2)
+        return 0
+
+    # ------------------------------------------------------------- movement
+    def send_to_jail(self, player):
+        player.position = JAIL_INDEX
+        player.in_jail = True
+        player.jail_turns = 0
+        self.say(f"{player.name} goes to Jail.")
+
+    def move_to(self, player, index, collect_go=True):
+        old = player.position
+        if collect_go and index < old:
+            player.cash += GO_SALARY
+            self.say(f"{player.name} passes GO and collects ${GO_SALARY}.")
+        player.position = index
+
+    def move_and_resolve(self, player, steps, d1, d2):
+        old = player.position
+        new = (old + steps) % len(self.board)
+        if new < old:
+            player.cash += GO_SALARY
+            self.say(f"{player.name} passes GO and collects ${GO_SALARY}.")
+        player.position = new
+        self.say(f"{player.name} rolls {d1}+{d2}={steps} and lands on "
+                 f"{self.board.space(new).name}.")
+        self.resolve_landing(player, d1, d2)
+
+    def resolve_landing(self, player, d1, d2, depth=0):
+        if player.bankrupt:
+            return
+        space = self.board.space(player.position)
+        kind = space.kind
+        if kind in ("property", "railroad", "utility"):
+            self._resolve_property(player, space)
+        elif kind == "chance":
+            card = self.draw_chance()
+            self.say(f"{player.name} draws Chance: {card['text']}")
+            self.apply_card(player, card, d1, d2, depth)
+        elif kind == "community_chest":
+            card = self.draw_community()
+            self.say(f"{player.name} draws Community Chest: {card['text']}")
+            self.apply_card(player, card, d1, d2, depth)
+        elif kind == "tax":
+            self.say(f"{player.name} pays ${space.tax} in tax.")
+            self.pay(player, space.tax, None)
+        elif kind == "go_to_jail":
+            self.send_to_jail(player)
+        # go / jail (visiting) / free_parking: no-op
+
+    def _resolve_property(self, player, space):
+        idx = space.index
+        ps = self.state[idx]
+        if ps.owner is None:
+            if self.ai is not None and self.ai.decide_buy(self, player, space):
+                if player.cash >= space.price:
+                    player.cash -= space.price
+                    ps.owner = player.index
+                    self.say(f"{player.name} buys {space.name} for ${space.price}.")
+                else:
+                    self.say(f"{player.name} cannot afford {space.name}.")
+            else:
+                self.say(f"{player.name} declines {space.name}.")
+        elif ps.owner == player.index:
+            self.say(f"{player.name} owns {space.name}; nothing happens.")
+        elif ps.mortgaged:
+            self.say(f"{space.name} is mortgaged; no rent.")
+        else:
+            rent = self.compute_rent(idx, self._last_d1, self._last_d2)
+            owner = self.players[ps.owner]
+            self.say(f"{player.name} pays ${rent} rent to {owner.name} "
+                     f"for {space.name}.")
+            self.pay(player, rent, ps.owner)
+
+    def apply_card(self, player, card, d1, d2, depth=0):
+        if depth > MAX_CARD_DEPTH:
+            return
+        kind = card["kind"]
+        if kind == "advance_to":
+            self.move_to(player, card["index"])
+            self.say(f"{player.name} advances to {self.board.space(player.position).name}.")
+            self.resolve_landing(player, d1, d2, depth + 1)
+        elif kind == "nearest":
+            idx = self._nearest(player.position, card["group"])
+            self.move_to(player, idx)
+            self.say(f"{player.name} advances to {self.board.space(idx).name}.")
+            self.resolve_landing(player, d1, d2, depth + 1)
+        elif kind == "move_back":
+            player.position = (player.position - card["steps"]) % len(self.board)
+            self.say(f"{player.name} moves back to "
+                     f"{self.board.space(player.position).name}.")
+            self.resolve_landing(player, d1, d2, depth + 1)
+        elif kind == "go_to_jail":
+            self.send_to_jail(player)
+        elif kind == "collect":
+            player.cash += card["amount"]
+            self.say(f"{player.name} collects ${card['amount']}.")
+        elif kind == "pay":
+            self.pay(player, card["amount"], None)
+        elif kind == "get_out_of_jail":
+            player.get_out_of_jail_cards += 1
+            self.say(f"{player.name} keeps a Get Out of Jail Free card.")
+        elif kind == "pay_per_house":
+            total = 0
+            for i, ps in enumerate(self.state):
+                if ps.owner == player.index and ps.houses > 0:
+                    if ps.houses == 5:
+                        total += card["per_hotel"]
+                    else:
+                        total += ps.houses * card["per_house"]
+            if total:
+                self.say(f"{player.name} pays ${total} in repairs.")
+                self.pay(player, total, None)
+        elif kind == "pay_each":
+            for other in self.players:
+                if other.index != player.index and not other.bankrupt:
+                    self.pay(player, card["amount"], other.index)
+        elif kind == "collect_from_each":
+            for other in self.players:
+                if other.index != player.index and not other.bankrupt:
+                    self.pay(other, card["amount"], player.index)
+
+    def _nearest(self, pos, group):
+        members = sorted(self.board.spaces_in_group(group))
+        for m in members:
+            if m > pos:
+                return m
+        return members[0]
+
+    # ------------------------------------------------------------------ turns
+    def handle_jail(self, player):
+        """Returns True if the turn ends without moving."""
+        d1, d2 = self.roll()
+        if player.get_out_of_jail_cards > 0:
+            player.get_out_of_jail_cards -= 1
+            player.in_jail = False
+            self.say(f"{player.name} uses a Get Out of Jail Free card.")
+            self.move_and_resolve(player, d1 + d2, d1, d2)
+            return True
+        if d1 == d2:
+            player.in_jail = False
+            self.say(f"{player.name} rolls doubles ({d1}+{d2}) and leaves Jail.")
+            self.move_and_resolve(player, d1 + d2, d1, d2)
+            return True
+        player.jail_turns += 1
+        if player.jail_turns >= 3:
+            self.say(f"{player.name} pays the ${JAIL_FINE} fine after 3 tries.")
+            self.pay(player, JAIL_FINE, None)
+            if player.bankrupt:
+                return True
+            player.in_jail = False
+            self.move_and_resolve(player, d1 + d2, d1, d2)
+            return True
+        self.say(f"{player.name} fails to roll doubles ({d1}+{d2}) and stays in Jail.")
+        return True
+
+    def play_turn(self, player):
+        self._last_d1 = self._last_d2 = 0
+        doubles = 0
+        while True:
+            if player.in_jail:
+                self.handle_jail(player)
+                return
+            d1, d2 = self.roll()
+            self._last_d1, self._last_d2 = d1, d2
+            if d1 == d2:
+                doubles += 1
+                if doubles == 3:
+                    self.say(f"{player.name} rolls three doubles and is jailed.")
+                    self.send_to_jail(player)
+                    return
+            self.move_and_resolve(player, d1 + d2, d1, d2)
+            if player.bankrupt:
+                return
+            if d1 == d2 and not player.in_jail:
+                self.say(f"{player.name} rolled doubles and takes another turn.")
+                continue
+            return
+
+    def manage(self, player):
+        """Post-roll management: let the AI build/unmortgage."""
+        if self.ai is None or player.bankrupt:
+            return
+        self.ai.manage(self, player)
+
+    def run(self, max_turns=None):
+        cap = self.max_turns if max_turns is None else max_turns
+        while self.turn < cap:
+            if len(self.alive()) <= 1:
+                break
+            player = self.players[self.current]
+            if not player.bankrupt:
+                self.turn += 1
+                self.play_turn(player)
+                self.manage(player)
+            if len(self.alive()) <= 1:
+                break
+            self._advance()
+        self.finished = True
+        self.winner = self._decide_winner()
+        return self.winner
+
+    def _advance(self):
+        n = len(self.players)
+        for _ in range(n):
+            self.current = (self.current + 1) % n
+            if not self.players[self.current].bankrupt:
+                return
+
+    def _decide_winner(self):
+        alive = self.alive()
+        if len(alive) == 1:
+            return alive[0]
+        return max(alive, key=lambda p: p.net_worth(self))

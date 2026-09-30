@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-66f92d7ade4b4c3bb7e499b4801dd3ac",
+  "artifact_id": "sha256:859af0fd8a5cb57aee92df4845063c6ef075431cb4f3160d30f0cd0700e7b280",
+  "relative_path": "PLAN_LAW.md",
+  "sha256": "859af0fd8a5cb57aee92df4845063c6ef075431cb4f3160d30f0cd0700e7b280",
+  "size_bytes": 17356,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:plan_law",
+    "task_id": "plan_law"
+  },
+  "written_at_utc": "2026-09-29T12:19:14.801710+00:00"
+}

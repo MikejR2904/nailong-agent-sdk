@@ -1,0 +1,14 @@
+{
+  "occurrence_id": "occ-bfe5326e75c14d2f8ca5371443ed908b",
+  "artifact_id": "sha256:e166b55366add879a6ed1110d80b0f6345030312d9fc38afb73b043d00973f60",
+  "relative_path": "DESIGN.md",
+  "sha256": "e166b55366add879a6ed1110d80b0f6345030312d9fc38afb73b043d00973f60",
+  "size_bytes": 12890,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "monopoly-run",
+    "node_id": "extension",
+    "task_id": "monopoly-extend-v1"
+  },
+  "written_at_utc": "2026-09-29T08:49:15.045431+00:00"
+}

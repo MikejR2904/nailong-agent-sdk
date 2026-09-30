@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:9d49092b80d9e3e2deb2b2ec64ad27ee2107cccf6b4706c0a80ee3517ffdf71e",
+  "relative_path": "DESIGN.md",
+  "sha256": "9d49092b80d9e3e2deb2b2ec64ad27ee2107cccf6b4706c0a80ee3517ffdf71e",
+  "size_bytes": 12715,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "monopoly-run",
+    "node_id": "extension",
+    "task_id": "monopoly-extend-v1"
+  },
+  "occurrence_id": "occ-7e7ce9cb5dcb405b87852f3421a7f550"
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "sha256:deda34cdb84b54fd75d2e2b5f59ec14278f492bd7ea28c13c0643082f68f0aac",
+  "relative_path": "PLAN_BUSINESS.md",
+  "sha256": "deda34cdb84b54fd75d2e2b5f59ec14278f492bd7ea28c13c0643082f68f0aac",
+  "size_bytes": 21107,
+  "kind": "draft",
+  "manifest": {
+    "run_id": "university-run",
+    "node_id": "node:plan_business",
+    "task_id": "plan_business"
+  },
+  "occurrence_id": "occ-75ccc82296b14bfb8e8f60a33a3fb0ac"
+}

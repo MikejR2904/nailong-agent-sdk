@@ -1,0 +1,3129 @@
+{
+  "schema_version": "agent-sdk-orchestration-v1",
+  "orchestration_id": "orchestration-2",
+  "request": {
+    "request_id": "university-live-request-v1",
+    "stage": "plan",
+    "snapshot": {
+      "snapshot_id": "university-live-campus-v1",
+      "version": "1.0.0",
+      "content_hash": "test-university-live-run",
+      "artifact_ids": [],
+      "read_only": true
+    },
+    "gap_metadata": {
+      "categories_touched": [
+        "engineering",
+        "computing",
+        "business",
+        "law",
+        "medicine",
+        "arts"
+      ],
+      "blast_radius": 1,
+      "gap_types": []
+    },
+    "plan": {
+      "plan_id": "university-live-plan-v1",
+      "tasks": [
+        {
+          "task_id": "survey_engineering",
+          "scope": "survey-engineering",
+          "locked_interface": {
+            "signals": [
+              "survey_engineering_to_engineering",
+              "survey_engineering_to_computing",
+              "survey_engineering_to_business",
+              "survey_engineering_to_law",
+              "survey_engineering_to_medicine",
+              "survey_engineering_to_arts"
+            ]
+          },
+          "instructions": "Produce the independent feasibility survey for engineering.",
+          "dependencies": [],
+          "acceptance_criteria": "Write SURVEY_ENGINEERING.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "survey_engineering",
+              "signal_id": "survey_engineering_to_engineering",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:engineering-survey-output"
+              ],
+              "scope_pointer": "survey_engineering.output"
+            },
+            {
+              "task_id": "survey_engineering",
+              "signal_id": "survey_engineering_to_computing",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:engineering-survey-output"
+              ],
+              "scope_pointer": "survey_engineering.output"
+            },
+            {
+              "task_id": "survey_engineering",
+              "signal_id": "survey_engineering_to_business",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:engineering-survey-output"
+              ],
+              "scope_pointer": "survey_engineering.output"
+            },
+            {
+              "task_id": "survey_engineering",
+              "signal_id": "survey_engineering_to_law",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:engineering-survey-output"
+              ],
+              "scope_pointer": "survey_engineering.output"
+            },
+            {
+              "task_id": "survey_engineering",
+              "signal_id": "survey_engineering_to_medicine",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:engineering-survey-output"
+              ],
+              "scope_pointer": "survey_engineering.output"
+            },
+            {
+              "task_id": "survey_engineering",
+              "signal_id": "survey_engineering_to_arts",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:engineering-survey-output"
+              ],
+              "scope_pointer": "survey_engineering.output"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "survey_computing",
+          "scope": "survey-computing",
+          "locked_interface": {
+            "signals": [
+              "survey_computing_to_engineering",
+              "survey_computing_to_computing",
+              "survey_computing_to_business",
+              "survey_computing_to_law",
+              "survey_computing_to_medicine",
+              "survey_computing_to_arts"
+            ]
+          },
+          "instructions": "Produce the independent feasibility survey for computing.",
+          "dependencies": [],
+          "acceptance_criteria": "Write SURVEY_COMPUTING.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "survey_computing",
+              "signal_id": "survey_computing_to_engineering",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:computing-survey-output"
+              ],
+              "scope_pointer": "survey_computing.output"
+            },
+            {
+              "task_id": "survey_computing",
+              "signal_id": "survey_computing_to_computing",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:computing-survey-output"
+              ],
+              "scope_pointer": "survey_computing.output"
+            },
+            {
+              "task_id": "survey_computing",
+              "signal_id": "survey_computing_to_business",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:computing-survey-output"
+              ],
+              "scope_pointer": "survey_computing.output"
+            },
+            {
+              "task_id": "survey_computing",
+              "signal_id": "survey_computing_to_law",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:computing-survey-output"
+              ],
+              "scope_pointer": "survey_computing.output"
+            },
+            {
+              "task_id": "survey_computing",
+              "signal_id": "survey_computing_to_medicine",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:computing-survey-output"
+              ],
+              "scope_pointer": "survey_computing.output"
+            },
+            {
+              "task_id": "survey_computing",
+              "signal_id": "survey_computing_to_arts",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:computing-survey-output"
+              ],
+              "scope_pointer": "survey_computing.output"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "survey_business",
+          "scope": "survey-business",
+          "locked_interface": {
+            "signals": [
+              "survey_business_to_engineering",
+              "survey_business_to_computing",
+              "survey_business_to_business",
+              "survey_business_to_law",
+              "survey_business_to_medicine",
+              "survey_business_to_arts"
+            ]
+          },
+          "instructions": "Produce the independent feasibility survey for business.",
+          "dependencies": [],
+          "acceptance_criteria": "Write SURVEY_BUSINESS.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "survey_business",
+              "signal_id": "survey_business_to_engineering",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:business-survey-output"
+              ],
+              "scope_pointer": "survey_business.output"
+            },
+            {
+              "task_id": "survey_business",
+              "signal_id": "survey_business_to_computing",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:business-survey-output"
+              ],
+              "scope_pointer": "survey_business.output"
+            },
+            {
+              "task_id": "survey_business",
+              "signal_id": "survey_business_to_business",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:business-survey-output"
+              ],
+              "scope_pointer": "survey_business.output"
+            },
+            {
+              "task_id": "survey_business",
+              "signal_id": "survey_business_to_law",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:business-survey-output"
+              ],
+              "scope_pointer": "survey_business.output"
+            },
+            {
+              "task_id": "survey_business",
+              "signal_id": "survey_business_to_medicine",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:business-survey-output"
+              ],
+              "scope_pointer": "survey_business.output"
+            },
+            {
+              "task_id": "survey_business",
+              "signal_id": "survey_business_to_arts",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:business-survey-output"
+              ],
+              "scope_pointer": "survey_business.output"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "survey_law",
+          "scope": "survey-law",
+          "locked_interface": {
+            "signals": [
+              "survey_law_to_engineering",
+              "survey_law_to_computing",
+              "survey_law_to_business",
+              "survey_law_to_law",
+              "survey_law_to_medicine",
+              "survey_law_to_arts"
+            ]
+          },
+          "instructions": "Produce the independent feasibility survey for law.",
+          "dependencies": [],
+          "acceptance_criteria": "Write SURVEY_LAW.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "survey_law",
+              "signal_id": "survey_law_to_engineering",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:law-survey-output"
+              ],
+              "scope_pointer": "survey_law.output"
+            },
+            {
+              "task_id": "survey_law",
+              "signal_id": "survey_law_to_computing",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:law-survey-output"
+              ],
+              "scope_pointer": "survey_law.output"
+            },
+            {
+              "task_id": "survey_law",
+              "signal_id": "survey_law_to_business",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:law-survey-output"
+              ],
+              "scope_pointer": "survey_law.output"
+            },
+            {
+              "task_id": "survey_law",
+              "signal_id": "survey_law_to_law",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:law-survey-output"
+              ],
+              "scope_pointer": "survey_law.output"
+            },
+            {
+              "task_id": "survey_law",
+              "signal_id": "survey_law_to_medicine",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:law-survey-output"
+              ],
+              "scope_pointer": "survey_law.output"
+            },
+            {
+              "task_id": "survey_law",
+              "signal_id": "survey_law_to_arts",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:law-survey-output"
+              ],
+              "scope_pointer": "survey_law.output"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "survey_medicine",
+          "scope": "survey-medicine",
+          "locked_interface": {
+            "signals": [
+              "survey_medicine_to_engineering",
+              "survey_medicine_to_computing",
+              "survey_medicine_to_business",
+              "survey_medicine_to_law",
+              "survey_medicine_to_medicine",
+              "survey_medicine_to_arts"
+            ]
+          },
+          "instructions": "Produce the independent feasibility survey for medicine.",
+          "dependencies": [],
+          "acceptance_criteria": "Write SURVEY_MEDICINE.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "survey_medicine",
+              "signal_id": "survey_medicine_to_engineering",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:medicine-survey-output"
+              ],
+              "scope_pointer": "survey_medicine.output"
+            },
+            {
+              "task_id": "survey_medicine",
+              "signal_id": "survey_medicine_to_computing",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:medicine-survey-output"
+              ],
+              "scope_pointer": "survey_medicine.output"
+            },
+            {
+              "task_id": "survey_medicine",
+              "signal_id": "survey_medicine_to_business",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:medicine-survey-output"
+              ],
+              "scope_pointer": "survey_medicine.output"
+            },
+            {
+              "task_id": "survey_medicine",
+              "signal_id": "survey_medicine_to_law",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:medicine-survey-output"
+              ],
+              "scope_pointer": "survey_medicine.output"
+            },
+            {
+              "task_id": "survey_medicine",
+              "signal_id": "survey_medicine_to_medicine",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:medicine-survey-output"
+              ],
+              "scope_pointer": "survey_medicine.output"
+            },
+            {
+              "task_id": "survey_medicine",
+              "signal_id": "survey_medicine_to_arts",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:medicine-survey-output"
+              ],
+              "scope_pointer": "survey_medicine.output"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "survey_arts",
+          "scope": "survey-arts",
+          "locked_interface": {
+            "signals": [
+              "survey_arts_to_engineering",
+              "survey_arts_to_computing",
+              "survey_arts_to_business",
+              "survey_arts_to_law",
+              "survey_arts_to_medicine",
+              "survey_arts_to_arts"
+            ]
+          },
+          "instructions": "Produce the independent feasibility survey for arts.",
+          "dependencies": [],
+          "acceptance_criteria": "Write SURVEY_ARTS.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "survey_arts",
+              "signal_id": "survey_arts_to_engineering",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:arts-survey-output"
+              ],
+              "scope_pointer": "survey_arts.output"
+            },
+            {
+              "task_id": "survey_arts",
+              "signal_id": "survey_arts_to_computing",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:arts-survey-output"
+              ],
+              "scope_pointer": "survey_arts.output"
+            },
+            {
+              "task_id": "survey_arts",
+              "signal_id": "survey_arts_to_business",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:arts-survey-output"
+              ],
+              "scope_pointer": "survey_arts.output"
+            },
+            {
+              "task_id": "survey_arts",
+              "signal_id": "survey_arts_to_law",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:arts-survey-output"
+              ],
+              "scope_pointer": "survey_arts.output"
+            },
+            {
+              "task_id": "survey_arts",
+              "signal_id": "survey_arts_to_medicine",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:arts-survey-output"
+              ],
+              "scope_pointer": "survey_arts.output"
+            },
+            {
+              "task_id": "survey_arts",
+              "signal_id": "survey_arts_to_arts",
+              "role": "PRODUCE",
+              "source_spans": [
+                "scenario:arts-survey-output"
+              ],
+              "scope_pointer": "survey_arts.output"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "plan_engineering",
+          "scope": "plan-engineering",
+          "locked_interface": {
+            "signals": [
+              "survey_engineering_to_engineering",
+              "survey_computing_to_engineering",
+              "survey_business_to_engineering",
+              "survey_law_to_engineering",
+              "survey_medicine_to_engineering",
+              "survey_arts_to_engineering"
+            ]
+          },
+          "instructions": "Produce the final building plan for engineering.",
+          "dependencies": [
+            "survey_engineering",
+            "survey_computing",
+            "survey_business",
+            "survey_law",
+            "survey_medicine",
+            "survey_arts"
+          ],
+          "acceptance_criteria": "Write PLAN_ENGINEERING.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "plan_engineering",
+              "signal_id": "survey_engineering_to_engineering",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_engineering_to_engineering-output"
+              ],
+              "scope_pointer": "plan_engineering.input.survey_engineering_to_engineering"
+            },
+            {
+              "task_id": "plan_engineering",
+              "signal_id": "survey_computing_to_engineering",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_computing_to_engineering-output"
+              ],
+              "scope_pointer": "plan_engineering.input.survey_computing_to_engineering"
+            },
+            {
+              "task_id": "plan_engineering",
+              "signal_id": "survey_business_to_engineering",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_business_to_engineering-output"
+              ],
+              "scope_pointer": "plan_engineering.input.survey_business_to_engineering"
+            },
+            {
+              "task_id": "plan_engineering",
+              "signal_id": "survey_law_to_engineering",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_law_to_engineering-output"
+              ],
+              "scope_pointer": "plan_engineering.input.survey_law_to_engineering"
+            },
+            {
+              "task_id": "plan_engineering",
+              "signal_id": "survey_medicine_to_engineering",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_medicine_to_engineering-output"
+              ],
+              "scope_pointer": "plan_engineering.input.survey_medicine_to_engineering"
+            },
+            {
+              "task_id": "plan_engineering",
+              "signal_id": "survey_arts_to_engineering",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_arts_to_engineering-output"
+              ],
+              "scope_pointer": "plan_engineering.input.survey_arts_to_engineering"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "plan_computing",
+          "scope": "plan-computing",
+          "locked_interface": {
+            "signals": [
+              "survey_engineering_to_computing",
+              "survey_computing_to_computing",
+              "survey_business_to_computing",
+              "survey_law_to_computing",
+              "survey_medicine_to_computing",
+              "survey_arts_to_computing"
+            ]
+          },
+          "instructions": "Produce the final building plan for computing.",
+          "dependencies": [
+            "survey_engineering",
+            "survey_computing",
+            "survey_business",
+            "survey_law",
+            "survey_medicine",
+            "survey_arts"
+          ],
+          "acceptance_criteria": "Write PLAN_COMPUTING.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "plan_computing",
+              "signal_id": "survey_engineering_to_computing",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_engineering_to_computing-output"
+              ],
+              "scope_pointer": "plan_computing.input.survey_engineering_to_computing"
+            },
+            {
+              "task_id": "plan_computing",
+              "signal_id": "survey_computing_to_computing",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_computing_to_computing-output"
+              ],
+              "scope_pointer": "plan_computing.input.survey_computing_to_computing"
+            },
+            {
+              "task_id": "plan_computing",
+              "signal_id": "survey_business_to_computing",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_business_to_computing-output"
+              ],
+              "scope_pointer": "plan_computing.input.survey_business_to_computing"
+            },
+            {
+              "task_id": "plan_computing",
+              "signal_id": "survey_law_to_computing",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_law_to_computing-output"
+              ],
+              "scope_pointer": "plan_computing.input.survey_law_to_computing"
+            },
+            {
+              "task_id": "plan_computing",
+              "signal_id": "survey_medicine_to_computing",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_medicine_to_computing-output"
+              ],
+              "scope_pointer": "plan_computing.input.survey_medicine_to_computing"
+            },
+            {
+              "task_id": "plan_computing",
+              "signal_id": "survey_arts_to_computing",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_arts_to_computing-output"
+              ],
+              "scope_pointer": "plan_computing.input.survey_arts_to_computing"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "plan_business",
+          "scope": "plan-business",
+          "locked_interface": {
+            "signals": [
+              "survey_engineering_to_business",
+              "survey_computing_to_business",
+              "survey_business_to_business",
+              "survey_law_to_business",
+              "survey_medicine_to_business",
+              "survey_arts_to_business"
+            ]
+          },
+          "instructions": "Produce the final building plan for business.",
+          "dependencies": [
+            "survey_engineering",
+            "survey_computing",
+            "survey_business",
+            "survey_law",
+            "survey_medicine",
+            "survey_arts"
+          ],
+          "acceptance_criteria": "Write PLAN_BUSINESS.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "plan_business",
+              "signal_id": "survey_engineering_to_business",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_engineering_to_business-output"
+              ],
+              "scope_pointer": "plan_business.input.survey_engineering_to_business"
+            },
+            {
+              "task_id": "plan_business",
+              "signal_id": "survey_computing_to_business",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_computing_to_business-output"
+              ],
+              "scope_pointer": "plan_business.input.survey_computing_to_business"
+            },
+            {
+              "task_id": "plan_business",
+              "signal_id": "survey_business_to_business",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_business_to_business-output"
+              ],
+              "scope_pointer": "plan_business.input.survey_business_to_business"
+            },
+            {
+              "task_id": "plan_business",
+              "signal_id": "survey_law_to_business",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_law_to_business-output"
+              ],
+              "scope_pointer": "plan_business.input.survey_law_to_business"
+            },
+            {
+              "task_id": "plan_business",
+              "signal_id": "survey_medicine_to_business",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_medicine_to_business-output"
+              ],
+              "scope_pointer": "plan_business.input.survey_medicine_to_business"
+            },
+            {
+              "task_id": "plan_business",
+              "signal_id": "survey_arts_to_business",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_arts_to_business-output"
+              ],
+              "scope_pointer": "plan_business.input.survey_arts_to_business"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "plan_law",
+          "scope": "plan-law",
+          "locked_interface": {
+            "signals": [
+              "survey_engineering_to_law",
+              "survey_computing_to_law",
+              "survey_business_to_law",
+              "survey_law_to_law",
+              "survey_medicine_to_law",
+              "survey_arts_to_law"
+            ]
+          },
+          "instructions": "Produce the final building plan for law.",
+          "dependencies": [
+            "survey_engineering",
+            "survey_computing",
+            "survey_business",
+            "survey_law",
+            "survey_medicine",
+            "survey_arts"
+          ],
+          "acceptance_criteria": "Write PLAN_LAW.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "plan_law",
+              "signal_id": "survey_engineering_to_law",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_engineering_to_law-output"
+              ],
+              "scope_pointer": "plan_law.input.survey_engineering_to_law"
+            },
+            {
+              "task_id": "plan_law",
+              "signal_id": "survey_computing_to_law",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_computing_to_law-output"
+              ],
+              "scope_pointer": "plan_law.input.survey_computing_to_law"
+            },
+            {
+              "task_id": "plan_law",
+              "signal_id": "survey_business_to_law",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_business_to_law-output"
+              ],
+              "scope_pointer": "plan_law.input.survey_business_to_law"
+            },
+            {
+              "task_id": "plan_law",
+              "signal_id": "survey_law_to_law",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_law_to_law-output"
+              ],
+              "scope_pointer": "plan_law.input.survey_law_to_law"
+            },
+            {
+              "task_id": "plan_law",
+              "signal_id": "survey_medicine_to_law",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_medicine_to_law-output"
+              ],
+              "scope_pointer": "plan_law.input.survey_medicine_to_law"
+            },
+            {
+              "task_id": "plan_law",
+              "signal_id": "survey_arts_to_law",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_arts_to_law-output"
+              ],
+              "scope_pointer": "plan_law.input.survey_arts_to_law"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "plan_medicine",
+          "scope": "plan-medicine",
+          "locked_interface": {
+            "signals": [
+              "survey_engineering_to_medicine",
+              "survey_computing_to_medicine",
+              "survey_business_to_medicine",
+              "survey_law_to_medicine",
+              "survey_medicine_to_medicine",
+              "survey_arts_to_medicine"
+            ]
+          },
+          "instructions": "Produce the final building plan for medicine.",
+          "dependencies": [
+            "survey_engineering",
+            "survey_computing",
+            "survey_business",
+            "survey_law",
+            "survey_medicine",
+            "survey_arts"
+          ],
+          "acceptance_criteria": "Write PLAN_MEDICINE.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "plan_medicine",
+              "signal_id": "survey_engineering_to_medicine",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_engineering_to_medicine-output"
+              ],
+              "scope_pointer": "plan_medicine.input.survey_engineering_to_medicine"
+            },
+            {
+              "task_id": "plan_medicine",
+              "signal_id": "survey_computing_to_medicine",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_computing_to_medicine-output"
+              ],
+              "scope_pointer": "plan_medicine.input.survey_computing_to_medicine"
+            },
+            {
+              "task_id": "plan_medicine",
+              "signal_id": "survey_business_to_medicine",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_business_to_medicine-output"
+              ],
+              "scope_pointer": "plan_medicine.input.survey_business_to_medicine"
+            },
+            {
+              "task_id": "plan_medicine",
+              "signal_id": "survey_law_to_medicine",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_law_to_medicine-output"
+              ],
+              "scope_pointer": "plan_medicine.input.survey_law_to_medicine"
+            },
+            {
+              "task_id": "plan_medicine",
+              "signal_id": "survey_medicine_to_medicine",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_medicine_to_medicine-output"
+              ],
+              "scope_pointer": "plan_medicine.input.survey_medicine_to_medicine"
+            },
+            {
+              "task_id": "plan_medicine",
+              "signal_id": "survey_arts_to_medicine",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_arts_to_medicine-output"
+              ],
+              "scope_pointer": "plan_medicine.input.survey_arts_to_medicine"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        },
+        {
+          "task_id": "plan_arts",
+          "scope": "plan-arts",
+          "locked_interface": {
+            "signals": [
+              "survey_engineering_to_arts",
+              "survey_computing_to_arts",
+              "survey_business_to_arts",
+              "survey_law_to_arts",
+              "survey_medicine_to_arts",
+              "survey_arts_to_arts"
+            ]
+          },
+          "instructions": "Produce the final building plan for arts.",
+          "dependencies": [
+            "survey_engineering",
+            "survey_computing",
+            "survey_business",
+            "survey_law",
+            "survey_medicine",
+            "survey_arts"
+          ],
+          "acceptance_criteria": "Write PLAN_ARTS.md and report status complete.",
+          "model_tier": "standard",
+          "signal_uses": [
+            {
+              "task_id": "plan_arts",
+              "signal_id": "survey_engineering_to_arts",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_engineering_to_arts-output"
+              ],
+              "scope_pointer": "plan_arts.input.survey_engineering_to_arts"
+            },
+            {
+              "task_id": "plan_arts",
+              "signal_id": "survey_computing_to_arts",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_computing_to_arts-output"
+              ],
+              "scope_pointer": "plan_arts.input.survey_computing_to_arts"
+            },
+            {
+              "task_id": "plan_arts",
+              "signal_id": "survey_business_to_arts",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_business_to_arts-output"
+              ],
+              "scope_pointer": "plan_arts.input.survey_business_to_arts"
+            },
+            {
+              "task_id": "plan_arts",
+              "signal_id": "survey_law_to_arts",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_law_to_arts-output"
+              ],
+              "scope_pointer": "plan_arts.input.survey_law_to_arts"
+            },
+            {
+              "task_id": "plan_arts",
+              "signal_id": "survey_medicine_to_arts",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_medicine_to_arts-output"
+              ],
+              "scope_pointer": "plan_arts.input.survey_medicine_to_arts"
+            },
+            {
+              "task_id": "plan_arts",
+              "signal_id": "survey_arts_to_arts",
+              "role": "CONSUME",
+              "source_spans": [
+                "scenario:survey_arts_to_arts-output"
+              ],
+              "scope_pointer": "plan_arts.input.survey_arts_to_arts"
+            }
+          ],
+          "generality_rank": 0,
+          "authorized_artifact_ids": [],
+          "routing_refs": {
+            "requirement_ids": [],
+            "signal_ids": [],
+            "task_ids": [],
+            "schema_ids": []
+          }
+        }
+      ],
+      "dependency_proofs": [
+        {
+          "parent_task_id": "survey_engineering",
+          "child_task_id": "plan_engineering",
+          "shared_signal_ids": [
+            "survey_engineering_to_engineering"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_engineering_to_engineering-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_computing",
+          "child_task_id": "plan_engineering",
+          "shared_signal_ids": [
+            "survey_computing_to_engineering"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_computing_to_engineering-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_business",
+          "child_task_id": "plan_engineering",
+          "shared_signal_ids": [
+            "survey_business_to_engineering"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_business_to_engineering-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_law",
+          "child_task_id": "plan_engineering",
+          "shared_signal_ids": [
+            "survey_law_to_engineering"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_law_to_engineering-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_medicine",
+          "child_task_id": "plan_engineering",
+          "shared_signal_ids": [
+            "survey_medicine_to_engineering"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_medicine_to_engineering-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_arts",
+          "child_task_id": "plan_engineering",
+          "shared_signal_ids": [
+            "survey_arts_to_engineering"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_arts_to_engineering-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_engineering",
+          "child_task_id": "plan_computing",
+          "shared_signal_ids": [
+            "survey_engineering_to_computing"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_engineering_to_computing-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_computing",
+          "child_task_id": "plan_computing",
+          "shared_signal_ids": [
+            "survey_computing_to_computing"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_computing_to_computing-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_business",
+          "child_task_id": "plan_computing",
+          "shared_signal_ids": [
+            "survey_business_to_computing"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_business_to_computing-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_law",
+          "child_task_id": "plan_computing",
+          "shared_signal_ids": [
+            "survey_law_to_computing"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_law_to_computing-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_medicine",
+          "child_task_id": "plan_computing",
+          "shared_signal_ids": [
+            "survey_medicine_to_computing"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_medicine_to_computing-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_arts",
+          "child_task_id": "plan_computing",
+          "shared_signal_ids": [
+            "survey_arts_to_computing"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_arts_to_computing-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_engineering",
+          "child_task_id": "plan_business",
+          "shared_signal_ids": [
+            "survey_engineering_to_business"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_engineering_to_business-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_computing",
+          "child_task_id": "plan_business",
+          "shared_signal_ids": [
+            "survey_computing_to_business"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_computing_to_business-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_business",
+          "child_task_id": "plan_business",
+          "shared_signal_ids": [
+            "survey_business_to_business"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_business_to_business-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_law",
+          "child_task_id": "plan_business",
+          "shared_signal_ids": [
+            "survey_law_to_business"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_law_to_business-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_medicine",
+          "child_task_id": "plan_business",
+          "shared_signal_ids": [
+            "survey_medicine_to_business"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_medicine_to_business-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_arts",
+          "child_task_id": "plan_business",
+          "shared_signal_ids": [
+            "survey_arts_to_business"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_arts_to_business-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_engineering",
+          "child_task_id": "plan_law",
+          "shared_signal_ids": [
+            "survey_engineering_to_law"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_engineering_to_law-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_computing",
+          "child_task_id": "plan_law",
+          "shared_signal_ids": [
+            "survey_computing_to_law"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_computing_to_law-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_business",
+          "child_task_id": "plan_law",
+          "shared_signal_ids": [
+            "survey_business_to_law"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_business_to_law-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_law",
+          "child_task_id": "plan_law",
+          "shared_signal_ids": [
+            "survey_law_to_law"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_law_to_law-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_medicine",
+          "child_task_id": "plan_law",
+          "shared_signal_ids": [
+            "survey_medicine_to_law"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_medicine_to_law-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_arts",
+          "child_task_id": "plan_law",
+          "shared_signal_ids": [
+            "survey_arts_to_law"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_arts_to_law-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_engineering",
+          "child_task_id": "plan_medicine",
+          "shared_signal_ids": [
+            "survey_engineering_to_medicine"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_engineering_to_medicine-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_computing",
+          "child_task_id": "plan_medicine",
+          "shared_signal_ids": [
+            "survey_computing_to_medicine"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_computing_to_medicine-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_business",
+          "child_task_id": "plan_medicine",
+          "shared_signal_ids": [
+            "survey_business_to_medicine"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_business_to_medicine-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_law",
+          "child_task_id": "plan_medicine",
+          "shared_signal_ids": [
+            "survey_law_to_medicine"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_law_to_medicine-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_medicine",
+          "child_task_id": "plan_medicine",
+          "shared_signal_ids": [
+            "survey_medicine_to_medicine"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_medicine_to_medicine-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_arts",
+          "child_task_id": "plan_medicine",
+          "shared_signal_ids": [
+            "survey_arts_to_medicine"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_arts_to_medicine-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_engineering",
+          "child_task_id": "plan_arts",
+          "shared_signal_ids": [
+            "survey_engineering_to_arts"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_engineering_to_arts-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_computing",
+          "child_task_id": "plan_arts",
+          "shared_signal_ids": [
+            "survey_computing_to_arts"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_computing_to_arts-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_business",
+          "child_task_id": "plan_arts",
+          "shared_signal_ids": [
+            "survey_business_to_arts"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_business_to_arts-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_law",
+          "child_task_id": "plan_arts",
+          "shared_signal_ids": [
+            "survey_law_to_arts"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_law_to_arts-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_medicine",
+          "child_task_id": "plan_arts",
+          "shared_signal_ids": [
+            "survey_medicine_to_arts"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_medicine_to_arts-output"
+          ]
+        },
+        {
+          "parent_task_id": "survey_arts",
+          "child_task_id": "plan_arts",
+          "shared_signal_ids": [
+            "survey_arts_to_arts"
+          ],
+          "applied_rule": "PRODUCER_TO_CONSUMER",
+          "source_spans": [
+            "scenario:survey_arts_to_arts-output"
+          ]
+        }
+      ],
+      "max_elastic_depth": 1,
+      "max_elastic_nodes": 2
+    },
+    "selected_skill_ids": [],
+    "profile_id_by_task_id": {
+      "survey_engineering": "planner",
+      "survey_computing": "planner",
+      "survey_business": "planner",
+      "survey_law": "planner",
+      "survey_medicine": "planner",
+      "survey_arts": "planner",
+      "plan_engineering": "planner",
+      "plan_computing": "planner",
+      "plan_business": "planner",
+      "plan_law": "planner",
+      "plan_medicine": "planner",
+      "plan_arts": "planner"
+    }
+  },
+  "policy_id": "university-live-v1",
+  "deterministic_architecture": "multi-agent",
+  "architecture": "multi-agent",
+  "routing_advice": null,
+  "execution_plan": {
+    "plan_id": "university-live-plan-v1",
+    "tasks": [
+      {
+        "task_id": "survey_engineering",
+        "scope": "survey-engineering",
+        "locked_interface": {
+          "signals": [
+            "survey_engineering_to_engineering",
+            "survey_engineering_to_computing",
+            "survey_engineering_to_business",
+            "survey_engineering_to_law",
+            "survey_engineering_to_medicine",
+            "survey_engineering_to_arts"
+          ]
+        },
+        "instructions": "Produce the independent feasibility survey for engineering.",
+        "dependencies": [],
+        "acceptance_criteria": "Write SURVEY_ENGINEERING.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "survey_engineering",
+            "signal_id": "survey_engineering_to_engineering",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:engineering-survey-output"
+            ],
+            "scope_pointer": "survey_engineering.output"
+          },
+          {
+            "task_id": "survey_engineering",
+            "signal_id": "survey_engineering_to_computing",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:engineering-survey-output"
+            ],
+            "scope_pointer": "survey_engineering.output"
+          },
+          {
+            "task_id": "survey_engineering",
+            "signal_id": "survey_engineering_to_business",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:engineering-survey-output"
+            ],
+            "scope_pointer": "survey_engineering.output"
+          },
+          {
+            "task_id": "survey_engineering",
+            "signal_id": "survey_engineering_to_law",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:engineering-survey-output"
+            ],
+            "scope_pointer": "survey_engineering.output"
+          },
+          {
+            "task_id": "survey_engineering",
+            "signal_id": "survey_engineering_to_medicine",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:engineering-survey-output"
+            ],
+            "scope_pointer": "survey_engineering.output"
+          },
+          {
+            "task_id": "survey_engineering",
+            "signal_id": "survey_engineering_to_arts",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:engineering-survey-output"
+            ],
+            "scope_pointer": "survey_engineering.output"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "survey_computing",
+        "scope": "survey-computing",
+        "locked_interface": {
+          "signals": [
+            "survey_computing_to_engineering",
+            "survey_computing_to_computing",
+            "survey_computing_to_business",
+            "survey_computing_to_law",
+            "survey_computing_to_medicine",
+            "survey_computing_to_arts"
+          ]
+        },
+        "instructions": "Produce the independent feasibility survey for computing.",
+        "dependencies": [],
+        "acceptance_criteria": "Write SURVEY_COMPUTING.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "survey_computing",
+            "signal_id": "survey_computing_to_engineering",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:computing-survey-output"
+            ],
+            "scope_pointer": "survey_computing.output"
+          },
+          {
+            "task_id": "survey_computing",
+            "signal_id": "survey_computing_to_computing",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:computing-survey-output"
+            ],
+            "scope_pointer": "survey_computing.output"
+          },
+          {
+            "task_id": "survey_computing",
+            "signal_id": "survey_computing_to_business",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:computing-survey-output"
+            ],
+            "scope_pointer": "survey_computing.output"
+          },
+          {
+            "task_id": "survey_computing",
+            "signal_id": "survey_computing_to_law",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:computing-survey-output"
+            ],
+            "scope_pointer": "survey_computing.output"
+          },
+          {
+            "task_id": "survey_computing",
+            "signal_id": "survey_computing_to_medicine",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:computing-survey-output"
+            ],
+            "scope_pointer": "survey_computing.output"
+          },
+          {
+            "task_id": "survey_computing",
+            "signal_id": "survey_computing_to_arts",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:computing-survey-output"
+            ],
+            "scope_pointer": "survey_computing.output"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "survey_business",
+        "scope": "survey-business",
+        "locked_interface": {
+          "signals": [
+            "survey_business_to_engineering",
+            "survey_business_to_computing",
+            "survey_business_to_business",
+            "survey_business_to_law",
+            "survey_business_to_medicine",
+            "survey_business_to_arts"
+          ]
+        },
+        "instructions": "Produce the independent feasibility survey for business.",
+        "dependencies": [],
+        "acceptance_criteria": "Write SURVEY_BUSINESS.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "survey_business",
+            "signal_id": "survey_business_to_engineering",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:business-survey-output"
+            ],
+            "scope_pointer": "survey_business.output"
+          },
+          {
+            "task_id": "survey_business",
+            "signal_id": "survey_business_to_computing",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:business-survey-output"
+            ],
+            "scope_pointer": "survey_business.output"
+          },
+          {
+            "task_id": "survey_business",
+            "signal_id": "survey_business_to_business",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:business-survey-output"
+            ],
+            "scope_pointer": "survey_business.output"
+          },
+          {
+            "task_id": "survey_business",
+            "signal_id": "survey_business_to_law",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:business-survey-output"
+            ],
+            "scope_pointer": "survey_business.output"
+          },
+          {
+            "task_id": "survey_business",
+            "signal_id": "survey_business_to_medicine",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:business-survey-output"
+            ],
+            "scope_pointer": "survey_business.output"
+          },
+          {
+            "task_id": "survey_business",
+            "signal_id": "survey_business_to_arts",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:business-survey-output"
+            ],
+            "scope_pointer": "survey_business.output"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "survey_law",
+        "scope": "survey-law",
+        "locked_interface": {
+          "signals": [
+            "survey_law_to_engineering",
+            "survey_law_to_computing",
+            "survey_law_to_business",
+            "survey_law_to_law",
+            "survey_law_to_medicine",
+            "survey_law_to_arts"
+          ]
+        },
+        "instructions": "Produce the independent feasibility survey for law.",
+        "dependencies": [],
+        "acceptance_criteria": "Write SURVEY_LAW.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "survey_law",
+            "signal_id": "survey_law_to_engineering",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:law-survey-output"
+            ],
+            "scope_pointer": "survey_law.output"
+          },
+          {
+            "task_id": "survey_law",
+            "signal_id": "survey_law_to_computing",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:law-survey-output"
+            ],
+            "scope_pointer": "survey_law.output"
+          },
+          {
+            "task_id": "survey_law",
+            "signal_id": "survey_law_to_business",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:law-survey-output"
+            ],
+            "scope_pointer": "survey_law.output"
+          },
+          {
+            "task_id": "survey_law",
+            "signal_id": "survey_law_to_law",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:law-survey-output"
+            ],
+            "scope_pointer": "survey_law.output"
+          },
+          {
+            "task_id": "survey_law",
+            "signal_id": "survey_law_to_medicine",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:law-survey-output"
+            ],
+            "scope_pointer": "survey_law.output"
+          },
+          {
+            "task_id": "survey_law",
+            "signal_id": "survey_law_to_arts",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:law-survey-output"
+            ],
+            "scope_pointer": "survey_law.output"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "survey_medicine",
+        "scope": "survey-medicine",
+        "locked_interface": {
+          "signals": [
+            "survey_medicine_to_engineering",
+            "survey_medicine_to_computing",
+            "survey_medicine_to_business",
+            "survey_medicine_to_law",
+            "survey_medicine_to_medicine",
+            "survey_medicine_to_arts"
+          ]
+        },
+        "instructions": "Produce the independent feasibility survey for medicine.",
+        "dependencies": [],
+        "acceptance_criteria": "Write SURVEY_MEDICINE.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "survey_medicine",
+            "signal_id": "survey_medicine_to_engineering",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:medicine-survey-output"
+            ],
+            "scope_pointer": "survey_medicine.output"
+          },
+          {
+            "task_id": "survey_medicine",
+            "signal_id": "survey_medicine_to_computing",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:medicine-survey-output"
+            ],
+            "scope_pointer": "survey_medicine.output"
+          },
+          {
+            "task_id": "survey_medicine",
+            "signal_id": "survey_medicine_to_business",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:medicine-survey-output"
+            ],
+            "scope_pointer": "survey_medicine.output"
+          },
+          {
+            "task_id": "survey_medicine",
+            "signal_id": "survey_medicine_to_law",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:medicine-survey-output"
+            ],
+            "scope_pointer": "survey_medicine.output"
+          },
+          {
+            "task_id": "survey_medicine",
+            "signal_id": "survey_medicine_to_medicine",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:medicine-survey-output"
+            ],
+            "scope_pointer": "survey_medicine.output"
+          },
+          {
+            "task_id": "survey_medicine",
+            "signal_id": "survey_medicine_to_arts",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:medicine-survey-output"
+            ],
+            "scope_pointer": "survey_medicine.output"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "survey_arts",
+        "scope": "survey-arts",
+        "locked_interface": {
+          "signals": [
+            "survey_arts_to_engineering",
+            "survey_arts_to_computing",
+            "survey_arts_to_business",
+            "survey_arts_to_law",
+            "survey_arts_to_medicine",
+            "survey_arts_to_arts"
+          ]
+        },
+        "instructions": "Produce the independent feasibility survey for arts.",
+        "dependencies": [],
+        "acceptance_criteria": "Write SURVEY_ARTS.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "survey_arts",
+            "signal_id": "survey_arts_to_engineering",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:arts-survey-output"
+            ],
+            "scope_pointer": "survey_arts.output"
+          },
+          {
+            "task_id": "survey_arts",
+            "signal_id": "survey_arts_to_computing",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:arts-survey-output"
+            ],
+            "scope_pointer": "survey_arts.output"
+          },
+          {
+            "task_id": "survey_arts",
+            "signal_id": "survey_arts_to_business",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:arts-survey-output"
+            ],
+            "scope_pointer": "survey_arts.output"
+          },
+          {
+            "task_id": "survey_arts",
+            "signal_id": "survey_arts_to_law",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:arts-survey-output"
+            ],
+            "scope_pointer": "survey_arts.output"
+          },
+          {
+            "task_id": "survey_arts",
+            "signal_id": "survey_arts_to_medicine",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:arts-survey-output"
+            ],
+            "scope_pointer": "survey_arts.output"
+          },
+          {
+            "task_id": "survey_arts",
+            "signal_id": "survey_arts_to_arts",
+            "role": "PRODUCE",
+            "source_spans": [
+              "scenario:arts-survey-output"
+            ],
+            "scope_pointer": "survey_arts.output"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "plan_engineering",
+        "scope": "plan-engineering",
+        "locked_interface": {
+          "signals": [
+            "survey_engineering_to_engineering",
+            "survey_computing_to_engineering",
+            "survey_business_to_engineering",
+            "survey_law_to_engineering",
+            "survey_medicine_to_engineering",
+            "survey_arts_to_engineering"
+          ]
+        },
+        "instructions": "Produce the final building plan for engineering.",
+        "dependencies": [
+          "survey_engineering",
+          "survey_computing",
+          "survey_business",
+          "survey_law",
+          "survey_medicine",
+          "survey_arts"
+        ],
+        "acceptance_criteria": "Write PLAN_ENGINEERING.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "plan_engineering",
+            "signal_id": "survey_engineering_to_engineering",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_engineering_to_engineering-output"
+            ],
+            "scope_pointer": "plan_engineering.input.survey_engineering_to_engineering"
+          },
+          {
+            "task_id": "plan_engineering",
+            "signal_id": "survey_computing_to_engineering",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_computing_to_engineering-output"
+            ],
+            "scope_pointer": "plan_engineering.input.survey_computing_to_engineering"
+          },
+          {
+            "task_id": "plan_engineering",
+            "signal_id": "survey_business_to_engineering",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_business_to_engineering-output"
+            ],
+            "scope_pointer": "plan_engineering.input.survey_business_to_engineering"
+          },
+          {
+            "task_id": "plan_engineering",
+            "signal_id": "survey_law_to_engineering",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_law_to_engineering-output"
+            ],
+            "scope_pointer": "plan_engineering.input.survey_law_to_engineering"
+          },
+          {
+            "task_id": "plan_engineering",
+            "signal_id": "survey_medicine_to_engineering",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_medicine_to_engineering-output"
+            ],
+            "scope_pointer": "plan_engineering.input.survey_medicine_to_engineering"
+          },
+          {
+            "task_id": "plan_engineering",
+            "signal_id": "survey_arts_to_engineering",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_arts_to_engineering-output"
+            ],
+            "scope_pointer": "plan_engineering.input.survey_arts_to_engineering"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "plan_computing",
+        "scope": "plan-computing",
+        "locked_interface": {
+          "signals": [
+            "survey_engineering_to_computing",
+            "survey_computing_to_computing",
+            "survey_business_to_computing",
+            "survey_law_to_computing",
+            "survey_medicine_to_computing",
+            "survey_arts_to_computing"
+          ]
+        },
+        "instructions": "Produce the final building plan for computing.",
+        "dependencies": [
+          "survey_engineering",
+          "survey_computing",
+          "survey_business",
+          "survey_law",
+          "survey_medicine",
+          "survey_arts"
+        ],
+        "acceptance_criteria": "Write PLAN_COMPUTING.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "plan_computing",
+            "signal_id": "survey_engineering_to_computing",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_engineering_to_computing-output"
+            ],
+            "scope_pointer": "plan_computing.input.survey_engineering_to_computing"
+          },
+          {
+            "task_id": "plan_computing",
+            "signal_id": "survey_computing_to_computing",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_computing_to_computing-output"
+            ],
+            "scope_pointer": "plan_computing.input.survey_computing_to_computing"
+          },
+          {
+            "task_id": "plan_computing",
+            "signal_id": "survey_business_to_computing",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_business_to_computing-output"
+            ],
+            "scope_pointer": "plan_computing.input.survey_business_to_computing"
+          },
+          {
+            "task_id": "plan_computing",
+            "signal_id": "survey_law_to_computing",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_law_to_computing-output"
+            ],
+            "scope_pointer": "plan_computing.input.survey_law_to_computing"
+          },
+          {
+            "task_id": "plan_computing",
+            "signal_id": "survey_medicine_to_computing",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_medicine_to_computing-output"
+            ],
+            "scope_pointer": "plan_computing.input.survey_medicine_to_computing"
+          },
+          {
+            "task_id": "plan_computing",
+            "signal_id": "survey_arts_to_computing",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_arts_to_computing-output"
+            ],
+            "scope_pointer": "plan_computing.input.survey_arts_to_computing"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "plan_business",
+        "scope": "plan-business",
+        "locked_interface": {
+          "signals": [
+            "survey_engineering_to_business",
+            "survey_computing_to_business",
+            "survey_business_to_business",
+            "survey_law_to_business",
+            "survey_medicine_to_business",
+            "survey_arts_to_business"
+          ]
+        },
+        "instructions": "Produce the final building plan for business.",
+        "dependencies": [
+          "survey_engineering",
+          "survey_computing",
+          "survey_business",
+          "survey_law",
+          "survey_medicine",
+          "survey_arts"
+        ],
+        "acceptance_criteria": "Write PLAN_BUSINESS.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "plan_business",
+            "signal_id": "survey_engineering_to_business",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_engineering_to_business-output"
+            ],
+            "scope_pointer": "plan_business.input.survey_engineering_to_business"
+          },
+          {
+            "task_id": "plan_business",
+            "signal_id": "survey_computing_to_business",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_computing_to_business-output"
+            ],
+            "scope_pointer": "plan_business.input.survey_computing_to_business"
+          },
+          {
+            "task_id": "plan_business",
+            "signal_id": "survey_business_to_business",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_business_to_business-output"
+            ],
+            "scope_pointer": "plan_business.input.survey_business_to_business"
+          },
+          {
+            "task_id": "plan_business",
+            "signal_id": "survey_law_to_business",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_law_to_business-output"
+            ],
+            "scope_pointer": "plan_business.input.survey_law_to_business"
+          },
+          {
+            "task_id": "plan_business",
+            "signal_id": "survey_medicine_to_business",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_medicine_to_business-output"
+            ],
+            "scope_pointer": "plan_business.input.survey_medicine_to_business"
+          },
+          {
+            "task_id": "plan_business",
+            "signal_id": "survey_arts_to_business",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_arts_to_business-output"
+            ],
+            "scope_pointer": "plan_business.input.survey_arts_to_business"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "plan_law",
+        "scope": "plan-law",
+        "locked_interface": {
+          "signals": [
+            "survey_engineering_to_law",
+            "survey_computing_to_law",
+            "survey_business_to_law",
+            "survey_law_to_law",
+            "survey_medicine_to_law",
+            "survey_arts_to_law"
+          ]
+        },
+        "instructions": "Produce the final building plan for law.",
+        "dependencies": [
+          "survey_engineering",
+          "survey_computing",
+          "survey_business",
+          "survey_law",
+          "survey_medicine",
+          "survey_arts"
+        ],
+        "acceptance_criteria": "Write PLAN_LAW.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "plan_law",
+            "signal_id": "survey_engineering_to_law",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_engineering_to_law-output"
+            ],
+            "scope_pointer": "plan_law.input.survey_engineering_to_law"
+          },
+          {
+            "task_id": "plan_law",
+            "signal_id": "survey_computing_to_law",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_computing_to_law-output"
+            ],
+            "scope_pointer": "plan_law.input.survey_computing_to_law"
+          },
+          {
+            "task_id": "plan_law",
+            "signal_id": "survey_business_to_law",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_business_to_law-output"
+            ],
+            "scope_pointer": "plan_law.input.survey_business_to_law"
+          },
+          {
+            "task_id": "plan_law",
+            "signal_id": "survey_law_to_law",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_law_to_law-output"
+            ],
+            "scope_pointer": "plan_law.input.survey_law_to_law"
+          },
+          {
+            "task_id": "plan_law",
+            "signal_id": "survey_medicine_to_law",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_medicine_to_law-output"
+            ],
+            "scope_pointer": "plan_law.input.survey_medicine_to_law"
+          },
+          {
+            "task_id": "plan_law",
+            "signal_id": "survey_arts_to_law",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_arts_to_law-output"
+            ],
+            "scope_pointer": "plan_law.input.survey_arts_to_law"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "plan_medicine",
+        "scope": "plan-medicine",
+        "locked_interface": {
+          "signals": [
+            "survey_engineering_to_medicine",
+            "survey_computing_to_medicine",
+            "survey_business_to_medicine",
+            "survey_law_to_medicine",
+            "survey_medicine_to_medicine",
+            "survey_arts_to_medicine"
+          ]
+        },
+        "instructions": "Produce the final building plan for medicine.",
+        "dependencies": [
+          "survey_engineering",
+          "survey_computing",
+          "survey_business",
+          "survey_law",
+          "survey_medicine",
+          "survey_arts"
+        ],
+        "acceptance_criteria": "Write PLAN_MEDICINE.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "plan_medicine",
+            "signal_id": "survey_engineering_to_medicine",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_engineering_to_medicine-output"
+            ],
+            "scope_pointer": "plan_medicine.input.survey_engineering_to_medicine"
+          },
+          {
+            "task_id": "plan_medicine",
+            "signal_id": "survey_computing_to_medicine",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_computing_to_medicine-output"
+            ],
+            "scope_pointer": "plan_medicine.input.survey_computing_to_medicine"
+          },
+          {
+            "task_id": "plan_medicine",
+            "signal_id": "survey_business_to_medicine",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_business_to_medicine-output"
+            ],
+            "scope_pointer": "plan_medicine.input.survey_business_to_medicine"
+          },
+          {
+            "task_id": "plan_medicine",
+            "signal_id": "survey_law_to_medicine",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_law_to_medicine-output"
+            ],
+            "scope_pointer": "plan_medicine.input.survey_law_to_medicine"
+          },
+          {
+            "task_id": "plan_medicine",
+            "signal_id": "survey_medicine_to_medicine",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_medicine_to_medicine-output"
+            ],
+            "scope_pointer": "plan_medicine.input.survey_medicine_to_medicine"
+          },
+          {
+            "task_id": "plan_medicine",
+            "signal_id": "survey_arts_to_medicine",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_arts_to_medicine-output"
+            ],
+            "scope_pointer": "plan_medicine.input.survey_arts_to_medicine"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      },
+      {
+        "task_id": "plan_arts",
+        "scope": "plan-arts",
+        "locked_interface": {
+          "signals": [
+            "survey_engineering_to_arts",
+            "survey_computing_to_arts",
+            "survey_business_to_arts",
+            "survey_law_to_arts",
+            "survey_medicine_to_arts",
+            "survey_arts_to_arts"
+          ]
+        },
+        "instructions": "Produce the final building plan for arts.",
+        "dependencies": [
+          "survey_engineering",
+          "survey_computing",
+          "survey_business",
+          "survey_law",
+          "survey_medicine",
+          "survey_arts"
+        ],
+        "acceptance_criteria": "Write PLAN_ARTS.md and report status complete.",
+        "model_tier": "standard",
+        "signal_uses": [
+          {
+            "task_id": "plan_arts",
+            "signal_id": "survey_engineering_to_arts",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_engineering_to_arts-output"
+            ],
+            "scope_pointer": "plan_arts.input.survey_engineering_to_arts"
+          },
+          {
+            "task_id": "plan_arts",
+            "signal_id": "survey_computing_to_arts",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_computing_to_arts-output"
+            ],
+            "scope_pointer": "plan_arts.input.survey_computing_to_arts"
+          },
+          {
+            "task_id": "plan_arts",
+            "signal_id": "survey_business_to_arts",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_business_to_arts-output"
+            ],
+            "scope_pointer": "plan_arts.input.survey_business_to_arts"
+          },
+          {
+            "task_id": "plan_arts",
+            "signal_id": "survey_law_to_arts",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_law_to_arts-output"
+            ],
+            "scope_pointer": "plan_arts.input.survey_law_to_arts"
+          },
+          {
+            "task_id": "plan_arts",
+            "signal_id": "survey_medicine_to_arts",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_medicine_to_arts-output"
+            ],
+            "scope_pointer": "plan_arts.input.survey_medicine_to_arts"
+          },
+          {
+            "task_id": "plan_arts",
+            "signal_id": "survey_arts_to_arts",
+            "role": "CONSUME",
+            "source_spans": [
+              "scenario:survey_arts_to_arts-output"
+            ],
+            "scope_pointer": "plan_arts.input.survey_arts_to_arts"
+          }
+        ],
+        "generality_rank": 0,
+        "authorized_artifact_ids": [],
+        "routing_refs": {
+          "requirement_ids": [],
+          "signal_ids": [],
+          "task_ids": [],
+          "schema_ids": []
+        }
+      }
+    ],
+    "dependency_proofs": [
+      {
+        "parent_task_id": "survey_engineering",
+        "child_task_id": "plan_engineering",
+        "shared_signal_ids": [
+          "survey_engineering_to_engineering"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_engineering_to_engineering-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_computing",
+        "child_task_id": "plan_engineering",
+        "shared_signal_ids": [
+          "survey_computing_to_engineering"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_computing_to_engineering-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_business",
+        "child_task_id": "plan_engineering",
+        "shared_signal_ids": [
+          "survey_business_to_engineering"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_business_to_engineering-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_law",
+        "child_task_id": "plan_engineering",
+        "shared_signal_ids": [
+          "survey_law_to_engineering"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_law_to_engineering-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_medicine",
+        "child_task_id": "plan_engineering",
+        "shared_signal_ids": [
+          "survey_medicine_to_engineering"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_medicine_to_engineering-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_arts",
+        "child_task_id": "plan_engineering",
+        "shared_signal_ids": [
+          "survey_arts_to_engineering"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_arts_to_engineering-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_engineering",
+        "child_task_id": "plan_computing",
+        "shared_signal_ids": [
+          "survey_engineering_to_computing"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_engineering_to_computing-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_computing",
+        "child_task_id": "plan_computing",
+        "shared_signal_ids": [
+          "survey_computing_to_computing"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_computing_to_computing-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_business",
+        "child_task_id": "plan_computing",
+        "shared_signal_ids": [
+          "survey_business_to_computing"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_business_to_computing-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_law",
+        "child_task_id": "plan_computing",
+        "shared_signal_ids": [
+          "survey_law_to_computing"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_law_to_computing-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_medicine",
+        "child_task_id": "plan_computing",
+        "shared_signal_ids": [
+          "survey_medicine_to_computing"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_medicine_to_computing-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_arts",
+        "child_task_id": "plan_computing",
+        "shared_signal_ids": [
+          "survey_arts_to_computing"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_arts_to_computing-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_engineering",
+        "child_task_id": "plan_business",
+        "shared_signal_ids": [
+          "survey_engineering_to_business"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_engineering_to_business-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_computing",
+        "child_task_id": "plan_business",
+        "shared_signal_ids": [
+          "survey_computing_to_business"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_computing_to_business-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_business",
+        "child_task_id": "plan_business",
+        "shared_signal_ids": [
+          "survey_business_to_business"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_business_to_business-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_law",
+        "child_task_id": "plan_business",
+        "shared_signal_ids": [
+          "survey_law_to_business"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_law_to_business-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_medicine",
+        "child_task_id": "plan_business",
+        "shared_signal_ids": [
+          "survey_medicine_to_business"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_medicine_to_business-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_arts",
+        "child_task_id": "plan_business",
+        "shared_signal_ids": [
+          "survey_arts_to_business"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_arts_to_business-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_engineering",
+        "child_task_id": "plan_law",
+        "shared_signal_ids": [
+          "survey_engineering_to_law"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_engineering_to_law-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_computing",
+        "child_task_id": "plan_law",
+        "shared_signal_ids": [
+          "survey_computing_to_law"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_computing_to_law-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_business",
+        "child_task_id": "plan_law",
+        "shared_signal_ids": [
+          "survey_business_to_law"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_business_to_law-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_law",
+        "child_task_id": "plan_law",
+        "shared_signal_ids": [
+          "survey_law_to_law"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_law_to_law-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_medicine",
+        "child_task_id": "plan_law",
+        "shared_signal_ids": [
+          "survey_medicine_to_law"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_medicine_to_law-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_arts",
+        "child_task_id": "plan_law",
+        "shared_signal_ids": [
+          "survey_arts_to_law"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_arts_to_law-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_engineering",
+        "child_task_id": "plan_medicine",
+        "shared_signal_ids": [
+          "survey_engineering_to_medicine"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_engineering_to_medicine-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_computing",
+        "child_task_id": "plan_medicine",
+        "shared_signal_ids": [
+          "survey_computing_to_medicine"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_computing_to_medicine-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_business",
+        "child_task_id": "plan_medicine",
+        "shared_signal_ids": [
+          "survey_business_to_medicine"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_business_to_medicine-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_law",
+        "child_task_id": "plan_medicine",
+        "shared_signal_ids": [
+          "survey_law_to_medicine"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_law_to_medicine-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_medicine",
+        "child_task_id": "plan_medicine",
+        "shared_signal_ids": [
+          "survey_medicine_to_medicine"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_medicine_to_medicine-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_arts",
+        "child_task_id": "plan_medicine",
+        "shared_signal_ids": [
+          "survey_arts_to_medicine"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_arts_to_medicine-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_engineering",
+        "child_task_id": "plan_arts",
+        "shared_signal_ids": [
+          "survey_engineering_to_arts"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_engineering_to_arts-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_computing",
+        "child_task_id": "plan_arts",
+        "shared_signal_ids": [
+          "survey_computing_to_arts"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_computing_to_arts-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_business",
+        "child_task_id": "plan_arts",
+        "shared_signal_ids": [
+          "survey_business_to_arts"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_business_to_arts-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_law",
+        "child_task_id": "plan_arts",
+        "shared_signal_ids": [
+          "survey_law_to_arts"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_law_to_arts-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_medicine",
+        "child_task_id": "plan_arts",
+        "shared_signal_ids": [
+          "survey_medicine_to_arts"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_medicine_to_arts-output"
+        ]
+      },
+      {
+        "parent_task_id": "survey_arts",
+        "child_task_id": "plan_arts",
+        "shared_signal_ids": [
+          "survey_arts_to_arts"
+        ],
+        "applied_rule": "PRODUCER_TO_CONSUMER",
+        "source_spans": [
+          "scenario:survey_arts_to_arts-output"
+        ]
+      }
+    ],
+    "max_elastic_depth": 1,
+    "max_elastic_nodes": 2
+  },
+  "assignments": [
+    {
+      "node_id": "node:survey_engineering",
+      "task_id": "survey_engineering",
+      "profile_id": "planner",
+      "agent_identity": "planner:survey_engineering",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:survey_computing",
+      "task_id": "survey_computing",
+      "profile_id": "planner",
+      "agent_identity": "planner:survey_computing",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:survey_business",
+      "task_id": "survey_business",
+      "profile_id": "planner",
+      "agent_identity": "planner:survey_business",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:survey_law",
+      "task_id": "survey_law",
+      "profile_id": "planner",
+      "agent_identity": "planner:survey_law",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:survey_medicine",
+      "task_id": "survey_medicine",
+      "profile_id": "planner",
+      "agent_identity": "planner:survey_medicine",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:survey_arts",
+      "task_id": "survey_arts",
+      "profile_id": "planner",
+      "agent_identity": "planner:survey_arts",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:plan_engineering",
+      "task_id": "plan_engineering",
+      "profile_id": "planner",
+      "agent_identity": "planner:plan_engineering",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:plan_computing",
+      "task_id": "plan_computing",
+      "profile_id": "planner",
+      "agent_identity": "planner:plan_computing",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:plan_business",
+      "task_id": "plan_business",
+      "profile_id": "planner",
+      "agent_identity": "planner:plan_business",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:plan_law",
+      "task_id": "plan_law",
+      "profile_id": "planner",
+      "agent_identity": "planner:plan_law",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:plan_medicine",
+      "task_id": "plan_medicine",
+      "profile_id": "planner",
+      "agent_identity": "planner:plan_medicine",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    },
+    {
+      "node_id": "node:plan_arts",
+      "task_id": "plan_arts",
+      "profile_id": "planner",
+      "agent_identity": "planner:plan_arts",
+      "model_key": "fireworks-flash",
+      "skill_ids": [],
+      "allowed_tool_names": [
+        "raise_finding",
+        "read_file",
+        "write_draft"
+      ],
+      "capability_ids": [
+        "draft.write",
+        "filesystem.read",
+        "state.broadcast"
+      ]
+    }
+  ],
+  "status": "executed",
+  "controller_id": "controller-1",
+  "graph_run_id": "run-1"
+}

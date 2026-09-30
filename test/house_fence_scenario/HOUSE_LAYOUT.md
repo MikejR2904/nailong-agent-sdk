@@ -1,0 +1,151 @@
+# HOUSE_LAYOUT.md — Final House Design
+
+This document is the authoritative build reference for the house. It supersedes
+SITE_PLAN.md for anything to do with the house footprint and rooms. Site
+elements that are unchanged from SITE_PLAN.md (lot, setbacks, driveway, fence)
+are restated here so this file stands on its own.
+
+---
+
+## 1. Coordinate system (unchanged from SITE_PLAN.md)
+
+- **Lot:** rectangle, 18 m wide (street-facing) × 25 m deep.
+- **Origin (0,0)** at the **front-left corner of the lot**.
+  - `x` runs along the 18 m street-facing width: 0 → 18.
+  - `y` runs with depth into the lot away from the street: 0 → 25 (y = 0 at the street).
+- **Required setbacks:** front 3 m (`y = 3`), left 1.5 m (`x = 1.5`),
+  right 1.5 m (`x = 16.5`), rear 3 m (`y = 22`).
+- **Buildable envelope:** (1.5, 3) → (16.5, 22) = 15 m × 19 m = 285 m².
+
+---
+
+## 2. Footprint I am actually building
+
+**House footprint (bounding rectangle): (1.5, 3) → (16.5, 16)**
+= **15.0 m wide × 13.0 m deep = 195.0 m²** (single story).
+
+### 2.1 Does this match SITE_PLAN.md?
+
+**No — it differs in depth only.** SITE_PLAN.md proposed **(1.5, 3) → (16.5, 15)**
+= 15 m × 12 m = 180 m². I am building the **same width and the same front
+position**, but **1 m deeper** (rear wall at `y = 16` instead of `y = 15`).
+
+### 2.2 Why I revised it
+
+I kept the plan's width (full 15 m buildable width) and its front position
+(front wall on the `y = 3` setback line) because both are sound. The problem
+only appeared once I detailed the rooms:
+
+- The plan's 12 m depth splits into a 6 m front zone and a 6 m rear zone.
+  After a 1.2 m hallway, the rear zone leaves only **4.8 m** of usable depth
+  for the bedroom row.
+- A master suite needs a bedroom **plus** an ensuite **plus** a wardrobe. In
+  4.8 m that forces the ensuite/wardrobe into **1.5 m-deep slivers**, which is
+  too shallow for a usable bathroom (a shower alone needs ~0.9 m plus a
+  standing zone) and leaves no depth for a wardrobe.
+- The 6 m front zone also squeezed the kitchen/dining into ~9 m² with no room
+  for a laundry or linen store anywhere in the plan.
+
+Adding **1 m of depth** (13 m total) resolves all of this: the rear zone becomes
+6.5 m deep, giving a 1.2 m hallway plus a **5.3 m** room row — enough for a
+proper master suite (bedroom + 2.0 m-deep ensuite + 2.0 m-deep wardrobe), a
+full second bathroom, laundry and linen store, and bedrooms that all reach an
+external wall. The cost is 1 m of backyard depth, which is a good trade (see §4).
+
+Everything else in SITE_PLAN.md — lot, setbacks, driveway, fence — is
+**unchanged** and is restated below.
+
+---
+
+## 3. Room layout
+
+All rooms are axis-aligned rectangles inside the footprint. Coordinates are
+given as `(x_min, y_min) → (x_max, y_max)`. The rooms tile the footprint
+exactly, with no gaps or overlaps.
+
+### 3.1 Front zone — `y = 3 → 9.5` (6.5 m deep)
+
+| Room | Rectangle | Size (m) | Area (m²) | Notes |
+|------|-----------|----------|-----------|-------|
+| 2-car garage | (1.5, 3) → (7.5, 9.5) | 6.0 × 6.5 | 39.0 | Garage door (5.0 m wide) in the front wall at `y = 3`, `x = 2.0 → 7.0`. Internal door to the entry foyer at `x = 7.5`, `y = 4.0 → 4.9`. |
+| Entry foyer | (7.5, 3) → (10.5, 5.5) | 3.0 × 2.5 | 7.5 | Front door (1.0 m) in the front wall at `y = 3`, `x = 8.5 → 9.5`. |
+| Kitchen / dining | (7.5, 5.5) → (10.5, 9.5) | 3.0 × 4.0 | 12.0 | Open to the living room and to the entry foyer. Lit from the living room and the hallway opening (the left wall is the garage). |
+| Living room | (10.5, 3) → (16.5, 9.5) | 6.0 × 6.5 | 39.0 | Front-facing; windows in the front wall (`y = 3`) and the right wall (`x = 16.5`). Opens to the hallway at `y = 9.5`. |
+
+Front-zone subtotal: 39.0 + 7.5 + 12.0 + 39.0 = **97.5 m²**
+
+### 3.2 Rear zone — `y = 9.5 → 16` (6.5 m deep)
+
+| Room | Rectangle | Size (m) | Area (m²) | Notes |
+|------|-----------|----------|-----------|-------|
+| Hallway | (1.5, 9.5) → (16.5, 10.7) | 15.0 × 1.2 | 18.0 | Spine corridor linking the living room / kitchen to all bedrooms, the second bathroom, laundry and linen store. |
+| Master bedroom | (1.5, 10.7) → (6.5, 14.0) | 5.0 × 3.3 | 16.5 | Window in the left external wall (`x = 1.5`). |
+| Master ensuite | (1.5, 14.0) → (4.0, 16.0) | 2.5 × 2.0 | 5.0 | Shower, WC, vanity. |
+| Master wardrobe (WIC) | (4.0, 14.0) → (6.5, 16.0) | 2.5 × 2.0 | 5.0 | Walk-in wardrobe. |
+| Bathroom 2 | (6.5, 10.7) → (9.5, 13.0) | 3.0 × 2.3 | 6.9 | Family bathroom: bath/shower, WC, vanity. Internal room (extract fan). |
+| Laundry | (9.5, 10.7) → (12.5, 13.0) | 3.0 × 2.3 | 6.9 | Washer/dryer, tub, bench. Internal room (extract fan). |
+| Linen / storage | (12.5, 10.7) → (13.5, 13.0) | 1.0 × 2.3 | 2.3 | Shelving. |
+| Bedroom 2 | (6.5, 13.0) → (10.0, 16.0) | 3.5 × 3.0 | 10.5 | Window in the rear external wall (`y = 16`). |
+| Bedroom 3 | (10.0, 13.0) → (13.5, 16.0) | 3.5 × 3.0 | 10.5 | Window in the rear external wall (`y = 16`). |
+| Bedroom 4 | (13.5, 10.7) → (16.5, 16.0) | 3.0 × 5.3 | 15.9 | Windows in the rear wall (`y = 16`) and the right wall (`x = 16.5`). |
+
+Rear-zone subtotal: 18.0 + 16.5 + 5.0 + 5.0 + 6.9 + 6.9 + 2.3 + 10.5 + 10.5 + 15.9 = **97.5 m²**
+
+**Total enclosed floor area: 97.5 + 97.5 = 195.0 m²** (equals the footprint
+15.0 × 13.0 = 195.0 m² — the layout tiles the footprint exactly).
+
+**Daylight check:** every bedroom reaches an external wall — master bedroom
+(left wall `x = 1.5`), bedrooms 2 and 3 (rear wall `y = 16`), bedroom 4 (rear
+wall `y = 16` and right wall `x = 16.5`). The living room and kitchen/dining are
+lit from the front and right walls. Only the family bathroom and laundry are
+internal rooms, which is normal for those functions (mechanical extract).
+
+### 3.3 Circulation summary
+
+- Front door → **entry foyer** (7.5 m²).
+- Entry foyer → **living room** (opening at `x = 10.5`, `y = 3 → 5.5`) and →
+  **kitchen/dining** (opening at `y = 5.5`, `x = 7.5 → 10.5`).
+- Entry foyer → **garage** (door at `x = 7.5`, `y = 4.0 → 4.9`).
+- Living room / kitchen → **hallway** (openings along `y = 9.5`).
+- Hallway → master suite, bedrooms 2–4, bathroom 2, laundry, linen store.
+- The hallway's left arm (`x = 1.5 → 6.5`) is the private master-wing approach.
+
+---
+
+## 4. Site elements (restated; unchanged from SITE_PLAN.md)
+
+| Element | Coordinates | Dimensions |
+|---------|-------------|------------|
+| Lot | (0, 0) → (18, 25) | 18 m × 25 m |
+| Buildable envelope | (1.5, 3) → (16.5, 22) | 15 m × 19 m (285 m²) |
+| **House footprint (this design)** | **(1.5, 3) → (16.5, 16)** | **15 m × 13 m (195 m²)** |
+| Driveway | x 1.5 → 7.5, y 0 → 3 | 6 m × 3 m |
+| Backyard | (1.5, 16) → (16.5, 22) | 15 m × 6 m (90 m²) |
+| Fence | (1.5,3)→(1.5,22)→(16.5,22)→(16.5,3)→(7.5,3) | 62 m total |
+
+- **Driveway:** unchanged — runs from the street to the garage door at `y = 3`,
+  `x = 1.5 → 7.5`.
+- **Backyard:** the house rear wall moved from `y = 15` to `y = 16`, so the
+  backyard is now **15 m × 6 m = 90 m²** (was 105 m²). Still a large, usable,
+  fenced private yard — 6 m of depth is ample for a lawn, patio and planting.
+- **Fence:** unchanged. It sits on the setback lines (`x = 1.5`, `x = 16.5`,
+  `y = 22`, and the front at `y = 3`), so it is independent of the house depth.
+  The only opening is the 6 m driveway gap at `x = 1.5 → 7.5`, `y = 3`.
+- **Clearances:** the house keeps the full required setbacks on all four sides
+  (front 3 m, left 1.5 m, right 1.5 m, rear 6 m to the fence / 9 m to the lot
+  boundary).
+
+---
+
+## 5. Summary of the decision
+
+- **Building:** a single-story house on footprint **(1.5, 3) → (16.5, 16)**,
+  15.0 m × 13.0 m = 195.0 m².
+- **Versus SITE_PLAN.md:** same width and front position; **1 m deeper**
+  (rear wall `y = 16` instead of `y = 15`), because the planned 12 m depth
+  could not fit a usable master ensuite/wardrobe or a second bathroom without
+  sub-1.5 m-deep slivers.
+- **Contains:** 4 bedrooms (master + 3), 2 bathrooms (master ensuite +
+  family bathroom), 2-car garage, entry foyer, kitchen/dining, living room,
+  hallway, laundry, walk-in wardrobe, linen store.
+- **Total floor area:** 195.0 m², tiling the footprint exactly.

@@ -1,0 +1,1 @@
+{"call":{"arguments":{"image_ref":"pdf:f2caa942004db5f0:p21:page"},"consumed_episode_ids":[],"depends_on_call_ids":[],"id":"chatcmpl-tool-a73ac57860df52bb","name":"interpret_pdf_image"},"result":{"error":"Chat response message must contain non-empty text content.","failure":null,"output":null,"status":"failed"}}
