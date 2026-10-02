@@ -14,12 +14,23 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 _COMMENT = re.compile(r"(?<!\\)%.*$", re.M)
-_ENV = re.compile(r"\\(?:begin|end)\{[^}]*\}(?:\[[^\]]*\])?(?:\{[^}]*\})*")
+# Only the environment name and optional argument: required arguments such as
+# \begin{twocolentry}{Aug 2026 -- Present} carry resume content (dates).
+_ENV = re.compile(r"\\(?:begin|end)\{[^}]*\}(?:\[[^\]]*\])?")
+# Spacing/size commands and bare dimensions are layout, not resume facts.
+_LAYOUT_CMD = re.compile(
+    r"\\(?:vspace|hspace|kern|fontsize|linespread|setlength|setcolumnwidth|titlespacing)\*?"
+    r"(?:\{[^{}]*\})*"
+)
+_DIMENSION = re.compile(r"-?\d*\.?\d+\s*(?:cm|mm|pt|em|ex|bp)\b")
 _CMD_WITH_ARG = re.compile(r"\\[a-zA-Z@]+\*?(?:\[[^\]]*\])?\{([^{}]*)\}")
 _BARE_CMD = re.compile(r"\\[a-zA-Z@]+\*?(?:\[[^\]]*\])?")
 _ESCAPED = re.compile(r"\\([%&$#_{}])")
 # Numbers with an optional unit; thousands separators are normalised away.
 _NUMBER = re.compile(r"(?<![\w.])(\d+(?:[.,]\d+)*)\s*(%|x|k|m|b|bn|\+)?(?![\w])", re.I)
+_MONTH_YEAR = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{4})\b", re.I
+)
 _PLACEHOLDER = re.compile(r"\b(TODO|TBD|FIXME|XXX|lorem ipsum|\[company\]|\[role\])", re.I)
 _WORD = re.compile(r"[A-Za-z][\w.+#-]*[\w+#]|[A-Za-z]")
 # Capitalised or symbol-bearing words in a JD are the skill/tool names
@@ -35,6 +46,7 @@ def latex_to_text(tex: str) -> str:
         body = body.split("\\begin{document}", 1)[1]
     body = body.split("\\end{document}", 1)[0]
     body = _COMMENT.sub("", body)
+    body = _DIMENSION.sub(" ", _LAYOUT_CMD.sub(" ", body))
     body = _ENV.sub(" ", body)
     previous = None
     while previous != body:  # unwrap nested \cmd{...} from the inside out
@@ -52,6 +64,10 @@ def numbers_in(text: str) -> set[str]:
     for value, unit in _NUMBER.findall(text):
         found.add(value.replace(",", "") + (unit or "").lower())
     return found
+
+
+def month_years_in(text: str) -> set[str]:
+    return {f"{month.lower()} {year}" for month, year in _MONTH_YEAR.findall(text)}
 
 
 def _bare_numbers(numbers: set[str]) -> set[str]:
@@ -120,6 +136,12 @@ def check_tailored_resume(
             f"{new_numbers}. Keep every metric, date, and figure verbatim from the base resume."
         )
 
+    new_dates = sorted(month_years_in(tailored_text) - month_years_in(base_text))
+    if new_dates:
+        check.errors.append(
+            f"Dates not present in the base resume: {new_dates}. Keep every date verbatim."
+        )
+
     # Skill-like terms taken from the JD that the base resume never mentions are
     # the classic keyword-stuffing failure: surface them for removal or review.
     jd_terms = skill_terms_in(job_description) if job_description else set()
@@ -157,7 +179,7 @@ def compile_latex(
     name = tex_path.name
     commands = {
         "tectonic": [["tectonic", "--keep-logs", name]],
-        "latexmk": [["latexmk", "-pdf", "-interaction=nonstopmode", "-halt-on-error", name]],
+        "latexmk": [["latexmk", "-g", "-pdf", "-interaction=nonstopmode", "-halt-on-error", name]],
         # Twice so cross-references and page counts settle.
         "pdflatex": [["pdflatex", "-interaction=nonstopmode", "-halt-on-error", name]] * 2,
     }[engine]
@@ -179,6 +201,22 @@ def compile_latex(
             return False, None, output[-3000:]
     pdf = tex_path.with_suffix(".pdf")
     return pdf.is_file(), (pdf if pdf.is_file() else None), output[-1500:]
+
+
+_OVERFULL = re.compile(r"Overfull \\hbox \(([\d.]+)pt too wide\) .*?lines? (\d+)")
+
+
+def overfull_lines(log_path: Path, tolerance_pt: float = 1.0) -> list[tuple[int, float]]:
+    """(source line, points too wide) for every line that visibly overruns the margin."""
+
+    if not log_path.is_file():
+        return []
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    return [
+        (int(line), float(width))
+        for width, line in _OVERFULL.findall(text)
+        if float(width) > tolerance_pt
+    ]
 
 
 def pdf_page_count(pdf_path: Path) -> int:

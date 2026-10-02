@@ -29,8 +29,9 @@ Tailoring may reorder, cut, and reword; it may **not** invent anything. Each tai
 resume is checked deterministically against your base resume:
 
 - **errors** (the run is rejected and retried once, then marked `tailor_failed`):
-  any number, metric, or date not in the base resume; leftover placeholders
-  (TODO, [company]); broken LaTeX; failed compilation; going over `max_pages`.
+  any number, metric, or month-year date not in the base resume; leftover
+  placeholders (TODO, [company]); broken LaTeX; failed compilation; going over
+  `max_pages`; any line that runs past the right margin.
 - **warnings** (shown to you before applying): skill terms copied from the JD
   that your base resume never mentions, e.g. adding "Kubernetes" because the JD
   asked for it.
@@ -66,6 +67,7 @@ uv run sg-job-agent discover                           # or: --role "Quant Devel
 uv run sg-job-agent list                               # ranked by fit score
 uv run sg-job-agent tailor --top 5                     # or: --job <id> [--job <id> ...]
 uv run sg-job-agent list --status tailored             # review jobs/<id>/ before applying!
+uv run sg-job-agent overleaf                           # one-click "Open in Overleaf" page
 uv run sg-job-agent apply --top 5 --mode review
 
 uv run sg-job-agent run --resume ~/cv/resume.tex --top 5   # all steps in one go
@@ -75,6 +77,17 @@ To steer the search, set `search.roles` (preferred roles, listed first),
 `search.exclude_companies`, `search.min_fit_score`, and
 `search.sources.{greenhouse_boards,lever_companies,ashby_boards}`. Those take
 company slugs, e.g. `jobs.lever.co/<slug>`.
+
+## Overleaf
+
+Every tailored resume gets an "Open in Overleaf" launcher at
+`jobs/<id>/open_in_overleaf.html`. `workspace/overleaf.html` lists all of them;
+regenerate it any time with `sg-job-agent overleaf`. Open the page in a browser
+where you are logged in to Overleaf and click a button. The page uses Overleaf's
+public [developer API](https://www.overleaf.com/devs): a form POST of the LaTeX
+(`encoded_snip`, `snip_name`, `engine=pdflatex`) to `https://www.overleaf.com/docs`,
+which creates a project you can edit and compile. Overleaf returns no PDF to the
+caller, so the page-limit and margin checks still need a local LaTeX engine.
 
 ## Apply modes
 

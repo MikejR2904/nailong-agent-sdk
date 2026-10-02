@@ -10,6 +10,7 @@ backends block bursts of automated traffic.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from nailong_agent_sdk.tools.tools import ToolInvocationContext
 from .latex import (
     check_tailored_resume,
     compile_latex,
+    overfull_lines,
     pdf_page_count,
 )
 from .sources import JobPosting, JobSourceClient, detect_ats, is_in_location
@@ -171,7 +173,8 @@ class JobToolbox:
     def _excluded(self, title: str, company: str) -> str | None:
         lowered_title = title.lower()
         for keyword in self.exclude_title_keywords:
-            if keyword.lower() in lowered_title:
+            # Whole words only: "intern" must not reject "International" or "Internal".
+            if re.search(rf"\b{re.escape(keyword.lower())}\b", lowered_title):
                 return f'title contains excluded keyword "{keyword}"'
         lowered_company = company.lower()
         for name in self.exclude_companies:
@@ -296,6 +299,12 @@ def run_resume_check(path: Path, tailoring: TailoringContext):
         return check
     check.pdf_path = str(pdf)
     check.page_count = pdf_page_count(pdf)
+    overfull = overfull_lines(path.with_suffix(".log"))
+    if overfull:
+        where = ", ".join(f"line {line} ({width:.0f}pt)" for line, width in overfull)
+        check.errors.append(
+            f"Text runs past the right margin at source {where}. Reword or shorten those lines."
+        )
     if check.page_count > tailoring.max_pages:
         check.errors.append(
             f"Resume is {check.page_count} pages; the limit is {tailoring.max_pages}. "

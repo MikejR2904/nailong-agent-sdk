@@ -122,3 +122,68 @@ def test_web_budget_is_enforced():
 
     statuses = [asyncio.run(call()).status for _ in range(3)]
     assert statuses == ["succeeded", "succeeded", "blocked"] and len(core.calls) == 2
+
+
+DATED_RESUME = r"""\begin{document}
+\begin{twocolentry}{\textbf{May -- Dec 2025}}
+  \textbf{Engineer} \\ \textit{Acme}
+\end{twocolentry}
+\vspace{0.05cm}
+\begin{twocolentry}{\textbf{Nov 2024 -- Jan 2025}}
+  \textbf{Developer} \\ \textit{Beta}
+\end{twocolentry}
+\end{document}"""
+
+
+def test_dates_inside_environment_arguments_are_checked():
+    assert "May - Dec 2025" in latex_to_text(DATED_RESUME)
+    moved = DATED_RESUME.replace("May -- Dec 2025", "Jan -- Dec 2024")
+    check = check_tailored_resume(DATED_RESUME, moved)
+    assert not check.passed and "dec 2024" in check.errors[0]
+
+
+def test_layout_spacing_changes_are_not_fabrication():
+    tighter = DATED_RESUME.replace("\\vspace{0.05cm}", "\\vspace{0.02cm}")
+    assert check_tailored_resume(DATED_RESUME, tighter).passed
+
+
+def test_overleaf_form_round_trips_latex():
+    import html as html_lib
+    import re
+    import urllib.parse
+
+    from job_agent.overleaf import OverleafEntry, launcher_html
+
+    tex = BASE_RESUME + '% quotes " and <tags> & 100\\% survive\n'
+    page = launcher_html([OverleafEntry(title="T", subtitle="S", tex=tex)], heading="H")
+    assert 'action="https://www.overleaf.com/docs" method="post"' in page
+    encoded = re.search(r'name="encoded_snip" value="([^"]*)"', page).group(1)
+    assert urllib.parse.unquote(html_lib.unescape(encoded)) == tex
+    assert 'name="engine" value="pdflatex"' in page
+
+
+def test_title_exclusions_match_whole_words(tmp_path):
+    from job_agent.tools import JobToolbox
+
+    toolbox = JobToolbox(
+        workspace=tmp_path,
+        ledger=JobLedger(tmp_path / "jobs.json"),
+        sources=None,  # type: ignore[arg-type]
+        exclude_title_keywords=["intern", "contract"],
+    )
+    assert toolbox._excluded("International Payments Engineer", "Acme") is None
+    assert toolbox._excluded("Internal Tools Engineer", "Acme") is None
+    assert toolbox._excluded("Software Engineer Intern", "Acme")
+    assert toolbox._excluded("Engineer (Contract)", "Acme")
+
+
+def test_overfull_lines_parsed_from_log(tmp_path):
+    from job_agent.latex import overfull_lines
+
+    log = tmp_path / "resume.log"
+    log.write_text(
+        "Overfull \\hbox (27.60052pt too wide) in paragraph at lines 169--170\n"
+        "Overfull \\hbox (0.3pt too wide) in paragraph at lines 12--13\n"
+    )
+    assert overfull_lines(log) == [(169, 27.60052)]
+    assert overfull_lines(tmp_path / "missing.log") == []

@@ -311,3 +311,21 @@ def test_real_openai_compatible_adapter_round_trip(tmp_path, config, sources, re
     assert sent[0]["temperature"] == config.model.temperature
     # The resume content reached the model as the tool result on the second call.
     assert "Acme AI Pte Ltd" in json.dumps(sent[1]["messages"])
+
+
+def test_tailoring_writes_overleaf_launchers(tmp_path, config, sources, resume_file):
+    from job_agent.sources import JobPosting
+
+    pipeline = make_pipeline(tmp_path, config, sources, resume_file, Models())
+    job_id, _ = pipeline.ledger.add(
+        JobPosting(title="ML Engineer", company="acme", url="https://example.com/j/1"),
+        fit_score=80,
+    )
+    (pipeline.root / f"jobs/{job_id}").mkdir(parents=True)
+    (pipeline.root / f"jobs/{job_id}/resume.tex").write_text(BASE_RESUME)
+    packet = pipeline.record_tailored(
+        job_id, {"changes": ["x"]}, pipeline.tailoring_context("JD text")
+    )
+    assert (pipeline.root / packet["overleaf_launcher"]).is_file()
+    index = (pipeline.root / "overleaf.html").read_text()
+    assert "ML Engineer" in index and "encoded_snip" in index

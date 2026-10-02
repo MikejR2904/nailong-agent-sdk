@@ -35,6 +35,8 @@ def _parser() -> argparse.ArgumentParser:
     listing = sub.add_parser("list", help="Show ledger entries ranked by fit.")
     listing.add_argument("--status", choices=[s.value for s in JobStatus])
 
+    sub.add_parser("overleaf", help="Write overleaf.html: open tailored resumes in Overleaf.")
+
     for name, text in (("tailor", "Tailor resumes."), ("apply", "Submit applications.")):
         command = sub.add_parser(name, help=text)
         group = command.add_mutually_exclusive_group(required=True)
@@ -102,6 +104,8 @@ async def _main(args: argparse.Namespace) -> None:
         elif args.command == "list":
             statuses = [JobStatus(args.status)] if args.status else []
             _print_jobs(pipeline.ledger.ranked(*statuses))
+        elif args.command == "overleaf":
+            print(f"Open {pipeline.write_overleaf_index()} in a browser logged in to Overleaf.")
         elif args.command == "tailor":
             if args.job:
                 for job_id in args.job:

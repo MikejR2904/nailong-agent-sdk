@@ -48,6 +48,7 @@ from .agents import (
 )
 from .config import AgentConfig
 from .latex import find_latex_engine
+from .overleaf import OverleafEntry, write_launcher
 from .sources import JobSourceClient
 from .store import JobLedger, JobStatus
 from .tools import JobToolbox, JobToolExecutor, TailoringContext, run_resume_check
@@ -69,6 +70,8 @@ def _slug(text: str, limit: int = 40) -> str:
 
 
 def openai_compatible_factory(config: AgentConfig) -> ModelFactory:
+    if not config.model.model:
+        raise ValueError("Set model.model in your config (the exact model identifier).")
     endpoint = OpenAICompatibleEndpoint(
         base_url=config.model.base_url,
         api_key=config.model.api_key(),
@@ -91,8 +94,6 @@ class JobAgentPipeline:
         search_client: WebSearchClient | None = None,
         log: Logger = print,
     ) -> None:
-        if not config.model.model and model_factory is None:
-            raise ValueError("Set model.model in your config (the exact model identifier).")
         self.config = config
         self.root = workspace.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -337,12 +338,7 @@ class JobAgentPipeline:
             f"Location: {job.get('location', '')}\n\n{description}\n",
             encoding="utf-8",
         )
-        tailoring = TailoringContext(
-            base_resume_tex=self.base_resume_path.read_text(encoding="utf-8"),
-            job_description=description,
-            latex_engine=find_latex_engine(self.config.tailoring.latex_engine),
-            max_pages=self.config.tailoring.max_pages,
-        )
+        tailoring = self.tailoring_context(description)
         toolbox.tailoring = tailoring
         gates = self._integrity_gates(resume_path, tailoring)
         task_input = {
@@ -361,7 +357,7 @@ class JobAgentPipeline:
             + "."
         )
         result = None
-        for attempt in range(2):
+        for _attempt in range(2):
             result = await self._run(
                 tailor_definition(self.binding),
                 stage="tailor",
@@ -405,13 +401,36 @@ class JobAgentPipeline:
                 self.artifacts.write_text(resume_path, snapshot)
                 summary["polish_fixes"] = [f"polish pass discarded: {polish.reason}"]
 
+        return self.record_tailored(job_id, summary, tailoring)
+
+    def tailoring_context(self, description: str) -> TailoringContext:
+        return TailoringContext(
+            base_resume_tex=self.base_resume_path.read_text(encoding="utf-8"),
+            job_description=description,
+            latex_engine=find_latex_engine(self.config.tailoring.latex_engine),
+            max_pages=self.config.tailoring.max_pages,
+        )
+
+    def record_tailored(
+        self, job_id: str, summary: dict[str, Any], tailoring: TailoringContext
+    ) -> dict[str, Any]:
+        """Final check, PDF copy, Overleaf launcher, and ledger update for a tailored job."""
+
+        job = self.ledger.get(job_id)
+        directory = self.job_dir(job_id)
+        resume_path = f"{directory}/resume.tex"
+        letter_path = f"{directory}/cover_letter.txt"
         check = run_resume_check(self.root / resume_path, tailoring)
+        if not check.passed:
+            self.ledger.update(
+                job_id, status=JobStatus.TAILOR_FAILED, error="; ".join(check.errors)
+            )
+            raise RuntimeError(f"Tailored resume for {job_id} failed checks: {check.errors}")
         packet: dict[str, Any] = {
             "resume_tex": resume_path,
-            "cover_letter": letter_path
-            if letter_path and (self.root / letter_path).is_file()
-            else "",
+            "cover_letter": letter_path if (self.root / letter_path).is_file() else "",
             "resume_pdf": "",
+            "page_count": check.page_count,
             "warnings": check.warnings,
             **{key: summary.get(key, []) for key in ("changes", "matched_requirements", "gaps")},
             "polish_fixes": summary.get("polish_fixes", []),
@@ -423,9 +442,40 @@ class JobAgentPipeline:
             )
             shutil.copyfile(check.pdf_path, self.root / pretty)
             packet["resume_pdf"] = pretty
+        launcher = self.root / directory / "open_in_overleaf.html"
+        write_launcher(
+            launcher,
+            [self._overleaf_entry(job, packet, relative_to=directory)],
+            heading=f"{job['title']} - {job['company']}",
+        )
+        packet["overleaf_launcher"] = f"{directory}/open_in_overleaf.html"
         self.ledger.update(job_id, status=JobStatus.TAILORED, packet=packet, error=None)
+        self.write_overleaf_index()
         self.log(f"  tailored {job['title']} @ {job['company']} -> {resume_path}")
         return packet
+
+    def _overleaf_entry(
+        self, job: dict[str, Any], packet: dict[str, Any], *, relative_to: str = ""
+    ) -> OverleafEntry:
+        prefix = f"{relative_to}/" if relative_to else ""
+        pdf = packet.get("resume_pdf", "")
+        return OverleafEntry(
+            title=job["title"],
+            subtitle=f"{job['company']} · fit {job.get('fit_score', '?')}",
+            tex=(self.root / packet["resume_tex"]).read_text(encoding="utf-8"),
+            file_name="resume.tex",
+            pdf_href=pdf.removeprefix(prefix) if pdf else "",
+            posting_url=job["url"],
+        )
+
+    def write_overleaf_index(self) -> Path:
+        """One page with an "Open in Overleaf" button for every tailored resume."""
+
+        jobs = self.ledger.ranked(JobStatus.TAILORED, JobStatus.APPLIED, JobStatus.NEEDS_MANUAL)
+        entries = [self._overleaf_entry(job, job["packet"]) for job in jobs if job.get("packet")]
+        return write_launcher(
+            self.root / "overleaf.html", entries, heading="Tailored resumes - Open in Overleaf"
+        )
 
     def shortlist(self, limit: int | None = None) -> list[dict[str, Any]]:
         jobs = self.ledger.ranked(JobStatus.DISCOVERED, min_fit=self.config.search.min_fit_score)
