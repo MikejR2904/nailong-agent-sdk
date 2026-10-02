@@ -1,0 +1,4 @@
+# Personal data and run output never belong in git.
+config.yaml
+workspace/
+*.tex.bak

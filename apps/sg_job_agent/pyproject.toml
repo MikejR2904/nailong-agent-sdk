@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sg-job-agent"
+version = "0.1.0"
+description = "Singapore job-hunting agent built on nailong-agent-sdk: profile a LaTeX resume, discover openings, tailor, and apply"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+  "nailong-agent-sdk",
+  "httpx>=0.27,<1",
+  "pydantic>=2.9,<3",
+  "pypdf>=5.0,<6",
+  "pyyaml>=6.0,<7",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.45,<2"]
+
+[project.scripts]
+sg-job-agent = "job_agent.cli:main"
+
+[tool.uv.sources]
+nailong-agent-sdk = { path = "../..", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "ruff>=0.16.8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = ["-q"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["job_agent"]

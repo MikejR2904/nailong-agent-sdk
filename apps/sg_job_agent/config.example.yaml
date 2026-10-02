@@ -1,0 +1,68 @@
+# Copy to config.yaml (git-ignored) and fill in. Nothing here is guessed by the agent.
+
+candidate:
+  full_name: "Your Name"
+  email: "you@example.com"
+  phone: "+65 9123 4567"
+  location: "Singapore"
+  linkedin_url: "https://www.linkedin.com/in/your-handle"
+  github_url: "https://github.com/your-handle"
+  portfolio_url: ""
+  current_company: ""
+  work_authorization: "Singapore Citizen"      # or "Permanent Resident", "Employment Pass holder", ...
+  notice_period: "1 month"
+  expected_salary_sgd: "Negotiable"
+  # Screening answers, matched case-insensitively against form question labels.
+  answers:
+    sponsorship: "No"
+    legally authorized: "Yes"
+    notice period: "1 month"
+    how did you hear: "Company careers page"
+
+search:
+  location: "Singapore"
+  roles: []                 # empty = infer from your resume (e.g. AI Engineer, Quant Dev, SWE, ...)
+  max_roles: 6
+  max_jobs_per_role: 15
+  max_web_calls_per_role: 8 # web_search + web_fetch budget per role (DuckDuckGo rate-limits bursts)
+  min_fit_score: 60
+  exclude_companies: []
+  exclude_title_keywords: ["intern", "internship", "part-time", "part time", "contract"]
+  sources:
+    mycareersfuture: true   # Singapore government job portal (public search API)
+    web_search: true        # site: searches over LinkedIn, eFinancialCareers, JobStreet, ATS boards
+    web_search_sites:
+      - linkedin.com/jobs/view
+      - efinancialcareers.sg
+      - sg.jobstreet.com
+      - boards.greenhouse.io
+      - jobs.lever.co
+      - jobs.ashbyhq.com
+    # Public ATS boards scanned directly for Singapore roles. Use each company's
+    # board slug, e.g. boards.greenhouse.io/<slug>, jobs.lever.co/<slug>,
+    # jobs.ashbyhq.com/<slug>. Unknown slugs are skipped with a warning.
+    greenhouse_boards: []
+    lever_companies: []
+    ashby_boards: []
+
+model:
+  # Any OpenAI-compatible Chat Completions endpoint with tool calling.
+  provider: "fireworks"
+  base_url: "https://api.fireworks.ai/inference/v1"
+  model: ""                  # required, e.g. accounts/fireworks/models/<model>
+  api_key_env: "FIREWORKS_API_KEY"
+  temperature: 0.2
+  max_tokens: 16000
+  timeout_seconds: 180
+
+tailoring:
+  max_pages: 2
+  latex_engine: auto        # auto | tectonic | latexmk | pdflatex | none
+  polish_pass: true
+  write_cover_letter: true
+
+apply:
+  mode: review              # manual | review | auto
+  max_applications_per_run: 10
+  headless: false            # only used in auto mode; review mode always shows the browser
+  browser_executable: ""     # optional Chrome/Chromium path, e.g. your installed Google Chrome
