@@ -108,8 +108,13 @@ def check_tailored_resume(
     tailored_tex: str,
     *,
     job_description: str = "",
+    evidence_text: str = "",
 ) -> ResumeCheck:
-    """Static integrity checks; compilation is a separate step."""
+    """Static integrity checks; compilation is a separate step.
+
+    ``evidence_text`` is the text of the experience-bank items the tailor cited:
+    numbers, dates, and skills found there are as legitimate as the base resume's.
+    """
 
     check = ResumeCheck()
     if "\\begin{document}" not in tailored_tex or "\\end{document}" not in tailored_tex:
@@ -118,11 +123,12 @@ def check_tailored_resume(
         check.errors.append("Unbalanced braces in tailored LaTeX.")
     base_text = latex_to_text(base_tex)
     tailored_text = latex_to_text(tailored_tex)
+    allowed_text = f"{base_text}\n{evidence_text}"
     placeholders = sorted({m.group(0) for m in _PLACEHOLDER.finditer(tailored_text)})
     if placeholders:
         check.errors.append(f"Leftover placeholders: {placeholders}")
 
-    base_numbers = numbers_in(base_text)
+    base_numbers = numbers_in(allowed_text)
     base_bare = _bare_numbers(base_numbers)
     new_numbers = sorted(
         number
@@ -132,26 +138,27 @@ def check_tailored_resume(
     if new_numbers:
         check.new_numbers = new_numbers
         check.errors.append(
-            "Numbers/metrics not present in the base resume (possible fabrication): "
-            f"{new_numbers}. Keep every metric, date, and figure verbatim from the base resume."
+            "Numbers/metrics not present in the base resume or the cited evidence (possible "
+            f"fabrication): {new_numbers}. Use figures verbatim from a source and cite its id."
         )
 
-    new_dates = sorted(month_years_in(tailored_text) - month_years_in(base_text))
+    new_dates = sorted(month_years_in(tailored_text) - month_years_in(allowed_text))
     if new_dates:
         check.errors.append(
-            f"Dates not present in the base resume: {new_dates}. Keep every date verbatim."
+            f"Dates not present in the base resume or the cited evidence: {new_dates}. "
+            "Keep every date verbatim from a cited source."
         )
 
     # Skill-like terms taken from the JD that the base resume never mentions are
     # the classic keyword-stuffing failure: surface them for removal or review.
     jd_terms = skill_terms_in(job_description) if job_description else set()
-    unsupported = sorted((words_in(tailored_text) - words_in(base_text)) & jd_terms)
+    unsupported = sorted((words_in(tailored_text) - words_in(allowed_text)) & jd_terms)
     if unsupported:
         check.unsupported_terms = unsupported
         check.warnings.append(
-            "Skill terms copied from the job description that the base resume never "
-            f"mentions: {unsupported}. Remove them unless they are a faithful rename of "
-            "something the base resume already shows."
+            "Skill terms copied from the job description that neither the base resume nor "
+            f"the cited evidence mentions: {unsupported}. Remove them unless they are a "
+            "faithful rename of something a source shows."
         )
     if len(tailored_text) < 0.4 * len(base_text):
         check.warnings.append("Tailored resume is less than 40% of the base resume's length.")

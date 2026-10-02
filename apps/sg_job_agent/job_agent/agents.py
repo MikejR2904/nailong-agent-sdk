@@ -53,18 +53,24 @@ def _definition(
 
 
 PROFILER_INSTRUCTIONS = """\
-You analyse one candidate's LaTeX resume to plan a full-time job search.
+You analyse one candidate to plan a full-time job search.
 
-1. Read the resume file named in the task with read_file (page through it with
+1. Read the base resume named in the task with read_file (page through it with
    offset/limit until you have read every line).
-2. Summarise the candidate strictly from the resume: never infer skills, employers,
-   degrees, or years that the resume does not state.
-3. Propose the distinct job titles this candidate is a strong, realistic fit for in
+2. The task input lists the candidate's experience bank (free-form notes, GitHub
+   repositories, LinkedIn export, personal website). Use search_experience and
+   read_experience to learn what the resume leaves out: projects, skills,
+   domains, and how deep each one goes. Read at least the items that look most
+   substantial; a one-page resume is only a summary of the candidate.
+3. Summarise the candidate strictly from these sources: never infer skills,
+   employers, degrees, or years that no source states.
+4. Propose the distinct job titles this candidate is a strong, realistic fit for in
    the target location. Think broadly across adjacent families (for example AI/ML
    Engineer, Research Scientist/Engineer, Software Engineer, Quant Developer,
-   Solutions Architect, Data Engineer, MLOps) but keep only roles the resume
-   genuinely supports, at a seniority the experience supports. Order by fit.
-4. For each role give: lowercase title_keywords that would appear in matching job
+   Solutions Architect, Data Engineer, MLOps) but keep only roles the evidence
+   genuinely supports, at a seniority the experience supports, and consistent with
+   the candidate's stated availability. Order by fit.
+5. For each role give: lowercase title_keywords that would appear in matching job
    titles (include common variants, e.g. "machine learning engineer", "ml engineer"),
    and 2-4 search_queries a recruiter would type into a job board.
 If the task lists preferred roles, include them (when supported) before others.
@@ -97,54 +103,67 @@ Finish with saved_job_ids exactly as returned by save_job_posting.
 """
 
 TAILOR_INSTRUCTIONS = """\
-You tailor one candidate's LaTeX resume to one job description, then self-check it.
+You build the strongest truthful one-job resume for a candidate by SELECTING the
+most relevant experience from everything they have done, then writing it well.
+The base resume is the layout template and a default selection, not the limit
+of what you may use.
 
-Read the base resume and the job description files named in the task with
-read_file (read every line). Then write the tailored resume to the declared
-resume path with write_draft.
+1. Read the job description and the base resume (read_file, every line).
+2. List the JD's concrete requirements. For each, search_experience (try several
+   phrasings) and read_experience the promising items. The experience bank holds
+   the candidate's own notes, GitHub repositories, LinkedIn export and website.
+3. Decide the selection. A one-page resume has fixed space, so compete for it:
+   swap a weakly relevant base-resume project or bullet for a more relevant one
+   from the bank, add a bullet that evidences an unmet requirement, and cut
+   what this employer will not care about. Prefer concrete, quantified,
+   recent evidence. Keep every employment and education entry that is on the
+   base resume (dates and titles verbatim) unless the page limit forces a cut.
+4. Write the tailored resume to the declared resume path with write_draft.
+   Reuse the base resume's preamble, macros and entry environments exactly so
+   new entries look identical to existing ones; escape & % $ # _ correctly.
+5. Call check_tailored_resume with the resume path and evidence_ids: every bank
+   item you drew any content from. Fix every error with edit_draft and check
+   again until it passes and the page limit holds.
 
-Tailoring rules (truthfulness is non-negotiable):
-- Use ONLY facts in the base resume. Never add employers, titles, dates, degrees,
-  projects, skills, tools, certifications, or metrics that the base resume lacks.
-- Keep every number (metrics, dates, team sizes, percentages) verbatim.
-- You MAY: reorder sections and bullets so the most relevant evidence comes first;
-  rewrite bullets to lead with impact and mirror the JD's vocabulary where the
-  underlying fact is the same; tighten or drop less relevant bullets; rewrite the
-  summary/objective for this role; reorder the skills list to put matching skills first.
-- Keep the base resume's LaTeX preamble, packages, macros, and visual style.
-  Escape special characters (& % $ # _) correctly.
-- Respect the page limit in the task.
+Truthfulness (non-negotiable):
+- Every claim must come from the base resume or a cited bank item. Never merge
+  facts from different items into one claim; never inflate scope ("led" only if
+  a source says the candidate led it).
+- Numbers, dates, team sizes and metrics only verbatim from a source.
+- Skills/tools only if a source shows the candidate used them. A JD keyword
+  with no source behind it belongs in "gaps", never on the resume.
+- GitHub READMEs describe projects; do not claim stars, users or adoption the
+  README does not state.
 
-Polish while writing: consistent tense (past for previous roles), strong action
-verbs, no first person, no filler, consistent date and punctuation style, ATS-
-friendly plain section headings.
+Writing: lead each bullet with an action verb and the impact, mirror the JD's
+vocabulary where the underlying fact is the same, past tense for finished work,
+no first person, no filler, consistent date and punctuation style.
 
-Then call check_tailored_resume on the resume path. Fix every error with
-edit_draft or write_draft and check again until it passes. Treat warnings about
-unsupported JD terms seriously: remove such a term unless the base resume shows
-the same thing under another name.
+If a cover letter path is declared, write a plain-text cover letter there (under
+300 words, three short paragraphs, addressed to the hiring team at the company,
+only sourced facts, no placeholders, signed with the candidate's name from the
+task input) that connects two or three selected experiences to the role.
 
-If a cover letter path is declared, write a concise plain-text cover letter there
-(under 300 words, addressed to the hiring team at the company, three short
-paragraphs, only facts from the base resume, no placeholders, signed with the
-candidate's name from the task input).
-
-Finish with the summary fields: the most important changes, the JD requirements
-your resume demonstrates, and genuine gaps (requirements the resume cannot show).
+Finish with: changes (what you selected, swapped, cut, and why), the JD
+requirements now evidenced, gaps (requirements no source supports), and
+evidence_ids (the same list you passed to the final passing check).
 """
 
 POLISHER_INSTRUCTIONS = """\
 You are a meticulous resume editor doing a final clean-up pass on a tailored
 LaTeX resume (and cover letter, if declared). You did not write them.
 
-Read the tailored resume, the base resume, and the job description with read_file.
-Fix only real problems, with minimal edit_draft edits:
+Read the tailored resume, the job description, and the evidence items whose ids
+are in the task input (read_experience). Fix only real problems, with minimal
+edit_draft edits:
 - typos, grammar, inconsistent tense, inconsistent date/punctuation formats
-- awkward or duplicated phrasing, filler, buzzword stuffing
-- LaTeX issues: unescaped special characters, broken macros, overfull lines
-- any claim, skill, or number not supported by the base resume: remove it
-Do not restructure or re-tailor; do not add content. Then call
-check_tailored_resume on the resume path and make sure it passes before finishing.
+- awkward or duplicated phrasing, filler, buzzword stuffing, a bullet that wraps
+  onto a near-empty last line (tighten it)
+- LaTeX issues: unescaped special characters, broken macros, text past the margin
+- any claim, skill, or number that neither the base resume nor a cited item
+  supports: remove it
+Do not re-select content. Then call check_tailored_resume with the resume path and
+the same evidence_ids, and make sure it passes before finishing.
 """
 
 
@@ -161,9 +180,9 @@ def profiler_definition(binding: ModelBinding) -> AgentDefinition:
     )
     return _definition(
         "Resume profiler that plans a candidate's full-time job search.",
-        "sg-job-profiler-v1",
+        "sg-job-profiler-v2",
         PROFILER_INSTRUCTIONS,
-        ["read_file"],
+        ["read_file", "search_experience", "read_experience"],
         _object(
             ["status", "candidate", "roles"],
             {
@@ -183,7 +202,7 @@ def profiler_definition(binding: ModelBinding) -> AgentDefinition:
             },
         ),
         binding,
-        max_iterations=12,
+        max_iterations=30,
     )
 
 
@@ -212,12 +231,19 @@ def scout_definition(binding: ModelBinding, *, web_search: bool) -> AgentDefinit
 
 def tailor_definition(binding: ModelBinding) -> AgentDefinition:
     return _definition(
-        "Resume tailor that adapts a LaTeX resume to one job description truthfully.",
-        "sg-job-tailor-v1",
+        "Resume tailor that selects a candidate's most relevant experience for one job.",
+        "sg-job-tailor-v2",
         TAILOR_INSTRUCTIONS,
-        ["read_file", "write_draft", "edit_draft", "check_tailored_resume"],
+        [
+            "read_file",
+            "search_experience",
+            "read_experience",
+            "write_draft",
+            "edit_draft",
+            "check_tailored_resume",
+        ],
         _object(
-            ["status", "resume_path", "changes", "matched_requirements", "gaps"],
+            ["status", "resume_path", "changes", "matched_requirements", "gaps", "evidence_ids"],
             {
                 "status": {"const": "complete"},
                 "resume_path": {"type": "string"},
@@ -225,10 +251,11 @@ def tailor_definition(binding: ModelBinding) -> AgentDefinition:
                 "changes": _STRING_LIST,
                 "matched_requirements": _STRING_LIST,
                 "gaps": _STRING_LIST,
+                "evidence_ids": _STRING_LIST,
             },
         ),
         binding,
-        max_iterations=24,
+        max_iterations=40,
         gate=RESUME_INTEGRITY_GATE,
     )
 
@@ -236,9 +263,9 @@ def tailor_definition(binding: ModelBinding) -> AgentDefinition:
 def polisher_definition(binding: ModelBinding) -> AgentDefinition:
     return _definition(
         "Resume editor doing a final proofreading and clean-up pass.",
-        "sg-job-polisher-v1",
+        "sg-job-polisher-v2",
         POLISHER_INSTRUCTIONS,
-        ["read_file", "edit_draft", "check_tailored_resume"],
+        ["read_file", "read_experience", "edit_draft", "check_tailored_resume"],
         _object(
             ["status", "resume_path", "fixes"],
             {

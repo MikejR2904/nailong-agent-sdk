@@ -72,13 +72,14 @@ def tailor_script(resume_tex: str) -> list[dict]:
             path="jobs/{job}/cover_letter.txt",
             content="Dear Hiring Team,\n\nI build production ML systems.\n\nAlex Tan",
         ),
-        call(5, "check_tailored_resume", path="jobs/{job}/resume.tex"),
+        call(5, "check_tailored_resume", path="jobs/{job}/resume.tex", evidence_ids=[]),
         final(
             resume_path="jobs/{job}/resume.tex",
             cover_letter_path="jobs/{job}/cover_letter.txt",
             changes=["Led with PyTorch recommendation work"],
             matched_requirements=["Python", "PyTorch", "AWS"],
             gaps=["Kubernetes"],
+            evidence_ids=[],
         ),
     ]
 
@@ -294,6 +295,9 @@ def test_real_openai_compatible_adapter_round_trip(tmp_path, config, sources, re
             sent.append(payload)
             return replies[len(sent) - 1]
 
+    config.model.provider = "fireworks"
+    config.model.base_url = "https://api.fireworks.ai/inference/v1"
+    config.model.temperature = 0.2
     config.model.model = "accounts/fireworks/models/test-model"
     adapter = OpenAICompatibleAgentModel(
         OpenAICompatibleEndpoint(base_url="https://api.fireworks.ai/inference/v1", api_key="k"),
@@ -307,7 +311,11 @@ def test_real_openai_compatible_adapter_round_trip(tmp_path, config, sources, re
     pipeline.import_resume(resume_file)
     profile = asyncio.run(pipeline.profile())
     assert profile["roles"][0]["title"] == "Machine Learning Engineer"
-    assert [tool["function"]["name"] for tool in sent[0]["tools"]] == ["read_file"]
+    assert [tool["function"]["name"] for tool in sent[0]["tools"]] == [
+        "read_file",
+        "search_experience",
+        "read_experience",
+    ]
     assert sent[0]["temperature"] == config.model.temperature
     # The resume content reached the model as the tool result on the second call.
     assert "Acme AI Pte Ltd" in json.dumps(sent[1]["messages"])

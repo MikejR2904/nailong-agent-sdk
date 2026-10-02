@@ -26,6 +26,7 @@ from nailong_agent_sdk.foundations.contracts import (
 )
 from nailong_agent_sdk.tools.tools import ToolInvocationContext
 
+from .knowledge import KnowledgeBase
 from .latex import (
     check_tailored_resume,
     compile_latex,
@@ -119,11 +120,42 @@ JOB_TOOLS: dict[str, ToolDefinition] = {
         ),
         _tool(
             "check_tailored_resume",
-            "Validate a tailored LaTeX resume against the base resume and job description: "
-            "flags fabricated numbers, placeholders, broken LaTeX, JD skills the base "
-            "resume never mentions, then compiles it and reports the page count. Call it "
-            "after every edit and fix all errors before finishing.",
-            _object(["path"], {"path": {"type": "string"}}),
+            "Validate a tailored LaTeX resume against the base resume, the experience-bank "
+            "items you cite, and the job description: flags numbers or dates found in no "
+            "cited source, placeholders, broken LaTeX, JD skills no source mentions, text "
+            "past the margin, then compiles it and reports the page count. Call it after "
+            "every edit with every evidence id you drew on, and fix all errors.",
+            _object(
+                ["path", "evidence_ids"],
+                {
+                    "path": {"type": "string"},
+                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                },
+            ),
+            write=False,
+        ),
+        _tool(
+            "search_experience",
+            "Search the candidate's experience bank (free-form notes, GitHub repos, LinkedIn "
+            "export, personal website, base resume) with BM25. Returns item ids, sources, "
+            "titles and snippets ranked by relevance to your query.",
+            _object(
+                ["query"],
+                {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 15},
+                    "sources": {
+                        "type": "array",
+                        "items": {"enum": ["resume", "document", "github", "linkedin", "website"]},
+                    },
+                },
+            ),
+            write=False,
+        ),
+        _tool(
+            "read_experience",
+            "Read one experience-bank item in full by id, with its source and URL.",
+            _object(["id"], {"id": {"type": "string"}}),
             write=False,
         ),
     ]
@@ -141,6 +173,7 @@ class TailoringContext:
     job_description: str
     latex_engine: str | None
     max_pages: int
+    knowledge: KnowledgeBase | None = None
 
 
 @dataclass
@@ -159,6 +192,7 @@ class JobToolbox:
     exclude_companies: list[str] = field(default_factory=list)
     exclude_title_keywords: list[str] = field(default_factory=list)
     tailoring: TailoringContext | None = None
+    knowledge: KnowledgeBase | None = None
     saved_job_ids: list[str] = field(default_factory=list)
     _candidates: dict[str, JobPosting] = field(default_factory=dict)
 
@@ -168,6 +202,8 @@ class JobToolbox:
             "get_job_description": self.get_job_description,
             "save_job_posting": self.save_job_posting,
             "check_tailored_resume": self.check_tailored_resume,
+            "search_experience": self.search_experience,
+            "read_experience": self.read_experience,
         }
 
     def _excluded(self, title: str, company: str) -> str | None:
@@ -279,15 +315,49 @@ class JobToolbox:
             raise ValueError("Path escapes the workspace.")
         if not path.is_file():
             raise ValueError(f"{arguments['path']} does not exist yet; write it first.")
-        return run_resume_check(path, self.tailoring).to_dict()
+        return run_resume_check(path, self.tailoring, arguments.get("evidence_ids", [])).to_dict()
+
+    async def search_experience(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self.knowledge is None or not len(self.knowledge):
+            return {"results": [], "note": "The experience bank is empty; run `ingest` first."}
+        hits = self.knowledge.search(
+            arguments["query"],
+            limit=int(arguments.get("limit", 8)),
+            sources=arguments.get("sources"),
+        )
+        return {
+            "results": [
+                {
+                    "id": item.id,
+                    "source": item.source,
+                    "title": item.title,
+                    "score": score,
+                    "snippet": item.text[:400],
+                }
+                for item, score in hits
+            ]
+        }
+
+    async def read_experience(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self.knowledge is None:
+            raise ValueError("The experience bank is empty; run `ingest` first.")
+        return self.knowledge.get(arguments["id"]).to_dict()
 
 
-def run_resume_check(path: Path, tailoring: TailoringContext):
+def run_resume_check(path: Path, tailoring: TailoringContext, evidence_ids=()):
+    evidence_text, unknown = "", []
+    if evidence_ids:
+        known = [i for i in evidence_ids if tailoring.knowledge and i in tailoring.knowledge]
+        unknown = [i for i in evidence_ids if i not in known]
+        evidence_text = tailoring.knowledge.text_for(known) if known else ""
     check = check_tailored_resume(
         tailoring.base_resume_tex,
         path.read_text(encoding="utf-8"),
         job_description=tailoring.job_description,
+        evidence_text=evidence_text,
     )
+    if unknown:
+        check.errors.append(f"Unknown evidence ids (cite only ids from the bank): {unknown}")
     if tailoring.latex_engine is None:
         check.warnings.append("No LaTeX engine installed; compilation was skipped.")
         return check

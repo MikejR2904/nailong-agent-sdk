@@ -1,6 +1,7 @@
 """Command-line entry point.
 
-sg-job-agent profile  --resume resume.tex     # infer target roles
+sg-job-agent ingest   --resume resume.tex     # build the experience bank
+sg-job-agent profile                          # infer target roles
 sg-job-agent discover [--role "AI Engineer"]   # find openings, save to ledger
 sg-job-agent list     [--status discovered]   # inspect the ledger
 sg-job-agent tailor   --top 5 | --job ID       # tailored resume + cover letter
@@ -25,6 +26,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     parser.add_argument("--workspace", type=Path, default=Path("workspace"))
     sub = parser.add_subparsers(dest="command", required=True)
+
+    ingest = sub.add_parser(
+        "ingest", help="Build the experience bank (documents, GitHub, LinkedIn export, website)."
+    )
+    ingest.add_argument("--resume", type=Path, help="Base resume .tex (imported once).")
 
     profile = sub.add_parser("profile", help="Analyse the resume and propose target roles.")
     profile.add_argument("--resume", type=Path, help="Base resume .tex (imported once).")
@@ -96,7 +102,9 @@ async def _main(args: argparse.Namespace) -> None:
     try:
         if getattr(args, "resume", None):
             pipeline.import_resume(args.resume)
-        if args.command == "profile":
+        if args.command == "ingest":
+            await pipeline.ingest()
+        elif args.command == "profile":
             await pipeline.profile()
         elif args.command == "discover":
             await pipeline.discover(args.role)
@@ -115,6 +123,7 @@ async def _main(args: argparse.Namespace) -> None:
         elif args.command == "apply":
             await _apply(pipeline, args, _tailored_ids(pipeline, args))
         elif args.command == "run":
+            await pipeline.ingest()
             if not pipeline.profile_path.is_file() or args.resume:
                 await pipeline.profile()
             await pipeline.discover()

@@ -6,16 +6,18 @@ writes a tailored and proofread resume plus cover letter for each one, and helps
 you apply.
 
 ```
-resume.tex ──profiler──▶ target roles ──scout × role──▶ jobs.json ledger
-           ──tailor + polisher × job──▶ tailored resume.tex/.pdf + cover letter
-           ──applier──▶ application (browser-assisted or hand-off)
+notes + GitHub + LinkedIn export + website ──ingest──▶ experience bank (cited items)
+resume.tex + bank ──profiler──▶ target roles ──scout × role──▶ jobs.json ledger
+                  ──tailor (select + refine) + polisher × job──▶ resume.tex/.pdf + cover letter
+                  ──applier──▶ application (browser-assisted or hand-off)
 ```
 
 | Stage | What it does | SDK pieces |
 |---|---|---|
+| `ingest` | Builds the **experience bank**: your free-form notes, every public GitHub repo (README, languages, topics), your LinkedIn data export, and your website, each kept as a cited item. No model involved. | BM25 search over the bank |
 | `profile` | Reads your resume and proposes target roles (e.g. AI Engineer, Research Engineer, Quant Dev, SWE, Solutions Architect), each with title keywords and search queries. | `BaseAgent` + `read_file` |
 | `discover` | One scout run per role. Searches MyCareersFuture and configured Greenhouse/Lever/Ashby boards, and runs `site:` web searches over LinkedIn, eFinancialCareers, JobStreet and ATS boards. Scores fit (0-100) and saves only real Singapore full-time postings. | `web_search`, `web_fetch`, custom tools, budgeted serialized web calls |
-| `tailor` | Rewrites the resume for one JD (reorders, rephrases, cuts) and writes a cover letter. A second **polisher** agent then proofreads both. | `write_draft`/`edit_draft`, `check_tailored_resume`, `resume-integrity` verification gate |
+| `tailor` | **Selects** the most relevant experience for one JD from the base resume *and* the bank: swaps in stronger projects, adds bullets for unmet requirements, cuts what this employer won't value, and rewrites. It cites the bank items it used, then writes a cover letter. A second **polisher** agent proofreads both. | `search_experience`/`read_experience`, `write_draft`/`edit_draft`, `check_tailored_resume`, `resume-integrity` verification gate |
 | `apply` | Fills Greenhouse and Lever forms in a real browser (Playwright): contact details, resume PDF, cover letter, and screening answers from your config. For other sites it opens the posting and hands off to you. | `Applier` |
 
 Everything is persisted under `--workspace` (default `./workspace`): `profile.json`,
@@ -25,8 +27,11 @@ re-runs never apply to the same job twice.
 
 ## Truthfulness guard
 
-Tailoring may reorder, cut, and reword; it may **not** invent anything. Each tailored
-resume is checked deterministically against your base resume:
+Tailoring may select, reorder, cut, and reword; it may **not** invent anything. Every
+claim must come from the base resume or an experience-bank item the tailor **cites**
+(`evidence_ids`). Each tailored resume is checked deterministically against the base
+resume plus the cited items. Checking against the whole bank would be too lax:
+READMEs are full of version numbers and dates.
 
 - **errors** (the run is rejected and retried once, then marked `tailor_failed`):
   any number, metric, or month-year date not in the base resume; leftover
@@ -55,14 +60,25 @@ For PDFs, install a LaTeX engine: [tectonic](https://tectonic-typesetting.github
 (`latexmk`/`pdflatex`). Without one you still get tailored `.tex` files, but the
 applier can only hand off to you, because it needs a PDF to upload.
 
-Any OpenAI-compatible Chat Completions endpoint with tool calling works. Set
-`model.base_url`, `model.model`, and `model.api_key_env` in `config.yaml`. Use a
-strong model for tailoring; it is the stage where quality shows.
+The default model is Claude Opus 5.5 through a native adapter (`job_agent/claude_model.py`)
+built on the official `anthropic` SDK. It keeps one **append-only** transcript per
+agent task: replies, thinking blocks included, go back unchanged. Claude binds its
+reasoning to the exact conversation prefix, and rebuilding the prompt each turn
+would invalidate it. Final answers arrive through a `submit_result` tool whose input
+schema is the agent's output schema. A server-side refusal fallback
+(`fallbacks: "default"`) is enabled; set `fallbacks=False` in `claude_factory` to
+turn it off. Any OpenAI-compatible endpoint also works: set `model.provider`,
+`model.base_url` and `model.model` (see `config.example.yaml`).
+
+For your experience document, write freely: one `##` heading per project, role,
+competition or story, with what you did, the tools you used, and the measured
+results. The tailor can only use numbers that appear in a source it cites.
 
 ## Usage
 
 ```bash
-uv run sg-job-agent profile --resume ~/cv/resume.tex   # review the proposed roles in profile.json
+uv run sg-job-agent ingest --resume ~/cv/resume.tex    # build the experience bank
+uv run sg-job-agent profile                            # review the proposed roles in profile.json
 uv run sg-job-agent discover                           # or: --role "Quant Developer"
 uv run sg-job-agent list                               # ranked by fit score
 uv run sg-job-agent tailor --top 5                     # or: --job <id> [--job <id> ...]

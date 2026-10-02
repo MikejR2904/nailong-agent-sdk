@@ -10,6 +10,7 @@ each CLI subcommand can be run on its own and re-runs resume rather than repeat.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from nailong_agent_sdk import (
     AgentDefinition,
     AgentModel,
@@ -47,6 +49,14 @@ from .agents import (
     tailor_definition,
 )
 from .config import AgentConfig
+from .ingest import (
+    GitHubIngester,
+    document_items,
+    linkedin_items,
+    resume_items,
+    website_items,
+)
+from .knowledge import KnowledgeBase
 from .latex import find_latex_engine
 from .overleaf import OverleafEntry, write_launcher
 from .sources import JobSourceClient
@@ -69,9 +79,37 @@ def _slug(text: str, limit: int = 40) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")[:limit] or "x"
 
 
-def openai_compatible_factory(config: AgentConfig) -> ModelFactory:
+def model_factory_for(config: AgentConfig) -> ModelFactory:
     if not config.model.model:
         raise ValueError("Set model.model in your config (the exact model identifier).")
+    if config.model.provider == "anthropic":
+        return claude_factory(config)
+    return openai_compatible_factory(config)
+
+
+def claude_factory(config: AgentConfig) -> ModelFactory:
+    import anthropic
+
+    from .claude_model import ClaudeAgentModel
+
+    client = anthropic.AsyncAnthropic(
+        api_key=config.model.api_key(),
+        # Explicit, so an ambient ANTHROPIC_BASE_URL never reroutes the agent.
+        base_url=config.model.base_url or "https://api.anthropic.com",
+        timeout=config.model.timeout_seconds,
+        max_retries=3,
+    )
+    return lambda _definition: ClaudeAgentModel(
+        client,
+        model=config.model.model,
+        effort=config.model.effort,
+        max_tokens=config.model.max_tokens,
+    )
+
+
+def openai_compatible_factory(config: AgentConfig) -> ModelFactory:
+    if not config.model.base_url:
+        raise ValueError("model.base_url is required for OpenAI-compatible providers.")
     endpoint = OpenAICompatibleEndpoint(
         base_url=config.model.base_url,
         api_key=config.model.api_key(),
@@ -103,14 +141,17 @@ class JobAgentPipeline:
         self.sources = sources or JobSourceClient()
         self.search_client = search_client
         self._model_factory = model_factory
+        self._knowledge: KnowledgeBase | None = None
         self.log = log
+        parameters: dict[str, Any] = {}
+        if config.model.provider != "anthropic":
+            parameters["max_tokens"] = min(config.model.max_tokens, 32_000)
+            if config.model.temperature is not None:
+                parameters["temperature"] = config.model.temperature
         self.binding = ModelBinding(
             provider=config.model.provider,
             model=config.model.model or "scripted",
-            parameters={
-                "temperature": config.model.temperature,
-                "max_tokens": config.model.max_tokens,
-            },
+            parameters=parameters,
         )
 
     # --- paths -----------------------------------------------------------------
@@ -130,6 +171,59 @@ class JobAgentPipeline:
         shutil.copyfile(tex_path, self.base_resume_path)
         self.log(f"Imported base resume from {tex_path}")
 
+    @property
+    def knowledge(self) -> KnowledgeBase:
+        if self._knowledge is None:
+            self._knowledge = KnowledgeBase(self.root / "knowledge")
+        return self._knowledge
+
+    # --- stage 0: ingest -------------------------------------------------------
+
+    async def ingest(self, *, http: httpx.AsyncClient | None = None) -> dict[str, int]:
+        """Build the experience bank from every configured source (no model calls)."""
+
+        settings = self.config.knowledge
+        kb = self.knowledge
+        client = http or httpx.AsyncClient(timeout=httpx.Timeout(30.0), follow_redirects=True)
+        warnings: list[str] = []
+        try:
+            if self.base_resume_path.is_file():
+                tex = self.base_resume_path.read_text(encoding="utf-8")
+                kb.replace_source("resume", resume_items(tex))
+            if settings.documents:
+                paths = [Path(path).expanduser() for path in settings.documents]
+                kb.replace_source("document", document_items(paths))
+            if settings.github_username or settings.github_extra_repos:
+                github = GitHubIngester(client, os.environ.get(settings.github_token_env, ""))
+                try:
+                    items = await github.items(
+                        settings.github_username,
+                        extra_repos=settings.github_extra_repos,
+                        include_forks=settings.github_include_forks,
+                    )
+                    kb.replace_source("github", items)
+                except (httpx.HTTPError, RuntimeError) as error:
+                    warnings.append(f"GitHub ingest failed: {error}")
+                warnings += github.warnings
+            if settings.linkedin_export:
+                export = Path(settings.linkedin_export).expanduser()
+                kb.replace_source("linkedin", linkedin_items(export))
+            if settings.website_urls:
+                items, site_warnings = await website_items(
+                    client, settings.website_urls, max_pages=settings.max_website_pages
+                )
+                kb.replace_source("website", items)
+                warnings += site_warnings
+        finally:
+            if http is None:
+                await client.aclose()
+        kb.save()
+        counts = kb.counts()
+        self.log("Experience bank: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+        for warning in warnings:
+            self.log(f"  warning: {warning}")
+        return counts
+
     def load_profile(self) -> dict[str, Any]:
         if not self.profile_path.is_file():
             raise FileNotFoundError("No profile yet: run the `profile` step first.")
@@ -139,7 +233,7 @@ class JobAgentPipeline:
 
     def _model(self, definition: AgentDefinition) -> AgentModel:
         if self._model_factory is None:
-            self._model_factory = openai_compatible_factory(self.config)
+            self._model_factory = model_factory_for(self.config)
         return self._model_factory(definition)
 
     def _core(self, declared_outputs: tuple[str, ...] = ()) -> CoreToolDispatcher:
@@ -169,6 +263,7 @@ class JobAgentPipeline:
             mycareersfuture=search.sources.mycareersfuture,
             exclude_companies=search.exclude_companies,
             exclude_title_keywords=search.exclude_title_keywords,
+            knowledge=self.knowledge,
             **overrides,
         )
 
@@ -227,7 +322,8 @@ class JobAgentPipeline:
             stage="profile",
             key="resume",
             instructions=(
-                f"Read the resume at {self.base_resume_path.name}, summarise the candidate, "
+                f"Read the resume at {self.base_resume_path.name} and the experience bank, "
+                "summarise the candidate, "
                 f"and propose up to {self.config.search.max_roles} target full-time roles in "
                 f"{self.config.search.location}."
             ),
@@ -236,8 +332,12 @@ class JobAgentPipeline:
                 "location": self.config.search.location,
                 "preferred_roles": self.config.search.roles,
                 "max_roles": self.config.search.max_roles,
+                "experience_bank": {
+                    "counts": self.knowledge.counts(),
+                    "items": self.knowledge.catalog()[:200],
+                },
             },
-            criteria=["Every role and skill is supported by the resume text."],
+            criteria=["Every role and skill is supported by the resume or the experience bank."],
             executor=self._executor(core, self._toolbox(core)),
         )
         if result.status is not AgentRunStatus.COMPLETED:
@@ -301,12 +401,18 @@ class JobAgentPipeline:
         self.ledger.update(job["id"], description=description)
         return description
 
-    def _integrity_gates(self, resume_path: str, tailoring: TailoringContext):
+    def _integrity_gates(
+        self, resume_path: str, tailoring: TailoringContext, evidence_ids: list[str]
+    ):
+        """``evidence_ids`` is shared state: the tailor's citations, reused by the polisher."""
+
         def gate(context: VerificationContext) -> VerificationDecision:
             output = context.output
             if output.get("resume_path") != resume_path:
                 return VerificationDecision(False, f"resume_path must be {resume_path}.")
-            check = run_resume_check(self.root / resume_path, tailoring)
+            if "evidence_ids" in output:
+                evidence_ids[:] = output["evidence_ids"]
+            check = run_resume_check(self.root / resume_path, tailoring, evidence_ids)
             if not check.passed:
                 return VerificationDecision(False, "; ".join(check.errors))
             return VerificationDecision(True)
@@ -340,7 +446,8 @@ class JobAgentPipeline:
         )
         tailoring = self.tailoring_context(description)
         toolbox.tailoring = tailoring
-        gates = self._integrity_gates(resume_path, tailoring)
+        evidence_ids: list[str] = []
+        gates = self._integrity_gates(resume_path, tailoring, evidence_ids)
         task_input = {
             "base_resume_path": self.base_resume_path.name,
             "job_description_path": jd_path,
@@ -381,6 +488,7 @@ class JobAgentPipeline:
         summary = result.output
 
         if self.config.tailoring.polish_pass:
+            task_input = {**task_input, "evidence_ids": list(evidence_ids)}
             snapshot = (self.root / resume_path).read_text(encoding="utf-8")
             polish = await self._run(
                 polisher_definition(self.binding),
@@ -409,6 +517,7 @@ class JobAgentPipeline:
             job_description=description,
             latex_engine=find_latex_engine(self.config.tailoring.latex_engine),
             max_pages=self.config.tailoring.max_pages,
+            knowledge=self.knowledge,
         )
 
     def record_tailored(
@@ -420,7 +529,8 @@ class JobAgentPipeline:
         directory = self.job_dir(job_id)
         resume_path = f"{directory}/resume.tex"
         letter_path = f"{directory}/cover_letter.txt"
-        check = run_resume_check(self.root / resume_path, tailoring)
+        evidence_ids = summary.get("evidence_ids", [])
+        check = run_resume_check(self.root / resume_path, tailoring, evidence_ids)
         if not check.passed:
             self.ledger.update(
                 job_id, status=JobStatus.TAILOR_FAILED, error="; ".join(check.errors)
@@ -434,11 +544,12 @@ class JobAgentPipeline:
             "warnings": check.warnings,
             **{key: summary.get(key, []) for key in ("changes", "matched_requirements", "gaps")},
             "polish_fixes": summary.get("polish_fixes", []),
+            "evidence_ids": evidence_ids,
         }
         if check.pdf_path:
             pretty = (
                 f"{directory}/{_slug(self.config.candidate.full_name)}_Resume_"
-                f"{_slug(job['company'], 30)}.pdf"
+                f"{_slug(job['company'], 24)}_{_slug(job['title'], 28)}.pdf"
             )
             shutil.copyfile(check.pdf_path, self.root / pretty)
             packet["resume_pdf"] = pretty

@@ -19,6 +19,20 @@ candidate:
     notice period: "1 month"
     how did you hear: "Company careers page"
 
+# The experience bank: everything the tailor may draw on beyond the one-page resume.
+# Every source is optional; run `sg-job-agent ingest` after changing any of them.
+knowledge:
+  documents:                 # dump everything here: projects, stories, metrics (.md .txt .tex .pdf .docx)
+    - "~/career/everything-i-have-done.md"
+  github_username: "your-handle"          # all public, non-fork repos: README, languages, topics
+  github_extra_repos: []                  # owner/repo outside your account, e.g. course or org repos
+  github_include_forks: false
+  github_token_env: "GITHUB_TOKEN"        # optional; raises the API rate limit
+  linkedin_export: ""                     # LinkedIn data export ZIP (Settings > Data privacy >
+                                          # Get a copy of your data) or the profile's "Save to PDF"
+  website_urls: []                        # personal site / blog, crawled within its own domain
+  max_website_pages: 15
+
 search:
   location: "Singapore"
   roles: []                 # empty = infer from your resume (e.g. AI Engineer, Quant Dev, SWE, ...)
@@ -46,17 +60,22 @@ search:
     ashby_boards: []
 
 model:
-  # Any OpenAI-compatible Chat Completions endpoint with tool calling.
-  provider: "fireworks"
-  base_url: "https://api.fireworks.ai/inference/v1"
-  model: ""                  # required, e.g. accounts/fireworks/models/<model>
-  api_key_env: "FIREWORKS_API_KEY"
-  temperature: 0.2
-  max_tokens: 16000
-  timeout_seconds: 180
+  # Default: Claude through the official anthropic SDK (native adapter).
+  provider: "anthropic"
+  model: "claude-opus-5-5"
+  api_key_env: "ANTHROPIC_API_KEY"
+  effort: "high"             # low | medium | high | xhigh | max
+  max_tokens: 64000
+  timeout_seconds: 600
+  # Any other provider uses the SDK's OpenAI-compatible adapter, e.g.:
+  # provider: "fireworks"
+  # base_url: "https://api.fireworks.ai/inference/v1"
+  # model: "accounts/fireworks/models/<model>"
+  # api_key_env: "FIREWORKS_API_KEY"
+  # temperature: 0.2
 
 tailoring:
-  max_pages: 2
+  max_pages: 1
   latex_engine: auto        # auto | tectonic | latexmk | pdflatex | none
   polish_pass: true
   write_cover_letter: true

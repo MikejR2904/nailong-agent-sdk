@@ -73,13 +73,18 @@ class SearchConfig(_Strict):
 
 
 class ModelConfig(_Strict):
-    provider: str = "fireworks"
-    base_url: str = "https://api.fireworks.ai/inference/v1"
-    model: str = ""
-    api_key_env: str = "FIREWORKS_API_KEY"
-    temperature: float = 0.2
-    max_tokens: int = 16_000
-    timeout_seconds: float = 180.0
+    # "anthropic" uses the native Claude adapter (official anthropic SDK). Any other
+    # provider name uses the SDK's OpenAI-compatible adapter and needs base_url.
+    provider: str = "anthropic"
+    model: str = "claude-opus-5-5"
+    base_url: str = ""
+    api_key_env: str = "ANTHROPIC_API_KEY"
+    # Claude: low | medium | high | xhigh | max. Ignored by OpenAI-compatible models.
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # OpenAI-compatible models only; current Claude models reject sampling parameters.
+    temperature: float | None = None
+    max_tokens: int = 64_000
+    timeout_seconds: float = 600.0
 
     def api_key(self) -> str:
         key = os.environ.get(self.api_key_env, "").strip()
@@ -88,6 +93,23 @@ class ModelConfig(_Strict):
                 f"Set the {self.api_key_env} environment variable to your model API key."
             )
         return key
+
+
+class KnowledgeConfig(_Strict):
+    """Where the experience bank comes from. Every source is optional."""
+
+    # Free-form "everything I have done" notes: .md .txt .tex .pdf .docx
+    documents: list[str] = Field(default_factory=list)
+    github_username: str = ""
+    # owner/repo for repos outside your account (e.g. org or course repos).
+    github_extra_repos: list[str] = Field(default_factory=list)
+    github_include_forks: bool = False
+    github_token_env: str = "GITHUB_TOKEN"
+    # LinkedIn data export ZIP/folder (Settings > Data privacy > Get a copy of
+    # your data) or the profile's "Save to PDF". Profiles are never scraped.
+    linkedin_export: str = ""
+    website_urls: list[str] = Field(default_factory=list)
+    max_website_pages: int = Field(default=15, ge=1, le=100)
 
 
 class TailoringConfig(_Strict):
@@ -111,6 +133,7 @@ class ApplyConfig(_Strict):
 class AgentConfig(_Strict):
     candidate: CandidateConfig
     search: SearchConfig = Field(default_factory=SearchConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     tailoring: TailoringConfig = Field(default_factory=TailoringConfig)
     apply: ApplyConfig = Field(default_factory=ApplyConfig)
