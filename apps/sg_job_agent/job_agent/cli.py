@@ -135,7 +135,10 @@ async def _main(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    asyncio.run(_main(_parser().parse_args()))
+    try:
+        asyncio.run(_main(_parser().parse_args()))
+    except (RuntimeError, ValueError, FileNotFoundError, KeyError) as error:
+        raise SystemExit(f"error: {error}") from None
 
 
 if __name__ == "__main__":

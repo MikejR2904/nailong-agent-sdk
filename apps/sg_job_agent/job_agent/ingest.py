@@ -254,7 +254,13 @@ class GitHubIngester:
         include_forks: bool = False,
         max_repos: int = 60,
     ) -> list[EvidenceItem]:
-        repos = await self.user_repos(username, include_forks=include_forks) if username else []
+        repos: list[dict] = []
+        if username:
+            try:
+                repos = await self.user_repos(username, include_forks=include_forks)
+            except (httpx.HTTPError, RuntimeError) as error:
+                # Keep going: explicitly listed repos may still be reachable.
+                self.warnings.append(f"listing repos of {username}: {error}")
         seen = {repo["full_name"].lower() for repo in repos}
         for full_name in extra_repos:
             if full_name.lower() in seen:

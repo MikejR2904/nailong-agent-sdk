@@ -70,9 +70,10 @@ model:
   # Any other provider uses the SDK's OpenAI-compatible adapter, e.g.:
   # provider: "fireworks"
   # base_url: "https://api.fireworks.ai/inference/v1"
-  # model: "accounts/fireworks/models/<model>"
+  # model: "accounts/fireworks/models/deepseek-v4p1-flash"   # DeepSeek V4.1 Flash
   # api_key_env: "FIREWORKS_API_KEY"
   # temperature: 0.2
+  # max_tokens: 32000
 
 tailoring:
   max_pages: 1

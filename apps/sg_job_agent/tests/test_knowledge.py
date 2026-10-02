@@ -271,3 +271,17 @@ def test_unknown_evidence_id_is_an_error(tmp_path, config, sources, resume_file)
     check = run_resume_check(path, pipeline.tailoring_context("JD"), ["gi-deadbeef"])
     assert not check.passed and "gi-deadbeef" in check.errors[-1]
     assert json.dumps(check.to_dict())
+
+
+def test_github_listing_failure_keeps_extra_repos():
+    from job_agent.ingest import GitHubIngester
+
+    def api(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/users/"):
+            return httpx.Response(403, text="forbidden")
+        return github_api(request)
+
+    ingester = GitHubIngester(httpx.AsyncClient(transport=httpx.MockTransport(api)))
+    items = asyncio.run(ingester.items("alextan", extra_repos=["course-org/pairs"]))
+    assert [item.title for item in items] == ["GitHub: course-org/pairs"]
+    assert "listing repos of alextan" in ingester.warnings[0]

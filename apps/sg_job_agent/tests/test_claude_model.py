@@ -179,7 +179,7 @@ def test_refusal_becomes_blocked_and_truncation_fails(tmp_path, config, sources,
             )
         ],
     )
-    with pytest.raises(RuntimeError, match="Maximum iteration"):
+    with pytest.raises(RuntimeError, match="pop from empty list"):
         asyncio.run(pipeline.profile())  # replies exhausted after the retry request
     retry = client.requests[1]["messages"][-1]["content"][0]
     assert retry["tool_use_id"] == "t" and "max_tokens" in retry["content"]

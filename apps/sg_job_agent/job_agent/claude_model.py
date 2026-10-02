@@ -31,7 +31,7 @@ from nailong_agent_sdk import (
 )
 from nailong_agent_sdk.agent.model import ModelContext
 from nailong_agent_sdk.foundations.contracts import AgentTurn
-from nailong_agent_sdk.foundations.errors import AgentSdkError
+from nailong_agent_sdk.foundations.errors import AgentSdkError, TransientProviderError
 from pydantic import TypeAdapter
 
 PROVIDER = "anthropic"
@@ -78,7 +78,6 @@ class ClaudeAgentModel:
         self._effort = effort
         self._max_tokens = max_tokens
         self._fallbacks = fallbacks
-        self._fatal: str | None = None
 
     # --- AgentModel -----------------------------------------------------------
 
@@ -91,17 +90,9 @@ class ClaudeAgentModel:
             )
         if context.output_schema is None:
             raise AgentSdkError("MODEL_OUTPUT_SCHEMA_REQUIRED", "An output schema is required.")
-        if self._fatal is not None:
-            return self._respond({"type": "blocked", "reason": self._fatal}, {}, None)
         state = self._state(context)
         self._append_pending_errors(state, context)
-        try:
-            message = await self._create(state, self._tools(context))
-        except _FatalProviderError as error:
-            # The SDK loop retries model exceptions until max_iterations; a bad key or
-            # malformed request will never succeed, so end the run instead.
-            self._fatal = str(error)
-            return self._respond({"type": "blocked", "reason": self._fatal}, {}, None)
+        message = await self._create(state, self._tools(context))
         content = [_block_dict(block) for block in message.content]
         state["messages"].append({"role": "assistant", "content": content})
         usage = _usage(message)
@@ -302,14 +293,13 @@ class ClaudeAgentModel:
             raise AgentSdkError(
                 "MODEL_TOOL_INPUT_INVALID", f"Unparseable tool input: {error}"
             ) from error
-        except (
-            anthropic.AuthenticationError,
-            anthropic.PermissionDeniedError,
-            anthropic.NotFoundError,
-            anthropic.BadRequestError,
-        ) as error:
-            raise _FatalProviderError(
-                f"Claude API error {error.status_code}: {error.message}"
+        # The SDK retries TransientProviderError and ends the run on any other
+        # AgentSdkError, so a bad key or malformed request fails after one call.
+        except (anthropic.RateLimitError, anthropic.InternalServerError) as error:
+            raise TransientProviderError(
+                "MODEL_PROVIDER_TRANSIENT",
+                f"Claude API error {error.status_code}: {error.message}",
+                {"request_id": getattr(error, "request_id", None)},
             ) from error
         except anthropic.APIStatusError as error:
             raise AgentSdkError(
@@ -318,7 +308,7 @@ class ClaudeAgentModel:
                 {"request_id": getattr(error, "request_id", None)},
             ) from error
         except anthropic.APIConnectionError as error:
-            raise AgentSdkError("MODEL_PROVIDER_UNREACHABLE", str(error)) from error
+            raise TransientProviderError("MODEL_PROVIDER_UNREACHABLE", str(error)) from error
 
     @staticmethod
     def _respond(
@@ -329,10 +319,6 @@ class ClaudeAgentModel:
             continuation=ProviderContinuation(provider=PROVIDER, state=state) if state else None,
             usage=usage,
         )
-
-
-class _FatalProviderError(Exception):
-    """A provider error that retrying the same request cannot fix."""
 
 
 def _schema_error(output: Any, schema: dict[str, Any] | None) -> str | None:
