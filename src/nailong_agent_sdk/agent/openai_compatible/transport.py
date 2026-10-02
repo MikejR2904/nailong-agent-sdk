@@ -29,6 +29,21 @@ from ...foundations.errors import AgentSdkError, TransientProviderError
 # merits, so retrying it unchanged would only reproduce the same rejection.
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
+_HTTP_STATUS_HINTS: dict[int, str] = {
+    400: "the request body or parameters were malformed for this provider",
+    401: "the API key is missing, invalid, or revoked",
+    403: "the API key lacks permission for this model or endpoint",
+    404: "the model name or endpoint path does not exist on this provider",
+    408: "the provider itself timed out waiting for the request",
+    413: "the request payload is too large for this provider",
+    422: "the request was well-formed but rejected on semantic grounds, such as an unsupported parameter value",
+    429: "the account is rate-limited or has exhausted its quota",
+    500: "the provider had an internal error unrelated to this request",
+    502: "the provider's upstream gateway failed",
+    503: "the provider is temporarily overloaded or under maintenance",
+    504: "the provider's upstream gateway timed out",
+}
+
 
 class JsonHttpTransport(Protocol):
     """A blocking JSON transport that a host may replace in tests or deployment."""
@@ -227,7 +242,9 @@ class HttpxStreamingJsonTransport:
 def _http_status_error(status_code: int, *, retry_after_seconds: float | None) -> AgentSdkError:
     """Classify one HTTP failure status as transient (retryable) or terminal."""
 
-    message = f"OpenAI-compatible provider returned HTTP {status_code}."
+    hint = _HTTP_STATUS_HINTS.get(status_code)
+    message = f"OpenAI-compatible provider returned HTTP {status_code}"
+    message += f" - likely cause: {hint}." if hint else "."
     if status_code in _RETRYABLE_HTTP_STATUS_CODES:
         return TransientProviderError(
             "OPENAI_COMPATIBLE_HTTP_ERROR", message, retry_after_seconds=retry_after_seconds

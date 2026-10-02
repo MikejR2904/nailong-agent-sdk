@@ -121,7 +121,11 @@ class BackgroundTaskManager:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            self._transition(task_id, TaskStatus.FAILED, error=str(error))
+            self._transition(
+                task_id,
+                TaskStatus.FAILED,
+                error=f"{type(error).__name__}: {error}",
+            )
             return
         status = TaskStatus.COMPLETED if outcome.successful else TaskStatus.FAILED
         self._transition(task_id, status, result=outcome.model_dump(mode="json"))
@@ -132,7 +136,11 @@ class BackgroundTaskManager:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            self._transition(task_id, TaskStatus.FAILED, error=str(error))
+            self._transition(
+                task_id,
+                TaskStatus.FAILED,
+                error=f"{type(error).__name__}: {error}",
+            )
             return
         if summarize is not None:
             result = summarize(outcome)

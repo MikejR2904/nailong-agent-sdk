@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .errors import AgentSdkError, sanitize_failure_details
@@ -425,14 +426,18 @@ def _validator_for(canonical_schema: str) -> Draft202012Validator:
 
 def _validate_instance(schema: dict[str, Any], instance: Any, label: str) -> None:
     canonical = _canonical_json_schema(schema)
+    validator = Draft202012Validator(schema) if canonical is None else _validator_for(canonical)
     try:
-        validator = Draft202012Validator(schema) if canonical is None else _validator_for(canonical)
         validator.validate(instance)
-    except Exception as error:
+    except JsonSchemaValidationError as error:
+        location = error.json_path if error.path else f"{error.json_path} (root)"
         raise AgentSdkError(
             "SCHEMA_VALIDATION_FAILED",
-            f"{label} does not match its declared schema.",
+            f"{label} does not match its declared schema at {location}: {error.message}.",
             {
+                "json_path": error.json_path,
+                "schema_rule": str(error.validator),
+                "failed_value": sanitize_failure_details({"value": error.instance}),
                 "validation_error": str(error),
             },
         ) from error

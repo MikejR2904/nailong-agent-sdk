@@ -34,7 +34,7 @@ from ...foundations.contracts import (
     validate_task_input,
     validate_tool_arguments,
 )
-from ...foundations.errors import AgentSdkError
+from ...foundations.errors import AgentSdkError, TransientProviderError
 from ...memory.context import assemble_initial_context
 from ...memory.context_projection import (
     ContextProjectionPolicy,
@@ -264,16 +264,28 @@ class BaseAgent:
 
         for iteration in range(1, self.definition.termination_policy.max_iterations + 1):
             if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                run_deadline_seconds = self.watchdog_policy.run_deadline_seconds
+                failure = AgentFailure(
+                    code="WATCHDOG_RUN_DEADLINE",
+                    message=f"Agent run exceeded its {run_deadline_seconds}s overall run "
+                    f"deadline after {iteration - 1} completed iteration(s); the task may need "
+                    "a longer deadline, a smaller scope, or fewer iterations per unit of work.",
+                    details={
+                        "run_deadline_seconds": run_deadline_seconds,
+                        "completed_iterations": iteration - 1,
+                    },
+                )
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration - 1,
-                    "WATCHDOG_RUN_DEADLINE",
+                    failure.message,
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
+                    failure=failure,
                 )
             if cancellation and cancellation.is_cancelled():
                 return self._terminate(
@@ -570,26 +582,65 @@ class BaseAgent:
                 else:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.COMPLETED)
             except TimeoutError:
+                turn_timeout = self.watchdog_policy.model_turn_timeout_seconds
+                timeout_detail = (
+                    f"its {turn_timeout}s per-turn watchdog timeout"
+                    if turn_timeout is not None
+                    else "the run's configured deadline"
+                )
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration,
-                    "WATCHDOG_MODEL_TIMEOUT",
+                    f"WATCHDOG_MODEL_TIMEOUT: model turn exceeded {timeout_detail}; "
+                    "the provider may be overloaded, the request may be too large for its "
+                    "current response time, or the network path may be degraded.",
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
                 )
-            except Exception as error:
+            except TransientProviderError as error:
                 observations.append(
                     ModelObservation(
                         kind="agent-error",
                         iteration=iteration,
-                        message=f"Model turn failed: {error}",
+                        message=f"Model turn failed, retrying ({error.code}): {error.message}",
                     )
                 )
                 continue
+            except AgentSdkError as error:
+                return self._terminate(
+                    AgentRunStatus.FAILED,
+                    task,
+                    iteration,
+                    error.message,
+                    prompt,
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
+                    failure=AgentFailure.from_sdk_error(error),
+                )
+            except Exception as error:
+                failure = AgentFailure(
+                    code="MODEL_TURN_UNEXPECTED_ERROR",
+                    message=str(error) or type(error).__name__,
+                    details={"error_type": type(error).__name__},
+                )
+                return self._terminate(
+                    AgentRunStatus.FAILED,
+                    task,
+                    iteration,
+                    failure.message,
+                    prompt,
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
+                    failure=failure,
+                )
 
             try:
                 turn, continuation, usage = self._normalize_model_response(response, continuation)
@@ -678,28 +729,61 @@ class BaseAgent:
                         deadline,
                     )
                 except TimeoutError:
+                    turn_timeout = self.watchdog_policy.model_turn_timeout_seconds
+                    timeout_detail = (
+                        f"its {turn_timeout}s per-turn watchdog timeout"
+                        if turn_timeout is not None
+                        else "the run's configured deadline"
+                    )
+                    failure = AgentFailure(
+                        code="WATCHDOG_MODEL_TIMEOUT",
+                        message=f"Provider tool-result continuation exceeded {timeout_detail}.",
+                        details={"watchdog_seconds": turn_timeout},
+                    )
                     return self._terminate(
                         AgentRunStatus.FAILED,
                         task,
                         iteration,
-                        "WATCHDOG_MODEL_TIMEOUT",
+                        f"WATCHDOG_MODEL_TIMEOUT: provider tool-result continuation exceeded "
+                        f"{timeout_detail}; the provider may be overloaded or the forwarded tool "
+                        "results may be too large for its current response time.",
                         prompt,
                         episodes,
                         events,
                         emit,
                         projection_history,
+                        failure=failure,
+                    )
+                except AgentSdkError as error:
+                    return self._terminate(
+                        AgentRunStatus.FAILED,
+                        task,
+                        iteration,
+                        f"MODEL_TOOL_CONTINUATION_FAILED: {error.message}",
+                        prompt,
+                        episodes,
+                        events,
+                        emit,
+                        projection_history,
+                        failure=AgentFailure.from_sdk_error(error),
                     )
                 except Exception as error:
+                    failure = AgentFailure(
+                        code="MODEL_TOOL_CONTINUATION_FAILED",
+                        message=str(error) or type(error).__name__,
+                        details={"error_type": type(error).__name__},
+                    )
                     return self._terminate(
                         AgentRunStatus.FAILED,
                         task,
                         iteration,
-                        f"MODEL_TOOL_CONTINUATION_FAILED: {error}",
+                        f"MODEL_TOOL_CONTINUATION_FAILED: {failure.message}",
                         prompt,
                         episodes,
                         events,
                         emit,
                         projection_history,
+                        failure=failure,
                     )
                 emit(
                     "provider-tool-results-forwarded",
@@ -745,10 +829,16 @@ class BaseAgent:
         try:
             return _AGENT_TURN_ADAPTER.validate_python(raw_turn), next_continuation, usage
         except ValidationError as error:
+            field_errors = [
+                f"{'.'.join(str(part) for part in issue['loc']) or '(root)'}: {issue['msg']}"
+                for issue in error.errors()
+            ]
             raise AgentSdkError(
                 "MODEL_TURN_INVALID",
-                "Model response does not match the declared agent-turn contract.",
-                {"validation_error": str(error)},
+                "Model response does not match the declared agent-turn contract: "
+                + "; ".join(field_errors[:5])
+                + ".",
+                {"field_errors": field_errors, "validation_error": str(error)},
             ) from error
 
     async def _accept_final_turn(
@@ -788,8 +878,33 @@ class BaseAgent:
                 )
             except TimeoutError:
                 self.profiler.finish_span(verification_span, ProfileSpanStatus.TIMED_OUT)
-                reason = "WATCHDOG_VERIFICATION_TIMEOUT"
-                emit("verification-completed", iteration, passed=False, reason=reason)
+                verification_timeout = self.watchdog_policy.verification_timeout_seconds
+                timeout_detail = (
+                    f"its {verification_timeout}s verification watchdog timeout"
+                    if verification_timeout is not None
+                    else "the run's configured deadline"
+                )
+                reason = (
+                    f"WATCHDOG_VERIFICATION_TIMEOUT: verification gate "
+                    f"{self.definition.verification_gate_id!r} exceeded {timeout_detail}; the "
+                    "gate implementation may be overloaded or the candidate output may be too "
+                    "large for its current response time."
+                )
+                failure = AgentFailure(
+                    code="WATCHDOG_VERIFICATION_TIMEOUT",
+                    message=reason,
+                    details={
+                        "verification_gate_id": self.definition.verification_gate_id,
+                        "watchdog_seconds": verification_timeout,
+                    },
+                )
+                emit(
+                    "verification-completed",
+                    iteration,
+                    passed=False,
+                    reason=reason,
+                    failure_code=failure.code,
+                )
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
@@ -800,6 +915,7 @@ class BaseAgent:
                     events,
                     emit,
                     projection_history,
+                    failure=failure,
                 )
             except AgentSdkError as error:
                 self.profiler.finish_span(verification_span, ProfileSpanStatus.FAILED)
@@ -824,31 +940,51 @@ class BaseAgent:
                 )
             except Exception as error:
                 self.profiler.finish_span(verification_span, ProfileSpanStatus.FAILED)
-                reason = f"Verification gate raised an error: {error}"
-                emit("verification-completed", iteration, passed=False, reason=reason)
+                failure = AgentFailure(
+                    code="VERIFICATION_GATE_UNEXPECTED_ERROR",
+                    message=f"Verification gate {self.definition.verification_gate_id!r} raised "
+                    f"{type(error).__name__}: {error}",
+                    details={"error_type": type(error).__name__},
+                )
+                emit(
+                    "verification-completed",
+                    iteration,
+                    passed=False,
+                    reason=failure.message,
+                    failure_code=failure.code,
+                )
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration,
-                    reason,
+                    failure.message,
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
+                    failure=failure,
                 )
             if decision is None:
                 self.profiler.finish_span(verification_span, ProfileSpanStatus.FAILED)
+                failure = AgentFailure(
+                    code="VERIFICATION_GATE_NO_DECISION",
+                    message=f"Verification gate registry returned no decision for gate "
+                    f"{self.definition.verification_gate_id!r}; the gate ID may not be "
+                    "registered with this agent's verification_gates registry.",
+                    details={"verification_gate_id": self.definition.verification_gate_id},
+                )
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration,
-                    "Verification gate registry returned no decision.",
+                    failure.message,
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
+                    failure=failure,
                 )
             self.profiler.finish_span(
                 verification_span,
@@ -1149,7 +1285,31 @@ class BaseAgent:
                     hook(context, result), self.watchdog_policy.tool_call_timeout_seconds, deadline
                 )
         except TimeoutError:
-            result = ToolExecutionResult(status="failed", error="WATCHDOG_TOOL_TIMEOUT")
+            tool_timeout = self.watchdog_policy.tool_call_timeout_seconds
+            timeout_detail = (
+                f"its {tool_timeout}s tool-call watchdog timeout"
+                if tool_timeout is not None
+                else "the run's configured deadline"
+            )
+            failure = AgentFailure(
+                code="WATCHDOG_TOOL_TIMEOUT",
+                message=f'Tool "{call.name}" (pre-tool hook, execution, or post-tool hook) '
+                f"exceeded {timeout_detail}.",
+                details={"tool": call.name, "watchdog_seconds": tool_timeout},
+            )
+            result = ToolExecutionResult(status="failed", error=failure.message, failure=failure)
+            return self._record_unexecuted_result(
+                call,
+                result,
+                iteration,
+                terminal_status=AgentRunStatus.FAILED,
+            )
+        except AgentSdkError as error:
+            result = ToolExecutionResult(
+                status="failed",
+                error=f'Tool "{call.name}" lifecycle failed: {error.message}',
+                failure=AgentFailure.from_sdk_error(error),
+            )
             return self._record_unexecuted_result(
                 call,
                 result,
@@ -1157,9 +1317,12 @@ class BaseAgent:
                 terminal_status=AgentRunStatus.FAILED,
             )
         except Exception as error:
-            result = ToolExecutionResult(
-                status="failed", error=f"Tool lifecycle execution failed: {error}"
+            failure = AgentFailure(
+                code="TOOL_LIFECYCLE_UNEXPECTED_ERROR",
+                message=f'Tool "{call.name}" lifecycle raised {type(error).__name__}: {error}',
+                details={"tool": call.name, "error_type": type(error).__name__},
             )
+            result = ToolExecutionResult(status="failed", error=failure.message, failure=failure)
             return self._record_unexecuted_result(
                 call,
                 result,

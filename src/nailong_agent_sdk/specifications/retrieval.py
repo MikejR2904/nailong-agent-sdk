@@ -380,7 +380,7 @@ class GroundedRetrievalService:
                 status=RetrievalStatus.UNAVAILABLE,
                 query_digest=query.query_digest,
                 backend=self._index.backend_name,
-                failure_reason=type(error).__name__,
+                failure_reason=f"{type(error).__name__}: {error}",
             )
         if self._cache is not None and result.status is RetrievalStatus.RETRIEVED:
             self._cache.set(cache_key, result, self._cache_ttl_seconds)

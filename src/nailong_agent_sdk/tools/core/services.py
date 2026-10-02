@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from ...foundations.contracts import ToolExecutionResult
+from ...foundations.contracts import AgentFailure, ToolExecutionResult
 from ...memory.context_projection import ToolResultJournal
 from ..artifacts import ArtifactStore
 from ..policy import SENSITIVE_PATH_PATTERNS
@@ -154,7 +154,12 @@ class CoreToolDispatcher:
         try:
             output = await self._dispatch(name, arguments)
         except Exception as error:
-            return ToolExecutionResult(status="failed", error=str(error))
+            failure = AgentFailure(
+                code="CORE_TOOL_EXECUTION_FAILED",
+                message=f'Core tool "{name}" raised {type(error).__name__}: {error}',
+                details={"tool": name, "error_type": type(error).__name__},
+            )
+            return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
         return ToolExecutionResult(status="succeeded", output=output)
 
     async def _dispatch(self, name: str, arguments: dict[str, Any]) -> Any:

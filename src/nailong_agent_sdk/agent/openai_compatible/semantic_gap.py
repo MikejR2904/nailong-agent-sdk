@@ -157,13 +157,28 @@ class OpenAICompatibleSemanticGapAnalyzer:
             payload=payload,
             timeout_seconds=self._endpoint.timeout_seconds,
         )
+        content = _chat_content(response)
         try:
-            decoded = json.loads(_chat_content(response))
-            raw_findings = _UntrustedSemanticGapAnalysis.model_validate(decoded).findings
-        except (json.JSONDecodeError, ValidationError) as error:
+            decoded = json.loads(content)
+        except json.JSONDecodeError as error:
             raise AgentSdkError(
                 "OPENAI_COMPATIBLE_SEMANTIC_ANALYSIS_INVALID",
-                "Semantic analysis response does not match the required finding contract.",
+                f"Semantic analysis response is not valid JSON: {error}.",
+                {"raw_content": content[:2_000]},
+            ) from error
+        try:
+            raw_findings = _UntrustedSemanticGapAnalysis.model_validate(decoded).findings
+        except ValidationError as error:
+            field_errors = [
+                f"{'.'.join(str(part) for part in issue['loc']) or '(root)'}: {issue['msg']}"
+                for issue in error.errors()
+            ]
+            raise AgentSdkError(
+                "OPENAI_COMPATIBLE_SEMANTIC_ANALYSIS_INVALID",
+                "Semantic analysis response does not match the required finding contract: "
+                + "; ".join(field_errors[:5])
+                + ".",
+                {"field_errors": field_errors, "raw_content": content[:2_000]},
             ) from error
         findings = [
             SemanticGapFinding(

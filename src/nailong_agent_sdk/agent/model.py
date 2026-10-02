@@ -279,9 +279,17 @@ class FailoverAgentModel:
                         )
                     )
                     break
+        last_attempt = self.attempts[-1] if self.attempts else None
+        last_detail = (
+            f" Last error (adapter index {last_attempt.index}, "
+            f"retry {last_attempt.retry_number}): {last_attempt.error}"
+            if last_attempt is not None
+            else ""
+        )
         raise AgentSdkError(
             "MODEL_FALLBACK_EXHAUSTED",
-            "Primary model and all configured fallback adapters failed.",
+            f"Primary model and all {len(self._models) - 1} configured fallback adapter(s) "
+            f"failed after {len(self.attempts)} attempt(s) total.{last_detail}",
             {
                 "attempts": [
                     {

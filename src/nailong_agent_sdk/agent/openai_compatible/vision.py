@@ -129,11 +129,25 @@ class OpenAICompatibleVisionAdapter:
         content = _chat_content(response)
         try:
             decoded = json.loads(content)
-            return VisionProposal.model_validate(decoded)
-        except (json.JSONDecodeError, ValidationError) as error:
+        except json.JSONDecodeError as error:
             raise AgentSdkError(
                 "OPENAI_COMPATIBLE_VISION_INVALID",
-                "Vision provider response does not match VisionProposal.",
+                f"Vision provider response is not valid JSON: {error}.",
+                {"raw_content": content[:2_000]},
+            ) from error
+        try:
+            return VisionProposal.model_validate(decoded)
+        except ValidationError as error:
+            field_errors = [
+                f"{'.'.join(str(part) for part in issue['loc']) or '(root)'}: {issue['msg']}"
+                for issue in error.errors()
+            ]
+            raise AgentSdkError(
+                "OPENAI_COMPATIBLE_VISION_INVALID",
+                "Vision provider response does not match VisionProposal: "
+                + "; ".join(field_errors[:5])
+                + ".",
+                {"field_errors": field_errors, "raw_content": content[:2_000]},
             ) from error
 
 

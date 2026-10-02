@@ -211,7 +211,11 @@ class HarnessCoordinator:
                         graph.execution_context(node.node_id, shared_state=wave_state),
                     )
                 except Exception as error:
-                    return GraphNodeResult(status=GraphNodeStatus.FAILED, reason=str(error))
+                    return GraphNodeResult(
+                        status=GraphNodeStatus.FAILED,
+                        reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
+                        f"{type(error).__name__}: {error}",
+                    )
 
             results = await asyncio.gather(*(execute_one(node) for node in wave))
             for node, result in zip(wave, results, strict=True):

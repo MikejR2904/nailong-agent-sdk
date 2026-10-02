@@ -151,8 +151,8 @@ class GraphAgentExecutor:
         except Exception as error:
             return GraphNodeResult(
                 status=GraphNodeStatus.FAILED,
-                reason=f"Graph agent invocation failed: {error}",
-                diagnostics=["graph-agent-exception"],
+                reason=f"Graph agent invocation raised {type(error).__name__}: {error}",
+                diagnostics=[f"error-type:{type(error).__name__}"],
             )
         status = _graph_status(result.status)
         payload = {

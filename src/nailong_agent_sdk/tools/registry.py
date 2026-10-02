@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..foundations.contracts import ToolDefinition, ToolExecutionResult
+from ..foundations.contracts import AgentFailure, ToolDefinition, ToolExecutionResult
 from ..memory.context_projection import ToolResultJournal
 from ..state.planning import PlanTask
 from .approvals import ApprovalRegistry
@@ -192,7 +192,12 @@ class HarnessToolExecutor(ToolExecutor):
                 return output
             return ToolExecutionResult(status="succeeded", output=output)
         except Exception as error:
-            return ToolExecutionResult(status="failed", error=str(error))
+            failure = AgentFailure(
+                code="HARNESS_TOOL_EXECUTION_FAILED",
+                message=f'Harness tool "{tool.name}" raised {type(error).__name__}: {error}',
+                details={"tool": tool.name, "error_type": type(error).__name__},
+            )
+            return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
 
     def _approval_for(self, capability: str):
         approval_id = self._context.approval_ids_by_capability.get(capability)

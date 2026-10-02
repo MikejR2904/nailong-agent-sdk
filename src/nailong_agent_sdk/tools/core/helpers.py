@@ -83,6 +83,23 @@ def _regex_search_worker(
 
 _MAX_PDF_BYTES = 20_000_000
 
+_HTTP_FETCH_STATUS_HINTS: dict[int, str] = {
+    401: "the resource requires authentication this tool cannot provide",
+    403: "the host rejected this request, possibly due to bot-detection or access control",
+    404: "the URL does not exist or was moved without a redirect",
+    410: "the resource was intentionally removed from the host",
+    429: "the host is rate-limiting this client",
+    500: "the host had an internal error unrelated to this request",
+    502: "the host's upstream gateway failed",
+    503: "the host is temporarily overloaded or under maintenance",
+    504: "the host's upstream gateway timed out",
+}
+
+
+def _http_fetch_hint(status_code: int) -> str:
+    hint = _HTTP_FETCH_STATUS_HINTS.get(status_code)
+    return f" Likely cause: {hint}." if hint else ""
+
 
 def _fetch_public_text(
     url: str,
@@ -144,8 +161,11 @@ def _fetch_public_text(
             if error.code in {301, 302, 303, 307, 308} and error.headers.get("Location"):
                 current = urllib.parse.urljoin(current, error.headers["Location"])
                 continue
-            raise ValueError(f"web_fetch HTTP error {error.code}.") from error
-    raise ValueError("web_fetch exceeded the redirect limit.")
+            raise ValueError(
+                f"web_fetch received HTTP {error.code} from {current!r}."
+                f"{_http_fetch_hint(error.code)}"
+            ) from error
+    raise ValueError(f"web_fetch exceeded the redirect limit fetching {url!r}.")
 
 
 def _to_png_bytes(pil_image: Any) -> bytes | None:
@@ -166,7 +186,7 @@ def _to_png_bytes(pil_image: Any) -> bytes | None:
 def _fetch_pdf_bytes_with_redirects(url: str) -> bytes:
     current = url
     for _ in range(4):
-        _assert_public_http_url(current)
+        _assert_public_http_url(current, "render_pdf_page")
         request = urllib.request.Request(
             current, headers={"User-Agent": "agent-design-sdk/0.8 evidence client"}
         )
@@ -188,8 +208,11 @@ def _fetch_pdf_bytes_with_redirects(url: str) -> bytes:
             if error.code in {301, 302, 303, 307, 308} and error.headers.get("Location"):
                 current = urllib.parse.urljoin(current, error.headers["Location"])
                 continue
-            raise ValueError(f"render_pdf_page HTTP error {error.code}.") from error
-    raise ValueError("render_pdf_page exceeded the redirect limit.")
+            raise ValueError(
+                f"render_pdf_page received HTTP {error.code} from {current!r}."
+                f"{_http_fetch_hint(error.code)}"
+            ) from error
+    raise ValueError(f"render_pdf_page exceeded the redirect limit fetching {url!r}.")
 
 
 def _render_pdf_page(
@@ -322,20 +345,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _assert_public_http_url(url: str) -> None:
+def _assert_public_http_url(url: str, tool_name: str = "web_fetch") -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("web_fetch accepts only absolute HTTP(S) URLs.")
+        raise ValueError(f"{tool_name} accepts only absolute HTTP(S) URLs; got {url!r}.")
     hostname = parsed.hostname.rstrip(".")
     if hostname.lower() in {"localhost", "localhost.localdomain"}:
-        raise ValueError("web_fetch rejects loopback hostnames.")
+        raise ValueError(f"{tool_name} rejects loopback hostnames; got {hostname!r}.")
     try:
         addresses = {
             entry[4][0]
             for entry in socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
         }
     except socket.gaierror as error:
-        raise ValueError("web_fetch could not resolve the requested host.") from error
+        raise ValueError(
+            f"{tool_name} could not resolve host {hostname!r}: {error}."
+        ) from error
     for address in addresses:
         candidate = ipaddress.ip_address(address)
         if (
@@ -347,8 +372,8 @@ def _assert_public_http_url(url: str) -> None:
             or candidate.is_unspecified
         ):
             raise ValueError(
-                "web_fetch rejects private, loopback, link-local, multicast, reserved, "
-                "and unspecified targets."
+                f"{tool_name} rejects private, loopback, link-local, multicast, reserved, "
+                f"and unspecified targets; {hostname!r} resolved to {address!r}."
             )
 
 

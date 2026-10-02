@@ -253,8 +253,12 @@ class StateGraph:
                         node,
                         self.execution_context(node.node_id, shared_state=wave_state),
                     )
-                except Exception as error:  # Convert execution errors into typed terminal state.
-                    return GraphNodeResult(status=GraphNodeStatus.FAILED, reason=str(error))
+                except Exception as error:
+                    return GraphNodeResult(
+                        status=GraphNodeStatus.FAILED,
+                        reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
+                        f"{type(error).__name__}: {error}",
+                    )
 
             wave_results = await asyncio.gather(*(execute_one(node) for node in wave))
             for node, result in zip(wave, wave_results, strict=True):

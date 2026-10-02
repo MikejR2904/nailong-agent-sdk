@@ -301,7 +301,7 @@ def _safe_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError) as error:
         raise AgentSdkError(
             "MODEL_PARAMETERS_INVALID",
-            "Model binding parameters must be JSON-compatible finite values.",
+            f"Model binding parameters must be JSON-compatible finite values: {error}.",
         ) from error
     forbidden = {
         "api_key",
@@ -406,9 +406,16 @@ def _agent_turn_from_chat_response(response: Mapping[str, Any]) -> AgentTurn:
     try:
         return _AGENT_TURN_ADAPTER.validate_python(raw_turn)
     except ValidationError as error:
+        field_errors = [
+            f"{'.'.join(str(part) for part in issue['loc']) or '(root)'}: {issue['msg']}"
+            for issue in error.errors()
+        ]
         raise AgentSdkError(
             "OPENAI_COMPATIBLE_RESPONSE_INVALID",
-            "Provider response does not match the AgentTurn contract.",
+            "Provider response does not match the AgentTurn contract: "
+            + "; ".join(field_errors[:5])
+            + ".",
+            {"field_errors": field_errors, "validation_error": str(error)},
         ) from error
 
 
