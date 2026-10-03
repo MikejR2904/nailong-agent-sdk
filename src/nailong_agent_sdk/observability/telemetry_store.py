@@ -296,6 +296,41 @@ class TelemetryStore:
                 )
         return summaries
 
+    def prune(
+        self,
+        *,
+        older_than: datetime | None = None,
+        keep_latest_runs: int | None = None,
+    ) -> list[str]:
+        """Delete whole runs (events and metrics) whose last event is too old.
+
+        A run is removed if its newest event precedes ``older_than``, or if it is
+        not among the ``keep_latest_runs`` most recently active runs. Runs are
+        removed whole, so every remaining run's hash chain still verifies.
+        """
+
+        if keep_latest_runs is not None and keep_latest_runs < 0:
+            raise ValueError("keep_latest_runs must not be negative.")
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT run_id, MAX(occurred_at_utc) FROM events GROUP BY run_id"
+            ).fetchall()
+            ranked = sorted(rows, key=lambda row: _parse_instant(row[1]), reverse=True)
+            victims = [
+                run_id
+                for rank, (run_id, last) in enumerate(ranked)
+                if (keep_latest_runs is not None and rank >= keep_latest_runs)
+                or (older_than is not None and _parse_instant(last) < older_than)
+            ]
+            if victims:
+                with self._connection as connection:
+                    for run_id in victims:
+                        connection.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+                        connection.execute(
+                            "DELETE FROM metric_observations WHERE run_id = ?", (run_id,)
+                        )
+        return victims
+
     def verify_run_chain(self, run_id: str) -> bool:
         return self.chain_break(run_id) is None
 
@@ -318,7 +353,12 @@ class TelemetryStore:
             "schema_version": "run-report-v1",
             "run_id": run_id,
             "event_count": len(events),
-            "verified_event_count": len(events),
+            # Events before the first chain break are the ones that verified.
+            "verified_event_count": (
+                sum(1 for event in events if event.sequence < failure.sequence)
+                if failure
+                else len(events)
+            ),
             "verified_through_sequence": boundary,
             "integrity_chain_valid": failure is None,
             "integrity_failure": failure.model_dump(mode="json") if failure else None,
@@ -392,6 +432,11 @@ def _events_chain_break(events: Iterable[TelemetryEvent]) -> ChainBreak | None:
             event.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
         ),
     )
+
+
+def _parse_instant(value: str) -> datetime:
+    instant = datetime.fromisoformat(value)
+    return instant if instant.tzinfo else instant.replace(tzinfo=UTC)
 
 
 def _count(values: Iterable[str]) -> dict[str, int]:

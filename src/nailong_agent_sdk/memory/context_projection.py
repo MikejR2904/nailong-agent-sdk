@@ -13,11 +13,13 @@ import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import Field
 
+from ..foundations.atomic_io import replace_atomic
 from ..foundations.canonical import canonical_json, estimate_tokens
 from ..foundations.contracts import (
     AgentPrompt,
@@ -121,11 +123,42 @@ class FileToolResultJournal(InMemoryToolResultJournal):
             truncated=False,
         )
 
+    def prune(self, *, older_than: datetime) -> int:
+        """Delete stored results written before ``older_than``; returns how many.
+
+        Handles to pruned results stop resolving; ids are never reused, because
+        numbering continues after the highest id ever written.
+        """
+
+        # Record the high-water mark first so a later journal on this root keeps
+        # numbering after it even when the highest-numbered result is pruned.
+        self._next_id = max(self._next_id, _next_handle_number(self._root))
+        self._atomic_marker(self._next_id)
+        removed = 0
+        for path in self._root.glob("result-*.json"):
+            if datetime.fromtimestamp(path.stat().st_mtime, UTC) < older_than:
+                path.unlink(missing_ok=True)
+                self._records.pop(path.stem, None)
+                removed += 1
+        return removed
+
+    def _atomic_marker(self, next_id: int) -> None:
+        marker = self._root / _NEXT_ID_MARKER
+        temporary = marker.with_name(f".{marker.name}.tmp")
+        temporary.write_text(str(next_id), encoding="utf-8")
+        replace_atomic(temporary, marker)
+
     def read(self, handle_id: str) -> dict[str, Any]:
         if handle_id in self._records:
             return super().read(handle_id)
         target = self._root / f"{handle_id}.json"
         if not target.is_file():
+            suffix = handle_id.removeprefix("result-")
+            if suffix.isdigit() and int(suffix) < self._next_id:
+                raise ValueError(
+                    f'Tool result handle "{handle_id}" no longer exists; it was removed by '
+                    "a retention policy or by hand."
+                )
             raise ValueError(f'Unknown tool result handle "{handle_id}".')
         payload = json.loads(target.read_text(encoding="utf-8"))
         self._records[handle_id] = payload
@@ -311,8 +344,16 @@ def _truncate_text(value: str | None, max_chars: int) -> str | None:
     return f"{value[:max_chars]}… [truncated]"
 
 
+_NEXT_ID_MARKER = "next-handle-id"
+
+
 def _next_handle_number(root: Path) -> int:
     highest = 0
+    marker = root / _NEXT_ID_MARKER
+    if marker.is_file():
+        recorded = marker.read_text(encoding="utf-8").strip()
+        if recorded.isdigit():
+            highest = int(recorded) - 1
     for path in root.glob("result-*.json"):
         suffix = path.stem.removeprefix("result-")
         if suffix.isdigit():

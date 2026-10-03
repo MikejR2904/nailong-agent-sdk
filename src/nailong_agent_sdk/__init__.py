@@ -132,11 +132,20 @@ from .integrations import (
     langgraph_interrupt_payload,
     parse_structured_sdk_turn,
 )
-from .mcp.client import McpClientManager, McpServerNotConnectedError
+from .mcp.client import (
+    McpClientError,
+    McpClientManager,
+    McpProtocolError,
+    McpServerNotConnectedError,
+    McpTimeoutError,
+    McpToolError,
+    McpTransportError,
+)
 from .mcp.client_bridge import mcp_tools_as_extensions, registered_tool_name
 from .mcp.client_types import (
     McpConnectionState,
     McpConnectionStatus,
+    McpErrorKind,
     McpHttpServerConfig,
     McpResourceInfo,
     McpServerConfig,
@@ -184,6 +193,7 @@ from .observability.profiler import (
     ProfileSpanKind,
     ProfileSpanStatus,
 )
+from .observability.retention import RetentionPolicy, RetentionReport, apply_retention
 from .observability.telemetry_helpers import metric_observation
 from .observability.telemetry_models import (
     ChainBreak,
@@ -497,6 +507,15 @@ __all__ = [
     "McpResourceInfo",
     "McpServerConfig",
     "McpServerNotConnectedError",
+    "McpTimeoutError",
+    "McpToolError",
+    "McpTransportError",
+    "McpProtocolError",
+    "McpClientError",
+    "McpErrorKind",
+    "RetentionPolicy",
+    "RetentionReport",
+    "apply_retention",
     "McpStdioServerConfig",
     "McpToolInfo",
     "McpTransportKind",

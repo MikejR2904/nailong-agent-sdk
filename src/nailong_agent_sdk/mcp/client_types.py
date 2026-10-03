@@ -17,6 +17,16 @@ class McpTransportKind(StrEnum):
     HTTP = "http"
 
 
+class McpErrorKind(StrEnum):
+    """Why an outbound MCP operation failed, so callers can react per cause."""
+
+    NOT_CONNECTED = "not-connected"
+    TIMEOUT = "timeout"
+    TRANSPORT = "transport"
+    TOOL_ERROR = "tool-error"
+    PROTOCOL = "protocol"
+
+
 class McpConnectionState(StrEnum):
     PENDING = "pending"
     CONNECTED = "connected"
@@ -31,6 +41,8 @@ class McpStdioServerConfig(StrictModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] | None = None
     cwd: str | None = None
+    connect_timeout_seconds: float = Field(default=30.0, gt=0)
+    call_timeout_seconds: float = Field(default=120.0, gt=0)
 
 
 class McpHttpServerConfig(StrictModel):
@@ -39,6 +51,8 @@ class McpHttpServerConfig(StrictModel):
     name: str = Field(min_length=1)
     url: str = Field(min_length=1)
     headers: dict[str, str] | None = None
+    connect_timeout_seconds: float = Field(default=30.0, gt=0)
+    call_timeout_seconds: float = Field(default=120.0, gt=0)
 
 
 McpServerConfig = McpStdioServerConfig | McpHttpServerConfig
@@ -64,5 +78,6 @@ class McpConnectionStatus(StrictModel):
     transport: McpTransportKind
     auth_configured: bool = False
     detail: str | None = None
+    error_kind: McpErrorKind | None = None
     tools: list[McpToolInfo] = Field(default_factory=list)
     resources: list[McpResourceInfo] = Field(default_factory=list)

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..foundations.atomic_io import replace_atomic
+from ..foundations.file_lock import FileLock
 from .coordination_records import RunRecord, _hash_run
 
 
@@ -41,10 +42,25 @@ class RunStateStore:
         # rebuilt from the verified durable boundary after a restart.
         self._persisted: dict[str, _PersistedHistoryCounts] = {}
 
+    def lock(self, run_id: str) -> FileLock:
+        """The cross-process lock for one run; hold it across a check-then-save."""
+
+        return FileLock(self._root / f"{run_id}.json")
+
     def save(self, record: RunRecord) -> None:
+        """Publish ``record``; costs only the history entries added since the last save.
+
+        The sidecar's committed length and running digest are tracked, so a save
+        neither re-reads nor re-hashes the existing history.
+        """
+
+        with self.lock(record.run_id).hold():
+            self._save_locked(record)
+
+    def _save_locked(self, record: RunRecord) -> None:
         counts = self._counts_for(record.run_id)
         history_path = self._history_path(record.run_id)
-        self._discard_uncommitted_history(history_path, counts.entry_count)
+        _truncate_uncommitted(history_path, counts.byte_length)
         if _history_shrunk(record.graph, counts):
             # A reused run ID has a shorter in-memory history, so start a new
             # sidecar before publishing the replacement snapshot.
@@ -52,10 +68,10 @@ class RunStateStore:
             counts = _PersistedHistoryCounts()
         new_entries, counts = _diff_history(record.graph, counts)
         if new_entries:
-            self._append_history(record.run_id, new_entries)
-        history_count, history_hash = _history_boundary(history_path)
-        if history_count != counts.entry_count:
-            raise ValueError("Run history boundary does not match its persisted collection counts.")
+            counts.byte_length += self._append_history(record.run_id, new_entries)
+            for entry in new_entries:
+                counts.digest.update(_entry_line(entry))
+        history_count, history_hash = counts.entry_count, counts.digest.hexdigest()
         target = self._root / f"{record.run_id}.json"
         temporary = target.with_name(f".{target.name}.tmp")
         snapshot = record.model_copy(
@@ -127,28 +143,28 @@ class RunStateStore:
             raise ValueError(f'Run "{run_id}" history failed integrity verification.')
         return counts
 
-    def _append_history(self, run_id: str, entries: list[dict[str, Any]]) -> None:
-        path = self._history_path(run_id)
-        with path.open("a", encoding="utf-8") as handle:
-            for entry in entries:
-                handle.write(json.dumps(entry, sort_keys=True, separators=(",", ":")))
-                handle.write("\n")
+    def _append_history(self, run_id: str, entries: list[dict[str, Any]]) -> int:
+        """Append ``entries`` durably; return the number of bytes written."""
+
+        payload = b"".join(_entry_line(entry) for entry in entries)
+        with self._history_path(run_id).open("ab") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-
-    def _discard_uncommitted_history(self, path: Path, committed_entries: int) -> None:
-        if _nonempty_line_count(path) <= committed_entries:
-            return
-        # The snapshot is the commit record. History beyond its named prefix was
-        # not published and must not be replayed or appended to on retry.
-        _rewrite_history(path, _read_history_entries(path, entry_limit=committed_entries))
+        return len(payload)
 
 
 @dataclass
 class _PersistedHistoryCounts:
-    """How much of each growing graph collection is already in the history log."""
+    """How much of each growing graph collection is already in the history log.
+
+    ``byte_length`` and ``digest`` describe the committed sidecar prefix so a save
+    can extend it without reading it back.
+    """
 
     entry_count: int = 0
+    byte_length: int = 0
+    digest: Any = field(default_factory=hashlib.sha256)
     events: int = 0
     route_decisions: int = 0
     conflicts: int = 0
@@ -206,6 +222,8 @@ def _diff_history(
     entries: list[dict[str, Any]] = []
     updated = _PersistedHistoryCounts(
         entry_count=counts.entry_count,
+        byte_length=counts.byte_length,
+        digest=counts.digest.copy(),
         events=counts.events,
         route_decisions=counts.route_decisions,
         conflicts=counts.conflicts,
@@ -261,8 +279,10 @@ def _replay_history(
     discoveries: dict[str, Any] = {}
     values: dict[str, Any] = {}
     lateral_dependencies: dict[str, list[Any]] = {}
-    entries = _read_history_entries(path, entry_limit=entry_limit)
+    entries, byte_length = _read_history_prefix(path, entry_limit=entry_limit)
+    digest = hashlib.sha256()
     for entry in entries:
+        digest.update(_entry_line(entry))
         kind = entry["kind"]
         if kind == "event":
             events.append(entry["value"])
@@ -288,6 +308,8 @@ def _replay_history(
     }
     counts = _PersistedHistoryCounts(
         entry_count=len(entries),
+        byte_length=byte_length,
+        digest=digest,
         events=len(events),
         route_decisions=len(route_decisions),
         conflicts=len(conflicts),
@@ -295,52 +317,54 @@ def _replay_history(
         value_keys=set(values),
         lateral_dependency_counts={key: len(items) for key, items in lateral_dependencies.items()},
     )
-    return history, counts, _history_hash(entries)
+    return history, counts, digest.hexdigest()
 
 
-def _read_history_entries(path: Path, *, entry_limit: int | None = None) -> list[dict[str, Any]]:
+def _entry_line(entry: dict[str, Any]) -> bytes:
+    """One sidecar line; also exactly the bytes the history digest covers."""
+
+    return json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+def _read_history_prefix(
+    path: Path, *, entry_limit: int | None = None
+) -> tuple[list[dict[str, Any]], int]:
+    """Entries of the committed prefix and the byte offset where it ends."""
+
     if not path.is_file():
-        return []
-    with path.open(encoding="utf-8") as handle:
-        entries: list[dict[str, Any]] = []
+        return [], 0
+    entries: list[dict[str, Any]] = []
+    offset = 0
+    with path.open("rb") as handle:
         for line in handle:
-            if not line.strip():
-                continue
             if entry_limit is not None and len(entries) >= entry_limit:
                 break
-            entries.append(json.loads(line))
-        return entries
+            if not line.endswith(b"\n"):
+                break  # a torn final line was never committed
+            offset += len(line)
+            if line.strip():
+                entries.append(json.loads(line))
+    return entries, offset
 
 
-def _history_boundary(path: Path) -> tuple[int, str]:
-    entries = _read_history_entries(path)
-    return len(entries), _history_hash(entries)
+def _truncate_uncommitted(path: Path, committed_bytes: int) -> None:
+    """Drop history written after the last published snapshot (an interrupted save).
 
+    The snapshot is the commit record: anything beyond the prefix it names was
+    never published and must not be replayed or appended to.
+    """
 
-def _nonempty_line_count(path: Path) -> int:
-    if not path.is_file():
-        return 0
-    with path.open(encoding="utf-8") as handle:
-        return sum(1 for line in handle if line.strip())
-
-
-def _history_hash(entries: list[dict[str, Any]]) -> str:
-    digest = hashlib.sha256()
-    for entry in entries:
-        digest.update(json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-        digest.update(b"\n")
-    return digest.hexdigest()
-
-
-def _rewrite_history(path: Path, entries: list[dict[str, Any]]) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        for entry in entries:
-            handle.write(json.dumps(entry, sort_keys=True, separators=(",", ":")))
-            handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    _replace_with_retry(temporary, path)
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    if size < committed_bytes:
+        raise ValueError(
+            f"Run history {path.name} is shorter ({size} bytes) than its committed prefix "
+            f"({committed_bytes} bytes); it was truncated outside the SDK."
+        )
+    if size > committed_bytes:
+        os.truncate(path, committed_bytes)
 
 
 def _write_json_atomic_candidate(path: Path, content: str) -> None:

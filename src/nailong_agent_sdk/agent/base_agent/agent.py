@@ -1711,7 +1711,7 @@ class BaseAgent:
             record_terminal_agent_metrics(
                 self.telemetry,
                 telemetry_context,
-                self.telemetry.list_events(telemetry_context.run_id, limit=1_000),
+                self.telemetry.iter_events(telemetry_context.run_id),
                 profile.model_dump(mode="json"),
                 completed=status is AgentRunStatus.COMPLETED,
                 terminal_reason=reason,

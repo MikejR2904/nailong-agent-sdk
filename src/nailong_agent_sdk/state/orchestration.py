@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..foundations.atomic_io import replace_atomic
+from ..foundations.file_lock import FileLock
 from .orchestration_models import (
     ComplexityRouter,
     ComplexityRoutingRules,
@@ -191,6 +192,10 @@ class ControllerStateStore:
         self._persisted_event_counts: dict[str, int] = {}
 
     def save(self, record: ControllerRecord) -> None:
+        with FileLock(self._root / f"{record.controller_id}.json").hold():
+            self._save_locked(record)
+
+    def _save_locked(self, record: ControllerRecord) -> None:
         persisted = self._persisted_event_counts.get(record.controller_id)
         if persisted is None:
             persisted = self._committed_event_count(record.controller_id)

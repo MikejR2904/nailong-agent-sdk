@@ -21,6 +21,7 @@ from pydantic import TypeAdapter
 from ..agent.base_agent import BaseAgent
 from ..agent.model import ModelContext, ModelTurnResponse
 from ..foundations.contracts import AgentResult, AgentTurn, ScopedAgentTask, ToolDefinition
+from ..foundations.errors import redact_secrets
 from ..tools.tools import ToolExecutor, ToolInvocationContext
 from ._utils import require_optional_module
 from .contracts import assert_sanitized_interop_value
@@ -79,10 +80,20 @@ class LangChainAgentModelAdapter:
 
 
 class LangChainSdkRunnable:
-    """Expose a host-constructed SDK run as a LangChain-compatible async Runnable."""
+    """Expose a host-constructed SDK run as a LangChain-compatible async Runnable.
 
-    def __init__(self, agent_factory: LangChainAgentFactory) -> None:
+    The framework receives the run outcome only (status, output, reason,
+    failure, escalation), with secrets redacted. Prompt context, project state,
+    episodes, lifecycle events and the profile stay with the host, which reads
+    them from its own telemetry and audit stores. Set ``include_diagnostics`` to
+    forward them too, still redacted.
+    """
+
+    def __init__(
+        self, agent_factory: LangChainAgentFactory, *, include_diagnostics: bool = False
+    ) -> None:
         self._agent_factory = agent_factory
+        self._include_diagnostics = include_diagnostics
 
     async def ainvoke(
         self,
@@ -94,7 +105,7 @@ class LangChainSdkRunnable:
             input if isinstance(input, ScopedAgentTask) else ScopedAgentTask.model_validate(input)
         )
         result = await self._agent_factory(task).run(task)
-        return _agent_result_projection(result)
+        return _agent_result_projection(result, include_diagnostics=self._include_diagnostics)
 
     def as_runnable(self) -> Any:
         """Return a real optional ``RunnableLambda`` without making it a base dependency."""
@@ -212,10 +223,20 @@ def _assert_safe_langchain_prompt(prompt: Any) -> None:
         seen_roles.add(role)
 
 
-def _agent_result_projection(result: AgentResult) -> dict[str, Any]:
-    """Return the SDK result contract; callers choose their own redacted tracing export."""
+_OUTCOME_FIELDS = frozenset(
+    {"status", "task_id", "iterations", "output", "reason", "failure", "escalation"}
+)
 
-    return result.model_dump(mode="json")
+
+def _agent_result_projection(
+    result: AgentResult, *, include_diagnostics: bool = False
+) -> dict[str, Any]:
+    """Return the redacted run outcome, plus diagnostics only when the host opts in."""
+
+    payload = result.model_dump(
+        mode="json", include=None if include_diagnostics else set(_OUTCOME_FIELDS)
+    )
+    return redact_secrets(payload)
 
 
 def _result_mapping(result: Any) -> dict[str, Any]:

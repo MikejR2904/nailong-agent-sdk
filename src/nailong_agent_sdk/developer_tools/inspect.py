@@ -37,9 +37,10 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
 
     telemetry = TelemetryStore(run_root)
     audit = AuditTranscriptStore(run_root)
-    events = telemetry.list_events(run_id, limit=1_000)
+    # Read the whole run: every event through one boundary, paged, never truncated.
+    events = list(telemetry.iter_events(run_id))
     metrics = telemetry.list_metrics(run_id)
-    entries = audit.list_entries(run_id, limit=10_000)
+    audit_entry_count = audit.snapshot_sequence(run_id)
     if not events:
         raise ValueError(f'Telemetry run "{run_id}" is unknown.')
 
@@ -75,7 +76,7 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
         event_types=event_types,
         statuses=statuses,
         metric_availability=metric_availability,
-        audit_entry_count=len(entries),
+        audit_entry_count=audit_entry_count,
         report=report,
     )
 

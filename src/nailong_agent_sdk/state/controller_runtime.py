@@ -280,8 +280,9 @@ class ControllerRuntime:
             if result.status is GraphNodeStatus.FAILED
         ]
         if failed and machine.record.phase is ControllerPhase.EXECUTING:
-            machine.record_stage_failure(f"Graph execution failed at nodes: {', '.join(failed)}")
-            self._controller_store.save(machine.record)
+            self._fail_stage(
+                machine, f"Graph execution failed at nodes: {', '.join(failed)}", "graph"
+            )
         self._emit(
             machine.record,
             "graph.executed",
@@ -305,8 +306,7 @@ class ControllerRuntime:
             required_schema_version=required_schema_version,
         )
         if not decision.accepted and machine.record.phase is ControllerPhase.EXECUTING:
-            machine.record_stage_failure("; ".join(decision.reasons))
-            self._controller_store.save(machine.record)
+            self._fail_stage(machine, "; ".join(decision.reasons), "provenance")
         self._emit(
             machine.record, "provenance.checked", "accepted" if decision.accepted else "rejected"
         )
@@ -330,10 +330,25 @@ class ControllerRuntime:
         return run
 
     def record_stage_failure(self, controller_id: str, reason: str) -> ControllerRecord:
-        machine = self._machine(controller_id)
+        return self._fail_stage(self._machine(controller_id), reason, "explicit")
+
+    def _fail_stage(
+        self, machine: ControllerStateMachine, reason: str, trigger: str
+    ) -> ControllerRecord:
+        """Enter repair (or escalation), persist it, and record the repair metrics.
+
+        Every trigger, explicit or automatic, goes through here so repair-attempt
+        metrics count every repair the controller actually entered.
+        """
+
         record = machine.record_stage_failure(reason)
         self._controller_store.save(record)
-        self._emit(record, "controller.stage-failure", record.phase.value, {"reason": reason})
+        self._emit(
+            record,
+            "controller.stage-failure",
+            record.phase.value,
+            {"reason": reason, "trigger": trigger},
+        )
         return record
 
     def evaluate_stage_completeness(
@@ -346,8 +361,7 @@ class ControllerRuntime:
         machine = self._machine(controller_id)
         decision = StageCompletenessGate().evaluate(self.project_state(controller_id), policy)
         if not decision.complete and machine.record.phase is ControllerPhase.EXECUTING:
-            machine.record_stage_failure("; ".join(decision.reasons))
-            self._controller_store.save(machine.record)
+            self._fail_stage(machine, "; ".join(decision.reasons), "stage-completeness")
         self._emit(
             machine.record,
             "controller.stage-completeness-checked",

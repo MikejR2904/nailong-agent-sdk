@@ -47,6 +47,7 @@ class HarnessCoordinator:
         self._graphs: dict[str, StateGraph] = {}
         self._approvals: dict[str, ApprovalRegistry] = {}
         self._fingerprints: dict[str, tuple[int, int, int] | None] = {}
+        self._records: dict[str, RunRecord] = {}
         self._cancelled: set[str] = set()
         self._counter = 1
 
@@ -79,9 +80,18 @@ class HarnessCoordinator:
 
     def get_run_state(self, run_id: str) -> RunRecord:
         fingerprint = self._store.fingerprint(run_id)
-        stored = self._store.load(run_id)
-        if run_id not in self._graphs or self._fingerprints.get(run_id) != fingerprint:
+        cached = self._records.get(run_id)
+        if (
+            cached is not None
+            and fingerprint is not None
+            and (self._fingerprints.get(run_id) == fingerprint)
+        ):
+            # Unchanged on disk since this coordinator verified or wrote it.
+            stored = cached
+        else:
+            stored = self._store.load(run_id)
             self._graphs[run_id] = StateGraph.from_snapshot(stored.graph)
+            self._records[run_id] = stored
         self._fingerprints[run_id] = fingerprint
         if run_id not in self._approvals:
             self._approvals[run_id] = self._approval_registry(run_id)
@@ -267,26 +277,30 @@ class HarnessCoordinator:
         validation: PlanValidationReport,
         cancelled: bool = False,
     ) -> RunRecord:
-        expected = self._fingerprints.get(run_id)
-        if expected is not None and self._store.fingerprint(run_id) != expected:
-            raise AgentSdkError(
-                "RUN_STATE_CONFLICT",
-                f'Run "{run_id}" was changed on disk by another writer after this coordinator '
-                "last read or wrote it, so saving now would overwrite that change. Use one "
-                "HarnessCoordinator per run root (share it with ControllerRuntime) or call "
-                "get_run_state to reload the run before changing it.",
-                {"run_id": run_id},
+        # The fingerprint check and the save happen under one cross-process lock,
+        # so no other writer can slip in between them.
+        with self._store.lock(run_id).hold():
+            expected = self._fingerprints.get(run_id)
+            if expected is not None and self._store.fingerprint(run_id) != expected:
+                raise AgentSdkError(
+                    "RUN_STATE_CONFLICT",
+                    f'Run "{run_id}" was changed on disk by another writer after this coordinator '
+                    "last read or wrote it, so saving now would overwrite that change. Use one "
+                    "HarnessCoordinator per run root (share it with ControllerRuntime) or call "
+                    "get_run_state to reload the run before changing it.",
+                    {"run_id": run_id},
+                )
+            cancelled = cancelled or run_id in self._cancelled
+            snapshot = graph.snapshot()
+            record = RunRecord(
+                run_id=run_id,
+                plan_id=plan_id,
+                graph=snapshot,
+                plan_validation=validation,
+                cancelled=cancelled,
+                run_hash=_hash_run(run_id, plan_id, snapshot, validation, cancelled),
             )
-        cancelled = cancelled or run_id in self._cancelled
-        snapshot = graph.snapshot()
-        record = RunRecord(
-            run_id=run_id,
-            plan_id=plan_id,
-            graph=snapshot,
-            plan_validation=validation,
-            cancelled=cancelled,
-            run_hash=_hash_run(run_id, plan_id, snapshot, validation, cancelled),
-        )
-        self._store.save(record)
-        self._fingerprints[run_id] = self._store.fingerprint(run_id)
-        return record
+            self._store.save(record)
+            self._fingerprints[run_id] = self._store.fingerprint(run_id)
+            self._records[run_id] = record
+            return record

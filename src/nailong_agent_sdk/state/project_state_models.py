@@ -245,6 +245,10 @@ class ProjectStateEvent(StrictModel):
     previous_state_hash: str = Field(min_length=1)
     state_hash: str = Field(min_length=1)
     event_hash: str = Field(min_length=1)
+    # Replay data for crash recovery. Outside ``event_hash`` so earlier events
+    # stay valid; a replay is trusted only if it reproduces ``state_hash``.
+    payload: dict[str, Any] | None = None
+    summary_max_chars: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def event_hash_matches(self) -> ProjectStateEvent:

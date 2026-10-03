@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import threading
-import time
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,12 +20,10 @@ from pydantic import Field, field_validator
 from ..foundations.atomic_io import replace_atomic
 from ..foundations.canonical import canonical_json, sha256_json
 from ..foundations.contracts import StrictModel
-from ..foundations.errors import AgentSdkError, assert_no_hidden_reasoning, redact_secrets
+from ..foundations.errors import assert_no_hidden_reasoning, redact_secrets
+from ..foundations.file_lock import FileLock
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import ChainBreak
-
-_LOCK_TIMEOUT_SECONDS = 30.0
-_LOCK_POLL_SECONDS = 0.005
 
 
 class AuditLogEntry(StrictModel):
@@ -55,9 +52,6 @@ class AuditTranscriptStore:
     intentionally external to ProjectState and never feeds raw history into ModelContext.
     """
 
-    _append_locks: dict[Path, threading.RLock] = {}
-    _append_locks_guard = threading.Lock()
-
     def __init__(
         self, root: Path, *, max_payload_chars: int = 8_192, max_open_handles: int = 32
     ) -> None:
@@ -73,6 +67,10 @@ class AuditTranscriptStore:
         # A bounded LRU avoids repeated opens for active runs without allowing a
         # long-lived host to retain one descriptor for every historical run.
         self._handles: OrderedDict[str, IO[bytes]] = OrderedDict()
+        # Last (hash, sequence, file size) this store wrote or read per run. It is
+        # trusted only while the file still has that size, so another writer's
+        # append is always noticed and re-read.
+        self._tails: dict[str, tuple[str | None, int, int]] = {}
 
     def _handle_for(self, run_id: str) -> IO[bytes]:
         cached = self._handles.get(run_id)
@@ -101,7 +99,11 @@ class AuditTranscriptStore:
                 handle = self._handle_for(run_id)
                 handle.seek(0, os.SEEK_END)
                 end = handle.tell()
-                previous, sequence = _parse_tail(handle, end)
+                cached = self._tails.get(run_id)
+                if cached is not None and cached[2] == end:
+                    previous, sequence = cached[0], cached[1]
+                else:
+                    previous, sequence = _parse_tail(handle, end)
                 prepared = AuditLogEntry(
                     sequence=sequence + 1,
                     event_type=event_type,
@@ -115,10 +117,11 @@ class AuditTranscriptStore:
                 complete = prepared.model_copy(
                     update={"integrity_hash": sha256_json(prepared.model_dump(mode="json"))}
                 )
-                handle.write(complete.model_dump_json().encode("utf-8"))
-                handle.write(b"\n")
+                line = complete.model_dump_json().encode("utf-8") + b"\n"
+                handle.write(line)
                 handle.flush()
                 os.fsync(handle.fileno())
+                self._tails[run_id] = (complete.integrity_hash, complete.sequence, end + len(line))
                 return complete
 
     def list_entries(
@@ -133,14 +136,19 @@ class AuditTranscriptStore:
         path = self._jsonl_path(run_id)
         if not path.exists():
             return []
-        entries = [
-            AuditLogEntry.model_validate_json(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line
-        ]
-        if through_sequence is not None:
-            entries = [entry for entry in entries if entry.sequence <= through_sequence]
-        return entries[:limit]
+        # Stream: stop at the page size or the boundary instead of reading the file.
+        entries: list[AuditLogEntry] = []
+        with path.open("rb") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                entry = AuditLogEntry.model_validate_json(line)
+                if through_sequence is not None and entry.sequence > through_sequence:
+                    break
+                entries.append(entry)
+                if len(entries) >= limit:
+                    break
+        return entries
 
     def snapshot_sequence(self, run_id: str) -> int:
         """Return the local append sequence used as a verification boundary."""
@@ -217,6 +225,43 @@ class AuditTranscriptStore:
         _atomic_write(path, "\n".join(lines))
         return path
 
+    def prune(
+        self,
+        *,
+        older_than: datetime | None = None,
+        keep_latest_runs: int | None = None,
+    ) -> list[str]:
+        """Delete whole run transcripts by last-append time.
+
+        A transcript is removed if it was last appended before ``older_than``, or
+        if it is not among the ``keep_latest_runs`` most recently appended runs.
+        """
+
+        if keep_latest_runs is not None and keep_latest_runs < 0:
+            raise ValueError("keep_latest_runs must not be negative.")
+        logs = sorted(
+            self._root.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True
+        )
+        removed: list[str] = []
+        for rank, path in enumerate(logs):
+            modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+            if not (
+                (keep_latest_runs is not None and rank >= keep_latest_runs)
+                or (older_than is not None and modified < older_than)
+            ):
+                continue
+            run_id = _first_run_id(path) or path.stem
+            with self._lock, self._append_transaction(run_id):
+                handle = self._handles.pop(run_id, None)
+                if handle is not None:
+                    handle.close()
+                self._tails.pop(run_id, None)
+                path.unlink(missing_ok=True)
+                path.with_suffix(".transcript.md").unlink(missing_ok=True)
+            path.with_suffix(".lock").unlink(missing_ok=True)
+            removed.append(run_id)
+        return removed
+
     def _tail(self, path: Path) -> tuple[str | None, int]:
         if not path.exists() or not path.stat().st_size:
             return None, 0
@@ -249,16 +294,7 @@ class AuditTranscriptStore:
         preventing two writers from deriving the same sequence and predecessor.
         """
 
-        path = self._jsonl_path(run_id).resolve()
-        with self._local_append_lock(path), _interprocess_lock(path.with_suffix(".lock")):
-            yield
-
-    @classmethod
-    @contextmanager
-    def _local_append_lock(cls, path: Path) -> Iterator[None]:
-        with cls._append_locks_guard:
-            lock = cls._append_locks.setdefault(path, threading.RLock())
-        with lock:
+        with FileLock(self._jsonl_path(run_id).resolve().with_suffix("")).hold():
             yield
 
 
@@ -291,57 +327,6 @@ def _parse_tail(handle: Any, end: int) -> tuple[str | None, int]:
     return tail.integrity_hash, tail.sequence
 
 
-@contextmanager
-def _interprocess_lock(path: Path) -> Iterator[None]:
-    """Serialize one audit append across processes without widening tool authority."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        descriptor = handle.fileno()
-        if os.name == "nt":
-            _acquire_windows_lock(descriptor, path)
-            try:
-                yield
-            finally:
-                _release_windows_lock(descriptor)
-        else:
-            import fcntl
-
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-
-def _acquire_windows_lock(descriptor: int, path: Path) -> None:
-    import msvcrt
-
-    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
-    while True:
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        try:
-            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            return
-        except PermissionError as error:
-            if time.monotonic() >= deadline:
-                raise AgentSdkError(
-                    "AUDIT_LOCK_TIMEOUT",
-                    f'Could not acquire the audit-log lock "{path.name}" within '
-                    f"{_LOCK_TIMEOUT_SECONDS:g}s: another process is holding it, most likely "
-                    "a writer that hung mid-append or software scanning the lock file.",
-                    {"lock_path": str(path), "timeout_seconds": _LOCK_TIMEOUT_SECONDS},
-                ) from error
-            time.sleep(_LOCK_POLL_SECONDS)
-
-
-def _release_windows_lock(descriptor: int) -> None:
-    import msvcrt
-
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-
-
 def _entries_chain_break(entries: Iterator[AuditLogEntry]) -> ChainBreak | None:
     return first_chain_break(
         entries,
@@ -351,6 +336,15 @@ def _entries_chain_break(entries: Iterator[AuditLogEntry]) -> ChainBreak | None:
             entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
         ),
     )
+
+
+def _first_run_id(path: Path) -> str | None:
+    try:
+        with path.open(encoding="utf-8") as handle:
+            first = handle.readline()
+        return AuditLogEntry.model_validate_json(first).run_id if first.strip() else None
+    except (OSError, ValueError):
+        return None
 
 
 def _safe_name(value: str) -> str:

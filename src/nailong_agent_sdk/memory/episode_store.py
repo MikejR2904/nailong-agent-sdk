@@ -835,8 +835,78 @@ class FileEpisodeStore(InMemoryEpisodeStore):
 
     def persist(self) -> None:
         self._atomic_write(
-            self._state_path, json.dumps([record.model_dump(mode="json") for record in self.list()])
+            self._state_path,
+            json.dumps(
+                {
+                    "next_id": self._next_id,
+                    "next_access_sequence": self._next_access_sequence,
+                    "records": [record.model_dump(mode="json") for record in self.list()],
+                }
+            ),
         )
+
+    def load(self) -> list[EpisodeRecord]:
+        """Restore the episodes last persisted under this run root.
+
+        Counters are restored too, so an id freed by pruning is never reused.
+        Files written before counters were persisted (a bare record list) load
+        with counters derived from the records.
+        """
+
+        if not self._state_path.is_file():
+            return []
+        raw = json.loads(self._state_path.read_text(encoding="utf-8"))
+        payload = raw if isinstance(raw, dict) else {"records": raw}
+        records = [EpisodeRecord.model_validate(item) for item in payload["records"]]
+        self._records = {record.id: record for record in records}
+        derived_id = 1 + max((_episode_number(record.id) for record in records), default=0)
+        derived_sequence = 1 + max((record.last_access_sequence for record in records), default=0)
+        self._next_id = max(int(payload.get("next_id", 1)), derived_id)
+        self._next_access_sequence = max(
+            int(payload.get("next_access_sequence", 1)), derived_sequence
+        )
+        return self.list()
+
+    def prune_compacted(self, *, keep_latest: int) -> list[str]:
+        """Drop all but the ``keep_latest`` most recently used compacted episodes.
+
+        Compacted episodes are already summarized out of model context. Only those
+        no remaining episode depends on are removed, so dependency links stay
+        whole. The pruned store is persisted.
+        """
+
+        if keep_latest < 0:
+            raise ValueError("keep_latest must not be negative.")
+        compacted = sorted(
+            (record for record in self.list() if record.state is EpisodeState.COMPACTED),
+            key=lambda record: record.last_access_sequence,
+            reverse=True,
+        )
+        removed: list[str] = []
+        for record in compacted[keep_latest:]:
+            dependants = [
+                other
+                for other in record.depended_on_by
+                if other in self._records and other not in removed
+            ]
+            if dependants:
+                continue
+            del self._records[record.id]
+            removed.append(record.id)
+        if removed:
+            removed_set = set(removed)
+            for episode_id, record in list(self._records.items()):
+                if removed_set & (set(record.depends_on) | set(record.depended_on_by)):
+                    self._records[episode_id] = record.model_copy(
+                        update={
+                            "depends_on": [d for d in record.depends_on if d not in removed_set],
+                            "depended_on_by": [
+                                d for d in record.depended_on_by if d not in removed_set
+                            ],
+                        }
+                    )
+            self.persist()
+        return removed
 
     def persist_checkpoint(self) -> EpisodeCheckpoint:
         checkpoint = self.checkpoint()
@@ -855,3 +925,8 @@ class FileEpisodeStore(InMemoryEpisodeStore):
         temporary = path.with_name(f".{path.name}.tmp")
         temporary.write_text(content, encoding="utf-8")
         replace_atomic(temporary, path)
+
+
+def _episode_number(episode_id: str) -> int:
+    _, _, number = episode_id.rpartition("-")
+    return int(number) if number.isdigit() else 0
