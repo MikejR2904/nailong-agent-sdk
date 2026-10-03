@@ -1,23 +1,23 @@
 # `state/` - durable run state: plans, the typed graph, the controller and project state
 
-Everything that must survive a restart and be explainable afterwards. There are four independent state machines, each with its own store: (1) the **plan** (`planning.py`) is validated deterministically; (2) the **graph run** (`graph.py` + `harness_coordinator.py` + `run_state_store.py`) schedules approved plan tasks in waves and is the only carrier of lateral data between agents; (3) the **controller** (`orchestration.py` + `controller_runtime.py`) owns plan approval, dispatch, bounded repair and escalation; (4) the **project state** (`project_state_*.py`) is the bounded working memory a `BaseAgent` reads every turn. Persisted records are integrity-hashed: run and controller records use a snapshot plus an append-only sidecar whose prefix hash the snapshot names, and project state uses one hash-chained event file per revision. The stores assume **one writer at a time per run root** and take no locks: the harness coordinator and the project-state store detect that another writer changed a file and refresh or refuse instead of overwriting it, but writers acting at the same instant can still interleave.
+Everything that must survive a restart and be explainable afterwards. There are four independent state machines, each with its own store: (1) the **plan** (`planning.py`) is validated deterministically; (2) the **graph run** (`graph.py` + `harness_coordinator.py` + `run_state_store.py`) schedules approved plan tasks in waves and is the only carrier of lateral data between agents; (3) the **controller** (`orchestration.py` + `controller_runtime.py`) owns plan approval, dispatch, bounded repair and escalation; (4) the **project state** (`project_state_*.py`) is the bounded working memory a `BaseAgent` reads every turn. Persisted records are integrity-hashed: run and controller records use a snapshot plus an append-only sidecar whose prefix hash the snapshot names, and project state uses one hash-chained event file per revision. Writers serialize through `foundations/file_lock.py::FileLock` (one cross-process lock per run, project or controller), and the harness coordinator and the project-state store also detect that another writer changed a file and refresh or refuse instead of overwriting it. A crash between a project-state event write and its state write is rolled forward on the next load.
 
 | File | Lines | Role |
 |---|---:|---|
 | [`state/__init__.py`](#state__init__py---package-marker-for-durable-run-state) | 3 | package marker for durable run state |
-| [`state/controller_runtime.py`](#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 488 | durable facade over the controller, the graph run, project state and telemetry |
+| [`state/controller_runtime.py`](#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 502 | durable facade over the controller, the graph run, project state and telemetry |
 | [`state/coordination_records.py`](#statecoordination_recordspy---durable-run-record-and-its-integrity-hash) | 45 | durable run record and its integrity hash |
-| [`state/graph.py`](#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 708 | deterministic wave scheduler and authoritative typed run state |
-| [`state/graph_models.py`](#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 176 | typed node, edge, event and shared-state contracts for the run graph |
-| [`state/harness_coordinator.py`](#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 291 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
-| [`state/orchestration.py`](#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 363 | controller state machine and its crash-safe store |
-| [`state/orchestration_models.py`](#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 93 | controller phase, routing-rule and record contracts |
+| [`state/graph.py`](#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 718 | deterministic wave scheduler and authoritative typed run state |
+| [`state/graph_models.py`](#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 179 | typed node, edge, event and shared-state contracts for the run graph |
+| [`state/harness_coordinator.py`](#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 284 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
+| [`state/orchestration.py`](#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 368 | controller state machine and its crash-safe store |
+| [`state/orchestration_models.py`](#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 92 | controller phase, routing-rule and record contracts |
 | [`state/planning.py`](#stateplanningpy---typed-plan-contracts-and-the-deterministic-plan-validator) | 358 | typed plan contracts and the deterministic plan validator |
-| [`state/project_state_engine.py`](#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 415 | mechanical reducer and token-bounded projector over `ProjectState` |
-| [`state/project_state_models.py`](#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 354 | bounded, hash-sealed working-memory contracts |
-| [`state/project_state_store.py`](#stateproject_state_storepy---in-memory-and-file-backed-project-state-stores-with-a-hash-chained-audit-trail) | 204 | in-memory and file-backed project-state stores with a hash-chained audit trail |
-| [`state/run_state_store.py`](#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 377 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
-| [`state/shared_state.py`](#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 333 | typed lateral-state payloads, exact routing references and provenance records |
+| [`state/project_state_engine.py`](#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 477 | mechanical reducer and token-bounded projector over `ProjectState` |
+| [`state/project_state_models.py`](#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 353 | bounded, hash-sealed working-memory contracts |
+| [`state/project_state_store.py`](#stateproject_state_storepy---in-memory-and-file-backed-project-state-stores-with-a-hash-chained-audit-trail) | 250 | in-memory and file-backed project-state stores with a hash-chained audit trail |
+| [`state/run_state_store.py`](#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 401 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
+| [`state/shared_state.py`](#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 238 | typed lateral-state payloads, exact routing references and provenance records |
 | [`state/stage_gates.py`](#statestage_gatespy---deterministic-stage-completeness-gate) | 94 | deterministic stage-completeness gate |
 
 ---
@@ -32,7 +32,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/controller_runtime.py` - durable facade over the controller, the graph run, project state and telemetry
 
-*488 lines · depends on: `observability/metrics.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/coordination_records.py`, `state/graph_models.py`, `state/harness_coordinator.py`, `state/orchestration.py`, `state/orchestration_models.py`, `state/planning.py`, `state/project_state_models.py`, `state/project_state_store.py`, `state/shared_state.py`, `state/stage_gates.py` · used by: `agent/orchestrator/orchestrator.py`, `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
+*502 lines · depends on: `observability/metrics.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/coordination_records.py`, `state/graph_models.py`, `state/harness_coordinator.py`, `state/orchestration.py`, `state/orchestration_models.py`, `state/planning.py`, `state/project_state_models.py`, `state/project_state_store.py`, `state/shared_state.py`, `state/stage_gates.py` · used by: `agent/orchestrator/orchestrator.py`, `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** The downward control path is create, submit plan, approve, dispatch, execute graph; the upward path is node results, stage failure (bounded repair, then escalation), provenance and completeness gates. Used by the `Orchestrator` and by the MCP controller tools. It owns no lateral-state store of its own.
 
@@ -52,7 +52,8 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - `ControllerRuntime.execute_graph(controller_id: str, executors: Mapping[GraphNodeKind, NodeExecutor], *, max_parallelism: int | None=None) -> RunRecord` *(async)* - Requires EXECUTING and a run; runs all waves through host executors, reduces every terminal result into project state, enters repair or escalation if any node FAILED, and emits `graph.executed`. · *Called by:* `orchestrator/orchestrator.py::Orchestrator.dispatch_and_execute`
   - `ControllerRuntime.verify_provenance_contract(controller_id: str, records: list[ProvenanceRecord], required_schema_version: str) -> ProvenanceGateDecision` - Runs the provenance gate against the controller's snapshot id; a rejection while executing records a stage failure.
   - `ControllerRuntime.request_lateral_dependency(controller_id: str, request: LateralDependencyRequest) -> RunRecord` - Requires a dispatched run; records a lateral dependency.
-  - `ControllerRuntime.record_stage_failure(controller_id: str, reason: str) -> ControllerRecord` - Explicit bounded repair or escalation request. · *Called within this file by:* `state/controller_runtime.py::ControllerRuntime.evaluate_stage_completeness`, `state/controller_runtime.py::ControllerRuntime.execute_graph`, `state/controller_runtime.py::ControllerRuntime.verify_provenance_contract`
+  - `ControllerRuntime.record_stage_failure(controller_id: str, reason: str) -> ControllerRecord` - Explicit bounded repair or escalation; delegates to `_fail_stage` with trigger `explicit`.
+    - `ControllerRuntime._fail_stage(machine: ControllerStateMachine, reason: str, trigger: str) -> ControllerRecord` - The one path into repair or escalation: records the stage failure, persists the controller and emits `controller.stage-failure` (payload `reason`, `trigger`), which records `controller.repair_attempt_count`. Graph failure (`graph`), provenance rejection (`provenance`), a failed completeness check (`stage-completeness`) and explicit calls all use it, so repair metrics count every repair entered. · *Called by:* `state/controller_runtime.py::ControllerRuntime.execute_graph`, `ControllerRuntime.verify_provenance_contract`, `ControllerRuntime.evaluate_stage_completeness`, `ControllerRuntime.record_stage_failure`
   - `ControllerRuntime.evaluate_stage_completeness(controller_id: str, policy: StageCompletenessPolicy) -> StageCompletenessDecision` - Evaluates a completeness policy over the project state; an incomplete result while executing records a stage failure with the joined reasons. · *No in-package callers (public API, entry point, or protocol hook).*
   - `ControllerRuntime.complete(controller_id: str) -> ControllerRecord` - Marks the controller completed. · *Called within this file by:* `state/controller_runtime.py::ControllerRuntime.evaluate_stage_completeness`
   - `ControllerRuntime.cancel(controller_id: str, reason: str) -> ControllerRecord` - Cancels the graph run if one exists, then the controller.
@@ -85,7 +86,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/graph.py` - deterministic wave scheduler and authoritative typed run state
 
-*708 lines · depends on: `foundations/dependency_graph.py`, `state/graph_models.py`, `state/shared_state.py` · used by: `state/harness_coordinator.py` · re-exported at the package root: 1 name(s)*
+*718 lines · depends on: `foundations/dependency_graph.py`, `state/graph_models.py`, `state/shared_state.py` · used by: `state/harness_coordinator.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** One `StateGraph` per run. The coordinator asks for the runnable wave, marks it RUNNING, persists, runs host executors concurrently, then commits terminal results in sorted node-id order. Lateral discoveries and values are published only after their producer has completed and are routed by exact reference to consumers that have not started. Failed, blocked or cancelled dependencies block their dependents.
 
@@ -106,8 +107,8 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - `StateGraph.recover_interrupted(replayable_node_ids: set[str]=frozenset()) -> list[str]` - After a crash, nodes persisted as RUNNING return to PENDING only if declared idempotent; every other one becomes FAILED (`interrupted-non-idempotent`). · *Called by:* `state/harness_coordinator.py::HarnessCoordinator.recover_interrupted_run`
   - `StateGraph.mark_started(node_id: str) -> None` - RUNNABLE to RUNNING. · *Called by:* `state/graph.py::StateGraph.execute`, `state/graph.py::StateGraph.start_runnable_wave`, `state/harness_coordinator.py::HarnessCoordinator._cancel_runnable_nodes`, `state/harness_coordinator.py::HarnessCoordinator.record_node_result`
   - `StateGraph.mark_terminal(node_id: str, result: GraphNodeResult) -> None` - RUNNING to a terminal status, storing the result, then blocks unreachable dependents and promotes new runnable nodes. · *Called by:* `state/graph.py::StateGraph.execute`, `state/harness_coordinator.py::HarnessCoordinator._cancel_runnable_nodes`, `state/harness_coordinator.py::HarnessCoordinator.execute_run`, `state/harness_coordinator.py::HarnessCoordinator.record_node_result`
-  - `StateGraph.execute(executors: Mapping[GraphNodeKind, NodeExecutor]) -> dict[str, GraphNodeResult]` *(async)* - In-memory wave loop: runs each wave's executors concurrently (`asyncio.gather`), converting a missing executor or an exception into a FAILED result that names the node, its kind and the exception type; commits results in node-id order.
-    - `StateGraph.execute.execute_one(node: GraphNode) -> GraphNodeResult` *(async)* - Runs one node's executor with its context; never lets an exception escape. · *Called within this file by:* `state/graph.py::StateGraph.execute`
+  - `StateGraph.execute(executors: Mapping[GraphNodeKind, NodeExecutor]) -> dict[str, GraphNodeResult]` *(async)* - In-memory wave loop: start each runnable wave, run it with `run_wave`, commit the results.
+    - `StateGraph.run_wave(wave: Sequence[GraphNode], executors: Mapping[GraphNodeKind, NodeExecutor]) -> list[GraphNodeResult]` *(async)* - Runs one started wave concurrently against a single frozen shared-state view; a missing executor or an executor exception becomes a FAILED result for that node. The single per-node executor wrapper, shared with `HarnessCoordinator.execute_run`. · *Called by:* `state/graph.py::StateGraph.execute`, `state/harness_coordinator.py::HarnessCoordinator.execute_run`
   - `StateGraph.publish_discovery(discovery: ExploratoryDiscovery) -> None` - Requires a closed discovery for the graph's snapshot id and version from a known, COMPLETED producer and an unused episode id; stores it and routes it. · *Called within this file by:* `state/graph.py::StateGraph.try_publish_discovery`
   - `StateGraph.try_publish_discovery(discovery: ExploratoryDiscovery) -> GraphStateConflict | None` - Like publish, but a snapshot-id or version mismatch is recorded as a typed conflict and returned instead of raised. · *No in-package callers (public API, entry point, or protocol hook).*
   - `StateGraph.write_shared_value(state_write: SharedStateWrite) -> None` - Stores an immutable keyed value from a COMPLETED producer; duplicate keys raise. · *Called within this file by:* `state/graph.py::StateGraph.try_write_shared_value`
@@ -131,7 +132,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/graph_models.py` - typed node, edge, event and shared-state contracts for the run graph
 
-*176 lines · depends on: `foundations/contracts.py`, `state/shared_state.py` · used by: `agent/graph_agent_executor.py`, `integrations/langgraph.py`, `mcp/controller_tools.py`, `state/controller_runtime.py`, `state/graph.py`, `state/harness_coordinator.py` · re-exported at the package root: 10 name(s)*
+*179 lines · depends on: `foundations/contracts.py`, `state/shared_state.py` · used by: `agent/graph_agent_executor.py`, `integrations/langgraph.py`, `mcp/controller_tools.py`, `state/controller_runtime.py`, `state/graph.py`, `state/harness_coordinator.py` · re-exported at the package root: 10 name(s)*
 
 **Role in the workflow.** The vocabulary of `StateGraph`: what a node is, which statuses it can have, what an executor receives and returns, and what lateral state a node may see.
 
@@ -139,8 +140,8 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 - **class `GraphNodeKind`** *(enum; bases: StrEnum)* - agent-invocation, deterministic-gate, pure-function or elastic-node; selects the host executor. The coordinator only creates agent nodes; elastic nodes are created at runtime.
   - members: `AGENT`, `GATE`, `FUNCTION`, `ELASTIC`
-- **class `GraphEdgeKind`** *(enum; bases: StrEnum)* - static, conditional (lateral discovery edge), dynamic-fan-out (elastic child) or fan-in (declared but never created by the SDK).
-  - members: `STATIC`, `CONDITIONAL`, `DYNAMIC_FAN_OUT`, `FAN_IN`
+- **class `GraphEdgeKind`** *(enum; bases: StrEnum)* - static, conditional (lateral discovery edge), dynamic-fan-out (elastic child).
+  - members: `STATIC`, `CONDITIONAL`, `DYNAMIC_FAN_OUT`
 - **class `GraphNodeStatus`** *(enum; bases: StrEnum)* - pending, runnable, running, completed, failed, blocked or cancelled. · *Instantiated by:* `state/graph.py::StateGraph.from_snapshot`
   - members: `PENDING`, `RUNNABLE`, `RUNNING`, `COMPLETED`, `FAILED`, `BLOCKED`, `CANCELLED`
 - **class `GraphStateConflictKind`** *(enum; bases: StrEnum)* - immutable-write-collision, discovery-snapshot-mismatch, discovery-version-mismatch or late-discovery.
@@ -172,16 +173,16 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/harness_coordinator.py` - run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery
 
-*291 lines · depends on: `foundations/errors.py`, `state/coordination_records.py`, `state/graph.py`, `state/graph_models.py`, `state/planning.py`, `state/run_state_store.py`, `state/shared_state.py`, `tools/approvals.py` · used by: `mcp/_shared.py`, `mcp/server.py`, `state/controller_runtime.py` · re-exported at the package root: 1 name(s)*
+*284 lines · depends on: `foundations/errors.py`, `state/coordination_records.py`, `state/graph.py`, `state/graph_models.py`, `state/planning.py`, `state/run_state_store.py`, `state/shared_state.py`, `tools/approvals.py` · used by: `mcp/_shared.py`, `mcp/server.py`, `state/controller_runtime.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Used by `ControllerRuntime` (dispatch and execution) and directly by the MCP run tools. `start_run` validates the plan and builds one agent node per task; `execute_run` persists after each wave start and after each terminal commit; `recover_interrupted_run` resolves crashed RUNNING nodes. Every mutating method re-saves the whole record through `RunStateStore`.
 
 **Contents**
 
 - **class `HarnessCoordinator`** *(class)* - Owns plan validation, the in-memory graph cache per run, approvals, cancellation and persistence. · *Instantiated by:* `mcp/server.py::create_mcp_server`, `state/controller_runtime.py::ControllerRuntime.__init__`
-  - `HarnessCoordinator.__init__(run_root: Path) -> None` - Creates the store, validator, graph and approval caches, the per-run file fingerprints, the set of cancelled runs and a process-local run counter.
+  - `HarnessCoordinator.__init__(run_root: Path) -> None` - Creates the store, validator, graph and verified-record caches, the per-run file fingerprints, the set of cancelled runs, a process-local run counter and the approvals root `.agent-approvals/`.
   - `HarnessCoordinator.start_run(plan: Plan, *, shared_state: GraphSharedState | None=None) -> RunRecord` - Validates the plan, picks the next unused `run-N`, builds `node:<task>` agent nodes (dependencies prefixed the same way) with the plan's elastic caps and optional shared state, caches the graph and persists it.
-  - `HarnessCoordinator.get_run_state(run_id: str) -> RunRecord` - Loads and verifies the stored record without writing anything. If the run file changed since this coordinator last read or wrote it (another instance or process), the cached graph is rebuilt from the stored snapshot, so a read can no longer revert newer durable state. · *Called within this file by:* `state/harness_coordinator.py::HarnessCoordinator.add_lateral_dependency`, `state/harness_coordinator.py::HarnessCoordinator.cancel_run`, `state/harness_coordinator.py::HarnessCoordinator.execute_run`, `state/harness_coordinator.py::HarnessCoordinator.publish_discovery` (+6 more)
+  - `HarnessCoordinator.get_run_state(run_id: str) -> RunRecord` - Returns the cached verified record while the run's snapshot fingerprint is unchanged; otherwise loads and verifies it, rebuilds the graph and caches both. Never writes.
   - `HarnessCoordinator.shared_state(run_id: str) -> GraphSharedState` - Graph-owned shared state after an integrity-checked load. · *Called within this file by:* `state/harness_coordinator.py::HarnessCoordinator.execute_run`, `state/harness_coordinator.py::HarnessCoordinator.start_run`
   - `HarnessCoordinator.cancel_run(run_id: str) -> RunRecord` - Records the run as cancelled (the flag is sticky for this coordinator), cancels every node that is runnable now (pending dependents become BLOCKED) and persists; running nodes are left to finish.
   - `HarnessCoordinator.publish_discovery(run_id: str, discovery: ExploratoryDiscovery) -> RunRecord` - Publishes a discovery into the graph and persists.
@@ -190,13 +191,13 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - `HarnessCoordinator.add_lateral_dependency(run_id: str, producer_node_id: str, consumer_node_id: str, discovery_episode_id: str) -> RunRecord` - Compatibility wrapper for adding the conditional edge directly.
   - `HarnessCoordinator.record_node_result(run_id: str, node_id: str, result: GraphNodeResult) -> RunRecord` - Starts and terminally commits one node through the state machine (host-driven execution) and persists.
   - `HarnessCoordinator.execute_run(run_id: str, executors: Mapping[GraphNodeKind, NodeExecutor], *, max_parallelism: int | None=None) -> RunRecord` *(async)* - Returns at once for a cancelled run; otherwise loops waves: before each wave it stops (cancelling the nodes that became runnable) if the run was cancelled, else starts the wave, persists, runs executors concurrently and commits results in node-id order, persisting after each. A cancel issued mid-run therefore stops later waves and the flag is never overwritten. · *Called by:* `state/controller_runtime.py::ControllerRuntime.execute_graph`
-    - `HarnessCoordinator.execute_run.execute_one(node: GraphNode) -> GraphNodeResult` *(async)* - Same per-node executor wrapper as `StateGraph.execute`, duplicated here. · *Called within this file by:* `state/harness_coordinator.py::HarnessCoordinator.execute_run`
   - `HarnessCoordinator.recover_interrupted_run(run_id: str, replayable_node_ids: set[str]=frozenset()) -> RunRecord` - Applies `StateGraph.recover_interrupted` and persists. · *No in-package callers (public API, entry point, or protocol hook).*
-  - `HarnessCoordinator.submit_approval(run_id: str, approval_id: str, approved: bool, reason: str | None=None) -> ApprovalRequest` - Records an approval decision in the run's in-memory registry; unavailable for runs not started or loaded by this instance.
-  - `HarnessCoordinator.approvals(run_id: str) -> ApprovalRegistry` - The run's approval registry or a `ValueError` naming the run. · *Called by:* `tools/registry.py::HarnessToolExecutor._approval_for`, `tools/registry.py::HarnessToolExecutor.execute`
+  - `HarnessCoordinator.submit_approval(run_id: str, approval_id: str, approved: bool, reason: str | None=None) -> ApprovalRequest` - Records a decision in the run's durable registry; works after a restart and from another process.
+  - `HarnessCoordinator.approvals(run_id: str) -> ApprovalRegistry` - The run's file-backed registry (`.agent-approvals/<run>.json`).
+    - `HarnessCoordinator._approval_registry(run_id: str) -> ApprovalRegistry` - Builds that registry. · *Called by:* `state/harness_coordinator.py::HarnessCoordinator.approvals`
   - `HarnessCoordinator.resume_run(run_id: str) -> RunRecord` - Re-reads and integrity-verifies the persisted run.
   - `HarnessCoordinator._cancel_runnable_nodes(graph: StateGraph) -> None` *(staticmethod)* - Marks each currently runnable node started and then CANCELLED with the reason `Run was cancelled.`. · *Called by:* `state/harness_coordinator.py::HarnessCoordinator.cancel_run`, `state/harness_coordinator.py::HarnessCoordinator.execute_run`
-  - `HarnessCoordinator._save(run_id: str, plan_id: str, graph: StateGraph, validation: PlanValidationReport, cancelled: bool=False) -> RunRecord` - Refuses to save (typed `RUN_STATE_CONFLICT` naming the run) if the run file changed on disk since this coordinator last read or wrote it; otherwise snapshots the graph, ORs in the sticky cancelled flag, builds the hashed `RunRecord`, writes it through the store and remembers the new file fingerprint. · *Called by:* `state/harness_coordinator.py::HarnessCoordinator.add_lateral_dependency`, `state/harness_coordinator.py::HarnessCoordinator.cancel_run`, `state/harness_coordinator.py::HarnessCoordinator.execute_run`, `state/harness_coordinator.py::HarnessCoordinator.publish_discovery` (+5 more)
+  - `HarnessCoordinator._save(run_id: str, plan_id: str, graph: StateGraph, validation: PlanValidationReport, cancelled: bool=False) -> RunRecord` - Under the run's `FileLock`, checks the snapshot fingerprint still matches what this coordinator last saw (another writer otherwise raises), builds the hashed `RunRecord`, saves it and caches it.
 
 **Algorithms & invariants.** Approvals live only in memory; a restarted coordinator loads the run with an empty registry. Detection of another writer uses the run file's fingerprint (inode, modification time, size); it narrows the race but there is still no lock, so two writers saving at the same instant can interleave.
 
@@ -204,7 +205,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/orchestration.py` - controller state machine and its crash-safe store
 
-*363 lines · depends on: `foundations/atomic_io.py`, `state/orchestration_models.py`, `state/planning.py`, `state/shared_state.py` · used by: `state/controller_runtime.py` · re-exported at the package root: 1 name(s)*
+*368 lines · depends on: `foundations/atomic_io.py`, `state/orchestration_models.py`, `state/planning.py`, `state/shared_state.py` · used by: `state/controller_runtime.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** `ControllerStateMachine` enforces the legal order planning, plan approval, dispatch, execution, then complete, with bounded repair and escalation. `ControllerStateStore` persists the record with the same snapshot-plus-sidecar pattern as run records.
 
@@ -226,7 +227,8 @@ Everything that must survive a restart and be explainable afterwards. There are 
 - `_replace_with_retry(temporary: Path, target: Path, *, attempts: int=5) -> None` - Atomic replace with bounded retries. · *Called within this file by:* `state/orchestration.py::ControllerStateStore._write_events`, `state/orchestration.py::ControllerStateStore.save`
 - **class `ControllerStateStore`** *(class)* - File store under `<run_root>/.agent-controllers/`: `<id>.json` snapshot plus `<id>.events.jsonl` sidecar. · *Instantiated by:* `state/controller_runtime.py::ControllerRuntime.__init__`
   - `ControllerStateStore.__init__(root: Path) -> None` - Creates the directory and the per-controller cursor cache.
-  - `ControllerStateStore.save(record: ControllerRecord) -> None` - Discards an uncommitted event suffix, rewrites the sidecar if the record has fewer events than persisted (a reused controller id) or appends the new ones, then atomically writes the snapshot with the event count and hash.
+  - `ControllerStateStore.save(record: ControllerRecord) -> None` - Holds the controller's `FileLock` and calls `_save_locked`, which discards an uncommitted event suffix, rewrites the sidecar if the recorded events diverge, appends new events and atomically replaces the snapshot.
+    - `ControllerStateStore._save_locked(record: ControllerRecord) -> None` - The save body, run under the lock. · *Called by:* `state/orchestration.py::ControllerStateStore.save`
   - `ControllerStateStore.exists(controller_id: str) -> bool` - True if a snapshot file exists for the controller id.
   - `ControllerStateStore.load(controller_id: str) -> ControllerRecord` - Reads the snapshot; verifies the named event prefix by count and hash and sequence continuity; legacy one-file records load directly.
   - `ControllerStateStore._events_path(controller_id: str) -> Path` - Sidecar path. · *Called by:* `state/orchestration.py::ControllerStateStore._append_events`, `state/orchestration.py::ControllerStateStore._discard_uncommitted_events`, `state/orchestration.py::ControllerStateStore._read_events`, `state/orchestration.py::ControllerStateStore._write_events` (+1 more)
@@ -246,14 +248,14 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/orchestration_models.py` - controller phase, routing-rule and record contracts
 
-*93 lines · depends on: `foundations/contracts.py`, `state/planning.py`, `state/shared_state.py` · used by: `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py`, `mcp/controller_tools.py`, `state/controller_runtime.py`, `state/orchestration.py` · re-exported at the package root: 7 name(s)*
+*92 lines · depends on: `foundations/contracts.py`, `state/planning.py`, `state/shared_state.py` · used by: `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py`, `mcp/controller_tools.py`, `state/controller_runtime.py`, `state/orchestration.py` · re-exported at the package root: 7 name(s)*
 
 **Role in the workflow.** The data that `ControllerStateMachine` mutates and `ControllerStateStore` persists.
 
 **Contents**
 
-- **class `ControllerPhase`** *(enum; bases: StrEnum)* - planning, awaiting-plan-approval, dispatch-ready, executing, repair-required, escalated, completed or cancelled (`intake` exists but is never entered).
-  - members: `INTAKE`, `PLANNING`, `AWAITING_PLAN_APPROVAL`, `DISPATCH_READY`, `EXECUTING`, `REPAIR_REQUIRED`, `ESCALATED`, `COMPLETED`, `CANCELLED`
+- **class `ControllerPhase`** *(enum; bases: StrEnum)* - planning, awaiting-plan-approval, dispatch-ready, executing, repair-required, escalated, completed or cancelled.
+  - members: `PLANNING`, `AWAITING_PLAN_APPROVAL`, `DISPATCH_READY`, `EXECUTING`, `REPAIR_REQUIRED`, `ESCALATED`, `COMPLETED`, `CANCELLED`
 - **class `WorkflowArchitecture`** *(enum; bases: StrEnum)* - single-agent or multi-agent. · *Instantiated by:* `orchestrator/orchestrator.py::Orchestrator.prepare`, `state/controller_runtime.py::ControllerRuntime.apply_advisory_architecture`
   - members: `SINGLE_AGENT`, `MULTI_AGENT`
 - **class `GapMetadata`** *(pydantic model; bases: StrictModel)* - Categories touched, blast radius and gap types of the specification gaps behind a task; input to routing.
@@ -316,7 +318,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/project_state_engine.py` - mechanical reducer and token-bounded projector over `ProjectState`
 
-*415 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `state/project_state_store.py` · re-exported at the package root: 2 name(s)*
+*477 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `state/project_state_store.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` calls `ProjectStateReducer.tool_transition` after every governed tool call and `agent_result_transition` at termination; stores apply them with `apply`. Each turn `ProjectStateProjector.project` selects the part of the state that fits the budget.
 
@@ -328,20 +330,20 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - `ProjectStateProjector.project(state: ProjectState) -> ProjectStateView` - Always includes the core (schema, fields, decisions, questions, blockers, last action); then adds artifacts and work items newest-first while they fit, skipping any that do not, and reports omitted counts and over-budget. If the core alone exceeds the budget, no artifacts or work items are included.
 - **class `ProjectStateReducer`** *(class)* - Applies only tool outcomes, agent results and authority-checked controller or human events, never model claims.
   - `ProjectStateReducer.tool_transition(call: ToolCall, result: ToolExecutionResult, handle: ToolResultHandle, *, output_summary_max_chars: int=256) -> StateTransition` *(staticmethod)* - Builds a harness `TOOL_OUTCOME` transition from a tool call, its result and result handle, carrying a bounded output summary, a truncated error and any recognised artifact. · *Called by:* `base_agent/agent.py::BaseAgent._apply_tool_outcome_to_project_state`
-  - `ProjectStateReducer.agent_result_transition(task_id: str, status: str, result_hash: str) -> StateTransition` *(staticmethod)* - Builds the harness `AGENT_RESULT` transition for a task. · *Called by:* `base_agent/agent.py::BaseAgent._terminate`
-  - `ProjectStateReducer.apply(current: ProjectState, transition: StateTransition, *, summary_max_chars: int=2048) -> ProjectState` *(staticmethod)* - Produces the next state: upserts the artifact or blocker (blocked tool results), the work item (agent result), decision (human only), question, work item update (controller or harness only) or stage change (controller or human only); then enforces per-collection capacity, bumps revision and step count and records the bounded last action.
+  - `ProjectStateReducer.agent_result_transition(task_id: str, status: str, result_hash: str, *, artifact_ids: Sequence[str]=()) -> StateTransition` *(staticmethod)* - Builds the harness-authority terminal record. `artifact_ids` names the artifact versions the run wrote; a `completed` run has passed its verification gate, so those exact versions become `ArtifactStatus.COMPLETE`. · *Called by:* `agent/base_agent/agent.py::BaseAgent._terminate`
+  - `ProjectStateReducer.apply(current: ProjectState, transition: StateTransition, *, summary_max_chars: int=2048) -> ProjectState` *(staticmethod)* - The mechanical reducer. Tool outcomes upsert IN_PROGRESS artifacts and blockers; a completed agent result completes the artifact versions it names; `ARTIFACT_STATUS_CHANGED` (any authority; models hold none) sets a recorded artifact's status and refuses if `artifact_id` no longer matches the recorded version; `BLOCKER_RESOLVED` and `QUESTION_RESOLVED` (controller or human; a human-owned question needs a human) remove the entry and fail if it is not recorded. Collections are then bounded by capacity and a new hashed state is returned.
 - `_artifact_from_result(call: ToolCall, result: ToolExecutionResult) -> dict[str, Any] | None` - Recognises a succeeded `write_draft` result carrying an artifact id and path and returns an IN_PROGRESS artifact entry. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.tool_transition`
 - `_upsert(items: list[T], key: str, value: T) -> list[T]` - Replaces any entry with the same key and appends the new one last. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
+- `_remove(items: list[T], key: str, value: str, noun: str) -> list[T]` - Removes the entry with that key; raises if it is not recorded. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
 - `_always_closed(_item: object) -> bool` - Eviction predicate for artifacts: all are evictable. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
 - `_never_closed(_item: object) -> bool` - Eviction predicate for blockers and questions: none are evictable. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
 - `_is_closed_work(item: ProjectWorkItem) -> bool` - Completed, failed and cancelled work items are evictable. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
 - `_is_superseded(decision: ProjectDecision) -> bool` - Superseded decisions are evictable. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
 - `_within_capacity(project_id: str, collection: str, items: list[T], limit: int, key: str, is_closed: Callable[[T], bool]) -> list[T]` - Evicts the oldest closed entries (never the newest) when a collection exceeds its cap; if too few are evictable raises `PROJECT_STATE_CAPACITY_EXCEEDED` naming the collection, limit and counts. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
-- `_canonical_json(value: Any) -> str` - Sorted-key compact JSON. · *Called within this file by:* `state/project_state_engine.py::_bounded_value`, `state/project_state_engine.py::_estimated_tokens`
+- Size checks and token estimates use `foundations/canonical.py` (`canonical_json`, `estimate_tokens` with `models=True`).
   - `_canonical_json.default(item: Any) -> Any` - JSON fallback encoder. · *Called within this file by:* `state/project_state_engine.py::_canonical_json`
 - `_bounded_value(value: Any, max_chars: int) -> Any` - Returns the value unchanged or a `truncated-state-summary` with a preview of the first N characters. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`, `state/project_state_engine.py::ProjectStateReducer.tool_transition`
 - `_bounded_text(value: str | None, max_chars: int) -> str | None` - Truncates text with a marker. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.tool_transition`
-- `_estimated_tokens(value: Any) -> int` - Approximate tokens as canonical JSON length divided by four (minimum one). · *Called by:* `state/project_state_engine.py::ProjectStateProjector.project`
 
 **Algorithms & invariants.** Only IN_PROGRESS artifacts are ever produced and no transition closes a blocker or question.
 
@@ -351,7 +353,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/project_state_models.py` - bounded, hash-sealed working-memory contracts
 
-*354 lines · depends on: `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/model.py`, `agent/runtime.py`, `mcp/agent_tools.py`, `mcp/project_state_tools.py`, `state/controller_runtime.py`, `state/project_state_engine.py` (+2 more) · re-exported at the package root: 21 name(s)*
+*353 lines · depends on: `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/model.py`, `agent/runtime.py`, `mcp/agent_tools.py`, `mcp/project_state_tools.py`, `state/controller_runtime.py`, `state/project_state_engine.py` (+2 more) · re-exported at the package root: 21 name(s)*
 
 **Role in the workflow.** `ProjectState` is the normal working memory a `BaseAgent` sees each turn (through `ProjectStateProjector`). It is current-state only: events and raw tool output stay as audit evidence and are not replayed to the model.
 
@@ -363,7 +365,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - members: `OPEN`, `LOCKED`, `SUPERSEDED`
 - **class `WorkItemStatus`** *(enum; bases: StrEnum)* - not-started, in-progress, completed, blocked, failed or cancelled. · *Instantiated by:* `state/project_state_engine.py::ProjectStateReducer.apply`
   - members: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `BLOCKED`, `FAILED`, `CANCELLED`
-- **class `ArtifactStatus`** *(enum; bases: StrEnum)* - not-started, in-progress, complete, invalid or blocked.
+- **class `ArtifactStatus`** *(enum; bases: StrEnum)* - not-started, in-progress, complete, invalid or blocked. A write records in-progress; a completed, verified run or an `ARTIFACT_STATUS_CHANGED` review sets complete.
   - members: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETE`, `INVALID`, `BLOCKED`
 - **class `QuestionOwner`** *(enum; bases: StrEnum)* - human or controller. · *Instantiated by:* `mcp/project_state_tools.py::register_project_state_tools.open_project_question`, `state/project_state_engine.py::ProjectStateReducer.apply`
   - members: `HUMAN`, `CONTROLLER`
@@ -396,12 +398,12 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - fields: `token_budget`, `action_output_summary_chars`
 - **class `ProjectStateView`** *(pydantic model; bases: StrictModel)* - Budgeted view with omitted counts and an over-budget flag. · *Instantiated by:* `state/project_state_engine.py::ProjectStateProjector.project`
   - fields: `project_id`, `revision`, `stage_schema`, `stage_fields`, `artifacts`, `decisions`, `open_questions`, `blocked`, `work_items`, `last_action`, `step_count`, `state_hash`, `estimated_tokens`, `token_budget`, `omitted_artifact_count`, `omitted_work_item_count`, ... (+1)
-- **class `StateTransitionKind`** *(enum; bases: StrEnum)* - tool-outcome, agent-result, human-decision, question-opened, work-item-updated or stage-changed.
-  - members: `TOOL_OUTCOME`, `AGENT_RESULT`, `HUMAN_DECISION`, `QUESTION_OPENED`, `WORK_ITEM_UPDATED`, `STAGE_CHANGED`
+- **class `StateTransitionKind`** *(enum; bases: StrEnum)* - tool-outcome, agent-result, human-decision, question-opened, work-item-updated, stage-changed, artifact-status-changed, blocker-resolved or question-resolved.
+  - members: `TOOL_OUTCOME`, `AGENT_RESULT`, `HUMAN_DECISION`, `QUESTION_OPENED`, `WORK_ITEM_UPDATED`, `STAGE_CHANGED`, `ARTIFACT_STATUS_CHANGED`, `BLOCKER_RESOLVED`, `QUESTION_RESOLVED`
 - **class `StateTransition`** *(pydantic model; bases: StrictModel)* - A typed mutation request: kind, actor, action id, payload and evidence. · *Instantiated by:* `mcp/project_state_tools.py::register_project_state_tools.open_project_question`, `mcp/project_state_tools.py::register_project_state_tools.record_human_project_decision`, `state/controller_runtime.py::ControllerRuntime._reduce_graph_result`, `state/controller_runtime.py::ControllerRuntime.record_node_result` (+2 more)
   - fields: `kind`, `actor`, `action_id`, `payload`, `evidence`
-- **class `ProjectStateEvent`** *(pydantic model; bases: StrictModel)* - Hash-chained audit record of one revision: previous and new state hash and its own hash. · *Instantiated by:* `state/project_state_store.py::_make_event`
-  - fields: `schema_version`, `project_id`, `revision`, `kind`, `actor`, `action_id`, `evidence`, `previous_state_hash`, `state_hash`, `event_hash`
+- **class `ProjectStateEvent`** *(pydantic model; bases: StrictModel)* - Hash-chained audit record of one revision: previous and new state hash and its own hash, plus the transition `payload` and `summary_max_chars` needed to replay it (both outside `event_hash`, so older events still verify). · *Instantiated by:* `state/project_state_store.py::_make_event`
+  - fields: `schema_version`, `project_id`, `revision`, `kind`, `actor`, `action_id`, `evidence`, `previous_state_hash`, `state_hash`, `event_hash`, `payload`, `summary_max_chars`
   - `ProjectStateEvent.event_hash_matches() -> ProjectStateEvent` *(validator)* - Validator: the event hash equals the recomputed canonical hash.
 - **class `ProjectStateRepository`** *(Protocol; bases: Protocol)* - Protocol of a project-state store: ensure, load, apply.
   - `ProjectStateRepository.ensure(project_id: str, stage_schema: StageStateSchema) -> ProjectState` - Create the state at revision 0 if it does not exist.
@@ -412,7 +414,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 - `project_state_hash_from_payload(payload: dict[str, Any]) -> str` - Same, from a plain dictionary. · *Called by:* `state/project_state_models.py::make_project_state`, `state/project_state_models.py::project_state_hash`
 - `_event_hash(project_id: str, revision: int, kind: StateTransitionKind, actor: StateAuthority, action_id: str, evidence: list[StateEvidence], previous_state_ha...` - Hash of an event's canonical fields. · *Called within this file by:* `state/project_state_models.py::ProjectStateEvent.event_hash_matches`
 - `_ensure_unique(items: list[T], key: str, label: str) -> None` - Raises `<label> must be unique` if a key repeats. · *Called by:* `state/project_state_models.py::ProjectState.state_is_well_formed`
-- `_canonical_json(value: Any) -> str` - Sorted-key compact JSON, with pydantic models dumped and unknown objects stringified. · *Called within this file by:* `state/project_state_models.py::StateAction.summary_is_bounded`, `state/project_state_models.py::_event_hash`, `state/project_state_models.py::project_state_hash_from_payload`
+- Hashes use `foundations/canonical.py` with `models=True`, which dumps pydantic models through `model_dump(mode="json")`; the encoding is byte-identical to the former local copy, so stored hashes still verify.
   - `_canonical_json.default(item: Any) -> Any` - JSON fallback encoder for models and other objects. · *Called within this file by:* `state/project_state_models.py::_canonical_json`
 
 **Algorithms & invariants.** `_canonical_json` is duplicated in this file, `project_state_engine.py` and `project_state_store.py`.
@@ -423,7 +425,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/project_state_store.py` - in-memory and file-backed project-state stores with a hash-chained audit trail
 
-*204 lines · depends on: `foundations/atomic_io.py`, `state/project_state_engine.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `agent/runtime.py`, `mcp/_shared.py`, `mcp/server.py`, `state/controller_runtime.py` · re-exported at the package root: 2 name(s)*
+*250 lines · depends on: `foundations/atomic_io.py`, `state/project_state_engine.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `agent/runtime.py`, `mcp/_shared.py`, `mcp/server.py`, `state/controller_runtime.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` (through the harness), `ControllerRuntime` and the MCP project-state tools call `ensure`, `load` and `apply`; `FileProjectStateStore` writes one event file per revision and one state file per project.
 
@@ -437,18 +439,19 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - `InMemoryProjectStateStore.events(project_id: str) -> tuple[ProjectStateEvent, ...]` - The project's events so far.
 - **class `FileProjectStateStore`** *(class; bases: InMemoryProjectStateStore)* - Persistent store under `<run_root>/.agent-project-state/`: `<sha256(project_id)>.json` and `<sha256>/<revision>.json`. · *Instantiated by:* `agent/runtime.py::AgentRuntimeServices.open`, `mcp/server.py::create_mcp_server`, `state/controller_runtime.py::ControllerRuntime.__init__`
   - `FileProjectStateStore.__init__(run_root: Path) -> None` - Creates the directory.
-  - `FileProjectStateStore.ensure(project_id: str, stage_schema: StageStateSchema) -> ProjectState` - Loads an existing file, else creates and writes revision 0.
-  - `FileProjectStateStore.load(project_id: str) -> ProjectState` - Returns the cached state while the state file's fingerprint is unchanged; if another instance or process wrote it, reads the file, loads the events and verifies the history before returning. · *Called within this file by:* `state/project_state_store.py::FileProjectStateStore.apply`, `state/project_state_store.py::FileProjectStateStore.ensure`
-  - `FileProjectStateStore.apply(project_id: str, transition: StateTransition, *, summary_max_chars: int=2048) -> ProjectState` - Loads the current state (refreshing a stale cache), reduces, writes the event file, then the state file, then updates its cache and fingerprint. There is still no lock, so two writers applying at the same instant can race.
+  - `FileProjectStateStore.ensure(project_id: str, stage_schema: StageStateSchema) -> ProjectState` - Under the project's `FileLock`: loads an existing file, else creates and persists the initial state.
+  - `FileProjectStateStore.load(project_id: str) -> ProjectState` - Returns the cached state while the state file's fingerprint is unchanged; otherwise reads the state and events. If the state is exactly one revision behind its events (a crash between the event write and the state write), rolls it forward under the lock, then verifies the history.
+  - `FileProjectStateStore.apply(project_id: str, transition: StateTransition, *, summary_max_chars: int=2048) -> ProjectState` - Under the project's `FileLock`, reloads (so another process's change is the base), reduces, writes the event (with replay data) and then the state.
+    - `FileProjectStateStore._roll_forward(project_id: str, state: ProjectState, event: ProjectStateEvent) -> ProjectState` - Replays the last event's transition onto the state and writes the result only if it reproduces the event's recorded `state_hash`; an event without replay data, or one that does not follow the state, raises with the manual fix (remove the last event file). · *Called by:* `state/project_state_store.py::FileProjectStateStore.load`
+    - `FileProjectStateStore._lock(project_id: str) -> FileLock` - The project's cross-process lock (sibling of the state file).
   - `FileProjectStateStore._fingerprint(project_id: str) -> tuple[int, int, int] | None` - Identity of the project's state file (inode, modification time, size) or None. · *Called by:* `state/project_state_store.py::FileProjectStateStore.apply`, `state/project_state_store.py::FileProjectStateStore.ensure`, `state/project_state_store.py::FileProjectStateStore.load`
   - `FileProjectStateStore._state_path(project_id: str) -> Path` - State file path (project id hashed). · *Called by:* `memory/episode_store.py::FileEpisodeStore.__init__`, `memory/episode_store.py::FileEpisodeStore.persist`, `state/project_state_store.py::FileProjectStateStore._fingerprint`, `state/project_state_store.py::FileProjectStateStore.apply` (+2 more)
   - `FileProjectStateStore._event_path(project_id: str, revision: int) -> Path` - Per-revision event file path (creating the folder). · *Called by:* `state/project_state_store.py::FileProjectStateStore.apply`
   - `FileProjectStateStore._read_events(project_id: str) -> list[ProjectStateEvent]` - Reads and validates every event file in revision order. · *Called within this file by:* `state/project_state_store.py::FileProjectStateStore.load`
   - `FileProjectStateStore._verify_history(project_id: str) -> None` - Requires revision equal to the event count, contiguous revisions, an unbroken previous-hash chain and a last event hash equal to the state hash. · *Called by:* `state/project_state_store.py::FileProjectStateStore.load`
   - `FileProjectStateStore._write_json(path: Path, value: dict[str, Any]) -> None` *(staticmethod)* - Atomic canonical JSON write. · *Called by:* `state/project_state_store.py::FileProjectStateStore.apply`, `state/project_state_store.py::FileProjectStateStore.ensure`
-- `_make_event(previous: ProjectState, current: ProjectState, transition: StateTransition) -> ProjectStateEvent` - Builds the sealed event linking the previous and new state hashes. · *Called by:* `state/project_state_store.py::FileProjectStateStore.apply`, `state/project_state_store.py::InMemoryProjectStateStore.apply`
+- `_make_event(previous: ProjectState, current: ProjectState, transition: StateTransition, summary_max_chars: int) -> ProjectStateEvent` - Builds the sealed event, including the replay payload.
 - `_safe_id(value: str) -> str` - SHA-256 of the project id, used as a filename. · *Called by:* `state/project_state_store.py::FileProjectStateStore._event_path`, `state/project_state_store.py::FileProjectStateStore._read_events`, `state/project_state_store.py::FileProjectStateStore._state_path`
-- `_canonical_json(value: Any) -> str` - Sorted-key compact JSON. · *Called within this file by:* `state/project_state_store.py::FileProjectStateStore._write_json`
   - `_canonical_json.default(item: Any) -> Any` - JSON fallback encoder. · *Called within this file by:* `state/project_state_store.py::_canonical_json`
 
 **Algorithms & invariants.** The event file is written before the state file; a crash between them leaves revision != event count and the next load raises until the last event file is removed by hand.
@@ -457,7 +460,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/run_state_store.py` - crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar
 
-*377 lines · depends on: `foundations/atomic_io.py`, `state/coordination_records.py` · used by: `state/harness_coordinator.py` · re-exported at the package root: 1 name(s)*
+*401 lines · depends on: `foundations/atomic_io.py`, `state/coordination_records.py` · used by: `state/harness_coordinator.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Each save appends only the new history entries (events, route decisions, conflicts, discoveries, values, lateral requests) to `<run>.history.jsonl` with fsync, then atomically replaces `<run>.json`, which names the exact sidecar prefix it owns by entry count and hash. A crash between the two leaves an unpublished suffix that the next save or load ignores or truncates, so recovery lands on the last complete generation. Loading replays the sidecar, merges it back and re-verifies `run_hash`.
 
@@ -466,26 +469,25 @@ Everything that must survive a restart and be explainable afterwards. There are 
 - `_replace_with_retry(temporary: Path, target: Path, *, attempts: int=5) -> None` - Atomic replace with bounded retries for transient Windows handle errors. · *Called within this file by:* `state/run_state_store.py::RunStateStore.save`, `state/run_state_store.py::_rewrite_history`
 - **class `RunStateStore`** *(class)* - File store under `<run_root>/.agent-runs/`. · *Instantiated by:* `state/harness_coordinator.py::HarnessCoordinator.__init__`
   - `RunStateStore.__init__(root: Path) -> None` - Creates the directory and the per-run cursor cache.
-  - `RunStateStore.save(record: RunRecord) -> None` - Discards any uncommitted sidecar suffix, restarts the sidecar if the in-memory history shrank (a reused run id), appends new entries, re-reads the whole sidecar to compute count and hash, writes the emptied snapshot atomically and updates the cursors.
+  - `RunStateStore.save(record: RunRecord) -> None` - Holds the run's `FileLock` and calls `_save_locked`.
+    - `RunStateStore.lock(run_id: str) -> FileLock` - The run's cross-process lock; `HarnessCoordinator._save` holds it across its fingerprint check and save.
+    - `RunStateStore._save_locked(record: RunRecord) -> None` - Truncates any uncommitted sidecar tail back to the committed byte length, restarts the sidecar if the in-memory history shrank, appends only new entries, advances the incremental SHA-256, and writes the snapshot with the boundary `(entry_count, digest)`; it never re-reads the sidecar.
   - `RunStateStore.load(run_id: str) -> RunRecord` - Reads the snapshot; legacy snapshots are verified directly; otherwise replays exactly the named sidecar prefix, checks count and hash, merges and verifies `run_hash`.
   - `RunStateStore.exists(run_id: str) -> bool` - True if a snapshot file exists.
   - `RunStateStore.fingerprint(run_id: str) -> tuple[int, int, int] | None` - Cheap identity of a run's snapshot file (inode, modification time, size) or None; callers compare it to detect that another writer replaced the file. · *Called by:* `state/harness_coordinator.py::HarnessCoordinator._save`, `state/harness_coordinator.py::HarnessCoordinator.get_run_state`, `state/project_state_store.py::FileProjectStateStore.load`
   - `RunStateStore._history_path(run_id: str) -> Path` - Sidecar path for a run. · *Called by:* `state/run_state_store.py::RunStateStore._append_history`, `state/run_state_store.py::RunStateStore._counts_for`, `state/run_state_store.py::RunStateStore.load`, `state/run_state_store.py::RunStateStore.save`
   - `RunStateStore._counts_for(run_id: str) -> _PersistedHistoryCounts` - Cursor for a run: the cached one, else rebuilt from the verified durable boundary. · *Called by:* `state/run_state_store.py::RunStateStore.save`
-  - `RunStateStore._append_history(run_id: str, entries: list[dict[str, Any]]) -> None` - Appends JSON lines and fsyncs. · *Called by:* `state/run_state_store.py::RunStateStore.save`
-  - `RunStateStore._discard_uncommitted_history(path: Path, committed_entries: int) -> None` - Rewrites the sidecar down to the committed prefix when it is longer. · *Called by:* `state/run_state_store.py::RunStateStore.save`
-- **class `_PersistedHistoryCounts`** *(dataclass)* - Cursor describing how much of each growing collection is already in the sidecar. · *Instantiated by:* `state/run_state_store.py::RunStateStore._counts_for`, `state/run_state_store.py::RunStateStore.load`, `state/run_state_store.py::RunStateStore.save`, `state/run_state_store.py::_diff_history` (+1 more)
+  - `RunStateStore._append_history(run_id: str, entries: list[dict[str, Any]]) -> int` - Appends canonical JSON lines, fsyncs, and returns the bytes written.
+- **class `_PersistedHistoryCounts`** *(dataclass)* - Cursor describing how much of each growing collection is in the sidecar, plus its committed `byte_length` and a running `hashlib.sha256` digest of those bytes.
   - fields: `entry_count`, `events`, `route_decisions`, `conflicts`, `discovery_keys`, `value_keys`, `lateral_dependency_counts`
 - `_emptied_history(graph: dict[str, Any]) -> dict[str, Any]` - Copy of the graph with every growing collection cleared (shallow copy: nodes, edges, statuses and results are shared by reference). · *Called by:* `state/run_state_store.py::RunStateStore.save`
 - `_history_shrunk(graph: dict[str, Any], counts: _PersistedHistoryCounts) -> bool` - True when any growing collection is now smaller than what was persisted. · *Called by:* `state/run_state_store.py::RunStateStore.save`
 - `_diff_history(graph: dict[str, Any], counts: _PersistedHistoryCounts) -> tuple[list[dict[str, Any]], _PersistedHistoryCounts]` - New sidecar entries since a cursor, with the updated cursor. · *Called by:* `state/run_state_store.py::RunStateStore.save`
-- `_replay_history(path: Path, *, entry_limit: int | None=None) -> tuple[dict[str, Any], _PersistedHistoryCounts, str]` - Rebuilds the growing collections from a bounded sidecar prefix, returning them, the cursor and the prefix hash. · *Called by:* `state/run_state_store.py::RunStateStore._counts_for`, `state/run_state_store.py::RunStateStore.load`
-- `_read_history_entries(path: Path, *, entry_limit: int | None=None) -> list[dict[str, Any]]` - Reads up to `entry_limit` non-blank JSON lines. · *Called by:* `state/run_state_store.py::RunStateStore._discard_uncommitted_history`, `state/run_state_store.py::_history_boundary`, `state/run_state_store.py::_replay_history`
-- `_history_boundary(path: Path) -> tuple[int, str]` - Entry count and hash of the whole sidecar. · *Called by:* `state/run_state_store.py::RunStateStore.save`
-- `_nonempty_line_count(path: Path) -> int` - Number of non-blank lines. · *Called by:* `state/run_state_store.py::RunStateStore._discard_uncommitted_history`
-- `_history_hash(entries: list[dict[str, Any]]) -> str` - SHA-256 over the canonical JSON lines. · *Called by:* `state/run_state_store.py::_history_boundary`, `state/run_state_store.py::_replay_history`
-- `_rewrite_history(path: Path, entries: list[dict[str, Any]]) -> None` - Atomically rewrites the sidecar with a given list of entries. · *Called by:* `state/run_state_store.py::RunStateStore._discard_uncommitted_history`
+- `_replay_history(path: Path, *, entry_limit: int | None=None) -> tuple[dict[str, Any], _PersistedHistoryCounts, str]` - Rebuilds the growing collections from the first `entry_limit` entries via `_read_history_prefix`, returning the cursor (with byte length and digest) and the hash.
 - `_write_json_atomic_candidate(path: Path, content: str) -> None` - Writes and fsyncs a temporary file ready for atomic replacement. · *Called by:* `state/run_state_store.py::RunStateStore.save`
+- `_entry_line(entry: dict[str, Any]) -> bytes` - One canonical JSON history line, the same bytes the digest covers.
+- `_read_history_prefix(path: Path, entry_limit: int | None) -> tuple[list[dict[str, Any]], int]` - Reads up to `entry_limit` entries in binary and returns them with the byte offset reached, stopping at a torn final line.
+- `_truncate_uncommitted(path: Path, committed_bytes: int) -> None` - Truncates the sidecar to its committed length; a sidecar shorter than that raises.
 - `_verify_run_record(record: RunRecord) -> None` - Recomputes `run_hash` and raises `Run "<id>" failed integrity verification.`. · *Called by:* `state/run_state_store.py::RunStateStore.load`
 - `_merge_history(snapshot_graph: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]` - Puts replayed growing collections back into a history-emptied graph. · *Called by:* `state/run_state_store.py::RunStateStore.load`
 
@@ -495,9 +497,9 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/shared_state.py` - typed lateral-state payloads, exact routing references and provenance records
 
-*333 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py` · used by: `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py`, `mcp/controller_tools.py`, `state/controller_runtime.py`, `state/graph.py`, `state/graph_models.py`, `state/harness_coordinator.py`, `state/orchestration.py` (+2 more) · re-exported at the package root: 13 name(s)*
+*238 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py` · used by: `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py`, `mcp/controller_tools.py`, `state/controller_runtime.py`, `state/graph.py`, `state/graph_models.py`, `state/harness_coordinator.py`, `state/orchestration.py` (+2 more) · re-exported at the package root: 13 name(s)*
 
-**Role in the workflow.** Workers never exchange conversation. A producer publishes a closed, source-backed `ExploratoryDiscovery` (or an immutable `SharedStateWrite`) into the graph; routing references on the discovery are matched exactly against the routing refs of graph nodes. `ProvenanceRecord`s hash what a node consumed and produced, and `ProvenanceContractGate` checks them at fan-in. The legacy `RunSharedState` and `SharedStateStore` remain for compatibility only; `StateGraph` now carries this state.
+**Role in the workflow.** Workers never exchange conversation. A producer publishes a closed, source-backed `ExploratoryDiscovery` (or an immutable `SharedStateWrite`) into the graph; routing references on the discovery are matched exactly against the routing refs of graph nodes. `ProvenanceRecord`s hash what a node consumed and produced, and `ProvenanceContractGate` checks them at fan-in. `StateGraph` carries this state (the former standalone `RunSharedState` and `SharedStateStore` were removed).
 
 **Contents**
 
@@ -528,23 +530,9 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - fields: `accepted`, `reasons`
 - **class `ProvenanceContractGate`** *(class)* - Mechanical fan-in acceptance test. · *Instantiated by:* `state/controller_runtime.py::ControllerRuntime.verify_provenance_contract`
   - `ProvenanceContractGate.verify(records: list[ProvenanceRecord], *, expected_snapshot_ids: set[str], required_schema_version: str) -> ProvenanceGateDecision` - Rejects duplicate producer node ids, wrong result schema versions and records that lack an expected source snapshot id; accepts only when there are no reasons.
-- **class `RunSharedState`** *(class)* - Legacy standalone container for discoveries, writes and lateral requests; superseded by `GraphSharedState`.
-  - `RunSharedState.__init__(snapshot: SharedSubstrateSnapshot) -> None` - Starts empty for one substrate snapshot.
-  - `RunSharedState.publish_discovery(discovery: ExploratoryDiscovery) -> None` - Accepts a closed discovery for the same snapshot id and version that is not already published. · *Called within this file by:* `state/shared_state.py::RunSharedState.from_snapshot`
-  - `RunSharedState.request_lateral_dependency(request: LateralDependencyRequest) -> ExploratoryDiscovery` - Requires a published discovery and a consumer other than its producer; records the request. · *Called within this file by:* `state/shared_state.py::RunSharedState.from_snapshot`
-  - `RunSharedState.write(state_write: SharedStateWrite) -> None` - Stores a keyed value; keys are immutable once written. · *Called by:* `memory/context_projection.py::FileToolResultJournal.record`, `observability/audit_log.py::AuditTranscriptStore.append`, `state/orchestration.py::ControllerStateStore._append_events`, `state/orchestration.py::ControllerStateStore._write_events` (+7 more)
-  - `RunSharedState.get_discovery(episode_id: str) -> ExploratoryDiscovery | None` - Looks a discovery up by episode id. · *No in-package callers (public API, entry point, or protocol hook).*
-  - `RunSharedState.snapshot_state() -> dict[str, Any]` - Sorted JSON-able dump of substrate, discoveries, writes and lateral requests. · *Called by:* `state/shared_state.py::SharedStateStore.save`
-  - `RunSharedState.from_snapshot(payload: dict[str, Any]) -> RunSharedState` *(classmethod)* - Rebuilds the container by replaying the dump through the validating methods.
-- **class `SharedStateStore`** *(class)* - Legacy file persistence under `.agent-shared-state/`.
-  - `SharedStateStore.__init__(root: Path) -> None` - Creates the directory.
-  - `SharedStateStore.save(run_id: str, state: RunSharedState) -> None` - Atomic JSON write of a run's shared state.
-  - `SharedStateStore.load(run_id: str) -> RunSharedState` - Reads and validates a run's shared state; unknown or malformed runs raise `ValueError`.
 - `make_provenance_record(*, node_id: str, input_hashes: list[str], source_snapshot_ids: list[str], source_spans: list[str], tool_record_hashes: list[str], artifact_ids: li...` - Builds a record, computing the result hash and the record hash. · *No in-package callers (public API, entry point, or protocol hook).*
 - `canonical_hash(value: Any) -> str` - SHA-256 of canonical JSON (sorted keys, no spaces, `default=str`); the SDK's general-purpose content hash for state records. · *Called by:* `state/controller_runtime.py::_graph_result_hash`, `state/shared_state.py::make_provenance_record`, `state/shared_state.py::provenance_hash`
 - `provenance_hash(node_id: str, input_hashes: list[str], source_snapshot_ids: list[str], source_spans: list[str], tool_record_hashes: list[str], artifact_ids: list[...` - Hash of the record's fields with every list sorted, so list order never changes identity. · *Called by:* `state/controller_runtime.py::ControllerRuntime._reduce_graph_result`, `state/controller_runtime.py::ControllerRuntime.record_node_result`, `state/shared_state.py::ProvenanceRecord.hash_matches_payload`, `state/shared_state.py::make_provenance_record`
-
-**Algorithms & invariants.** `RunSharedState` and `SharedStateStore` are only reachable through the package root re-export; nothing in the SDK instantiates them.
 
 ---
 

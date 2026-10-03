@@ -222,6 +222,9 @@ class StateTransitionKind(StrEnum):
     QUESTION_OPENED = "question-opened"
     WORK_ITEM_UPDATED = "work-item-updated"
     STAGE_CHANGED = "stage-changed"
+    ARTIFACT_STATUS_CHANGED = "artifact-status-changed"
+    BLOCKER_RESOLVED = "blocker-resolved"
+    QUESTION_RESOLVED = "question-resolved"
 
 
 class StateTransition(StrictModel):

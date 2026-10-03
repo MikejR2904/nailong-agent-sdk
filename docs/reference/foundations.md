@@ -7,10 +7,13 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 | [`foundations/__init__.py`](#foundations__init__py---package-marker-for-the-dependency-free-layer) | 4 | package marker for the dependency-free layer |
 | [`foundations/atomic_io.py`](#foundationsatomic_iopy---crash-safe-publication-of-a-prepared-temporary-file) | 29 | crash-safe publication of a prepared temporary file |
 | [`foundations/benchmarks.py`](#foundationsbenchmarkspy---reproducible-exact-vs-greedy-pckp-benchmark-harness) | 87 | reproducible exact-vs-greedy PCKP benchmark harness |
-| [`foundations/contracts.py`](#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 481 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
+| [`foundations/canonical.py`](#foundationscanonicalpy---the-one-canonical-json-encoding-digest-and-token-estimate) | 53 | the one canonical JSON encoding, digest and token estimate |
+| [`foundations/contracts.py`](#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 489 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
 | [`foundations/dependency_graph.py`](#foundationsdependency_graphpy---deterministic-cycle-and-blast-radius-traversal-over-dependent-prerequisite-edges) | 100 | deterministic cycle and blast-radius traversal over (dependent, prerequisite) edges |
 | [`foundations/errors.py`](#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 210 | typed SDK errors and secret/reasoning redaction for durable records |
+| [`foundations/file_lock.py`](#foundationsfile_lockpy---cross-process-exclusive-locks-for-the-file-backed-stores) | 126 | cross-process exclusive locks for the file-backed stores |
 | [`foundations/logging.py`](#foundationsloggingpy---opt-in-stdlib-logging-namespace-for-the-few-paths-outside-structured-telemetry) | 25 | opt-in stdlib logging namespace for the few paths outside structured telemetry |
+| [`foundations/version.py`](#foundationsversionpy---the-single-source-of-the-sdk-name-version-and-user-agent) | 8 | the single source of the SDK name, version and user agent |
 | [`foundations/optimization/__init__.py`](#foundationsoptimization__init__py---re-exports-the-pckp-models-and-solvers) | 17 | re-exports the PCKP models and solvers |
 | [`foundations/optimization/models.py`](#foundationsoptimizationmodelspy---pckp-problem-item-and-solution-contracts) | 98 | PCKP problem, item and solution contracts |
 | [`foundations/optimization/solvers.py`](#foundationsoptimizationsolverspy---exact-tree-dp--branch-and-bound-and-greedy-pckp-solvers) | 445 | exact (tree DP / branch-and-bound) and greedy PCKP solvers |
@@ -59,9 +62,27 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 ---
 
+### `foundations/canonical.py` - the one canonical JSON encoding, digest and token estimate
+
+*53 lines · depends on: nothing in the package · used by: every module that hashes, content-addresses or budgets (audit log, profiler, telemetry, project state, run state, context projection, git versioning, graph agent executor, tool helpers, integrations, episode scoring, BaseAgent) · not re-exported at the package root*
+
+**Role in the workflow.** Every integrity chain, content address and context budget in the SDK hashes or measures the same canonical form, so it lives in exactly one place. It replaced eight local `_canonical_json` copies, their differently named SHA-256 wrappers and four copies of the token estimate.
+
+**Contents**
+
+- `canonical_json(value: Any, *, models: bool=False) -> str` - Sorted-key, compact, ASCII JSON; non-JSON values fall back to `str(value)`, or with `models=True` pydantic models encode through `model_dump(mode="json")` (what typed project state uses).
+- `sha256_text(text: str) -> str` - SHA-256 hex of UTF-8 text.
+- `sha256_json(value: Any, *, models: bool=False) -> str` - SHA-256 hex of `canonical_json(value)`.
+- `estimate_tokens(value: Any, *, models: bool=False) -> int` - One token per four canonical characters, at least one.
+- `_model_aware_default(item: Any) -> Any` - The `default=` hook for `models=True`.
+
+**Algorithms & invariants.** The encoding is byte-for-byte the one each module used before, so every hash already persisted on disk still verifies (tested in `tests/test_canonical.py`).
+
+---
+
 ### `foundations/contracts.py` - the serializable BaseAgent contract: definitions, tasks, turns, results, context types
 
-*481 lines · depends on: `foundations/errors.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/model.py`, `agent/openai_compatible/chat.py`, `agent/openai_compatible/semantic_gap.py`, `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py` (+53 more) · re-exported at the package root: 17 name(s)*
+*489 lines · depends on: `foundations/errors.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/model.py`, `agent/openai_compatible/chat.py`, `agent/openai_compatible/semantic_gap.py`, `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py` (+53 more) · re-exported at the package root: 17 name(s)*
 
 **Role in the workflow.** The shared vocabulary of the whole SDK. A host builds an `AgentDefinition` (data only) and a `ScopedAgentTask`; `BaseAgent` validates them, asks the model for `AgentTurn`s (tool call, tool batch, final, blocked), executes tools producing `ToolExecutionResult`s, records `ModelObservation`s/`EpisodeSummary`s, and returns an `AgentResult` carrying lifecycle events and projection metadata. Every model adapter, store, MCP tool and integration exchanges these types, which is why it is the most depended-on module.
 
@@ -204,6 +225,28 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 ---
 
+### `foundations/file_lock.py` - cross-process exclusive locks for the file-backed stores
+
+*126 lines · depends on: `foundations/errors.py` · used by: `state/run_state_store.py`, `state/harness_coordinator.py`, `state/project_state_store.py`, `state/orchestration.py`, `tools/approvals.py`, `observability/audit_log.py` · not re-exported at the package root*
+
+**Role in the workflow.** Each durable store performs a read-check-write sequence; change detection narrows the window in which two writers interleave, and this lock closes it. Run state, project state, controller state, approvals and audit appends all serialize through it.
+
+**Contents**
+
+- **class `FileLock`** *(class)* - Exclusive lock on the resource at `path`, held through a sibling `<name>.lock` file.
+  - `FileLock.__init__(path: Path, *, timeout_seconds: float=30.0) -> None` - Records the path and lock-file path; a non-positive timeout raises.
+  - `FileLock.hold() -> Iterator[None]` *(contextmanager)* - Takes a per-path in-process `RLock`, then a non-blocking OS lock polled every 10 ms until the timeout. Re-entrant per thread (nested holds only count depth).
+  - `FileLock._timeout() -> AgentSdkError` - `STORE_LOCK_TIMEOUT`, naming the lock file and noting that OS locks release on process exit, so a held lock means a live (possibly hung) process.
+- `_process_lock(path: Path) -> threading.RLock` - The process-wide lock for one lock-file path.
+- `_depths() -> dict[str, int]` - This thread's hold depth per lock path.
+- `_acquire_os(fd: int, blocking: bool) -> bool` / `_release_os(fd: int) -> None` - `fcntl.flock` on POSIX, `msvcrt.locking` on byte 0 on Windows.
+
+**Algorithms & invariants.** The OS lock serializes processes; the in-process lock serializes threads (POSIX `flock` alone does not exclude two descriptors in one process from each other reliably across platforms). Tested with spawned processes in `tests/test_durability.py`.
+
+*Module-level names:* `_registry_guard`, `_process_locks`, `_holders`
+
+---
+
 ### `foundations/logging.py` - opt-in stdlib logging namespace for the few paths outside structured telemetry
 
 *25 lines · depends on: nothing in the package · used by: `agent/model.py`, `mcp/client.py`, `tools/tasks.py` · not re-exported at the package root*
@@ -215,6 +258,16 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 - `get_logger(name: str) -> logging.Logger` - Returns a logger named `nailong_agent_sdk.<name>`. · *Called by:* `agent/model.py::<module>`, `mcp/client.py::<module>`, `tools/tasks.py::<module>`
 
 *Module-level names:* `_ROOT_LOGGER_NAME`
+
+---
+
+### `foundations/version.py` - the single source of the SDK name, version and user agent
+
+*8 lines · depends on: nothing in the package · used by: `mcp/server.py`, `tools/core/helpers.py`, `tools/core/services.py`; `pyproject.toml` reads the version from it (hatch dynamic version)*
+
+**Contents**
+
+*Module-level names:* `__version__`, `SDK_NAME`, `USER_AGENT` - The package version, `nailong-agent-sdk`, and `nailong-agent-sdk/<version>`. The MCP `SERVER_NAME`/`SERVER_VERSION` and the HTTP clients' user agents derive from them.
 
 ---
 

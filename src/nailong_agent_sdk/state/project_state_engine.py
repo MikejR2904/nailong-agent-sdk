@@ -9,7 +9,7 @@ events, never model claims.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from ..foundations.canonical import canonical_json, estimate_tokens
@@ -137,12 +137,24 @@ class ProjectStateReducer:
         task_id: str,
         status: str,
         result_hash: str,
+        *,
+        artifact_ids: Sequence[str] = (),
     ) -> StateTransition:
+        """Record a run's terminal status.
+
+        ``artifact_ids`` names the artifact versions the run wrote. A run reaches
+        ``completed`` only after its verification gate accepted the output, so
+        those exact versions become ``ArtifactStatus.COMPLETE``.
+        """
+
+        payload: dict[str, Any] = {"task_id": task_id, "status": status}
+        if artifact_ids:
+            payload["artifact_ids"] = sorted(set(artifact_ids))
         return StateTransition(
             kind=StateTransitionKind.AGENT_RESULT,
             actor=StateAuthority.HARNESS,
             action_id=f"agent-result:{task_id}",
-            payload={"task_id": task_id, "status": status},
+            payload=payload,
             evidence=[
                 StateEvidence(
                     evidence_id=f"agent-result:{task_id}",
@@ -212,6 +224,20 @@ class ProjectStateReducer:
                     evidence=transition.evidence,
                 ),
             )
+            if status == "completed":
+                verified = set(payload.get("artifact_ids") or ())
+                artifacts = [
+                    artifact.model_copy(
+                        update={
+                            "status": ArtifactStatus.COMPLETE,
+                            "evidence": [*artifact.evidence, *transition.evidence][-32:],
+                        }
+                    )
+                    if artifact.artifact_id in verified
+                    and artifact.status is ArtifactStatus.IN_PROGRESS
+                    else artifact
+                    for artifact in artifacts
+                ]
 
         elif transition.kind is StateTransitionKind.HUMAN_DECISION:
             if transition.actor is not StateAuthority.HUMAN:
@@ -261,6 +287,48 @@ class ProjectStateReducer:
             stage_fields = [
                 StageStateField.model_validate(item) for item in payload.get("stage_fields", [])
             ]
+
+        elif transition.kind is StateTransitionKind.ARTIFACT_STATUS_CHANGED:
+            # Every StateAuthority (harness, controller, human) may record a review;
+            # models never hold one.
+            path = str(payload["relative_path"])
+            existing = next((a for a in artifacts if a.relative_path == path), None)
+            if existing is None:
+                raise ValueError(f'Artifact "{path}" is not recorded in project state.')
+            expected_id = payload.get("artifact_id")
+            if expected_id is not None and expected_id != existing.artifact_id:
+                raise ValueError(
+                    f'Artifact "{path}" changed since it was reviewed '
+                    f"(recorded {existing.artifact_id}, reviewed {expected_id})."
+                )
+            artifacts = _upsert(
+                artifacts,
+                "relative_path",
+                existing.model_copy(
+                    update={
+                        "status": ArtifactStatus(payload["status"]),
+                        "evidence": transition.evidence,
+                    }
+                ),
+            )
+
+        elif transition.kind is StateTransitionKind.BLOCKER_RESOLVED:
+            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
+                raise ValueError("Only controller or human authority may resolve a blocker.")
+            blocked = _remove(blocked, "blocker_id", str(payload["blocker_id"]), "Blocker")
+
+        elif transition.kind is StateTransitionKind.QUESTION_RESOLVED:
+            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
+                raise ValueError("Only controller or human authority may resolve a question.")
+            question_id = str(payload["question_id"])
+            question = next((q for q in questions if q.question_id == question_id), None)
+            if (
+                question is not None
+                and question.owner is QuestionOwner.HUMAN
+                and (transition.actor is not StateAuthority.HUMAN)
+            ):
+                raise ValueError("A question owned by a human must be resolved by a human.")
+            questions = _remove(questions, "question_id", question_id, "Open question")
 
         else:
             raise ValueError(f"Unsupported state transition {transition.kind.value}.")
@@ -331,6 +399,13 @@ def _upsert[T](items: list[T], key: str, value: T) -> list[T]:
     value_key = getattr(value, key)
     replacement = [item for item in items if getattr(item, key) != value_key]
     return [*replacement, value]
+
+
+def _remove[T](items: list[T], key: str, value: str, noun: str) -> list[T]:
+    remaining = [item for item in items if getattr(item, key) != value]
+    if len(remaining) == len(items):
+        raise ValueError(f'{noun} "{value}" is not recorded in project state.')
+    return remaining
 
 
 _CLOSED_WORK_STATUSES = frozenset(

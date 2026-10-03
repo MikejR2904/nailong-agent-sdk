@@ -15,7 +15,6 @@ from .shared_state import SharedSubstrateSnapshot
 
 
 class ControllerPhase(StrEnum):
-    INTAKE = "intake"
     PLANNING = "planning"
     AWAITING_PLAN_APPROVAL = "awaiting-plan-approval"
     DISPATCH_READY = "dispatch-ready"

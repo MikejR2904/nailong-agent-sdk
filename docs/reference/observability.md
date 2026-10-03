@@ -5,13 +5,14 @@ Three independent records of a run, all written outside the model's context: the
 | File | Lines | Role |
 |---|---:|---|
 | [`observability/__init__.py`](#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
-| [`observability/audit_log.py`](#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 372 | append-only, hash-chained, per-run JSONL audit transcript |
+| [`observability/audit_log.py`](#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 359 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/metric_definitions.py`](#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 481 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
-| [`observability/profiler.py`](#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 318 | privacy-conscious timing profile for one agent run |
+| [`observability/profiler.py`](#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 311 | privacy-conscious timing profile for one agent run |
+| [`observability/retention.py`](#observabilityretentionpy---one-retention-policy-applied-across-every-growing-ledger) | 91 | one retention policy applied across every growing ledger |
 | [`observability/telemetry_helpers.py`](#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
 | [`observability/telemetry_models.py`](#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 129 | telemetry event, context, actor and metric contracts |
-| [`observability/telemetry_store.py`](#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 466 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
+| [`observability/telemetry_store.py`](#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 503 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
 
 ---
 
@@ -25,7 +26,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/audit_log.py` - append-only, hash-chained, per-run JSONL audit transcript
 
-*372 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/runtime.py`, `developer_tools/inspect.py`, `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 2 name(s)*
+*359 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/runtime.py`, `developer_tools/inspect.py`, `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` appends an entry for every lifecycle event, the received task, each model turn, each tool result and the final profile. Reviewers read it through the MCP `get_audit_log` / `render_audit_transcript` tools or `developer_tools/inspect.py`, which also verify the chain. It never feeds back into the model's context.
 
@@ -35,11 +36,12 @@ Three independent records of a run, all written outside the model's context: the
   - fields: `schema_version`, `sequence`, `event_type`, `occurred_at_utc`, `run_id`, `task_id`, `iteration`, `payload`, `previous_hash`, `integrity_hash`
   - `AuditLogEntry.safe_payload(payload: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: refuses a payload containing a hidden-reasoning key.
 - **class `AuditTranscriptStore`** *(class)* - Owns `<root>/.agent-audit-logs/<run>.jsonl` files: bounded redacted appends, paging, boundary snapshots, chain verification and markdown rendering. · *Instantiated by:* `agent/runtime.py::AgentRuntimeServices.open`, `developer_tools/inspect.py::inspect_run`, `mcp/server.py::create_mcp_server`
-  - fields: `_append_locks`, `_append_locks_guard`
+  - fields: `_tails` - last `(hash, sequence, file size)` written or read per run, trusted only while the file still has that size, so another writer's append is always noticed.
   - `AuditTranscriptStore.__init__(root: Path, *, max_payload_chars: int=8192, max_open_handles: int=32) -> None` - Creates the log directory; validates `max_payload_chars` (>= 256) and `max_open_handles` (>= 1, default 32); sets up the store lock and the LRU of open file handles.
   - `AuditTranscriptStore._handle_for(run_id: str) -> IO[bytes]` - Returns a cached append handle for a run, evicting and closing the least recently used one when the cache is full (so more than 32 concurrently active runs reopen files on every append). · *Called by:* `observability/audit_log.py::AuditTranscriptStore.append`
   - `AuditTranscriptStore.append(run_id: str, event_type: str, payload: dict[str, Any], *, task_id: str | None=None, iteration: int | None=None) -> AuditLogEntry` - One atomic transaction under a thread lock plus a cross-process lock: seek to the end, read the tail line to get the previous hash and sequence, redact and size-bound the payload, compute the entry hash, write the JSON line, flush and `fsync`.
-  - `AuditTranscriptStore.list_entries(run_id: str, *, limit: int=1000, through_sequence: int | None=None) -> list[AuditLogEntry]` - Reads the whole file, optionally cuts at `through_sequence`, and returns up to `limit` entries (1 to 10,000). · *Called by:* `developer_tools/inspect.py::inspect_run`, `mcp/telemetry_tools.py::register_telemetry_tools.get_audit_log`, `observability/audit_log.py::AuditTranscriptStore.render_markdown`
+  - `AuditTranscriptStore.list_entries(run_id: str, *, limit: int=1000, through_sequence: int | None=None) -> list[AuditLogEntry]` - Streams the file line by line and stops at the page size or the boundary, so a page never reads the whole transcript.
+    - `AuditTranscriptStore.prune(*, older_than: datetime | None=None, keep_latest_runs: int | None=None) -> list[str]` - Deletes whole run transcripts (`.jsonl`, `.transcript.md`, `.lock`) last appended before `older_than` or outside the `keep_latest_runs` most recent, under each run's lock; returns the removed run ids.
   - `AuditTranscriptStore.snapshot_sequence(run_id: str) -> int` - Highest persisted sequence for a run (read from the tail); the fixed boundary used for verification and rendering. · *Called by:* `observability/audit_log.py::AuditTranscriptStore.chain_break`, `observability/audit_log.py::AuditTranscriptStore.iter_entries`, `observability/audit_log.py::AuditTranscriptStore.render_markdown`
   - `AuditTranscriptStore.iter_entries(run_id: str, *, through_sequence: int | None=None) -> Iterator[AuditLogEntry]` - Streams entries in order up to a boundary without loading the file at once. · *Called by:* `observability/audit_log.py::AuditTranscriptStore.chain_break`, `observability/audit_log.py::AuditTranscriptStore.entry_count`, `observability/audit_log.py::AuditTranscriptStore.render_markdown`
   - `AuditTranscriptStore.entry_count(run_id: str, *, through_sequence: int | None=None) -> int` - Counts entries through a boundary. · *Called by:* `observability/audit_log.py::AuditTranscriptStore.render_markdown`, `state/run_state_store.py::RunStateStore._counts_for`, `state/run_state_store.py::RunStateStore.load`, `state/run_state_store.py::RunStateStore.save` (+1 more)
@@ -50,22 +52,18 @@ Three independent records of a run, all written outside the model's context: the
   - `AuditTranscriptStore._tail(path: Path) -> tuple[str | None, int]` - Opens a log read-only and returns (last hash, last sequence), or (None, 0) for a missing or empty file. · *Called by:* `observability/audit_log.py::AuditTranscriptStore.snapshot_sequence`
   - `AuditTranscriptStore._jsonl_path(run_id: str) -> Path` - Maps a run id to its sanitized `.jsonl` filename. · *Called by:* `observability/audit_log.py::AuditTranscriptStore._append_transaction`, `observability/audit_log.py::AuditTranscriptStore._handle_for`, `observability/audit_log.py::AuditTranscriptStore.iter_entries`, `observability/audit_log.py::AuditTranscriptStore.list_entries` (+1 more)
   - `AuditTranscriptStore.close() -> None` - Closes all cached append handles (needed before deleting the root on Windows). · *Called within this file by:* `observability/audit_log.py::AuditTranscriptStore._handle_for`
-  - `AuditTranscriptStore._append_transaction(run_id: str) -> Iterator[None]` *(contextmanager)* - Context manager that holds the in-process lock and the `<run>.lock` file lock around one append. · *Called by:* `observability/audit_log.py::AuditTranscriptStore.append`
-  - `AuditTranscriptStore._local_append_lock(path: Path) -> Iterator[None]` *(classmethod, contextmanager)* - Class-level registry of one `RLock` per log path so separate store instances in one process serialize on the same file. · *Called by:* `observability/audit_log.py::AuditTranscriptStore._append_transaction`
+  - `AuditTranscriptStore._append_transaction(run_id: str) -> Iterator[None]` *(contextmanager)* - Holds the run's `FileLock` (`<run>.lock`, re-entrant per thread, cross-process) around one tail-read/hash/write/fsync append.
 - `_bound_and_redact(value: Any, max_chars: int) -> dict[str, Any]` - Redacts secrets, then keeps the payload if its JSON fits `max_chars`; otherwise replaces it with a truncation record (hash, original size, preview). · *Called by:* `observability/audit_log.py::AuditTranscriptStore.append`
 - `_parse_tail(handle: Any, end: int) -> tuple[str | None, int]` - Decodes up to the last 64 KiB of the file (tolerating a cut multi-byte character) and returns the hash and sequence of the last complete line. · *Called by:* `observability/audit_log.py::AuditTranscriptStore._tail`, `observability/audit_log.py::AuditTranscriptStore.append`
-- `_interprocess_lock(path: Path) -> Iterator[None]` *(contextmanager)* - Cross-process mutex on a `.lock` file: POSIX `flock`, Windows byte-range locking via the helpers below. · *Called by:* `observability/audit_log.py::AuditTranscriptStore._append_transaction`
-- `_acquire_windows_lock(descriptor: int, path: Path) -> None` - Polls a non-blocking byte-0 lock every 5 ms for up to 30 s and raises `AUDIT_LOCK_TIMEOUT` with the likely causes if another process still holds it. · *Called by:* `observability/audit_log.py::_interprocess_lock`
-- `_release_windows_lock(descriptor: int) -> None` - Unlocks the byte locked by `_acquire_windows_lock`. · *Called by:* `observability/audit_log.py::_interprocess_lock`
-- `_canonical_json(value: Any) -> str` - Sorted-key compact JSON used for hashing and size checks. · *Called within this file by:* `observability/audit_log.py::_bound_and_redact`, `observability/audit_log.py::_hash`
-- `_hash(value: Any) -> str` - SHA-256 hex of the canonical JSON of a value. · *Called within this file by:* `observability/audit_log.py::AuditTranscriptStore.append`, `observability/audit_log.py::_entries_chain_break`
+- `_first_run_id(path: Path) -> str | None` - The run id recorded in a transcript's first entry (a sanitized filename may differ from it).
+- Cross-process serialization of appends uses `foundations/file_lock.py::FileLock` on `<run>.lock` (the same lock file as before), so the module no longer carries its own POSIX/Windows lock code.
+- Hashing and size checks use `foundations/canonical.py` (`canonical_json`, `sha256_json`).
 - `_entries_chain_break(entries: Iterator[AuditLogEntry]) -> ChainBreak | None` - Runs the shared chain checker over audit entries (previous-hash field `previous_hash`, hash recomputed with `integrity_hash` blanked). · *Called by:* `observability/audit_log.py::AuditTranscriptStore._verify_entries`, `observability/audit_log.py::AuditTranscriptStore.chain_break`, `observability/audit_log.py::AuditTranscriptStore.render_markdown`
 - `_safe_name(value: str) -> str` - Replaces any character other than letters, digits, `-`, `_` and `.` with `_` so a run id is a safe filename. · *Called within this file by:* `observability/audit_log.py::AuditTranscriptStore._jsonl_path`, `observability/audit_log.py::AuditTranscriptStore.render_markdown`
 - `_atomic_write(path: Path, content: str) -> None` - Writes text to a temp file then `replace_atomic`s it into place. · *Called within this file by:* `observability/audit_log.py::AuditTranscriptStore.render_markdown`
 
 **Algorithms & invariants.** Each entry hashes its own canonical JSON with `integrity_hash` blank and stores the previous entry's hash, so editing, deleting or reordering any entry breaks verification of everything after it. Per-entry `fsync` makes entries durable but is synchronous work done on whichever thread calls `append`.
 
-*Module-level names:* `_LOCK_TIMEOUT_SECONDS`, `_LOCK_POLL_SECONDS`
 
 ---
 
@@ -102,7 +100,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/profiler.py` - privacy-conscious timing profile for one agent run
 
-*318 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/runtime.py` · re-exported at the package root: 7 name(s)*
+*311 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/runtime.py` · re-exported at the package root: 7 name(s)*
 
 **Role in the workflow.** `BaseAgent` owns the lifecycle: `begin_run`, a span around every context projection, model turn, tool call and verification, then `finish_run`. The result is attached to `AgentResult.profile`, summarized into telemetry, and its hash is audited. It records durations and statuses only, never prompts, reasoning or raw tool payloads.
 
@@ -133,9 +131,25 @@ Three independent records of a run, all written outside the model's context: the
   - `AgentRunProfiler.write_json(destination: Path) -> Path` - Atomically writes a finished profile to a path chosen by the host; requires `finish_run` first. · *No in-package callers (public API, entry point, or protocol hook).*
 - `_summaries(spans: list[ProfileSpan]) -> list[ProfilePhaseSummary]` - Folds spans into per-kind `ProfilePhaseSummary` rows sorted by kind. · *Called by:* `observability/profiler.py::AgentRunProfiler.snapshot`
 - `_assert_profile_safe(value: Any) -> None` - Recursively rejects attribute keys reserved for hidden reasoning. · *Called by:* `observability/profiler.py::AgentRunProfiler.start_span`, `observability/profiler.py::ProfileSpan.attributes_are_bounded_and_safe`
-- `_canonical_json(value: Any) -> str` - Sorted-key compact JSON for hashing. · *Called within this file by:* `observability/profiler.py::AgentRunProfiler.start_span`, `observability/profiler.py::ProfileSpan.attributes_are_bounded_and_safe`, `observability/profiler.py::_hash`
-- `_hash(value: Any) -> str` - SHA-256 of the canonical JSON. · *Called within this file by:* `observability/profiler.py::AgentRunProfiler.snapshot`
+- Hashing uses `foundations/canonical.py` (`canonical_json`, `sha256_json`).
 - `_utc_now() -> str` - Current UTC time as an ISO-8601 string. · *Called by:* `observability/profiler.py::AgentRunProfiler.begin_run`, `observability/profiler.py::AgentRunProfiler.finish_run`, `observability/profiler.py::AgentRunProfiler.start_span`
+
+---
+
+### `observability/retention.py` - one retention policy applied across every growing ledger
+
+*91 lines · depends on: `observability/telemetry_store.py`, `observability/audit_log.py`, `memory/context_projection.py`, `memory/episode_store.py` · used by: hosts (re-exported at the package root)*
+
+**Role in the workflow.** Telemetry, audit transcripts, stored tool results and episode records grow with every run. A long-lived host calls `apply_retention` periodically to bound its footprint.
+
+**Contents**
+
+- **class `RetentionPolicy`** *(pydantic model; bases: StrictModel)* - What to keep; unset fields keep everything along that dimension.
+  - fields: `max_age_days`, `keep_latest_runs`, `keep_compacted_episodes`
+- **class `RetentionReport`** *(dataclass)* - What was removed: telemetry run ids, audit run ids, tool-result count and episode ids.
+- `apply_retention(run_root: Path, policy: RetentionPolicy, *, now: datetime | None=None, telemetry: TelemetryStore | None=None, audit_logs: AuditTranscriptStore | None=None) -> RetentionReport` - Prunes telemetry and audit logs by whole run (age and/or count), stored tool results by age, and compacted episodes beyond `keep_compacted_episodes`. Pass the host's open stores to keep their caches consistent.
+
+**Algorithms & invariants.** Telemetry and audit logs lose whole runs only, so every remaining hash chain still verifies. Tool-result handles are never reused after pruning (the journal records a high-water mark). Compacted episodes that a remaining episode depends on are kept, and dependency links on both sides are cleaned.
 
 ---
 
@@ -188,7 +202,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/telemetry_store.py` - durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics
 
-*466 lines · depends on: `foundations/atomic_io.py`, `foundations/errors.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/orchestrator/orchestrator.py`, `agent/runtime.py`, `developer_tools/inspect.py`, `integrations/jev/receipts.py`, `integrations/receipts.py`, `mcp/_shared.py`, `mcp/server.py` (+4 more) · re-exported at the package root: 1 name(s)*
+*503 lines · depends on: `foundations/atomic_io.py`, `foundations/errors.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/orchestrator/orchestrator.py`, `agent/runtime.py`, `developer_tools/inspect.py`, `integrations/jev/receipts.py`, `integrations/receipts.py`, `mcp/_shared.py`, `mcp/server.py` (+4 more) · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Every `BaseAgent` lifecycle event becomes an `agent.<type>` telemetry event; metrics are recorded beside them. The MCP telemetry tools and `developer_tools/inspect.py` page the events, verify the chain and build run reports from this store.
 
@@ -212,11 +226,12 @@ Three independent records of a run, all written outside the model's context: the
   - `TelemetryStore.verify_run_chain(run_id: str) -> bool` - True if `chain_break` finds nothing through the run's current boundary. · *No in-package callers (public API, entry point, or protocol hook).*
   - `TelemetryStore.chain_break(run_id: str) -> ChainBreak | None` - Checks the run's chain through its current boundary and returns a `ChainBreak` naming the first bad sequence and why, or None. · *Called within this file by:* `observability/telemetry_store.py::TelemetryStore.verify_run_chain`
   - `TelemetryStore._verify_events(events: Iterable[TelemetryEvent]) -> bool` *(staticmethod)* - True if `_events_chain_break` finds no break in a stream of events. · *No in-package callers (public API, entry point, or protocol hook).*
-  - `TelemetryStore.create_run_report(run_id: str) -> dict[str, Any]` - Writes `reports/<run>.run-report.json`: counts by status and type, watchdog interventions, all metrics, per-metric summaries by registered aggregation, chain validity (with the failure when broken) and every event hash. · *Called by:* `mcp/telemetry_tools.py::register_telemetry_tools.create_telemetry_report`
+  - `TelemetryStore.create_run_report(run_id: str) -> dict[str, Any]` - Writes `reports/<run>.run-report.json`: counts by status and type, watchdog interventions, all metrics, per-metric summaries by registered aggregation, chain validity (with the failure when broken), `verified_event_count` (events before the first chain break) and every event hash. · *Called by:* `mcp/telemetry_tools.py::register_telemetry_tools.create_telemetry_report`
+    - `TelemetryStore.prune(*, older_than: datetime | None=None, keep_latest_runs: int | None=None) -> list[str]` - Deletes whole runs (events and metric observations) whose newest event precedes `older_than` or that fall outside the `keep_latest_runs` most recently active; removing whole runs keeps every remaining chain verifiable.
   - `TelemetryStore._initialize() -> None` - Creates the events, metric_observations and metric_definitions tables and their indexes if absent. · *Called by:* `observability/telemetry_store.py::TelemetryStore.__init__`
-- `_canonical_json(value: Any) -> str` - Sorted-key compact ASCII JSON used for hashing and storage. · *Called within this file by:* `observability/telemetry_store.py::TelemetryStore.append`, `observability/telemetry_store.py::TelemetryStore.record_metric`, `observability/telemetry_store.py::_canonical_hash`
-- `_canonical_hash(value: Any) -> str` - SHA-256 of the canonical JSON. · *Called by:* `observability/telemetry_store.py::TelemetryStore.append`, `observability/telemetry_store.py::_events_chain_break`
+- Hashing and storage encoding use `foundations/canonical.py` (`canonical_json`, `sha256_json`).
 - `_events_chain_break(events: Iterable[TelemetryEvent]) -> ChainBreak | None` - Runs the shared chain checker over telemetry events (previous-hash field `previous_event_hash`, hash recomputed with `integrity_hash` blanked). · *Called by:* `observability/telemetry_store.py::TelemetryStore._verify_events`, `observability/telemetry_store.py::TelemetryStore.chain_break`, `observability/telemetry_store.py::TelemetryStore.create_run_report`
+- `_parse_instant(value: str) -> datetime` - Parses a stored ISO timestamp, assuming UTC when it has no offset.
 - `_count(values: Iterable[str]) -> dict[str, int]` - Counts occurrences of each string into a dict. · *Called by:* `observability/telemetry_store.py::TelemetryStore.create_run_report`
 - `_summarize_metrics(observations: Iterable[MetricObservation], definitions: Iterable[MetricDefinition]) -> dict[str, dict[str, Any]]` - Groups observations by metric and aggregates available values (sum, mean, min, max, last) according to the registered definition; unregistered metrics and missing data yield None rather than zero. · *Called by:* `observability/telemetry_store.py::TelemetryStore.create_run_report`
 - `_safe_name(value: str) -> str` - Filename-safe version of a run id. · *Called within this file by:* `observability/telemetry_store.py::TelemetryStore.create_run_report`

@@ -154,6 +154,7 @@ class BaseAgent:
         self.project_state_store = project_state_store or InMemoryProjectStateStore()
         self._episode_store_factory = episode_store_factory or InMemoryEpisodeStore
         self._active_project_id: str | None = None
+        self._run_artifact_ids: list[str] = []
         self._active_project_state: ProjectState | None = None
         self.telemetry = telemetry
         self.telemetry_context = telemetry_context
@@ -187,6 +188,7 @@ class BaseAgent:
         project_state = self.project_state_store.ensure(project_id, self._stage_schema_for(task))
         self._active_project_id = project_id
         self._active_project_state = project_state
+        self._run_artifact_ids = []
         deadline = (
             asyncio.get_running_loop().time() + self.watchdog_policy.run_deadline_seconds
             if self.watchdog_policy.run_deadline_seconds is not None
@@ -1611,6 +1613,7 @@ class BaseAgent:
                         task.id,
                         status.value,
                         project_state_hash_from_result(status, output, reason),
+                        artifact_ids=self._run_artifact_ids,
                     ),
                 )
             except Exception as error:
@@ -1795,14 +1798,18 @@ class BaseAgent:
         action_output_summary_chars = (
             self.project_state_projector.policy.action_output_summary_chars
         )
+        transition = ProjectStateReducer.tool_transition(
+            outcome.call,
+            outcome.result,
+            projected.handle,
+            output_summary_max_chars=action_output_summary_chars,
+        )
+        written = transition.payload.get("artifact")
+        if isinstance(written, dict) and isinstance(written.get("artifact_id"), str):
+            self._run_artifact_ids.append(written["artifact_id"])
         state = self.project_state_store.apply(
             self._active_project_id,
-            ProjectStateReducer.tool_transition(
-                outcome.call,
-                outcome.result,
-                projected.handle,
-                output_summary_max_chars=action_output_summary_chars,
-            ),
+            transition,
             # apply()'s own summary wraps tool_transition's already-bounded
             # output_summary plus a few short fields (tool_call_id, tool_name,
             # status, error) - a second, independent hardcoded 2048 limit

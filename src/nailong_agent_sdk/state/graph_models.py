@@ -39,7 +39,6 @@ class GraphEdgeKind(StrEnum):
     STATIC = "static"
     CONDITIONAL = "conditional"
     DYNAMIC_FAN_OUT = "dynamic-fan-out"
-    FAN_IN = "fan-in"
 
 
 class GraphNodeStatus(StrEnum):

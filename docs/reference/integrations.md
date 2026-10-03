@@ -5,16 +5,16 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 | File | Lines | Role |
 |---|---:|---|
 | [`integrations/__init__.py`](#integrations__init__py---public-surface-of-the-integrations-package) | 113 | public surface of the integrations package |
-| [`integrations/_utils.py`](#integrations_utilspy---private-sanitiser-digest-and-optional-import-helpers) | 129 | private sanitiser, digest and optional-import helpers |
+| [`integrations/_utils.py`](#integrations_utilspy---private-sanitiser-digest-and-optional-import-helpers) | 126 | private sanitiser, digest and optional-import helpers |
 | [`integrations/contracts.py`](#integrationscontractspy---framework-neutral-interop-contracts) | 147 | framework-neutral interop contracts |
 | [`integrations/jev/__init__.py`](#integrationsjev__init__py---public-surface-of-the-jev-package) | 59 | public surface of the Jev package |
-| [`integrations/jev/advisory.py`](#integrationsjevadvisorypy---verification-gate-that-adds-a-non-authoritative-jev-signal) | 116 | verification gate that adds a non-authoritative Jev signal |
+| [`integrations/jev/advisory.py`](#integrationsjevadvisorypy---verification-gate-that-adds-a-non-authoritative-jev-signal) | 107 | verification gate that adds a non-authoritative Jev signal |
 | [`integrations/jev/architecture.py`](#integrationsjevarchitecturepy---monotonic-single-to-multi-routing-advice) | 151 | monotonic single-to-multi routing advice |
 | [`integrations/jev/decision.py`](#integrationsjevdecisionpy---optional-typesafe-jev-evaluator) | 296 | optional TypeSafe Jev evaluator |
 | [`integrations/jev/exploration.py`](#integrationsjevexplorationpy---optional-prioritisation-of-an-already-approved-candidate-set) | 139 | optional prioritisation of an already-approved candidate set |
 | [`integrations/jev/models.py`](#integrationsjevmodelspy---jev-question-answer-request-result-and-receipt-contracts) | 163 | Jev question, answer, request, result and receipt contracts |
 | [`integrations/jev/receipts.py`](#integrationsjevreceiptspy---receipt-sinks-for-jev-evaluations) | 57 | receipt sinks for Jev evaluations |
-| [`integrations/langchain.py`](#integrationslangchainpy---optional-langchain-adapters) | 226 | optional LangChain adapters |
+| [`integrations/langchain.py`](#integrationslangchainpy---optional-langchain-adapters) | 247 | optional LangChain adapters |
 | [`integrations/langgraph.py`](#integrationslanggraphpy---optional-langgraph-adapters) | 298 | optional LangGraph adapters |
 | [`integrations/receipts.py`](#integrationsreceiptspy---receipt-sinks-for-external-operations) | 65 | receipt sinks for external operations |
 
@@ -30,7 +30,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/_utils.py` - private sanitiser, digest and optional-import helpers
 
-*129 lines · depends on: nothing in the package · used by: `integrations/contracts.py`, `integrations/jev/decision.py`, `integrations/jev/models.py`, `integrations/langchain.py`, `integrations/langgraph.py` · not re-exported at the package root*
+*126 lines · depends on: nothing in the package · used by: `integrations/contracts.py`, `integrations/jev/decision.py`, `integrations/jev/models.py`, `integrations/langchain.py`, `integrations/langgraph.py` · not re-exported at the package root*
 
 **Role in the workflow.** Every contract validator and every receipt digest in this package calls these.
 
@@ -90,7 +90,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/jev/advisory.py` - verification gate that adds a non-authoritative Jev signal
 
-*116 lines · depends on: `agent/verification.py`, `foundations/contracts.py`, `integrations/contracts.py`, `integrations/jev/models.py` · used by: `integrations/jev/__init__.py` · re-exported at the package root: 2 name(s)*
+*107 lines · depends on: `agent/verification.py`, `foundations/contracts.py`, `integrations/contracts.py`, `integrations/jev/models.py` · used by: `integrations/jev/__init__.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** Registered as a verification gate: the deterministic gate runs first and a failure is final; only after it passes is Jev asked, and Jev's answer can lower confidence but never accept a locally failed output.
 
@@ -102,7 +102,6 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
   - `JevAdvisoryVerificationGate.__init__(deterministic_gate: VerificationGate, evaluator: ExternalDecisionProvider, request_factory: JevRequestFactory, policy: JevAdvisoryPolicy) -> None` - Stores the gate, evaluator, request factory and policy.
   - `JevAdvisoryVerificationGate.verify(context: VerificationContext) -> VerificationReturn` *(async)* - Runs the deterministic gate, returns its failure, otherwise builds a request, evaluates it and applies the policy.
   - `JevAdvisoryVerificationGate._apply_policy(result: ExternalDecisionResult) -> VerificationDecision` - Unavailable results follow the failure mode; the named question must be a noul answer; passes when the probability meets the minimum. · *Called by:* `jev/advisory.py::JevAdvisoryVerificationGate.verify`
-- `_normalize_verification(value: VerificationReturn) -> VerificationDecision` - Normalises a gate return (decision, bool or tuple) into a decision. · *Called by:* `jev/advisory.py::JevAdvisoryVerificationGate.verify`
 - `_unavailable_decision(mode: InteropFailureMode, reason: str | None) -> VerificationDecision` - Fallback accepts, escalate rejects with `Escalation required`, reject rejects, each naming the reason. · *Called by:* `jev/advisory.py::JevAdvisoryVerificationGate._apply_policy`
 
 *Module-level names:* `JevRequestFactory`
@@ -236,7 +235,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/langchain.py` - optional LangChain adapters
 
-*226 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `foundations/contracts.py`, `integrations/_utils.py`, `integrations/contracts.py`, `tools/tools.py` · used by: `integrations/__init__.py` · re-exported at the package root: 4 name(s)*
+*247 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `foundations/contracts.py`, `integrations/_utils.py`, `integrations/contracts.py`, `tools/tools.py` · used by: `integrations/__init__.py` · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** A LangChain Runnable can serve as the SDK model, an SDK run can be exposed as a Runnable, and an SDK tool can be exposed as a LangChain tool that re-enters the host's governed `ToolExecutor`. LangChain is never the security monitor.
 
@@ -247,9 +246,9 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 - **class `LangChainAgentModelAdapter`** *(class)* - Uses an injected Runnable as an SDK model adapter, with a host prompt projector and typed turn parser; never infers a tool call from prose.
   - `LangChainAgentModelAdapter.__init__(runnable: AsyncLangChainRunnable, prompt_projector: LangChainPromptProjector, turn_parser: LangChainTurnParser, *, config_factory: Callable[[Model...` - Stores the runnable, projector, parser and optional config factory.
   - `LangChainAgentModelAdapter.next_turn(context: ModelContext) -> AgentTurn | ModelTurnResponse` *(async)* - Projects the prompt, checks it with the chat-pair sanitiser, sanitises the config, invokes the runnable, parses and validates the turn.
-- **class `LangChainSdkRunnable`** *(class)* - Exposes a host-built SDK agent as an async Runnable.
-  - `LangChainSdkRunnable.__init__(agent_factory: LangChainAgentFactory) -> None` - Stores the agent factory.
-  - `LangChainSdkRunnable.ainvoke(input: ScopedAgentTask | Mapping[str, Any], config: Mapping[str, Any] | None=None) -> dict[str, Any]` *(async)* - Builds or validates the task, runs the agent and returns the whole `AgentResult` dump (prompt context, episode summaries, events, profile), ignoring framework config. · *Called within this file by:* `integrations/langchain.py::LangChainSdkRunnable.as_runnable`
+- **class `LangChainSdkRunnable`** *(class)* - Exposes a host-built SDK agent as an async Runnable that hands the framework the redacted run outcome only.
+  - `LangChainSdkRunnable.__init__(agent_factory: LangChainAgentFactory, *, include_diagnostics: bool=False) -> None` - Stores the factory; `include_diagnostics` also forwards prompt context, project state, episodes, events and profile (still redacted).
+  - `LangChainSdkRunnable.ainvoke(input: ScopedAgentTask | Mapping[str, Any], config: Mapping[str, Any] | None=None) -> dict[str, Any]` *(async)* - Builds or validates the task, runs the agent and returns `_agent_result_projection` of the result.
   - `LangChainSdkRunnable.as_runnable() -> Any` - Wraps `ainvoke` in a real `RunnableLambda` (needs `langchain_core`). · *No in-package callers (public API, entry point, or protocol hook).*
 - **class `LangChainSdkToolFacade`** *(class)* - A schema-only LangChain tool whose calls go through the SDK executor after a local preflight.
   - `LangChainSdkToolFacade.__init__(tool: ToolDefinition, executor: ToolExecutor, invocation_factory: LangChainToolInvocationFactory, *, preflight: LangChainToolPreflight | None=None...` - Stores the tool, executor, invocation factory and optional preflight.
@@ -259,7 +258,9 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
   - `LangChainSdkToolFacade._validate_invocation(invocation: ToolInvocationContext, payload: dict[str, Any]) -> None` - Requires the invocation's tool name and arguments to equal the declared tool and dispatched payload. · *Called by:* `integrations/langchain.py::LangChainSdkToolFacade.ainvoke`
 - `parse_structured_sdk_turn(response: Any, _: ModelContext) -> AgentTurn` - Accepts a mapping or pydantic-style response and validates it as an `AgentTurn`; anything else raises `TypeError`. · *No in-package callers (public API, entry point, or protocol hook).*
 - `_assert_safe_langchain_prompt(prompt: Any) -> None` - Allows at most one system and one user message with only role and content, each non-empty and at most 16,384 characters; everything else must pass the generic sanitiser. · *Called by:* `integrations/langchain.py::LangChainAgentModelAdapter.next_turn`
-- `_agent_result_projection(result: AgentResult) -> dict[str, Any]` - The full `AgentResult` JSON dump. · *Called by:* `integrations/langchain.py::LangChainSdkRunnable.ainvoke`
+- `_agent_result_projection(result: AgentResult, *, include_diagnostics: bool=False) -> dict[str, Any]` - Status, task id, iterations, output, reason, failure and escalation (or everything with diagnostics), passed through `redact_secrets`. · *Called by:* `integrations/langchain.py::LangChainSdkRunnable.ainvoke`
+
+*Module-level names:* `_OUTCOME_FIELDS`
 - `_result_mapping(result: Any) -> dict[str, Any]` - Converts a preflight result (model or mapping) to a dictionary. · *Called by:* `integrations/langchain.py::LangChainSdkToolFacade.ainvoke`
 
 *Module-level names:* `_AGENT_TURN_ADAPTER`, `LangChainPromptProjector`, `LangChainTurnParser`, `LangChainAgentFactory`, `LangChainToolPreflight`, `LangChainToolInvocationFactory`

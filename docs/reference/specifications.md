@@ -10,11 +10,11 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 | [`specifications/gate.py`](#specificationsgatepy---gate-1-deterministic-checks-soft-lock-decision-and-artifact-persistence) | 369 | Gate 1 deterministic checks, soft-lock decision and artifact persistence |
 | [`specifications/gate_models.py`](#specificationsgate_modelspy---gate-1-requirement-gap-and-version-metadata-contracts) | 167 | Gate 1 requirement, gap and version-metadata contracts |
 | [`specifications/git_models.py`](#specificationsgit_modelspy---git-backed-version-and-variant-worktree-contracts) | 120 | Git-backed version and variant-worktree contracts |
-| [`specifications/git_versioning.py`](#specificationsgit_versioningpy---local-only-git-adapter-and-the-specification-version-lock-service) | 464 | local-only Git adapter and the specification version-lock service |
-| [`specifications/preprocessing.py`](#specificationspreprocessingpy---manifest-driven-source-preserving-specification-parsing) | 386 | manifest-driven, source-preserving specification parsing |
-| [`specifications/retrieval.py`](#specificationsretrievalpy---provenance-grounded-candidate-retrieval-with-caches-and-optional-vector-backends) | 485 | provenance-grounded candidate retrieval with caches and optional vector backends |
+| [`specifications/git_versioning.py`](#specificationsgit_versioningpy---local-only-git-adapter-and-the-specification-version-lock-service) | 461 | local-only Git adapter and the specification version-lock service |
+| [`specifications/preprocessing.py`](#specificationspreprocessingpy---manifest-driven-source-preserving-specification-parsing) | 396 | manifest-driven, source-preserving specification parsing |
+| [`specifications/retrieval.py`](#specificationsretrievalpy---provenance-grounded-candidate-retrieval-with-caches-and-optional-vector-backends) | 512 | provenance-grounded candidate retrieval with caches and optional vector backends |
 | [`specifications/retrieval_models.py`](#specificationsretrieval_modelspy---retrieval-document-query-candidate-and-result-contracts) | 130 | retrieval document, query, candidate and result contracts |
-| [`specifications/vision.py`](#specificationsvisionpy---vision-extraction-adapter-protocol-and-trivial-adapters) | 43 | vision-extraction adapter protocol and trivial adapters |
+| [`specifications/vision.py`](#specificationsvisionpy---vision-extraction-adapter-protocol-and-trivial-adapters) | 22 | vision-extraction adapter protocol and trivial adapters |
 
 ---
 
@@ -199,7 +199,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/git_versioning.py` - local-only Git adapter and the specification version-lock service
 
-*464 lines · depends on: `foundations/atomic_io.py`, `specifications/gate_models.py`, `specifications/git_models.py` · used by: `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 2 name(s)*
+*461 lines · depends on: `foundations/atomic_io.py`, `specifications/gate_models.py`, `specifications/git_models.py` · used by: `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** Turns an approved Gate 1 soft-lock into a Git annotated tag plus a structured snapshot, and later classifies the next candidate version by comparing it with the previous snapshot. Exposed through the MCP git tools.
 
@@ -230,7 +230,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 - `_major_rationale(diff: StructuralSpecificationDiff) -> list[str]` - Human-readable reasons for a MAJOR classification. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.classify`
 - `_parse_semver(value: str) -> tuple[int, int, int]` - Parses `MAJOR.MINOR.PATCH` (no prerelease) into integers or raises. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.classify`, `specifications/git_versioning.py::SpecificationVersionService.create_lock`
 - `_satisfies_bump(previous: tuple[int, int, int], requested: tuple[int, int, int], required: VersionBump) -> bool` - Whether the requested version advances the previous one by the required bump (major resets minor/patch, minor resets patch). · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.create_lock`
-- `_sha256(value: Any) -> str` - SHA-256 of canonical JSON. · *Called within this file by:* `specifications/git_versioning.py::SpecificationVersionService._load_snapshot`, `specifications/git_versioning.py::SpecificationVersionService.create_lock`
+- Snapshot and lock hashes use `foundations/canonical.py` (`sha256_json`).
 - `_atomic_json(target: Path, value: dict[str, Any]) -> None` - Writes JSON to a temp file and replaces the target atomically. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService._persist_snapshot`, `specifications/git_versioning.py::SpecificationVersionService.create_lock`, `specifications/git_versioning.py::SpecificationVersionService.create_variant_worktree`
 
 *Module-level names:* `_SEMVER`, `_SAFE_BRANCH`
@@ -239,7 +239,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/preprocessing.py` - manifest-driven, source-preserving specification parsing
 
-*386 lines · depends on: `specifications/documents.py`, `specifications/vision.py` · used by: `mcp/_shared.py`, `mcp/server.py`, `memory/context_selection.py`, `specifications/retrieval.py` · re-exported at the package root: 1 name(s)*
+*396 lines · depends on: `specifications/documents.py`, `specifications/vision.py` · used by: `mcp/_shared.py`, `mcp/server.py`, `memory/context_selection.py`, `specifications/retrieval.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** First stage of the pipeline: reads the manifest, parses each document into an ordered `DocumentTree`, optionally resolves images through a vision adapter, and can persist the processed trees. Exposed through the MCP specification tools.
 
@@ -265,7 +265,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/retrieval.py` - provenance-grounded candidate retrieval with caches and optional vector backends
 
-*485 lines · depends on: `observability/metrics.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `specifications/documents.py`, `specifications/preprocessing.py`, `specifications/retrieval_models.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 10 name(s)*
+*512 lines · depends on: `observability/metrics.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `specifications/documents.py`, `specifications/preprocessing.py`, `specifications/retrieval_models.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 10 name(s)*
 
 **Role in the workflow.** `GroundedRetrievalService` indexes frozen trees, retrieves ranked references (cached, with a lexical fallback), and `resolve` re-verifies every candidate against local trees before any content can be exposed. Retrieval outcomes are logged digest-only to telemetry.
 
@@ -280,10 +280,10 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 - **class `RetrievalCache`** *(Protocol; bases: Protocol)* - Optional cache for bounded retrieval responses.
   - `RetrievalCache.get(key: str) -> RetrievalResult | None` - Protocol method: cached result or None.
   - `RetrievalCache.set(key: str, result: RetrievalResult, ttl_seconds: int) -> None` - Protocol method: store a result with a TTL.
-- **class `InMemoryRetrievalCache`** *(class)* - Deterministic dictionary cache without wall-clock expiry.
-  - `InMemoryRetrievalCache.__init__() -> None` - Starts empty.
-  - `InMemoryRetrievalCache.get(key: str) -> RetrievalResult | None` - Returns the stored result or None.
-  - `InMemoryRetrievalCache.set(key: str, result: RetrievalResult, ttl_seconds: int) -> None` - Stores a result; rejects a non-positive TTL.
+- **class `InMemoryRetrievalCache`** *(class)* - Process-local cache with TTL expiry and a least-recently-used bound.
+  - `InMemoryRetrievalCache.__init__(*, max_entries: int=1024, clock: Callable[[], float]=time.monotonic) -> None` - Starts empty; `clock` is injectable for deterministic expiry.
+  - `InMemoryRetrievalCache.get(key: str) -> RetrievalResult | None` - Returns a live entry and marks it most recently used; an expired entry is evicted and reported as a miss.
+  - `InMemoryRetrievalCache.set(key: str, result: RetrievalResult, ttl_seconds: int) -> None` - Stores a result until `ttl_seconds` elapse (a non-positive TTL is rejected) and evicts the least recently used entry beyond `max_entries`.
 - **class `RedisRetrievalCache`** *(class)* - Optional Redis cache storing only references and scores, never source text.
   - `RedisRetrievalCache.__init__(redis_url: str, *, namespace: str='agent-sdk:retrieval:') -> None` - Validates the URL and namespace, imports `redis` (the install hint it prints still names the old package `agent-design-agent-sdk[redis-cache]`) and opens a client.
   - `RedisRetrievalCache.get(key: str) -> RetrievalResult | None` - Reads and validates a cached result.
@@ -350,7 +350,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/vision.py` - vision-extraction adapter protocol and trivial adapters
 
-*43 lines · depends on: `foundations/contracts.py`, `specifications/documents.py` · used by: `agent/openai_compatible/vision.py`, `specifications/preprocessing.py` · re-exported at the package root: 4 name(s)*
+*22 lines · depends on: `foundations/contracts.py`, `specifications/documents.py` · used by: `agent/openai_compatible/vision.py`, `specifications/preprocessing.py` · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** `SpecificationPreprocessor.resolve_images` calls a `VisionAdapter` for image and diagram nodes; the real model-backed adapter is `OpenAICompatibleVisionAdapter` in the agent package.
 
@@ -360,9 +360,5 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
   - fields: `confidence`, `structure`, `errors`
 - **class `VisionAdapter`** *(Protocol; bases: Protocol)* - Protocol for anything that can propose a structure for an image node.
   - `VisionAdapter.extract(node: DocumentNode) -> VisionProposal` *(async)* - Protocol method.
-- **class `UnconfiguredVisionAdapter`** *(class)* - Default adapter: always returns confidence 0 and an error saying none is configured. · *Instantiated by:* `specifications/preprocessing.py::SpecificationPreprocessor.resolve_images`
-  - `UnconfiguredVisionAdapter.extract(node: DocumentNode) -> VisionProposal` *(async)* - Returns the zero-confidence proposal.
-- **class `ScriptedVisionAdapter`** *(class)* - Test adapter that returns pre-supplied proposals in order.
-  - `ScriptedVisionAdapter.__init__(proposals: list[VisionProposal]) -> None` - Copies the proposal list.
-  - `ScriptedVisionAdapter.extract(node: DocumentNode) -> VisionProposal` *(async)* - Pops the next proposal, or a zero-confidence one when exhausted.
+- *(There is no built-in default adapter. With no adapter, `SpecificationPreprocessor.resolve_images` marks image nodes `REVIEW_REQUIRED` directly; production hosts pass `OpenAICompatibleVisionAdapter`. The `ScriptedVisionAdapter` test double lives in `tests/support/doubles.py`.)*
 

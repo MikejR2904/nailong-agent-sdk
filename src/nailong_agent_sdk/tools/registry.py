@@ -247,25 +247,13 @@ class HarnessToolExecutor(ToolExecutor):
         }:
             return await self._core.execute(tool.name, arguments)
 
-        if tool.name == "read_artifact":
+        if tool.name in {"read_artifact", "grep_artifact"}:
+            # Authorization is the registry's job; the operation itself has one
+            # implementation, in the core dispatcher.
             artifact_id = _string_argument(arguments, "artifact_id")
             if artifact_id not in self._context.plan_task.authorized_artifact_ids:
                 raise ValueError("Artifact is not authorized for this PlanTask.")
-            return {
-                "artifact_id": artifact_id,
-                "content": self._context.artifacts.read_text(artifact_id),
-            }
-
-        if tool.name == "grep_artifact":
-            artifact_id = _string_argument(arguments, "artifact_id")
-            needle = _string_argument(arguments, "needle")
-            if artifact_id not in self._context.plan_task.authorized_artifact_ids:
-                raise ValueError("Artifact is not authorized for this PlanTask.")
-            lines = self._context.artifacts.read_text(artifact_id).splitlines()
-            return {
-                "artifact_id": artifact_id,
-                "matches": [index + 1 for index, line in enumerate(lines) if needle in line],
-            }
+            return await self._core.execute(tool.name, arguments)
 
         if tool.name == "diff_declared_artifacts":
             base = _string_argument(arguments, "base_artifact_id")
@@ -290,7 +278,7 @@ class HarnessToolExecutor(ToolExecutor):
                     raise ValueError(
                         "Draft artifact is not authorized and lacks current-task occurrence proof."
                     )
-            return self._context.artifacts.diff(base, draft)
+            return await self._core.execute(tool.name, arguments)
 
         if tool.command_template:
             process = await self._context.supervisor.execute(

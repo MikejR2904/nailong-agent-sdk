@@ -6,11 +6,11 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 |---|---:|---|
 | [`memory/__init__.py`](#memory__init__py---package-marker-for-episode-memory-and-context-assembly) | 3 | package marker for episode memory and context assembly |
 | [`memory/context.py`](#memorycontextpy---builds-the-fixed-initial-prompt-for-a-run) | 51 | builds the fixed initial prompt for a run |
-| [`memory/context_projection.py`](#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 327 | per-turn bounded context projection and the tool-result journal |
+| [`memory/context_projection.py`](#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 361 | per-turn bounded context projection and the tool-result journal |
 | [`memory/context_selection.py`](#memorycontext_selectionpy---pre-run-specification-selection-by-design-stage-eda) | 170 | pre-run specification selection by design stage (EDA) |
 | [`memory/episode_models.py`](#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 176 | episode records, compaction policy and the retention contracts |
-| [`memory/episode_scoring.py`](#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 54 | deterministic lexical relevance and cost helpers for retention |
-| [`memory/episode_store.py`](#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 857 | episode lifecycle and the three deterministic compaction strategies |
+| [`memory/episode_scoring.py`](#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 55 | deterministic lexical relevance and cost helpers for retention |
+| [`memory/episode_store.py`](#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 932 | episode lifecycle and the three deterministic compaction strategies |
 | [`memory/episodes.py`](#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 76 | task-scoped episode graph of one-line summaries |
 
 ---
@@ -37,7 +37,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/context_projection.py` - per-turn bounded context projection and the tool-result journal
 
-*327 lines · depends on: `foundations/contracts.py`, `memory/episode_models.py`, `memory/episode_store.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `mcp/agent_tools.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 6 name(s)*
+*361 lines · depends on: `foundations/contracts.py`, `memory/episode_models.py`, `memory/episode_store.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `mcp/agent_tools.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 6 name(s)*
 
 **Role in the workflow.** Each loop iteration `BaseAgent.run` calls `ContextProjector.project`, which compacts episodes and returns the observations, episode summaries and compacted-episode references that go into the `ModelContext`. After every tool call `project_tool_result` stores the full result in the journal and returns only a bounded preview plus a handle, which is also what the `get_tool_result` core tool later reads.
 
@@ -57,7 +57,9 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 - **class `FileToolResultJournal`** *(class; bases: InMemoryToolResultJournal)* - Journal that also writes each record to `<run_root>/.agent-tool-results/<id>.json`, claiming every file exclusively so no instance overwrites another's evidence. · *Instantiated by:* `agent/runtime.py::AgentRuntimeServices.open`
   - `FileToolResultJournal.__init__(run_root: Path) -> None` - Creates the results directory under the run root and numbers new handles after the highest `result-N.json` already there.
   - `FileToolResultJournal.record(call: ToolCall, result: ToolExecutionResult) -> ToolResultHandle` - Builds the payload and claims the next free `result-N.json` by exclusive creation (an id already on disk is skipped), keeps the payload in memory and returns the handle with its content hash and byte count.
-  - `FileToolResultJournal.read(handle_id: str) -> dict[str, Any]` - Serves from memory, otherwise loads and caches the JSON file; raises for an unknown handle.
+  - `FileToolResultJournal.read(handle_id: str) -> dict[str, Any]` - Serves from memory, otherwise loads and caches the JSON file; a handle numbered below the next id whose file is gone raises that it was removed by retention, any other unknown handle raises as unknown.
+    - `FileToolResultJournal.prune(*, older_than: datetime) -> int` - Records the numbering high-water mark, then deletes results written before `older_than`; returns how many.
+    - `FileToolResultJournal._atomic_marker(next_id: int) -> None` - Atomically writes the `next-handle-id` marker.
 - **class `ContextProjection`** *(dataclass)* - Result of one projection: observations, retained episode summaries, metadata, the compaction result and the compacted-episode references. · *Instantiated by:* `memory/context_projection.py::ContextProjector.project`
   - fields: `observations`, `episodes`, `metadata`, `compaction`, `compacted_episodes`
 - **class `ContextProjector`** *(class)* - Builds the bounded per-turn view from the immutable prompt, the observation history and the typed episode memory. · *Instantiated by:* `base_agent/agent.py::BaseAgent.__init__`
@@ -68,9 +70,8 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 - `_compacted_references(summaries: Sequence[EpisodeSummary], observations: Sequence[ModelObservation], summary_chars: int, token_allowance: int) -> tuple[tuple[CompactedE...` - Builds one `CompactedEpisodeReference` per compacted episode (tool name, status, iteration and handle id come from that episode's observation), newest first, keeping as many as fit the token allowance and returning the references oldest-first with the omitted count and tokens used. · *Called by:* `memory/context_projection.py::ContextProjector.project`
 - `_bounded_preview(value: Any, max_chars: int) -> tuple[Any | None, bool]` - Returns the value unchanged if its canonical JSON fits, else a truncated-preview record that points at the handle. · *Called by:* `memory/context_projection.py::ContextProjector.project_tool_result`
 - `_truncate_text(value: str | None, max_chars: int) -> str | None` - Cuts text to a character limit with a truncation marker; passes None through. · *Called by:* `memory/context_projection.py::ContextProjector.project_tool_result`, `memory/context_projection.py::_compacted_references`
-- `_estimate_tokens(value: Any) -> int` - Heuristic token estimate: canonical JSON length divided by 4 (at least 1). · *Called by:* `memory/context_projection.py::ContextProjector.project`, `memory/context_projection.py::_compacted_references`
-- `_canonical_json(value: Any) -> str` - Sorted-key compact JSON with `default=str`. · *Called within this file by:* `memory/context_projection.py::FileToolResultJournal.record`, `memory/context_projection.py::InMemoryToolResultJournal._store`, `memory/context_projection.py::_bounded_preview`, `memory/context_projection.py::_estimate_tokens`
-- `_next_handle_number(root: Path) -> int` - One more than the highest `result-N.json` number in a directory (1 for an empty one). · *Called by:* `memory/context_projection.py::FileToolResultJournal.__init__`
+- Token estimates and canonical JSON come from `foundations/canonical.py` (`estimate_tokens`, `canonical_json`); the module keeps no copies.
+- `_next_handle_number(root: Path) -> int` - One more than the highest handle number ever issued: the larger of the `next-handle-id` marker and the highest `result-N.json` present (1 for an empty directory), so pruning never leads to an id being reused.
 
 **Algorithms & invariants.** Budgets are characters/4 estimates, not provider token counts, and the project-state view is budgeted separately by `ProjectStateProjector`. `FileToolResultJournal` claims each handle file exclusively and numbers new handles after the highest id already on disk, so separate instances and restarts never overwrite earlier evidence.
 
@@ -136,7 +137,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/episode_scoring.py` - deterministic lexical relevance and cost helpers for retention
 
-*54 lines · depends on: `foundations/contracts.py`, `memory/episode_models.py` · used by: `memory/episode_store.py` · re-exported at the package root: 1 name(s)*
+*55 lines · depends on: `foundations/contracts.py`, `memory/episode_models.py` · used by: `memory/episode_store.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Supplies the default relevance scorer and the token-cost estimate that `episode_store.py` feeds into the PCKP and PASK algorithms.
 
@@ -154,7 +155,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/episode_store.py` - episode lifecycle and the three deterministic compaction strategies
 
-*857 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/optimization/__init__.py`, `memory/episode_models.py`, `memory/episode_scoring.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `memory/context_projection.py` · re-exported at the package root: 2 name(s)*
+*932 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/optimization/__init__.py`, `memory/episode_models.py`, `memory/episode_scoring.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `memory/context_projection.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` opens one episode per tool call (exploratory read or action), closes it, and the projector calls `compact` every turn with the episode token budget and the latest tool batch protected. Compacted episodes are replaced by structural tombstones; their raw evidence stays in the tool-result journal.
 
@@ -191,10 +192,13 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
   - `InMemoryEpisodeStore._require(episode_id: str) -> EpisodeRecord` - Returns a record or raises for an unknown id. · *Called within this file by:* `memory/episode_store.py::InMemoryEpisodeStore._compact_exact_pckp`, `memory/episode_store.py::InMemoryEpisodeStore._compact_pask`, `memory/episode_store.py::InMemoryEpisodeStore._compact_record`, `memory/episode_store.py::InMemoryEpisodeStore._compact_unretained` (+9 more)
 - **class `FileEpisodeStore`** *(class; bases: InMemoryEpisodeStore)* - Episode store that can persist records and structural checkpoints under `<run_root>/.agent-memory`.
   - `FileEpisodeStore.__init__(run_root: Path, *, compaction_policy: PaskCompactionPolicy | None=None, relevance_scorer: EpisodeRelevanceScorer | None=None) -> None` - Creates the memory directory and the file paths.
-  - `FileEpisodeStore.persist() -> None` - Writes all episode records to `episodes.json` atomically (there is no matching load for the records).
+  - `FileEpisodeStore.persist() -> None` - Writes `{next_id, next_access_sequence, records}` to `episodes.json` atomically.
+    - `FileEpisodeStore.load() -> list[EpisodeRecord]` - Restores the persisted records and counters (so an id freed by pruning is never reused); a legacy bare-list file loads with counters derived from the records.
+    - `FileEpisodeStore.prune_compacted(*, keep_latest: int) -> list[str]` - Drops all but the `keep_latest` most recently used COMPACTED episodes that no remaining episode depends on, cleans `depends_on`/`depended_on_by` links to them, persists, and returns the removed ids. · *Called by:* `observability/retention.py::apply_retention`
   - `FileEpisodeStore.persist_checkpoint() -> EpisodeCheckpoint` - Writes the current structural checkpoint to `checkpoint.json` and returns it. · *No in-package callers (public API, entry point, or protocol hook).*
   - `FileEpisodeStore.load_checkpoint() -> EpisodeCheckpoint` - Reads the persisted checkpoint or raises if none exists. · *No in-package callers (public API, entry point, or protocol hook).*
   - `FileEpisodeStore._atomic_write(path: Path, content: str) -> None` *(staticmethod)* - Writes a temp file then `replace_atomic`s it. · *Called within this file by:* `memory/episode_store.py::FileEpisodeStore.persist`, `memory/episode_store.py::FileEpisodeStore.persist_checkpoint`
+- `_episode_number(episode_id: str) -> int` - The numeric suffix of `episode-N` (0 if none).
 
 **Algorithms & invariants.** Mandatory (never compacted): the active and protected episodes, open episodes, and action episodes whose tool declared `requires_manifest` and have no manifest yet, plus all their prerequisites. If that closure alone exceeds the budget the result is PROTECTED_OVER_BUDGET (protected set present) or CONTEXT_DEADLOCK, which ends the run as BLOCKED. Exact PCKP is additive; PASK adds a diversity term that depends on already-chosen episodes, so it is a greedy heuristic with no optimality claim.
 

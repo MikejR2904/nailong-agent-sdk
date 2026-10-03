@@ -5,21 +5,21 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | File | Lines | Role |
 |---|---:|---|
 | [`tools/__init__.py`](#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
-| [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 73 | typed approval gates for state-changing actions |
+| [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 125 | typed approval gates for state-changing actions |
 | [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution) | 255 | content-addressed artifact store with immutable write attribution |
 | [`tools/core/__init__.py`](#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
 | [`tools/core/definitions.py`](#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 288 | typed declarations of the governed core tool set |
-| [`tools/core/helpers.py`](#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 436 | private validation, HTTP and isolated-regex helpers behind the core tools |
-| [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 437 | portable governed tools: dispatcher, services and web search |
+| [`tools/core/helpers.py`](#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 431 | private validation, HTTP and isolated-regex helpers behind the core tools |
+| [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 436 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 113 | delegated sub-runs on isolated git worktrees |
 | [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 153 | deny-by-default capability policy |
-| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 323 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 311 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 247 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 50 | typed configuration for sandbox backends |
-| [`tools/supervisor.py`](#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 437 | registered-command execution with timeout, bounded output and process-tree kill |
+| [`tools/supervisor.py`](#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 439 | registered-command execution with timeout, bounded output and process-tree kill |
 | [`tools/task_models.py`](#toolstask_modelspy---records-for-background-tasks) | 43 | records for background tasks |
-| [`tools/tasks.py`](#toolstaskspy---background-task-lifecycle-start-poll-stop) | 208 | background task lifecycle: start, poll, stop |
-| [`tools/tools.py`](#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 72 | the ToolExecutor protocol and two deterministic test executors |
+| [`tools/tasks.py`](#toolstaskspy---background-task-lifecycle-start-poll-stop) | 206 | background task lifecycle: start, poll, stop |
+| [`tools/tools.py`](#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 26 | the ToolExecutor protocol and two deterministic test executors |
 | [`tools/worktree_models.py`](#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 25 | record for an agent's git worktree |
 | [`tools/worktrees.py`](#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 145 | git worktree isolation for concurrent agents |
 
@@ -35,7 +35,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/approvals.py` - typed approval gates for state-changing actions
 
-*73 lines · depends on: `foundations/contracts.py` · used by: `state/harness_coordinator.py`, `tools/policy.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*125 lines · depends on: `foundations/contracts.py` · used by: `state/harness_coordinator.py`, `tools/policy.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** When `CapabilityPolicy` says a mutating or process capability needs approval, `HarnessToolExecutor` files a request here and returns a BLOCKED tool result carrying the approval id; a human or controller later answers it (MCP `submit_approval`) and the run is resumed.
 
@@ -45,12 +45,15 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - members: `PENDING`, `APPROVED`, `REJECTED`
 - **class `ApprovalRequest`** *(pydantic model; bases: StrictModel)* - One request: id, run, node, capability, reason, status and the decision reason. · *Instantiated by:* `tools/approvals.py::ApprovalRegistry.request`
   - fields: `approval_id`, `run_id`, `node_id`, `capability`, `reason`, `status`, `decision_reason`
-- **class `ApprovalRegistry`** *(class)* - In-memory owner of approval state as typed data rather than conversation text. · *Instantiated by:* `state/harness_coordinator.py::HarnessCoordinator.get_run_state`, `state/harness_coordinator.py::HarnessCoordinator.start_run`
-  - `ApprovalRegistry.__init__() -> None` - Starts empty with the id counter at 1.
+- **class `ApprovalRegistry`** *(class)* - Owner of approval state as typed data rather than conversation text; in memory, or durable and cross-process when given a file path. · *Instantiated by:* `state/harness_coordinator.py::HarnessCoordinator._approval_registry`, `mcp/server.py::create_mcp_server`
+  - `ApprovalRegistry.__init__(path: Path | None=None) -> None` - In memory when `path` is None; otherwise durable: every change runs under `_mutation` (a `FileLock` on the file, reload, change, atomic persist), and reads reload first, so requests and decisions survive restarts and are shared across processes.
+    - `ApprovalRegistry._mutation() -> Iterator[None]` *(contextmanager)* - Lock, reload, yield, persist.
+    - `ApprovalRegistry._reload() -> None` - Reads the file (if any) into memory.
+    - `ApprovalRegistry._persist() -> None` - Atomic write of every request.
   - `ApprovalRegistry.request(run_id: str, node_id: str, capability: str, reason: str) -> ApprovalRequest` - Creates a pending `approval-N` request for a run/node/capability. · *Called by:* `openai_compatible/transport.py::UrlLibJsonTransport.post_json`, `orchestrator/orchestrator.py::Orchestrator._assign_workers`, `orchestrator/orchestrator.py::Orchestrator._build_bindings`, `orchestrator/orchestrator.py::Orchestrator._emit` (+30 more)
   - `ApprovalRegistry.submit(approval_id: str, approved: bool, reason: str | None=None) -> ApprovalRequest` - Records approve/reject exactly once; unknown ids and already-decided requests raise. · *Called by:* `state/harness_coordinator.py::HarnessCoordinator.submit_approval`
   - `ApprovalRegistry.get(approval_id: str) -> ApprovalRequest | None` - Returns a request by id or None. · *Called within this file by:* `tools/approvals.py::ApprovalRegistry.submit`
-  - `ApprovalRegistry.list(run_id: str | None=None) -> list[ApprovalRequest]` - All requests (optionally for one run) sorted by id.
+  - `ApprovalRegistry.list(run_id: str | None=None) -> list[ApprovalRequest]` - All requests (optionally for one run) in numeric id order (`approval-2` before `approval-10`), after reloading the file.
 
 ---
 
@@ -112,7 +115,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/core/helpers.py` - private validation, HTTP and isolated-regex helpers behind the core tools
 
-*436 lines · depends on: nothing in the package · used by: `tools/core/services.py` · not re-exported at the package root*
+*431 lines · depends on: nothing in the package · used by: `tools/core/services.py` · not re-exported at the package root*
 
 **Role in the workflow.** Called only by `CoreToolDispatcher` (mostly through `asyncio.to_thread`) to implement grep, web_fetch, render_pdf_page and argument validation.
 
@@ -135,7 +138,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - `_bounded_int(value: Any, name: str, lower: int, upper: int) -> int` - Non-negative integer within [lower, upper]. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`, `core/services.py::CoreToolDispatcher._grep`, `core/services.py::CoreToolDispatcher._notebook_edit`, `core/services.py::CoreToolDispatcher._read_result` (+3 more)
 - `_bounded_float(value: Any, name: str, lower: float, upper: float) -> float` - Number within [lower, upper] (not a bool). · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`, `core/services.py::CoreToolDispatcher._render_pdf_page`
 - `_strip_html(value: str) -> str` - Removes tags and unescapes entities. · *Called by:* `core/services.py::DuckDuckGoHtmlClient._search`
-- `_sha256(value: str) -> str` - SHA-256 hex of a string. · *Called within this file by:* `core/helpers.py::_parse_pdf_page`, `core/helpers.py::_render_pdf_page`
+- PDF cache keys use `foundations/canonical.py` (`sha256_text`); the HTTP clients identify as `foundations/version.py::USER_AGENT` plus a role suffix.
 
 **Algorithms & invariants.** Every network helper names its tool in error text and appends a likely-cause hint for HTTP errors; every redirect hop is re-validated against the public-address rules.
 
@@ -145,7 +148,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/core/services.py` - portable governed tools: dispatcher, services and web search
 
-*437 lines · depends on: `foundations/contracts.py`, `memory/context_projection.py`, `tools/artifacts.py`, `tools/core/helpers.py`, `tools/policy.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 4 name(s)*
+*436 lines · depends on: `foundations/contracts.py`, `memory/context_projection.py`, `tools/artifacts.py`, `tools/core/helpers.py`, `tools/policy.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** `CoreToolDispatcher.execute(name, arguments)` is the implementation behind the core tool names. `HarnessToolExecutor` calls it after policy checks; hosts that skip the governed harness (such as the job-agent app) call it directly. Heavy work (grep scanning, web fetch, PDF render, search) runs in worker threads; small file operations run inline.
 
@@ -237,7 +240,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/registry.py` - capability-bound harness tool registry and its BaseAgent executor
 
-*323 lines · depends on: `foundations/contracts.py`, `memory/context_projection.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
+*311 lines · depends on: `foundations/contracts.py`, `memory/context_projection.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** The governed `ToolExecutor`: `BaseAgent` hands it every tool call; it applies policy and approvals, then runs a host handler, a core tool, a registered process command or a built-in spec/artifact reader. The registry is closed: no generic shell and no dynamically named tool.
 
@@ -258,7 +261,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `HarnessToolExecutor.__init__(registry: HarnessToolRegistry, context: HarnessExecutionContext) -> None` - Stores the registry and context and builds an internal `CoreToolDispatcher` from the context.
   - `HarnessToolExecutor.execute(tool: ToolDefinition, invocation: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Resolve the tool, collect requested write paths, look up any approval for the capability, evaluate policy; blocked decisions return BLOCKED (filing an approval request when one is needed); otherwise run the tool and convert exceptions into a failed result with `HARNESS_TOOL_EXECUTION_FAILED`. · *Called within this file by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
   - `HarnessToolExecutor._approval_for(capability: str)` - The approval registered for a capability in this context, if any. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
-  - `HarnessToolExecutor._execute_registered(tool: RegisteredTool, arguments: dict[str, Any]) -> Any` *(async)* - Dispatch chain: custom handler -> `read_spec` (only the plan task's scope pointer) -> `run_registered_command` -> core tool names -> authorization-checked artifact read/grep/diff -> command-template process tools. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
+  - `HarnessToolExecutor._execute_registered(tool: RegisteredTool, arguments: dict[str, Any]) -> Any` *(async)* - Dispatch chain: custom handler -> `read_spec` (only the plan task's scope pointer) -> `run_registered_command` -> core tool names -> artifact read/grep/diff (authorization is checked here, then the core dispatcher performs the operation, so each has one implementation) -> command-template process tools. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
   - `HarnessToolExecutor._requested_paths(tool_name: str, arguments: dict[str, Any]) -> list[str]` *(staticmethod)* - Write-style tools declare their `path` argument for the path-containment check. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
 - `_string_argument(arguments: dict[str, Any], key: str) -> str` - Argument must be a non-empty string. · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
 
@@ -315,7 +318,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/supervisor.py` - registered-command execution with timeout, bounded output and process-tree kill
 
-*437 lines · depends on: `foundations/contracts.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `tools/sandbox_models.py` · used by: `tools/registry.py`, `tools/sandbox.py`, `tools/tasks.py` · re-exported at the package root: 8 name(s)*
+*439 lines · depends on: `foundations/contracts.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `tools/sandbox_models.py` · used by: `tools/registry.py`, `tools/sandbox.py`, `tools/tasks.py` · re-exported at the package root: 8 name(s)*
 
 **Role in the workflow.** `run_registered_command` and the EDA process tools reach this supervisor. It never runs a raw string: only a host-registered `CommandTemplate`, with watchdog events recorded to telemetry.
 
@@ -372,7 +375,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/tasks.py` - background task lifecycle: start, poll, stop
 
-*208 lines · depends on: `foundations/logging.py`, `tools/sandbox.py`, `tools/sandbox_models.py`, `tools/supervisor.py`, `tools/task_models.py` · used by: `tools/delegation.py` · re-exported at the package root: 1 name(s)*
+*206 lines · depends on: `foundations/logging.py`, `tools/sandbox.py`, `tools/sandbox_models.py`, `tools/supervisor.py`, `tools/task_models.py` · used by: `tools/delegation.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Runs a registered command through a sandbox backend, or tracks any host coroutine (usually `BaseAgent.run`), reporting every status change to an optional listener (so tasks can feed telemetry).
 
@@ -401,7 +404,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/tools.py` - the ToolExecutor protocol and two deterministic test executors
 
-*72 lines · depends on: `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `integrations/langchain.py`, `integrations/langgraph.py`, `mcp/agent_tools.py`, `tools/registry.py` · not re-exported at the package root*
+*26 lines · depends on: `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `integrations/langchain.py`, `integrations/langgraph.py`, `mcp/agent_tools.py`, `tools/registry.py` · not re-exported at the package root*
 
 **Role in the workflow.** `BaseAgent` depends only on `ToolExecutor`: any object with `async execute(tool, context)` can serve a run.
 
@@ -411,12 +414,6 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - fields: `agent_identity`, `task`, `iteration`, `call`
 - **class `ToolExecutor`** *(Protocol; bases: Protocol)* - Protocol: `execute(tool, context)` returns a `ToolExecutionResult`.
   - `ToolExecutor.execute(tool: ToolDefinition, context: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Protocol method.
-- **class `InMemoryTaskToolExecutor`** *(class)* - Safe deterministic tools for protocol tests: `read_locked_interface` and `echo`; no filesystem or process. · *Instantiated by:* `mcp/agent_tools.py::register_agent_tools.run_agent_task`
-  - `InMemoryTaskToolExecutor.__init__() -> None` - Starts with an empty call log.
-  - `InMemoryTaskToolExecutor.execute(tool: ToolDefinition, context: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Returns the locked interface or the arguments for the two known tools, otherwise a failure naming the tool.
-- **class `RecordingToolExecutor`** *(dataclass)* - Test double that returns pre-configured results by tool name and records calls.
-  - fields: `results_by_name`, `calls`
-  - `RecordingToolExecutor.execute(tool: ToolDefinition, context: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Logs the call and returns the configured result, or a failure naming the unconfigured tool.
 
 ---
 

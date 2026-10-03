@@ -10,7 +10,6 @@ lateral-state persistence channel.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -196,28 +195,7 @@ class HarnessCoordinator:
             record = self._save(
                 run_id, record.plan_id, graph, record.plan_validation, record.cancelled
             )
-            wave_state = graph.shared_state
-
-            async def execute_one(node: GraphNode) -> GraphNodeResult:
-                executor = executors.get(node.kind)
-                if executor is None:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'No executor is registered for node kind "{node.kind.value}".',
-                    )
-                try:
-                    return await executor(
-                        node,
-                        graph.execution_context(node.node_id, shared_state=wave_state),
-                    )
-                except Exception as error:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
-                        f"{type(error).__name__}: {error}",
-                    )
-
-            results = await asyncio.gather(*(execute_one(node) for node in wave))
+            results = await graph.run_wave(wave, executors)
             for node, result in zip(wave, results, strict=True):
                 graph.mark_terminal(node.node_id, result)
                 record = self._save(

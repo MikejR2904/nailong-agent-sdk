@@ -6,12 +6,13 @@
 |---|---:|---|
 | [`agent/__init__.py`](#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 28 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](#agentbase_agentagentpy---the-single-task-agent-loop) | 1918 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](#agentbase_agentagentpy---the-single-task-agent-loop) | 1926 | the single-task agent loop |
 | [`agent/base_agent/types.py`](#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 74 | small value types used by the BaseAgent loop |
-| [`agent/graph_agent_executor.py`](#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 195 | runs registered BaseAgent bindings as graph nodes |
+| [`agent/graph_agent_executor.py`](#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 189 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 326 | provider-neutral model contract, streaming events and failover |
+| [`agent/model_resolver.py`](#agentmodel_resolverpy---resolve-a-declared-modelbinding-into-a-live-agentmodel) | 118 | resolve a declared ModelBinding into a live AgentModel |
 | [`agent/openai_compatible/__init__.py`](#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 44 | public surface of the OpenAI-compatible adapters |
-| [`agent/openai_compatible/chat.py`](#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 576 | Chat Completions adapter for the agent model contract |
+| [`agent/openai_compatible/chat.py`](#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 572 | Chat Completions adapter for the agent model contract |
 | [`agent/openai_compatible/embeddings.py`](#agentopenai_compatibleembeddingspy---synchronous-embedding-provider-for-retrieval-indexes) | 68 | synchronous embedding provider for retrieval indexes |
 | [`agent/openai_compatible/semantic_gap.py`](#agentopenai_compatiblesemantic_gappy---model-proposed-semantic-findings-for-gate-1) | 232 | model-proposed semantic findings for Gate 1 |
 | [`agent/openai_compatible/transport.py`](#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 379 | JSON HTTP transports and endpoint configuration |
@@ -21,8 +22,8 @@
 | [`agent/orchestrator/orchestrator.py`](#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 637 | deterministic composition of policy, plan, controller and graph execution |
 | [`agent/orchestrator/state_store.py`](#agentorchestratorstate_storepy---atomic-local-persistence-of-orchestration-records-and-policies) | 57 | atomic local persistence of orchestration records and policies |
 | [`agent/runtime.py`](#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 100 | composition root for the durable stores around an agent |
-| [`agent/specialists.py`](#agentspecialistspy---declarative-agent-definitions-for-the-frameworks-roles) | 178 | declarative agent definitions for the framework's roles |
-| [`agent/verification.py`](#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 223 | host-registered, bounded output-acceptance gates |
+| [`agent/specialists.py`](#agentspecialistspy---declarative-agent-definitions-for-the-frameworks-roles) | 300 | declarative agent definitions for the framework's roles |
+| [`agent/verification.py`](#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 225 | host-registered, bounded output-acceptance gates |
 
 ---
 
@@ -44,7 +45,7 @@
 
 ### `agent/base_agent/agent.py` - the single-task agent loop
 
-*1918 lines · depends on: `agent/base_agent/types.py`, `agent/model.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/errors.py`, `memory/context.py`, `memory/context_projection.py`, `memory/episode_models.py`, `memory/episode_store.py`, `memory/episodes.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/profiler.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/project_state_engine.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/tools.py` · used by: `agent/base_agent/__init__.py` · re-exported at the package root: 1 name(s)*
+*1926 lines · depends on: `agent/base_agent/types.py`, `agent/model.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/errors.py`, `memory/context.py`, `memory/context_projection.py`, `memory/episode_models.py`, `memory/episode_store.py`, `memory/episodes.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/profiler.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/project_state_engine.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/tools.py` · used by: `agent/base_agent/__init__.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Per iteration: check the run deadline and cancellation; project context (compact episodes, select observations); project the bounded project state; enforce the three budget guards; call the model under a watchdog; validate the response as an `AgentTurn`; then act on it. A `blocked` turn ends BLOCKED; a `final` turn is validated and optionally gated; a tool turn runs a governed batch whose results become observations, episodes and project-state transitions. Every exit goes through `_terminate`, which records the agent result in project state, seals the profile, emits telemetry and audit entries, and builds the `AgentResult`. An instance runs one task (its profiler allows a single run).
 
@@ -114,7 +115,7 @@
 
 ### `agent/graph_agent_executor.py` - runs registered BaseAgent bindings as graph nodes
 
-*195 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/runtime.py`, `agent/verification.py`, `foundations/contracts.py`, `memory/context_projection.py`, `memory/episode_store.py`, `state/graph_models.py`, `state/project_state_models.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py` · re-exported at the package root: 2 name(s)*
+*189 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/runtime.py`, `agent/verification.py`, `foundations/contracts.py`, `memory/context_projection.py`, `memory/episode_store.py`, `state/graph_models.py`, `state/project_state_models.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** The controller's `execute_graph` receives `GraphAgentExecutor.executors()`; each agent or elastic node looks up its binding, builds task, model and tool executor from the node context, runs the agent and converts its result into a `GraphNodeResult` with a provenance hash.
 
@@ -129,7 +130,7 @@
   - `GraphAgentExecutor.idempotent_node_ids() -> set[str]` - Ids of bindings declared replay-safe, used by crash recovery. · *No in-package callers (public API, entry point, or protocol hook).*
   - `GraphAgentExecutor.execute(node: GraphNode, context: GraphNodeExecutionContext) -> GraphNodeResult` *(async)* - Fails if no binding exists; otherwise builds task, model, tool executor and projection policy, runs the agent and returns its status, output, reason and diagnostics (status, iteration count, binding hash) with a hash of the agent result payload as provenance. Any exception becomes a FAILED node result naming the exception type. · *Called within this file by:* `agent/graph_agent_executor.py::GraphAgentExecutor.executors`
 - `_graph_status(status: AgentRunStatus) -> GraphNodeStatus` - Maps agent run statuses to graph node statuses. · *Called by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
-- `_hash_payload(payload: Any) -> str` - SHA-256 of canonical JSON. · *Called by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
+- `sha256_json` (from `foundations/canonical.py`) hashes node payloads; the module keeps no copy of its own.
 
 *Module-level names:* `GraphTaskAdapter`, `GraphModelFactory`, `GraphToolExecutorFactory`, `GraphContextProjectionPolicyFactory`
 
@@ -166,13 +167,12 @@
   - `AgentModel.next_turn(context: ModelContext) -> AgentTurn | ModelTurnResponse` *(async)* - Return the next turn for a context.
 - **class `StreamingAgentModel`** *(Protocol; bases: Protocol)* - Optional capability: stream deltas to a listener while still returning the whole turn.
   - `StreamingAgentModel.stream_turn(context: ModelContext, on_delta: ModelStreamListener) -> AgentTurn | ModelTurnResponse` *(async)* - Stream and return the full turn.
-- **class `ScriptedModel`** *(class)* - Deterministic test adapter that replays pre-validated turns by iteration number. · *Instantiated by:* `mcp/agent_tools.py::register_agent_tools.run_agent_task`
-  - `ScriptedModel.__init__(turns: Sequence[AgentTurn | dict[str, Any]]) -> None` - Validates every scripted turn against the `AgentTurn` union.
-  - `ScriptedModel.next_turn(context: ModelContext) -> AgentTurn` *(async)* - Returns the turn for the current iteration or raises `SCRIPTED_MODEL_EXHAUSTED`.
+- *(The deterministic `ScriptedModel` test adapter moved out of the SDK into `tests/support/doubles.py`; production code resolves real adapters with `ModelResolver`.)*
 - **class `ModelFailoverAttempt`** *(dataclass)* - Record of one failed attempt: adapter index, error text, whether it was retryable and the retry number. · *Instantiated by:* `agent/model.py::FailoverAgentModel._call_with_failover`
   - fields: `index`, `error`, `retryable`, `retry_number`
 - **class `FailoverAgentModel`** *(class)* - Tries adapters in declared order; a `TransientProviderError` is retried on the same adapter with bounded exponential backoff (honouring `retry_after_seconds`), any other error moves to the next adapter at once.
-  - `FailoverAgentModel.__init__(models: Sequence[AgentModel], *, max_retries_per_model: int=2, base_backoff_seconds: float=1.0, max_backoff_seconds: float=20.0, on_attempt: Calla...` - Requires a primary adapter and non-negative retry and backoff settings.
+  - `FailoverAgentModel.__init__(models: Sequence[AgentModel], *, bindings: Sequence[ModelBinding] | None=None, max_retries_per_model: int=2, base_backoff_seconds: float=1.0, ...) -> None` - Tries adapters in order. `bindings` gives each adapter its own binding: the context passed to adapter *i* carries binding *i* (via `_context_for`), so an OpenAI-compatible fallback is not rejected with `MODEL_BINDING_MISMATCH` for the primary's binding.
+    - `FailoverAgentModel._context_for(index: int, context: ModelContext) -> ModelContext` - The context with adapter *index*'s binding, or unchanged when no bindings were given.
   - `FailoverAgentModel.next_turn(context: ModelContext) -> AgentTurn | ModelTurnResponse` *(async)* - Fail over around `next_turn`. · *Called within this file by:* `agent/model.py::FailoverAgentModel.stream_turn.call_one`
   - `FailoverAgentModel.stream_turn(context: ModelContext, on_delta: ModelStreamListener) -> AgentTurn | ModelTurnResponse` *(async)* - Fail over around streaming, calling adapters without streaming through `next_turn`.
     - `FailoverAgentModel.stream_turn.call_one(model: AgentModel) -> AgentTurn | ModelTurnResponse` *(async)* - Calls one adapter in streaming mode when it supports it. · *Called by:* `agent/model.py::FailoverAgentModel.stream_turn`
@@ -181,6 +181,25 @@
   - `FailoverAgentModel._backoff_seconds(error: TransientProviderError, retry_number: int) -> float` - Server-declared delay or exponential backoff, capped at the maximum. · *Called by:* `agent/model.py::FailoverAgentModel._call_with_failover`
 
 *Module-level names:* `_AGENT_TURN_ADAPTER`, `_logger`, `ModelStreamEvent`, `ModelStreamListener`
+
+---
+
+### `agent/model_resolver.py` - resolve a declared ModelBinding into a live AgentModel
+
+*118 lines · depends on: `agent/model.py`, `agent/openai_compatible/`, `foundations/contracts.py`, `foundations/errors.py` · used by: `mcp/server.py`, `mcp/agent_tools.py`, `mcp/_shared.py` · not re-exported at the package root*
+
+**Role in the workflow.** A definition names its model only as data. A host that runs definitions it did not build itself (the MCP server) turns that data into adapters through a `ModelResolver` configured with explicit provider endpoints; it never invents a provider.
+
+**Contents**
+
+- **class `ModelResolver`** *(class)* - Builds adapters for bindings from host-configured providers.
+  - `ModelResolver.__init__(endpoints: Mapping[str, OpenAICompatibleEndpoint] | None=None, *, factories: Mapping[str, AdapterFactory] | None=None) -> None` - Endpoints build `OpenAICompatibleAgentModel`s; a factory (for any other adapter) wins over an endpoint of the same name.
+  - `ModelResolver.providers() -> tuple[str, ...]` *(property)* - Configured provider names, sorted.
+  - `ModelResolver.resolve(binding: ModelBinding) -> AgentModel` - One adapter, or a `FailoverAgentModel` over the primary and its fallbacks with a matching binding per adapter.
+  - `ModelResolver._adapter(binding: FallbackModelBinding) -> AgentModel` - Builds one adapter or raises `MODEL_PROVIDER_NOT_CONFIGURED` listing the configured providers.
+  - `ModelResolver.from_environment(environ: Mapping[str, str] | None=None) -> ModelResolver` *(classmethod)* - Reads `NAILONG_MODEL_PROVIDERS` (comma-separated names) and, per name `X`, `NAILONG_MODEL_PROVIDER_X_BASE_URL`, `..._API_KEY_ENV` (the *name* of the variable holding the key, so the key itself never sits in this table) and optional `..._TIMEOUT_SECONDS`; incomplete configuration raises `MODEL_PROVIDER_CONFIG_INVALID`.
+
+*Module-level names:* `AdapterFactory`, `ENV_PROVIDERS`, `ENV_PREFIX`
 
 ---
 
@@ -194,7 +213,7 @@
 
 ### `agent/openai_compatible/chat.py` - Chat Completions adapter for the agent model contract
 
-*576 lines · depends on: `agent/model.py`, `agent/openai_compatible/transport.py`, `foundations/contracts.py`, `foundations/errors.py` · used by: `agent/openai_compatible/__init__.py`, `agent/openai_compatible/semantic_gap.py`, `agent/openai_compatible/vision.py` · re-exported at the package root: 1 name(s)*
+*572 lines · depends on: `agent/model.py`, `agent/openai_compatible/transport.py`, `foundations/contracts.py`, `foundations/errors.py` · used by: `agent/openai_compatible/__init__.py`, `agent/openai_compatible/semantic_gap.py`, `agent/openai_compatible/vision.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** `BaseAgent` passes a `ModelContext`; `_chat_payload` builds a three-message request (system, stable task context, volatile per-turn context), the transport posts it off the event loop, and the response is mapped to an `AgentTurn`: tool calls become one dependency-free `tool-batch`, otherwise the content must be a JSON `AgentTurn`.
 
@@ -440,7 +459,7 @@
 
 ### `agent/specialists.py` - declarative agent definitions for the framework's roles
 
-*178 lines · depends on: `foundations/contracts.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 3 name(s)*
+*300 lines · depends on: `foundations/contracts.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** Hosts call these factories to obtain an `AgentDefinition` (tools, schemas, iteration budget, gate) to pass to `BaseAgent` or a graph binding.
 
@@ -449,13 +468,19 @@
 - `_object_schema(required: list[str], properties: dict[str, object]) -> dict[str, object]` - Builds a closed JSON-schema object with required fields and no additional properties. · *Called by:* `agent/specialists.py::placeholder_specialist_definition`, `agent/specialists.py::planning_agent_definition`, `agent/specialists.py::rtl_worker_definition`
 - `planning_agent_definition(model_binding: ModelBinding) -> AgentDefinition` - Planner role: one read-only `read_spec` tool, output `{status: complete, plan}`, six iterations, no gate (plan validity stays deterministic). · *No in-package callers (public API, entry point, or protocol hook).*
 - `rtl_worker_definition(model_binding: ModelBinding) -> AgentDefinition` - RTL worker role: `read_spec`, `read_artifact`, `write_draft`, `run_verilator`, `run_yosys` (both `requires_manifest`) and `diff_declared_artifacts`, ten iterations, gate `validate-rtl-task-result`. · *No in-package callers (public API, entry point, or protocol hook).*
-- `placeholder_specialist_definition(role: str, model_binding: ModelBinding) -> AgentDefinition` - A role boundary with no tools and one iteration that returns blocked when capabilities are absent. · *No in-package callers (public API, entry point, or protocol hook).*
+- `synthesis_worker_definition(model_binding: ModelBinding) -> AgentDefinition` - Synthesises one scoped, already-linted RTL artifact to a gate-level netlist with `run_yosys`; verified by the `status-is-complete` gate.
+- `physical_design_worker_definition(model_binding: ModelBinding) -> AgentDefinition` - Floorplan, place and route one scoped netlist with `run_openroad`.
+- `timing_signoff_worker_definition(model_binding: ModelBinding) -> AgentDefinition` - Static timing analysis of one scoped layout or netlist with `run_opensta`.
+- `_stage_worker(*, identity, version, instructions, tools, outputs, model_binding) -> AgentDefinition` - Shared builder for the stage workers: read-spec, read-artifact, write-draft and one process tool; output artifact ids must match `^sha256:[0-9a-f]{64}$`.
+- `_read_spec_tool() -> ToolDefinition` / `_read_artifact_tool() -> ToolDefinition` - The shared read-only tool definitions for the stage workers.
+- `_write_draft_tool(what: str) -> ToolDefinition` - The declared-output write tool, described for the artifact the worker produces.
+- `_process_tool(name: str, description: str) -> ToolDefinition` - A registered process tool (`run_yosys`, `run_openroad`, `run_opensta`) executed by the supervisor from a command template.
 
 ---
 
 ### `agent/verification.py` - host-registered, bounded output-acceptance gates
 
-*223 lines · depends on: `foundations/contracts.py`, `foundations/errors.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `integrations/jev/advisory.py`, `integrations/langgraph.py` · re-exported at the package root: 5 name(s)*
+*225 lines · depends on: `foundations/contracts.py`, `foundations/errors.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `integrations/jev/advisory.py`, `integrations/langgraph.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** A definition names a `verification_gate_id`; at a final turn `BaseAgent._accept_final_turn` asks `VerificationGateRegistry.evaluate`; a failed decision ends the run FAILED.
 
@@ -481,7 +506,7 @@
   - `VerificationGateRegistry.unregister(gate_id: str) -> None` - Removes a custom gate; built-ins and unknown ids raise. · *No in-package callers (public API, entry point, or protocol hook).*
   - `VerificationGateRegistry.resolve(gate_id: str | None) -> VerificationGate | None` - Returns the gate, None for no gate, or raises `VERIFICATION_GATE_UNKNOWN`. · *Called within this file by:* `agent/verification.py::VerificationGateRegistry.evaluate`
   - `VerificationGateRegistry.evaluate(gate_id: str | None, output: Any, definition: AgentDefinition, task: ScopedAgentTask) -> VerificationDecision | None` *(async)* - Runs the gate and normalises its return into a decision.
-- `_normalize_decision(result: VerificationReturn) -> VerificationDecision` - Accepts a decision, a bool or a `(bool, reason)` tuple; anything else raises `TypeError`. · *Called by:* `agent/verification.py::VerificationGateRegistry.evaluate`
+- `normalize_verification_result(result: VerificationReturn) -> VerificationDecision` - The one normaliser of gate returns (also used by the Jev advisory gate): accepts a decision, a bool or a `(bool, reason)` tuple; anything else raises `TypeError`. · *Called by:* `agent/verification.py::VerificationGateRegistry.evaluate`, `integrations/jev/advisory.py::JevAdvisoryVerificationGate.verify`
 - `_validate_gate_id(gate_id: str) -> None` - Rejects empty ids and ids containing whitespace. · *Called by:* `agent/verification.py::VerificationGateRegistry.register`
 
 *Module-level names:* `VerificationReturn`, `VerificationCallback`

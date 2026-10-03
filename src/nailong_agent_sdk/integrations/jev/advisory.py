@@ -14,6 +14,7 @@ from ...agent.verification import (
     VerificationDecision,
     VerificationGate,
     VerificationReturn,
+    normalize_verification_result,
 )
 from ...foundations.contracts import StrictModel
 from ..contracts import (
@@ -61,7 +62,7 @@ class JevAdvisoryVerificationGate:
         local = self._deterministic_gate.verify(context)
         if inspect.isawaitable(local):
             local = await local
-        normalized = _normalize_verification(local)
+        normalized = normalize_verification_result(local)
         if not normalized.passed:
             return normalized
         request = self._request_factory(context)
@@ -95,16 +96,6 @@ class JevAdvisoryVerificationGate:
             False,
             f"Jev advisory probability {parsed.noul:.3f} is below {self._policy.minimum_noul:.3f}.",
         )
-
-
-def _normalize_verification(value: VerificationReturn) -> VerificationDecision:
-    if isinstance(value, VerificationDecision):
-        return value
-    if isinstance(value, bool):
-        return VerificationDecision(value)
-    if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], bool):
-        return VerificationDecision(value[0], value[1])
-    raise TypeError("Deterministic verification gate returned an invalid value.")
 
 
 def _unavailable_decision(mode: InteropFailureMode, reason: str | None) -> VerificationDecision:

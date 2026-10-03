@@ -127,6 +127,9 @@ def test_write_needs_operator_approval_then_succeeds(scripted_server):
     )
     assert second["result"]["status"] == "completed"
     assert (workspace / "notes/out.md").read_text() == "hello"
+    # The verified run marks the exact draft version it wrote as complete.
+    artifacts = second["result"]["project_state"]["artifacts"]
+    assert [(a["relative_path"], a["status"]) for a in artifacts] == [("notes/out.md", "complete")]
 
 
 def test_role_without_grant_is_blocked(scripted_server):

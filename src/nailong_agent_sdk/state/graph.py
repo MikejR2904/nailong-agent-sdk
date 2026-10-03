@@ -12,7 +12,7 @@ participates in execution.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..foundations.dependency_graph import deterministic_cycles
@@ -240,32 +240,42 @@ class StateGraph:
         while wave := self.runnable():
             for node in wave:
                 self.mark_started(node.node_id)
-            wave_state = self.shared_state
-
-            async def execute_one(node: GraphNode) -> GraphNodeResult:
-                executor = executors.get(node.kind)
-                if executor is None:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'No executor is registered for node kind "{node.kind.value}".',
-                    )
-                try:
-                    return await executor(
-                        node,
-                        self.execution_context(node.node_id, shared_state=wave_state),
-                    )
-                except Exception as error:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
-                        f"{type(error).__name__}: {error}",
-                    )
-
-            wave_results = await asyncio.gather(*(execute_one(node) for node in wave))
+            wave_results = await self.run_wave(wave, executors)
             for node, result in zip(wave, wave_results, strict=True):
                 self.mark_terminal(node.node_id, result)
 
         return dict(self._results)
+
+    async def run_wave(
+        self, wave: Sequence[GraphNode], executors: Mapping[GraphNodeKind, NodeExecutor]
+    ) -> list[GraphNodeResult]:
+        """Run one started wave concurrently against a single frozen shared-state view.
+
+        A missing executor or an executor exception becomes a FAILED result for
+        that node instead of aborting the wave. Callers commit the results.
+        """
+
+        wave_state = self.shared_state
+
+        async def execute_one(node: GraphNode) -> GraphNodeResult:
+            executor = executors.get(node.kind)
+            if executor is None:
+                return GraphNodeResult(
+                    status=GraphNodeStatus.FAILED,
+                    reason=f'No executor is registered for node kind "{node.kind.value}".',
+                )
+            try:
+                return await executor(
+                    node, self.execution_context(node.node_id, shared_state=wave_state)
+                )
+            except Exception as error:
+                return GraphNodeResult(
+                    status=GraphNodeStatus.FAILED,
+                    reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
+                    f"{type(error).__name__}: {error}",
+                )
+
+        return list(await asyncio.gather(*(execute_one(node) for node in wave)))
 
     def publish_discovery(self, discovery: ExploratoryDiscovery) -> None:
         """Publish one closed source-backed discovery into graph-owned state."""

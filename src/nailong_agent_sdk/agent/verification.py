@@ -198,10 +198,12 @@ class VerificationGateRegistry:
         result = gate.verify(VerificationContext(output=output, definition=definition, task=task))
         if inspect.isawaitable(result):
             result = await result
-        return _normalize_decision(result)
+        return normalize_verification_result(result)
 
 
-def _normalize_decision(result: VerificationReturn) -> VerificationDecision:
+def normalize_verification_result(result: VerificationReturn) -> VerificationDecision:
+    """Turn any accepted gate return form into a ``VerificationDecision``."""
+
     if isinstance(result, VerificationDecision):
         return result
     if isinstance(result, bool):

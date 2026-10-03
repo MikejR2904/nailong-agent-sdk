@@ -7,7 +7,7 @@ Four deterministic helpers behind one CLI: generate the public API catalogue fro
 | [`developer_tools/__init__.py`](#developer_tools__init__py---public-surface-of-the-developer-utilities) | 33 | public surface of the developer utilities |
 | [`developer_tools/catalog.py`](#developer_toolscatalogpy---public-api-catalogue-generation) | 87 | public API catalogue generation |
 | [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 98 | the `nailong-agent-sdk-dev` command line |
-| [`developer_tools/inspect.py`](#developer_toolsinspectpy---read-only-run-evidence-inspection) | 84 | read-only run evidence inspection |
+| [`developer_tools/inspect.py`](#developer_toolsinspectpy---read-only-run-evidence-inspection) | 85 | read-only run evidence inspection |
 | [`developer_tools/quality.py`](#developer_toolsqualitypy---closed-ruff-quality-check) | 85 | closed Ruff quality check |
 | [`developer_tools/validate.py`](#developer_toolsvalidatepy---contract-file-validation) | 92 | contract-file validation |
 
@@ -63,7 +63,7 @@ Four deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/inspect.py` - read-only run evidence inspection
 
-*84 lines · depends on: `foundations/contracts.py`, `observability/audit_log.py`, `observability/telemetry_store.py` · used by: `developer_tools/__init__.py`, `developer_tools/cli.py` · not re-exported at the package root*
+*85 lines · depends on: `foundations/contracts.py`, `observability/audit_log.py`, `observability/telemetry_store.py` · used by: `developer_tools/__init__.py`, `developer_tools/cli.py` · not re-exported at the package root*
 
 **Role in the workflow.** Verifies the telemetry and audit chains of one run and summarises event types, statuses and metric availability.
 
@@ -71,7 +71,7 @@ Four deterministic helpers behind one CLI: generate the public API catalogue fro
 
 - **class `RunInspection`** *(pydantic model; bases: StrictModel)* - Chain validity flags with the first failure of each chain, event and metric counts, breakdowns, audit entry count and an evidence report with event hashes. · *Instantiated by:* `developer_tools/inspect.py::inspect_run`
   - fields: `schema_version`, `run_id`, `telemetry_chain_valid`, `audit_chain_valid`, `telemetry_chain_failure`, `audit_chain_failure`, `event_count`, `metric_count`, `event_types`, `statuses`, `metric_availability`, `audit_entry_count`, `report`
-- `inspect_run(run_root: Path, run_id: str) -> RunInspection` - Opens the stores, reads up to 1,000 events, all metrics and up to 10,000 audit entries, verifies both chains and builds the summary; an unknown run raises. The counts are capped at those limits without saying so, and opening the stores creates them if the root had none. · *Called by:* `developer_tools/cli.py::_inspect_run`
+- `inspect_run(run_root: Path, run_id: str) -> RunInspection` - Opens the stores, pages through every telemetry event (`iter_events`, no cap), reads all metrics and the audit entry count from the transcript's boundary sequence, verifies both chains and builds the summary; an unknown run raises.
 - `_counts(values: Iterable[str]) -> dict[str, int]` - Sorted occurrence counts. · *Called by:* `developer_tools/inspect.py::inspect_run`
 
 ---
