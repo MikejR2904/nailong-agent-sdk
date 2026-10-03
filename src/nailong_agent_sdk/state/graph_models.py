@@ -150,7 +150,11 @@ class GraphSharedState(StrictModel):
 
     @classmethod
     def unbound(cls) -> GraphSharedState:
-        """Return a safe placeholder for standalone graph/unit-test construction."""
+        """Shared state for a graph with no specification snapshot bound to it.
+
+        The substrate is empty and its fixed identity says so, so it can never be
+        mistaken for a real snapshot when discoveries or provenance are checked.
+        """
 
         return cls(
             substrate=SharedSubstrateSnapshot(

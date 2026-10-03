@@ -55,7 +55,8 @@ def _definition(
 
 PROFILER_INSTRUCTIONS = """\
 You analyse one candidate to plan a full-time job search, normally in ONE response: the
-tools are only for looking up detail the task input lacks. The task input holds the base resume LaTeX (`base_resume_tex`) and the candidate's
+tools are only for looking up detail the task input lacks. The task input holds the base resume
+LaTeX (`base_resume_tex`) and the candidate's
 experience bank (`experience_bank.items`: id, source, title, text for free-form notes,
 GitHub repositories, LinkedIn export and website). A one-page resume only summarises the
 candidate: use the bank to see what it leaves out (projects, skills, domains, depth).
@@ -93,7 +94,8 @@ Give a fit_rationale of at most 25 words naming the concrete match and the main 
 Return one entry per candidate_id you were given, no others.
 """
 
-ANALYST_INSTRUCTIONS = """You are a senior engineer reviewing one GitHub repository for a hiring portfolio, in ONE
+ANALYST_INSTRUCTIONS = """You are a senior engineer reviewing one GitHub repository for a hiring
+portfolio, in ONE
 response with no tools. The task input has `facts` (computed from the repository archive),
 the repository's `readme`, and `excerpts` (the opening lines of its largest source files).
 
@@ -123,7 +125,8 @@ are not supported, and a skill named in a claim must appear in the sources.
 Return exactly one verdict per claim id.
 """
 
-TAILOR_INSTRUCTIONS = """You build the strongest truthful one-job resume (and cover letter) for a candidate in
+TAILOR_INSTRUCTIONS = """You build the strongest truthful one-job resume (and cover letter) for a
+candidate in
 ONE response, with no tools. The task input holds everything: the base resume LaTeX
 (`base_resume_tex`, the layout template and default selection), the job description,
 and `evidence`, the experience-bank items most relevant to this job (id, source, title,

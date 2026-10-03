@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nailong-agent-sdk"
-version = "0.17.0"
+dynamic = ["version"]
 description = "Extensible Python BaseAgent runtime, grounded retrieval, governed orchestration, deterministic controller, profiling, verification gates, and MCP harness for the Agent-Assisted Design framework"
 requires-python = ">=3.12"
 license = "MIT"
@@ -63,6 +63,7 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+testpaths = ["tests"]
 addopts = ["-q"]
 
 [tool.ruff]
@@ -71,6 +72,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.hatch.version]
+path = "src/nailong_agent_sdk/foundations/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nailong_agent_sdk"]

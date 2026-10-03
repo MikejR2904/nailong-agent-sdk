@@ -204,11 +204,9 @@ class OpenAICompatibleAgentModel(AgentModel):
             "recent_observations": [
                 observation.model_dump(mode="json") for observation in context.observations
             ],
-            "episode_summaries": [
-                episode.model_dump(mode="json") for episode in context.episodes
-            ],
+            "episode_summaries": [episode.model_dump(mode="json") for episode in context.episodes],
             "compacted_episodes": [
-                stub.model_dump(mode="json") for stub in context.compacted_episodes
+                reference.model_dump(mode="json") for reference in context.compacted_episodes
             ],
             "omitted_compacted_count": (
                 context.projection.omitted_compacted_count if context.projection else 0
@@ -524,9 +522,7 @@ class _ChatStreamAccumulator:
             events.extend(self._consume_tool_call_deltas(raw_tool_calls))
         return events
 
-    def _consume_tool_call_deltas(
-        self, raw_tool_calls: list[Any]
-    ) -> list[ModelToolCallDelta]:
+    def _consume_tool_call_deltas(self, raw_tool_calls: list[Any]) -> list[ModelToolCallDelta]:
         events: list[ModelToolCallDelta] = []
         for raw_call in raw_tool_calls:
             if not isinstance(raw_call, Mapping) or not isinstance(raw_call.get("index"), int):

@@ -131,7 +131,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
   - fields: `sections`
 - **class `EpisodeSummary`** *(pydantic model; bases: StrictModel)* - One-line summary of an episode (id, kind, summary text, creation time, dependencies) exposed to the model while the episode is live. · *Instantiated by:* `memory/episodes.py::InMemoryEpisodeGraph._add`
   - fields: `id`, `kind`, `summary`, `created_at`, `dependency_ids`
-- **class `CompactedEpisodeStub`** *(pydantic model; bases: StrictModel)* - Residue of a compacted episode that stays visible to the model: id, kind, one-line summary, tool name, status, iteration and the result handle id used to fetch the dropped result later. · *Instantiated by:* `memory/context_projection.py::_compacted_stubs`
+- **class `CompactedEpisodeReference`** *(pydantic model; bases: StrictModel)* - Residue of a compacted episode that stays visible to the model: id, kind, one-line summary, tool name, status, iteration and the result handle id used to fetch the dropped result later. · *Instantiated by:* `memory/context_projection.py::_compacted_references`
   - fields: `episode_id`, `kind`, `summary`, `tool_name`, `status`, `iteration`, `handle_id`
 - **class `ModelObservation`** *(pydantic model; bases: StrictModel)* - What the model is told happened: a projected tool result or an agent-error message (rejected answer, retried model failure), tagged with its iteration. · *Instantiated by:* `base_agent/agent.py::BaseAgent._accept_final_turn`, `base_agent/agent.py::BaseAgent._record_executed_result`, `base_agent/agent.py::BaseAgent._record_unexecuted_result`, `base_agent/agent.py::BaseAgent.run`
   - fields: `kind`, `iteration`, `message`, `tool_call_id`, `tool_name`, `episode_id`, `result`
@@ -139,7 +139,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
   - fields: `handle_id`, `content_hash`, `byte_count`, `truncated`
 - **class `ProjectedToolResult`** *(pydantic model; bases: StrictModel)* - Bounded form of a tool result safe for the model: status, handle, size-limited preview and truncated error. · *Instantiated by:* `memory/context_projection.py::ContextProjector.project_tool_result`
   - fields: `status`, `handle`, `preview`, `error`
-- **class `ContextProjectionMetadata`** *(pydantic model; bases: StrictModel)* - Bookkeeping for one projection: estimated tokens, budgets, episodes compacted this turn, and counts of omitted observations and omitted compacted stubs. · *Instantiated by:* `memory/context_projection.py::ContextProjector.project`
+- **class `ContextProjectionMetadata`** *(pydantic model; bases: StrictModel)* - Bookkeeping for one projection: estimated tokens, budgets, episodes compacted this turn, and counts of omitted observations and omitted compacted references. · *Instantiated by:* `memory/context_projection.py::ContextProjector.project`
   - fields: `estimated_tokens`, `context_token_budget`, `episode_token_budget`, `compacted_episode_ids`, `omitted_observation_count`, `omitted_compacted_count`
 - **class `AgentLifecycleEvent`** *(pydantic model; bases: StrictModel)* - One typed lifecycle event (run-started, context-projected, tool-requested, terminated, ...) with iteration, timestamp and free-form details. · *Instantiated by:* `base_agent/agent.py::BaseAgent.run.emit`
   - fields: `type`, `task_id`, `iteration`, `at`, `details`

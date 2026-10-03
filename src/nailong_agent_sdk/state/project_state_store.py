@@ -5,11 +5,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
 from ..foundations.atomic_io import replace_atomic
+from ..foundations.canonical import canonical_json
 from .project_state_engine import ProjectStateReducer
 from .project_state_models import (
     ProjectState,
@@ -160,7 +160,7 @@ class FileProjectStateStore(InMemoryProjectStateStore):
     @staticmethod
     def _write_json(path: Path, value: dict[str, Any]) -> None:
         temporary = path.with_name(f".{path.name}.tmp")
-        temporary.write_text(_canonical_json(value), encoding="utf-8")
+        temporary.write_text(canonical_json(value, models=True), encoding="utf-8")
         replace_atomic(temporary, path)
 
 
@@ -193,12 +193,3 @@ def _make_event(
 
 def _safe_id(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _canonical_json(value: Any) -> str:
-    def default(item: Any) -> Any:
-        if hasattr(item, "model_dump"):
-            return item.model_dump(mode="json")
-        return str(item)
-
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=default)

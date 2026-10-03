@@ -285,10 +285,18 @@ AgentTurn = Annotated[
 
 
 class RuntimeOptions(StrictModel):
-    """Options intentionally limited to deterministic execution until a model is selected."""
+    """Per-run options for a host-executed agent task (for example over MCP).
 
-    mode: Literal["deterministic"] = "deterministic"
-    scripted_turns: list[AgentTurn] = Field(default_factory=list)
+    The model comes from the definition's ``model_binding``, resolved by the
+    host's configured providers. ``role`` selects one of the host's capability
+    grants; a caller cannot grant itself capabilities. ``approval_ids`` maps a
+    capability to an approval the operator already decided, so a re-run can use
+    an approval-gated tool.
+    """
+
+    role: str = Field(default="agent", min_length=1)
+    declared_output_paths: list[str] = Field(default_factory=list)
+    approval_ids: dict[str, str] = Field(default_factory=dict)
     run_deadline_seconds: float | None = Field(default=None, gt=0, le=86_400)
     model_turn_timeout_seconds: float | None = Field(default=None, gt=0, le=86_400)
     tool_call_timeout_seconds: float | None = Field(default=None, gt=0, le=86_400)
@@ -316,7 +324,7 @@ class EpisodeSummary(StrictModel):
     dependency_ids: list[str] = Field(default_factory=list)
 
 
-class CompactedEpisodeStub(StrictModel):
+class CompactedEpisodeReference(StrictModel):
     """One-line residue of a compacted episode that stays visible to the model."""
 
     episode_id: str = Field(min_length=1)

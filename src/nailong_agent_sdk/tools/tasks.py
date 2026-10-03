@@ -81,9 +81,7 @@ class BackgroundTaskManager:
 
         task_id = self._allocate_id(TaskKind.AGENT_RUN)
         record = self._register(task_id, TaskKind.AGENT_RUN, description)
-        self._running[task_id] = asyncio.create_task(
-            self._run_agent(task_id, run, summarize)
-        )
+        self._running[task_id] = asyncio.create_task(self._run_agent(task_id, run, summarize))
         return record
 
     def get_task(self, task_id: str) -> TaskRecord | None:

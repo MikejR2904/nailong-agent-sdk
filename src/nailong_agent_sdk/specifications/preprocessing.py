@@ -28,7 +28,7 @@ from .documents import (
     SpecificationManifest,
     VisionStatus,
 )
-from .vision import UnconfiguredVisionAdapter, VisionAdapter, VisionProposal
+from .vision import VisionAdapter, VisionProposal
 
 
 class SpecificationPreprocessor:
@@ -86,11 +86,21 @@ class SpecificationPreprocessor:
         confidence_threshold: float = 0.8,
         max_attempts: int = 3,
     ) -> DocumentTree:
-        adapter = adapter or UnconfiguredVisionAdapter()
+        """Resolve image nodes through ``adapter``.
+
+        With no adapter configured, image nodes are marked ``REVIEW_REQUIRED`` so a
+        person interprets them; nothing is guessed.
+        """
+
         resolved: list[DocumentNode] = []
         for node in tree.nodes:
             if node.kind is not DocumentNodeKind.IMAGE:
                 resolved.append(node)
+                continue
+            if adapter is None:
+                resolved.append(
+                    node.model_copy(update={"vision_status": VisionStatus.REVIEW_REQUIRED})
+                )
                 continue
             proposal: VisionProposal | None = None
             for _ in range(max_attempts):

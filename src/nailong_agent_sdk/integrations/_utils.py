@@ -4,11 +4,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
-import json
 import re
 from typing import Any
+
+from ..foundations.canonical import sha256_json
 
 _FORBIDDEN_KEYS = {
     "access_key",
@@ -104,10 +104,7 @@ class OptionalDependencyError(RuntimeError):
 
 
 def content_digest(value: Any) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
-    )
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return sha256_json(value)
 
 
 def canonical_digest(value: Any) -> str:

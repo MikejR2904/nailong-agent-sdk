@@ -111,9 +111,7 @@ class McpClientManager:
                 f"{type(result).__name__} for a tool call; interactive mid-call "
                 "input requests are not supported by this client."
             )
-        parts = [
-            getattr(item, "text", None) or item.model_dump_json() for item in result.content
-        ]
+        parts = [getattr(item, "text", None) or item.model_dump_json() for item in result.content]
         if result.structured_content and not parts:
             parts.append(str(result.structured_content))
         text = "\n".join(part for part in parts if part).strip() or "(no output)"

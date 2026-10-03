@@ -1,12 +1,12 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Provider-neutral model interfaces and deterministic test adapter."""
+"""Provider-neutral model interfaces and the model failover adapter."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter
@@ -14,7 +14,7 @@ from pydantic import TypeAdapter
 from ..foundations.contracts import (
     AgentPrompt,
     AgentTurn,
-    CompactedEpisodeStub,
+    CompactedEpisodeReference,
     ContextProjectionMetadata,
     EpisodeSummary,
     ModelBinding,
@@ -121,7 +121,7 @@ class ModelContext:
     # request, so a host cannot silently use a client for a different model.
     model_binding: ModelBinding | None = None
     output_schema: dict[str, Any] | None = None
-    compacted_episodes: Sequence[CompactedEpisodeStub] = ()
+    compacted_episodes: Sequence[CompactedEpisodeReference] = ()
 
 
 @dataclass(frozen=True)
@@ -174,24 +174,6 @@ class StreamingAgentModel(Protocol):
     ) -> AgentTurn | ModelTurnResponse: ...
 
 
-class ScriptedModel:
-    """Deterministic test adapter; never calls an external model provider."""
-
-    def __init__(self, turns: Sequence[AgentTurn | dict[str, Any]]) -> None:
-        self._turns = [_AGENT_TURN_ADAPTER.validate_python(turn) for turn in turns]
-        self.calls: list[ModelContext] = []
-
-    async def next_turn(self, context: ModelContext) -> AgentTurn:
-        self.calls.append(context)
-        index = context.iteration - 1
-        if index >= len(self._turns):
-            raise AgentSdkError(
-                "SCRIPTED_MODEL_EXHAUSTED",
-                "No deterministic scripted turn was supplied for this iteration.",
-            )
-        return self._turns[index]
-
-
 @dataclass(frozen=True)
 class ModelFailoverAttempt:
     index: int
@@ -227,6 +209,7 @@ class FailoverAgentModel:
         self,
         models: Sequence[AgentModel],
         *,
+        bindings: Sequence[ModelBinding] | None = None,
         max_retries_per_model: int = 2,
         base_backoff_seconds: float = 1.0,
         max_backoff_seconds: float = 20.0,
@@ -234,11 +217,16 @@ class FailoverAgentModel:
     ) -> None:
         if not models:
             raise ValueError("FailoverAgentModel requires a primary adapter.")
+        if bindings is not None and len(bindings) != len(models):
+            raise ValueError("FailoverAgentModel needs exactly one binding per adapter.")
         if max_retries_per_model < 0:
             raise ValueError("max_retries_per_model may not be negative.")
         if base_backoff_seconds < 0 or max_backoff_seconds < 0:
             raise ValueError("Backoff durations may not be negative.")
         self._models = tuple(models)
+        # Each adapter validates the binding it is handed, so adapter i must see
+        # binding i rather than the primary binding.
+        self._bindings = tuple(bindings) if bindings is not None else None
         self._max_retries_per_model = max_retries_per_model
         self._base_backoff_seconds = base_backoff_seconds
         self._max_backoff_seconds = max_backoff_seconds
@@ -246,26 +234,38 @@ class FailoverAgentModel:
         self.attempts: list[ModelFailoverAttempt] = []
 
     async def next_turn(self, context: ModelContext) -> AgentTurn | ModelTurnResponse:
-        return await self._call_with_failover(lambda model: model.next_turn(context))
+        return await self._call_with_failover(
+            context, lambda model, model_context: model.next_turn(model_context)
+        )
 
     async def stream_turn(
         self, context: ModelContext, on_delta: ModelStreamListener
     ) -> AgentTurn | ModelTurnResponse:
-        async def call_one(model: AgentModel) -> AgentTurn | ModelTurnResponse:
+        async def call_one(
+            model: AgentModel, model_context: ModelContext
+        ) -> AgentTurn | ModelTurnResponse:
             if isinstance(model, StreamingAgentModel):
-                return await model.stream_turn(context, on_delta)
-            return await model.next_turn(context)
+                return await model.stream_turn(model_context, on_delta)
+            return await model.next_turn(model_context)
 
-        return await self._call_with_failover(call_one)
+        return await self._call_with_failover(context, call_one)
+
+    def _context_for(self, context: ModelContext, index: int) -> ModelContext:
+        if self._bindings is None:
+            return context
+        return replace(context, model_binding=self._bindings[index])
 
     async def _call_with_failover(
-        self, call_model: Callable[[AgentModel], Awaitable[Any]]
+        self,
+        context: ModelContext,
+        call_model: Callable[[AgentModel, ModelContext], Awaitable[Any]],
     ) -> Any:
         first_attempt_index = len(self.attempts)
         for index, model in enumerate(self._models):
+            model_context = self._context_for(context, index)
             for retry_number in range(self._max_retries_per_model + 1):
                 try:
-                    return await call_model(model)
+                    return await call_model(model, model_context)
                 except TransientProviderError as error:
                     self._record(
                         ModelFailoverAttempt(

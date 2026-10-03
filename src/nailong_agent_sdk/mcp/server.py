@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from mcp.server import MCPServer
 
+from ..agent.model_resolver import ModelResolver
+from ..foundations.version import SDK_NAME, __version__
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.metrics import register_standard_metric_definitions
 from ..observability.telemetry_store import TelemetryStore
@@ -21,7 +23,11 @@ from ..state.controller_runtime import ControllerRuntime
 from ..state.harness_coordinator import HarnessCoordinator
 from ..state.planning import PlanValidator
 from ..state.project_state_store import FileProjectStateStore
-from ._shared import McpContext
+from ..tools.approvals import ApprovalRegistry
+from ..tools.core import WebSearchClient
+from ..tools.policy import CapabilityPolicy
+from ..tools.supervisor import ProcessSupervisor
+from ._shared import McpContext, default_capability_policy
 from .agent_tools import register_agent_tools
 from .controller_tools import register_controller_tools
 from .git_tools import register_git_tools
@@ -31,12 +37,27 @@ from .run_tools import register_run_tools
 from .specification_tools import register_specification_tools
 from .telemetry_tools import register_telemetry_tools
 
-SERVER_NAME = "agent-design-python-runtime"
-SERVER_VERSION = "0.17.0"
+SERVER_NAME = SDK_NAME
+SERVER_VERSION = __version__
 
 
-def create_mcp_server(run_root: Path | None = None) -> MCPServer:
-    """Build the BaseAgent and typed harness MCP surface without a network listener."""
+def create_mcp_server(
+    run_root: Path | None = None,
+    *,
+    model_resolver: ModelResolver | None = None,
+    capability_policy: CapabilityPolicy | None = None,
+    supervisor: ProcessSupervisor | None = None,
+    search_client: WebSearchClient | None = None,
+) -> MCPServer:
+    """Build the BaseAgent and typed harness MCP surface without a network listener.
+
+    ``model_resolver`` turns each definition's model binding into an adapter;
+    by default it reads the providers the operator declared in the environment
+    (``ModelResolver.from_environment``). ``capability_policy`` decides which
+    tools an MCP-run agent may use; the default grants local reads and
+    approval-gated draft writes only. ``supervisor`` holds the named command
+    templates process tools may run (none by default).
+    """
 
     # Defer MCP initialization so ordinary SDK imports do not create runtime
     # stores or require the optional server implementation.
@@ -69,6 +90,13 @@ def create_mcp_server(run_root: Path | None = None) -> MCPServer:
         gate_store=Gate1ArtifactStore(specification_root),
         plan_validator=PlanValidator(),
         versioning=SpecificationVersionService(resolved_run_root),
+        model_resolver=model_resolver or ModelResolver.from_environment(),
+        capability_policy=capability_policy or default_capability_policy(),
+        supervisor=supervisor or ProcessSupervisor(telemetry=telemetry),
+        agent_task_approvals=ApprovalRegistry(
+            resolved_run_root / ".agent-approvals" / "agent-tasks.json"
+        ),
+        search_client=search_client,
     )
 
     server = MCPServer(

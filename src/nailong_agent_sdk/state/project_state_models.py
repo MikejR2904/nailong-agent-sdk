@@ -10,12 +10,12 @@ they are not replayed as the agent's ordinary reasoning context.
 from __future__ import annotations
 
 import hashlib
-import json
 from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import Field, field_validator, model_validator
 
+from ..foundations.canonical import canonical_json
 from ..foundations.contracts import StrictModel
 
 MAX_STAGE_FIELDS = 128
@@ -136,7 +136,7 @@ class StateAction(StrictModel):
     @field_validator("summary")
     @classmethod
     def summary_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if len(_canonical_json(value)) > 4_096:
+        if len(canonical_json(value, models=True)) > 4_096:
             raise ValueError("state action summary exceeds the 4,096-character bound")
         return value
 
@@ -310,7 +310,7 @@ def project_state_hash(state: ProjectState) -> str:
 
 def project_state_hash_from_payload(payload: dict[str, Any]) -> str:
     stable = {key: value for key, value in payload.items() if key != "state_hash"}
-    return hashlib.sha256(_canonical_json(stable).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_json(stable, models=True).encode("utf-8")).hexdigest()
 
 
 def _event_hash(
@@ -324,7 +324,7 @@ def _event_hash(
     state_hash: str,
 ) -> str:
     return hashlib.sha256(
-        _canonical_json(
+        canonical_json(
             {
                 "project_id": project_id,
                 "revision": revision,
@@ -334,7 +334,8 @@ def _event_hash(
                 "evidence": [item.model_dump(mode="json") for item in evidence],
                 "previous_state_hash": previous_state_hash,
                 "state_hash": state_hash,
-            }
+            },
+            models=True,
         ).encode("utf-8")
     ).hexdigest()
 
@@ -343,12 +344,3 @@ def _ensure_unique[T](items: list[T], key: str, label: str) -> None:
     values = [getattr(item, key) for item in items]
     if len(values) != len(set(values)):
         raise ValueError(f"{label} must be unique")
-
-
-def _canonical_json(value: Any) -> str:
-    def default(item: Any) -> Any:
-        if hasattr(item, "model_dump"):
-            return item.model_dump(mode="json")
-        return str(item)
-
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=default)

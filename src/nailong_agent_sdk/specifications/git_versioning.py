@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..foundations.atomic_io import replace_atomic
+from ..foundations.canonical import sha256_json
 from .gate_models import DependencyGraph, GapReport, UnifiedSpecification, VersionMetadata
 from .git_models import (
     GitApproval,
@@ -196,10 +197,13 @@ class SpecificationVersionService:
         snapshot = SpecificationSnapshotRecord.model_validate_json(
             target.read_text(encoding="utf-8")
         )
-        if _sha256(snapshot.specification.model_dump(mode="json")) != snapshot.specification_digest:
+        if (
+            sha256_json(snapshot.specification.model_dump(mode="json"))
+            != snapshot.specification_digest
+        ):
             raise ValueError("Persisted specification snapshot digest does not match its content.")
         if (
-            _sha256(snapshot.dependency_graph.model_dump(mode="json"))
+            sha256_json(snapshot.dependency_graph.model_dump(mode="json"))
             != snapshot.dependency_graph_digest
         ):
             raise ValueError(
@@ -275,8 +279,8 @@ class SpecificationVersionService:
                 f"Version {metadata.version} does not satisfy the required "
                 f"{classification.recommended_bump.value} bump."
             )
-        specification_digest = _sha256(specification.model_dump(mode="json"))
-        dependency_graph_digest = _sha256(dependency_graph.model_dump(mode="json"))
+        specification_digest = sha256_json(specification.model_dump(mode="json"))
+        dependency_graph_digest = sha256_json(dependency_graph.model_dump(mode="json"))
         if metadata.unified_specification_hash != specification_digest:
             raise ValueError(
                 "Version metadata unified_specification_hash does not match supplied specification."
@@ -300,9 +304,9 @@ class SpecificationVersionService:
                 classification=classification,
                 approval=approval,
                 created_at_utc=datetime.now(UTC).isoformat(),
-                gap_report_hash=_sha256(gap_report.model_dump(mode="json")),
+                gap_report_hash=sha256_json(gap_report.model_dump(mode="json")),
                 dependency_graph_hash=dependency_graph_digest,
-                snapshot_digest=_sha256(
+                snapshot_digest=sha256_json(
                     {
                         "specification_digest": specification_digest,
                         "dependency_graph_digest": dependency_graph_digest,
@@ -448,13 +452,6 @@ def _satisfies_bump(
     if required is VersionBump.MINOR:
         return requested[0] == major and requested[1] > minor and requested[2] == 0
     return requested[0] == major and requested[1] == minor and requested[2] > patch
-
-
-def _sha256(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    import hashlib
-
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _atomic_json(target: Path, value: dict[str, Any]) -> None:

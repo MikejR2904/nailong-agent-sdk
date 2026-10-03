@@ -45,13 +45,15 @@ from nailong_agent_sdk.tools.core import WebSearchClient
 from .agents import (
     RESUME_INTEGRITY_GATE,
     TAILOR_GATE,
+    analyst_definition,
     polisher_definition,
     profiler_definition,
-    analyst_definition,
-    verifier_definition,
     scorer_definition,
     tailor_definition,
+    verifier_definition,
 )
+from .claims import claims_to_verify, unsupported_claims
+from .codebase import analyze_archive, key_excerpts, verified_claims
 from .config import AgentConfig
 from .ingest import (
     GitHubIngester,
@@ -60,13 +62,10 @@ from .ingest import (
     resume_items,
     website_items,
 )
-from .claims import claims_to_verify, unsupported_claims
-from .codebase import analyze_archive, key_excerpts, verified_claims
 from .knowledge import EvidenceItem, KnowledgeBase
 from .latex import find_latex_engine, latex_to_text
 from .overleaf import OverleafEntry, write_launcher
 from .sources import JobSourceClient
-from .visual import render_preview, vision_review
 from .store import JobLedger, JobStatus
 from .tools import (
     JobToolbox,
@@ -75,6 +74,7 @@ from .tools import (
     assemble_resume,
     run_resume_check,
 )
+from .visual import render_preview, vision_review
 
 MAX_ARCHIVE_BYTES = 40_000_000
 ModelFactory = Callable[[AgentDefinition], AgentModel]
@@ -418,7 +418,12 @@ class JobAgentPipeline:
             raise FileNotFoundError("Import a base resume first (--resume path/to/resume.tex).")
         core = self._core()
         bank = [
-            {"id": item.id, "source": item.source, "title": item.title[:90], "text": item.text[:500]}
+            {
+                "id": item.id,
+                "source": item.source,
+                "title": item.title[:90],
+                "text": item.text[:500],
+            }
             for item in self.knowledge.items()
             if item.source != "resume"
         ][:40]
@@ -460,7 +465,9 @@ class JobAgentPipeline:
             wanted = {title.lower() for title in role_titles}
             roles = [role for role in roles if role["title"].lower() in wanted]
         network = asyncio.Semaphore(3)
-        batches = await asyncio.gather(*(self._scout_role(role, profile, network) for role in roles))
+        batches = await asyncio.gather(
+            *(self._scout_role(role, profile, network) for role in roles)
+        )
         saved: list[str] = []
         for batch in batches:
             saved += [job_id for job_id in batch if job_id not in saved]
@@ -623,7 +630,12 @@ class JobAgentPipeline:
     def _evidence_for(self, job: dict[str, Any], description: str, limit: int = 14) -> list[dict]:
         query = f"{job['title']} {job['company']} {description[:4000]}"
         return [
-            {"id": item.id, "source": item.source, "title": item.title, "text": item.text[: 1800 if item.source == "code" else 900]}
+            {
+                "id": item.id,
+                "source": item.source,
+                "title": item.title,
+                "text": item.text[: 1800 if item.source == "code" else 900],
+            }
             for item, _score in self.knowledge.search(query, limit=limit)
             if item.source != "resume"
         ]
@@ -748,9 +760,7 @@ class JobAgentPipeline:
             return []
         cited = [item_id for item_id in evidence_ids if item_id in self.knowledge]
         sources = (
-            latex_to_text(tailoring.base_resume_tex)
-            + chr(10) * 2
-            + self.knowledge.text_for(cited)
+            latex_to_text(tailoring.base_resume_tex) + chr(10) * 2 + self.knowledge.text_for(cited)
         )[:40_000]
         verdict = await self._run(
             verifier_definition(self.binding),
@@ -809,10 +819,14 @@ class JobAgentPipeline:
             shutil.copyfile(check.pdf_path, self.root / pretty)
             packet["resume_pdf"] = pretty
         if check.pdf_path:
-            preview = render_preview(Path(check.pdf_path), self.root / directory / "resume_preview.png")
+            preview = render_preview(
+                Path(check.pdf_path), self.root / directory / "resume_preview.png"
+            )
             packet["preview_png"] = f"{directory}/resume_preview.png" if preview else ""
-            if preview and self.config.tailoring.vision_review and (
-                self.config.model.provider != "anthropic"
+            if (
+                preview
+                and self.config.tailoring.vision_review
+                and (self.config.model.provider != "anthropic")
             ):
                 try:
                     packet["visual_review"] = vision_review(

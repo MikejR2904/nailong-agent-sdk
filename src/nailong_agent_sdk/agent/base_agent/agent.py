@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
+from ...foundations.canonical import estimate_tokens
 from ...foundations.contracts import (
     AgentDefinition,
     AgentEscalation,
@@ -337,7 +338,7 @@ class BaseAgent:
                 estimated_tokens=projection.metadata.estimated_tokens,
                 context_token_budget=projection.metadata.context_token_budget,
                 omitted_observation_count=projection.metadata.omitted_observation_count,
-                compacted_stub_count=len(projection.compacted_episodes),
+                compacted_reference_count=len(projection.compacted_episodes),
                 omitted_compacted_count=projection.metadata.omitted_compacted_count,
             )
             if self.telemetry is not None:
@@ -1859,7 +1860,7 @@ class BaseAgent:
             "prompt": prompt.model_dump(mode="json"),
             "project_state": project_state_view.model_dump(mode="json"),
         }
-        return max(1, len(json.dumps(payload, sort_keys=True, separators=(",", ":"))) // 4)
+        return estimate_tokens(payload)
 
     @staticmethod
     def _with_projection_history(

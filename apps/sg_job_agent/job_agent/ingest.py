@@ -212,9 +212,10 @@ class GitHubIngester:
         async with self._http.stream(
             "GET", f"{GITHUB_API}/repos/{full_name}/tarball", headers=self._headers
         ) as response:
-            if response.status_code == 403 and "rate limit" in (await response.aread()).decode(
-                errors="replace"
-            ).lower():
+            if (
+                response.status_code == 403
+                and "rate limit" in (await response.aread()).decode(errors="replace").lower()
+            ):
                 raise RuntimeError("GitHub API rate limit reached; set a token.")
             response.raise_for_status()
             async for chunk in response.aiter_bytes():

@@ -41,6 +41,7 @@ class HarnessCoordinator:
     """
 
     def __init__(self, run_root: Path) -> None:
+        self._approval_root = run_root / ".agent-approvals"
         self._store = RunStateStore(run_root)
         self._validator = PlanValidator()
         self._graphs: dict[str, StateGraph] = {}
@@ -73,7 +74,7 @@ class HarnessCoordinator:
             max_elastic_nodes=plan.max_elastic_nodes,
         )
         self._graphs[run_id] = graph
-        self._approvals[run_id] = ApprovalRegistry()
+        self._approvals[run_id] = self._approval_registry(run_id)
         return self._save(run_id, plan.plan_id, graph, validation)
 
     def get_run_state(self, run_id: str) -> RunRecord:
@@ -82,7 +83,8 @@ class HarnessCoordinator:
         if run_id not in self._graphs or self._fingerprints.get(run_id) != fingerprint:
             self._graphs[run_id] = StateGraph.from_snapshot(stored.graph)
         self._fingerprints[run_id] = fingerprint
-        self._approvals.setdefault(run_id, ApprovalRegistry())
+        if run_id not in self._approvals:
+            self._approvals[run_id] = self._approval_registry(run_id)
         if stored.cancelled:
             self._cancelled.add(run_id)
         return stored
@@ -231,18 +233,17 @@ class HarnessCoordinator:
         approved: bool,
         reason: str | None = None,
     ) -> ApprovalRequest:
-        registry = self._approvals.get(run_id)
-        if registry is None:
-            raise ValueError(
-                "Approval registry is unavailable after process restart in this increment."
-            )
-        return registry.submit(approval_id, approved, reason)
+        return self.approvals(run_id).submit(approval_id, approved, reason)
 
     def approvals(self, run_id: str) -> ApprovalRegistry:
-        registry = self._approvals.get(run_id)
-        if registry is None:
-            raise ValueError(f'Run "{run_id}" is not active in this coordinator.')
-        return registry
+        """The run's durable approval registry; works after a process restart."""
+
+        if run_id not in self._approvals:
+            self.get_run_state(run_id)  # verifies the run exists and its integrity
+        return self._approvals[run_id]
+
+    def _approval_registry(self, run_id: str) -> ApprovalRegistry:
+        return ApprovalRegistry(self._approval_root / f"{run_id}.json")
 
     def resume_run(self, run_id: str) -> RunRecord:
         """Re-read and integrity-verify the persisted graph state before reporting it."""

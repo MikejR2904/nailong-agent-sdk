@@ -14,8 +14,8 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
 
+from ..foundations.canonical import sha256_json
 from ..foundations.contracts import AgentDefinition, AgentRunStatus, ScopedAgentTask
 from ..memory.context_projection import ContextProjectionPolicy
 from ..memory.episode_store import InMemoryEpisodeStore
@@ -165,7 +165,7 @@ class GraphAgentExecutor:
             "escalation": result.escalation.model_dump(mode="json")
             if result.escalation is not None
             else None,
-            "project_state_hash": _hash_payload(result.project_state),
+            "project_state_hash": sha256_json(result.project_state),
         }
         return GraphNodeResult(
             status=status,
@@ -176,7 +176,7 @@ class GraphAgentExecutor:
                 f"agent-iterations:{result.iterations}",
                 f"binding-hash:{binding.binding_hash}",
             ],
-            provenance_hash=_hash_payload(payload),
+            provenance_hash=sha256_json(payload),
         )
 
 
@@ -187,9 +187,3 @@ def _graph_status(status: AgentRunStatus) -> GraphNodeStatus:
         AgentRunStatus.FAILED: GraphNodeStatus.FAILED,
         AgentRunStatus.CANCELLED: GraphNodeStatus.CANCELLED,
     }[status]
-
-
-def _hash_payload(payload: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()

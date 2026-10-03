@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import threading
@@ -15,6 +14,7 @@ from time import monotonic_ns
 from typing import Any
 
 from ..foundations.atomic_io import replace_atomic
+from ..foundations.canonical import canonical_json, sha256_json
 from ..foundations.errors import redact_secrets
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import (
@@ -118,7 +118,7 @@ class TelemetryStore:
                     "links": redact_secrets(event.links),
                 }
             )
-            digest = _canonical_hash(prepared.model_dump(mode="json"))
+            digest = sha256_json(prepared.model_dump(mode="json"))
             prepared = prepared.model_copy(update={"integrity_hash": digest})
             connection.execute(
                 """
@@ -137,7 +137,7 @@ class TelemetryStore:
                     prepared.severity.value,
                     prepared.integrity_hash,
                     prepared.previous_event_hash,
-                    _canonical_json(prepared.payload),
+                    canonical_json(prepared.payload),
                     prepared.model_dump_json(),
                 ),
             )
@@ -172,7 +172,7 @@ class TelemetryStore:
                     observation.source_event_id,
                     observation.source_artifact_id,
                     observation.parser_version,
-                    _canonical_json(observation.context),
+                    canonical_json(observation.context),
                     observation.observed_at_utc,
                     observation.model_dump_json(),
                 ),
@@ -383,20 +383,12 @@ class TelemetryStore:
             )
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
-
-
-def _canonical_hash(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
 def _events_chain_break(events: Iterable[TelemetryEvent]) -> ChainBreak | None:
     return first_chain_break(
         events,
         noun="event",
         previous_attribute="previous_event_hash",
-        expected_hash=lambda event: _canonical_hash(
+        expected_hash=lambda event: sha256_json(
             event.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
         ),
     )

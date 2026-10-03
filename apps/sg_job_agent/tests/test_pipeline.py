@@ -7,7 +7,7 @@ import json
 
 import pytest
 from conftest import BASE_RESUME
-from nailong_agent_sdk import ScriptedModel
+from scripted import ScriptedModel
 
 from job_agent.apply import Applier
 from job_agent.pipeline import JobAgentPipeline
@@ -66,7 +66,9 @@ def body_of(tex: str) -> str:
 
 
 def tailor_script(resume_tex: str) -> list[dict]:
-    letter = "Dear Hiring Team, " + "I build production machine learning systems. " * 16 + "Alex Tan"
+    letter = (
+        "Dear Hiring Team, " + "I build production machine learning systems. " * 16 + "Alex Tan"
+    )
     return [
         final(
             resume_body=body_of(resume_tex),
@@ -107,8 +109,16 @@ def test_profile_discover_tailor_and_manual_apply(tmp_path, config, sources, res
         [
             final(
                 scores=[
-                    {"candidate_id": mcf_id, "fit_score": 72, "fit_rationale": "Good PyTorch match"},
-                    {"candidate_id": gh_id, "fit_score": 88, "fit_rationale": "Strong PyTorch match"},
+                    {
+                        "candidate_id": mcf_id,
+                        "fit_score": 72,
+                        "fit_rationale": "Good PyTorch match",
+                    },
+                    {
+                        "candidate_id": gh_id,
+                        "fit_score": 88,
+                        "fit_rationale": "Strong PyTorch match",
+                    },
                 ]
             )
         ]
@@ -146,7 +156,12 @@ def test_profile_discover_tailor_and_manual_apply(tmp_path, config, sources, res
         return True
 
     applier = Applier(
-        config, pipeline.root, pipeline.ledger, confirm=yes, open_url=opened.append, log=lambda _: None
+        config,
+        pipeline.root,
+        pipeline.ledger,
+        confirm=yes,
+        open_url=opened.append,
+        log=lambda _: None,
     )
     outcome = asyncio.run(applier.apply(gh_id))
     assert outcome.status is JobStatus.APPLIED
@@ -292,7 +307,11 @@ def test_real_openai_compatible_adapter_round_trip(tmp_path, config, sources, re
         transport=FakeTransport(),
     )
     pipeline = JobAgentPipeline(
-        config, tmp_path / "ws", model_factory=lambda _d: adapter, sources=sources, log=lambda _: None
+        config,
+        tmp_path / "ws",
+        model_factory=lambda _d: adapter,
+        sources=sources,
+        log=lambda _: None,
     )
     pipeline.import_resume(resume_file)
     profile = asyncio.run(pipeline.profile())
@@ -329,7 +348,8 @@ def test_parse_linkedin_cards_extracts_listing_fields():
     from job_agent.sources import parse_linkedin_cards
 
     page = (
-        '<li><div class="base-card base-search-card" data-entity-urn="urn:li:jobPosting:4472838794">'
+        '<li><div class="base-card base-search-card" '
+        'data-entity-urn="urn:li:jobPosting:4472838794">'
         '<h3 class="base-search-card__title"> ML Engineer </h3>'
         '<h4 class="base-search-card__subtitle"><a href="x"> Acme </a></h4>'
         '<span class="job-search-card__location"> Singapore, Singapore </span>'
@@ -367,9 +387,12 @@ def test_project_bullet_counts_reads_the_projects_section_only():
 
     bs = chr(92)
     tex = (
-        f"{bs}section{{Experience}}{bs}begin{{highlights}}{bs}item a{bs}item b{bs}item c{bs}end{{highlights}}"
-        f"{bs}section{{Projects}}{bs}textbf{{Alpha}}{bs}begin{{highlights}}{bs}item x{bs}item y{bs}end{{highlights}}"
+        f"{bs}section{{Experience}}{bs}begin{{highlights}}"
+        f"{bs}item a{bs}item b{bs}item c{bs}end{{highlights}}"
+        f"{bs}section{{Projects}}{bs}textbf{{Alpha}}{bs}begin{{highlights}}"
+        f"{bs}item x{bs}item y{bs}end{{highlights}}"
         f"{bs}textbf{{Beta}}{bs}begin{{itemize}}{bs}item z{bs}end{{itemize}}"
-        f"{bs}section{{Skills}}{bs}begin{{highlights}}{bs}item s1{bs}item s2{bs}item s3{bs}end{{highlights}}"
+        f"{bs}section{{Skills}}{bs}begin{{highlights}}"
+        f"{bs}item s1{bs}item s2{bs}item s3{bs}end{{highlights}}"
     )
     assert project_bullet_counts(tex) == [("Alpha", 2), ("Beta", 1)]

@@ -19,6 +19,7 @@ from typing import IO, Any
 from pydantic import Field, field_validator
 
 from ..foundations.atomic_io import replace_atomic
+from ..foundations.canonical import canonical_json, sha256_json
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError, assert_no_hidden_reasoning, redact_secrets
 from .telemetry_helpers import first_chain_break
@@ -112,7 +113,7 @@ class AuditTranscriptStore:
                     previous_hash=previous,
                 )
                 complete = prepared.model_copy(
-                    update={"integrity_hash": _hash(prepared.model_dump(mode="json"))}
+                    update={"integrity_hash": sha256_json(prepared.model_dump(mode="json"))}
                 )
                 handle.write(complete.model_dump_json().encode("utf-8"))
                 handle.write(b"\n")
@@ -263,7 +264,7 @@ class AuditTranscriptStore:
 
 def _bound_and_redact(value: Any, max_chars: int) -> dict[str, Any]:
     redacted = redact_secrets(value)
-    encoded = _canonical_json(redacted)
+    encoded = canonical_json(redacted)
     if len(encoded) <= max_chars:
         if isinstance(redacted, dict):
             return redacted
@@ -341,20 +342,12 @@ def _release_windows_lock(descriptor: int) -> None:
     msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _hash(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
 def _entries_chain_break(entries: Iterator[AuditLogEntry]) -> ChainBreak | None:
     return first_chain_break(
         entries,
         noun="audit entry",
         previous_attribute="previous_hash",
-        expected_hash=lambda entry: _hash(
+        expected_hash=lambda entry: sha256_json(
             entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
         ),
     )

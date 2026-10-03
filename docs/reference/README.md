@@ -50,7 +50,7 @@ file's import order is the order that gets exercised.
 3. **Loop `iteration = 1..max_iterations`.** Stop if the run deadline passed (FAILED) or the
    caller cancelled (CANCELLED).
 4. **Project context** (`ContextProjector.project`): compact episodes over budget, keep the
-   newest observations that fit, and build the stubs of compacted episodes. Emit the
+   newest observations that fit, and build the references of compacted episodes. Emit the
    `context-projected` event and the context metrics.
 5. **Three guards** end the run BLOCKED before any model call: `CONTEXT_DEADLOCK` (nothing can
    be compacted), `PROJECT_STATE_BUDGET_EXCEEDED` (the mandatory state exceeds its 2,000-token
@@ -78,14 +78,14 @@ The Chat Completions adapter sends three messages plus any continuation:
   byte-identical every turn so the provider's prompt cache can match the whole prefix.
 * **volatile context** - the bounded *project state view*; the iteration number;
   `recent_observations` (the newest observations that fit the budget); `episode_summaries`
-  (one line per retained episode); `compacted_episodes` (one-line stubs with a status and a
+  (one line per retained episode); `compacted_episodes` (one-line references with a status and a
   `handle_id` for episodes whose content was dropped, within a 1,500-token allowance, newest
   first); and `omitted_compacted_count`.
 * **continuation** - for providers that issued tool calls, the raw assistant tool calls and the
   matching bounded tool results, only for the latest batch.
 
 Defaults: context budget 12,000 estimated tokens, episode budget 6,000, tool-result preview
-1,024 characters, stub budget 1,500, stub summary 160 characters, project-state view 2,000.
+1,024 characters, reference budget 1,500, reference summary 160 characters, project-state view 2,000.
 Estimates are characters divided by four. The model never sees raw tool output beyond the
 preview: the full result is journalled and the model can fetch it with the `get_tool_result`
 tool and a handle id.
@@ -96,7 +96,7 @@ budget, the default strategy (exact PCKP, `foundations/optimization`) keeps a ma
 their prerequisites) and chooses the rest by solving a dependency-closed knapsack exactly
 (tree DP for rooted forests up to a 50,000 budget, otherwise branch and bound with a cap that
 degrades to BEST_EFFORT). Compacted episodes keep only a tombstone plus their summary; the
-stub list keeps them findable.
+reference list keeps them findable.
 
 ## Workflow 3 - how a tool call is governed
 
@@ -172,7 +172,7 @@ evidence with the exact PCKP solver.
 * **Episode** - one tool call and its result as a unit of memory; *exploratory* (read-only) or
   *action* (consumes other episodes). **Observation** - the model-facing message about a call.
 * **Projection** - the bounded view of memory and state built for one turn. **Compaction** -
-  dropping an episode's content while keeping a tombstone. **Stub** - the one-line, handle-bearing
+  dropping an episode's content while keeping a tombstone. **Reference** - the one-line, handle-bearing
   residue of a compacted episode. **Handle** - an opaque id of a journalled full result.
 * **Manifest** - the declared inputs and outputs of an EDA action; `requires_manifest` tools
   cannot be compacted until it is complete.

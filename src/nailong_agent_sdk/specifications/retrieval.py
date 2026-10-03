@@ -9,7 +9,9 @@ state, approvals, or execution evidence.
 from __future__ import annotations
 
 import json
+import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -57,18 +59,43 @@ class RetrievalCache(Protocol):
 
 
 class InMemoryRetrievalCache:
-    """Deterministic test/development cache without wall-clock expiry semantics."""
+    """Process-local retrieval cache with TTL expiry and a least-recently-used bound.
 
-    def __init__(self) -> None:
-        self._values: dict[str, RetrievalResult] = {}
+    Entries expire ``ttl_seconds`` after they are set, measured on a monotonic
+    clock so wall-clock changes cannot extend or cut them short. When more than
+    ``max_entries`` are live, the least recently used entry is evicted.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = 1_024,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if max_entries < 1:
+            raise ValueError("retrieval cache max_entries must be positive")
+        self._values: OrderedDict[str, tuple[float, RetrievalResult]] = OrderedDict()
+        self._max_entries = max_entries
+        self._clock = clock
 
     def get(self, key: str) -> RetrievalResult | None:
-        return self._values.get(key)
+        entry = self._values.get(key)
+        if entry is None:
+            return None
+        expires_at, result = entry
+        if self._clock() >= expires_at:
+            del self._values[key]
+            return None
+        self._values.move_to_end(key)
+        return result
 
     def set(self, key: str, result: RetrievalResult, ttl_seconds: int) -> None:
         if ttl_seconds < 1:
             raise ValueError("retrieval cache ttl_seconds must be positive")
-        self._values[key] = result
+        self._values[key] = (self._clock() + ttl_seconds, result)
+        self._values.move_to_end(key)
+        while len(self._values) > self._max_entries:
+            self._values.popitem(last=False)
 
 
 class RedisRetrievalCache:

@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ...foundations.canonical import sha256_text
 from ...foundations.contracts import AgentFailure, ToolExecutionResult
+from ...foundations.version import USER_AGENT
 from ...memory.context_projection import ToolResultJournal
 from ..artifacts import ArtifactStore
 from ..policy import SENSITIVE_PATH_PATTERNS
@@ -33,7 +35,6 @@ from .helpers import (
     _read_lines,
     _render_pdf_page,
     _required_text,
-    _sha256,
     _strip_html,
 )
 
@@ -71,7 +72,7 @@ class DuckDuckGoHtmlClient:
         request = urllib.request.Request(
             "https://html.duckduckgo.com/html/",
             data=data,
-            headers={"User-Agent": "agent-design-sdk/0.8 research client"},
+            headers={"User-Agent": f"{USER_AGENT} research client"},
             method="POST",
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -99,9 +100,7 @@ class DuckDuckGoHtmlClient:
                 continue
             title = _strip_html(match.group("title"))
             chunk_end = (
-                title_matches[index + 1].start()
-                if index + 1 < len(title_matches)
-                else len(body)
+                title_matches[index + 1].start() if index + 1 < len(title_matches) else len(body)
             )
             snippet_match = snippet_pattern.search(body, match.end(), chunk_end)
             snippet = _strip_html(snippet_match.group("snippet")) if snippet_match else ""
@@ -350,7 +349,7 @@ class CoreToolDispatcher:
             "handle_id": handle,
             "content": encoded[:max_chars],
             "truncated": len(encoded) > max_chars,
-            "content_hash": _sha256(encoded),
+            "content_hash": sha256_text(encoded),
         }
 
     async def _web_fetch(self, arguments: dict[str, Any]) -> dict[str, Any]:

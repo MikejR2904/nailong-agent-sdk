@@ -18,9 +18,10 @@ from typing import Any, Protocol
 
 from pydantic import Field
 
+from ..foundations.canonical import canonical_json, estimate_tokens
 from ..foundations.contracts import (
     AgentPrompt,
-    CompactedEpisodeStub,
+    CompactedEpisodeReference,
     ContextProjectionMetadata,
     EpisodeSummary,
     ModelObservation,
@@ -40,7 +41,7 @@ class ContextProjectionPolicy(StrictModel):
     context_token_budget: int = Field(default=12_000, ge=256, le=1_000_000)
     episode_token_budget: int = Field(default=6_000, ge=0, le=1_000_000)
     tool_result_preview_chars: int = Field(default=1_024, ge=32, le=100_000)
-    compacted_stub_token_budget: int = Field(default=1_500, ge=0, le=1_000_000)
+    compacted_reference_token_budget: int = Field(default=1_500, ge=0, le=1_000_000)
     compacted_summary_chars: int = Field(default=160, ge=32, le=2_000)
 
     def __init__(self, **data: Any) -> None:
@@ -58,7 +59,7 @@ class ToolResultJournal(Protocol):
 
 
 class InMemoryToolResultJournal:
-    """In-process journal for a bounded task invocation and deterministic tests."""
+    """In-process journal for one bounded task invocation (results are lost on exit)."""
 
     def __init__(self) -> None:
         self._records: dict[str, dict[str, Any]] = {}
@@ -74,7 +75,7 @@ class InMemoryToolResultJournal:
         return self._records[handle_id]
 
     def _store(self, payload: dict[str, Any]) -> ToolResultHandle:
-        encoded = _canonical_json(payload).encode("utf-8")
+        encoded = canonical_json(payload).encode("utf-8")
         handle = ToolResultHandle(
             handle_id=f"result-{self._next_id}",
             content_hash=hashlib.sha256(encoded).hexdigest(),
@@ -101,7 +102,7 @@ class FileToolResultJournal(InMemoryToolResultJournal):
 
     def record(self, call: ToolCall, result: ToolExecutionResult) -> ToolResultHandle:
         payload = {"call": call.model_dump(mode="json"), "result": result.model_dump(mode="json")}
-        encoded = _canonical_json(payload)
+        encoded = canonical_json(payload)
         while True:
             handle_id = f"result-{self._next_id}"
             self._next_id += 1
@@ -137,7 +138,7 @@ class ContextProjection:
     episodes: tuple[EpisodeSummary, ...]
     metadata: ContextProjectionMetadata
     compaction: CompactionResult
-    compacted_episodes: tuple[CompactedEpisodeStub, ...] = ()
+    compacted_episodes: tuple[CompactedEpisodeReference, ...] = ()
 
 
 class ContextProjector:
@@ -175,7 +176,7 @@ class ContextProjector:
                 observations=(),
                 episodes=(),
                 metadata=ContextProjectionMetadata(
-                    estimated_tokens=_estimate_tokens(prompt),
+                    estimated_tokens=estimate_tokens(prompt),
                     context_token_budget=self._policy.context_token_budget,
                     episode_token_budget=self._policy.episode_token_budget,
                     compacted_episode_ids=compaction.compacted_episode_ids,
@@ -198,8 +199,8 @@ class ContextProjector:
                 and record.state.value != "compacted"
             )
         ]
-        base_tokens = _estimate_tokens(prompt) + _estimate_tokens(retained_episodes)
-        stubs, omitted_stubs, stub_tokens = _compacted_stubs(
+        base_tokens = estimate_tokens(prompt) + estimate_tokens(retained_episodes)
+        references, omitted_references, reference_tokens = _compacted_references(
             [
                 summary
                 for summary in episode_summaries
@@ -209,15 +210,15 @@ class ContextProjector:
             observations,
             self._policy.compacted_summary_chars,
             min(
-                self._policy.compacted_stub_token_budget,
+                self._policy.compacted_reference_token_budget,
                 max(0, self._policy.context_token_budget - base_tokens),
             ),
         )
-        base_tokens += stub_tokens
+        base_tokens += reference_tokens
         selected: list[ModelObservation] = []
         omitted = len(observations) - len(eligible_observations)
         for observation in reversed(eligible_observations):
-            candidate_tokens = _estimate_tokens(observation)
+            candidate_tokens = estimate_tokens(observation)
             if base_tokens + candidate_tokens > self._policy.context_token_budget:
                 omitted += 1
                 continue
@@ -233,10 +234,10 @@ class ContextProjector:
                 episode_token_budget=self._policy.episode_token_budget,
                 compacted_episode_ids=compaction.compacted_episode_ids,
                 omitted_observation_count=omitted,
-                omitted_compacted_count=omitted_stubs,
+                omitted_compacted_count=omitted_references,
             ),
             compaction=compaction,
-            compacted_episodes=stubs,
+            compacted_episodes=references,
         )
 
     def project_tool_result(
@@ -255,24 +256,24 @@ class ContextProjector:
         )
 
 
-def _compacted_stubs(
+def _compacted_references(
     summaries: Sequence[EpisodeSummary],
     observations: Sequence[ModelObservation],
     summary_chars: int,
     token_allowance: int,
-) -> tuple[tuple[CompactedEpisodeStub, ...], int, int]:
+) -> tuple[tuple[CompactedEpisodeReference, ...], int, int]:
     results = {
         observation.episode_id: observation
         for observation in observations
         if observation.episode_id is not None and observation.result is not None
     }
-    selected: list[CompactedEpisodeStub] = []
+    selected: list[CompactedEpisodeReference] = []
     omitted = 0
     used = 0
     for summary in reversed(summaries):
         observation = results.get(summary.id)
         projected = observation.result if observation is not None else None
-        stub = CompactedEpisodeStub(
+        reference = CompactedEpisodeReference(
             episode_id=summary.id,
             kind=summary.kind,
             summary=_truncate_text(summary.summary, summary_chars) or "",
@@ -281,11 +282,11 @@ def _compacted_stubs(
             iteration=observation.iteration if observation is not None else None,
             handle_id=projected.handle.handle_id if projected is not None else None,
         )
-        cost = _estimate_tokens(stub.model_dump(mode="json"))
+        cost = estimate_tokens(reference.model_dump(mode="json"))
         if used + cost > token_allowance:
             omitted += 1
             continue
-        selected.append(stub)
+        selected.append(reference)
         used += cost
     selected.reverse()
     return tuple(selected), omitted, used
@@ -294,7 +295,7 @@ def _compacted_stubs(
 def _bounded_preview(value: Any, max_chars: int) -> tuple[Any | None, bool]:
     if value is None:
         return None, False
-    encoded = _canonical_json(value)
+    encoded = canonical_json(value)
     if len(encoded) <= max_chars:
         return value, False
     return {
@@ -308,14 +309,6 @@ def _truncate_text(value: str | None, max_chars: int) -> str | None:
     if value is None or len(value) <= max_chars:
         return value
     return f"{value[:max_chars]}… [truncated]"
-
-
-def _estimate_tokens(value: Any) -> int:
-    return max(1, len(_canonical_json(value)) // 4)
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _next_handle_number(root: Path) -> int:

@@ -18,7 +18,6 @@ from .agent.model import (
     ProviderToolResult,
     ProviderToolResultConsumer,
     ProviderUsage,
-    ScriptedModel,
     StreamingAgentModel,
 )
 from .agent.openai_compatible import (
@@ -51,9 +50,11 @@ from .agent.orchestrator import (
 )
 from .agent.runtime import AgentRuntimeServices
 from .agent.specialists import (
-    placeholder_specialist_definition,
+    physical_design_worker_definition,
     planning_agent_definition,
     rtl_worker_definition,
+    synthesis_worker_definition,
+    timing_signoff_worker_definition,
 )
 from .agent.verification import (
     CallableVerificationGate,
@@ -75,7 +76,7 @@ from .foundations.contracts import (
     AgentFailure,
     AgentResult,
     AgentRunStatus,
-    CompactedEpisodeStub,
+    CompactedEpisodeReference,
     ContextProjectionMetadata,
     ModelBinding,
     RuntimeOptions,
@@ -267,8 +268,6 @@ from .specifications.retrieval_models import (
     RetrievalStatus,
 )
 from .specifications.vision import (
-    ScriptedVisionAdapter,
-    UnconfiguredVisionAdapter,
     VisionAdapter,
     VisionProposal,
 )
@@ -417,7 +416,7 @@ __all__ = [
     "CapabilityGrant",
     "CapabilityPolicy",
     "CommandTemplate",
-    "CompactedEpisodeStub",
+    "CompactedEpisodeReference",
     "ComplexityRouter",
     "ComplexityRoutingRules",
     "ContextProjection",
@@ -586,8 +585,6 @@ __all__ = [
     "SpecificationPreprocessor",
     "SpecificationSnapshotRecord",
     "SpecificationVersionService",
-    "ScriptedModel",
-    "ScriptedVisionAdapter",
     "StateGraph",
     "StreamingAgentModel",
     "StreamingJsonHttpTransport",
@@ -618,7 +615,6 @@ __all__ = [
     "ToolResultJournal",
     "UserModelSelection",
     "UnifiedSpecification",
-    "UnconfiguredVisionAdapter",
     "VersionMetadata",
     "VersionBump",
     "VersionClassification",
@@ -640,7 +636,9 @@ __all__ = [
     "record_metric_unavailable",
     "record_metric_value",
     "register_standard_metric_definitions",
-    "placeholder_specialist_definition",
+    "physical_design_worker_definition",
+    "synthesis_worker_definition",
+    "timing_signoff_worker_definition",
     "make_provenance_record",
     "planning_agent_definition",
     "rtl_worker_definition",

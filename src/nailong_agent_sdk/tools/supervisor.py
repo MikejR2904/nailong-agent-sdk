@@ -163,8 +163,10 @@ class ProcessSupervisor:
             raise ValueError(f'Command working directory "{cwd}" does not exist.')
         # An explicit call-site override wins; otherwise a template-declared
         # policy scrubs the environment; otherwise the host is fully inherited.
-        effective_env = env if env is not None else (
-            template.environment.resolve() if template.environment is not None else None
+        effective_env = (
+            env
+            if env is not None
+            else (template.environment.resolve() if template.environment is not None else None)
         )
 
         attempts = 0

@@ -9,7 +9,7 @@ import zipfile
 
 import httpx
 from conftest import BASE_RESUME
-from nailong_agent_sdk import ScriptedModel
+from scripted import ScriptedModel
 
 from job_agent.ingest import linkedin_items
 from job_agent.knowledge import EvidenceItem, KnowledgeBase, chunk_text

@@ -8,8 +8,6 @@ records prompts, model reasoning, raw tool payloads, or provider-internal traces
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +19,7 @@ from typing import Any
 from pydantic import Field, field_validator
 
 from ..foundations.atomic_io import replace_atomic
+from ..foundations.canonical import canonical_json, sha256_json
 from ..foundations.contracts import StrictModel
 
 
@@ -57,7 +56,7 @@ class ProfileSpan(StrictModel):
     @classmethod
     def attributes_are_bounded_and_safe(cls, value: dict[str, Any]) -> dict[str, Any]:
         _assert_profile_safe(value)
-        if len(_canonical_json(value)) > 4_096:
+        if len(canonical_json(value)) > 4_096:
             raise ValueError("profile span attributes exceed the 4,096-character bound")
         return value
 
@@ -160,7 +159,7 @@ class AgentRunProfiler:
                 raise RuntimeError("Cannot start a profile span after finish_run().")
             safe_attributes = dict(attributes or {})
             _assert_profile_safe(safe_attributes)
-            if len(_canonical_json(safe_attributes)) > 4_096:
+            if len(canonical_json(safe_attributes)) > 4_096:
                 raise ValueError("profile span attributes exceed the 4,096-character bound")
             self._counter += 1
             handle = ProfileSpanHandle(span_id=f"span-{self._counter}")
@@ -253,7 +252,9 @@ class AgentRunProfiler:
                 ],
                 "integrity_hash": "",
             }
-            return AgentRunProfile.model_validate({**payload, "integrity_hash": _hash(payload)})
+            return AgentRunProfile.model_validate(
+                {**payload, "integrity_hash": sha256_json(payload)}
+            )
 
     def write_json(self, destination: Path) -> Path:
         """Atomically persist a completed profile owned by the SDK consumer."""
@@ -304,14 +305,6 @@ def _assert_profile_safe(value: Any) -> None:
     elif isinstance(value, list):
         for nested in value:
             _assert_profile_safe(nested)
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _hash(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _utc_now() -> str:

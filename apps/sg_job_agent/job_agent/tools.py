@@ -31,8 +31,8 @@ from .latex import (
     check_tailored_resume,
     compile_latex,
     overfull_lines,
-    project_bullet_counts,
     pdf_page_count,
+    project_bullet_counts,
 )
 from .sources import JobPosting, JobSourceClient, detect_ats, html_to_text, is_in_location
 from .store import JobLedger
@@ -76,7 +76,8 @@ JOB_TOOLS: dict[str, ToolDefinition] = {
         _tool(
             "search_job_sources",
             "Search structured job sources (LinkedIn public job listings, MyCareersFuture, the "
-            "Singapore government job portal, plus configured Greenhouse/Lever/Ashby company boards) for full-time "
+            "Singapore government job portal, plus configured Greenhouse/Lever/Ashby company "
+            "boards) for full-time "
             "openings in the target location. Returns candidates with a candidate_id; "
             "this does not use the rate-limited web_search budget.",
             _object(
@@ -376,7 +377,11 @@ DOCUMENT_BEGIN = r"\begin{document}"
 def _restore_preamble(base_tex: str, tailored_tex: str) -> str:
     if DOCUMENT_BEGIN not in base_tex or DOCUMENT_BEGIN not in tailored_tex:
         return tailored_tex
-    return base_tex.split(DOCUMENT_BEGIN, 1)[0] + DOCUMENT_BEGIN + tailored_tex.split(DOCUMENT_BEGIN, 1)[1]
+    return (
+        base_tex.split(DOCUMENT_BEGIN, 1)[0]
+        + DOCUMENT_BEGIN
+        + tailored_tex.split(DOCUMENT_BEGIN, 1)[1]
+    )
 
 
 def assemble_resume(base_tex: str, body: str) -> str:

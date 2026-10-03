@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from ..agent.model_resolver import ModelResolver
 from ..agent.orchestrator import Orchestrator
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.telemetry_store import TelemetryStore
@@ -20,6 +21,35 @@ from ..state.controller_runtime import ControllerRuntime
 from ..state.harness_coordinator import HarnessCoordinator
 from ..state.planning import PlanValidator
 from ..state.project_state_store import FileProjectStateStore
+from ..tools.approvals import ApprovalRegistry
+from ..tools.core import WebSearchClient
+from ..tools.policy import CapabilityGrant, CapabilityPolicy
+from ..tools.supervisor import ProcessSupervisor
+
+# Capabilities an MCP-run agent gets when the host configures no policy: local
+# reads, bounded utilities, and approval-gated draft writes inside its own task
+# workspace. Web research, process execution and EDA tools need an explicit grant.
+DEFAULT_AGENT_ROLE = "agent"
+
+
+def default_capability_policy() -> CapabilityPolicy:
+    return CapabilityPolicy(
+        [
+            CapabilityGrant(
+                role=DEFAULT_AGENT_ROLE,
+                capabilities=[
+                    "filesystem.read",
+                    "artifact.read",
+                    "artifact.diff",
+                    "evidence.read",
+                    "utility.brief",
+                    "utility.wait",
+                    "draft.write",
+                ],
+                allowed_paths=["."],
+            )
+        ]
+    )
 
 
 def _validation_errors(error: ValidationError) -> list[dict[str, Any]]:
@@ -49,6 +79,11 @@ class McpContext:
     gate_store: Gate1ArtifactStore
     plan_validator: PlanValidator
     versioning: SpecificationVersionService
+    model_resolver: ModelResolver
+    capability_policy: CapabilityPolicy
+    supervisor: ProcessSupervisor
+    agent_task_approvals: ApprovalRegistry
+    search_client: WebSearchClient | None = None
     orchestrators: dict[str, Orchestrator] = field(default_factory=dict)
 
     def repository_for(self, relative_path: str) -> GitRepositoryAdapter:
