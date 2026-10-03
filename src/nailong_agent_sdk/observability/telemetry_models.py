@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -121,3 +121,9 @@ class TelemetryRunSummary(StrictModel):
     last_event_at: str | None = None
     statuses: dict[str, int] = Field(default_factory=dict)
     event_types: dict[str, int] = Field(default_factory=dict)
+
+
+class ChainBreak(StrictModel):
+    sequence: int = Field(ge=1)
+    kind: Literal["content-hash-mismatch", "previous-hash-mismatch", "unreadable-entry"]
+    message: str = Field(min_length=1)

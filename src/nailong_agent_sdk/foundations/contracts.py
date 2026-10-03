@@ -99,6 +99,7 @@ class ToolDefinition(StrictModel):
     input_schema: dict[str, Any]
     episode_kind: EpisodeKind
     concurrency: ToolConcurrency = ToolConcurrency.SERIAL
+    requires_manifest: bool = False
 
     @field_validator("input_schema")
     @classmethod
@@ -218,6 +219,16 @@ class ToolCallTurn(StrictModel):
     type: Literal["tool-call"] = "tool-call"
     call: ToolCall
 
+    @field_validator("call")
+    @classmethod
+    def call_declares_no_batch_dependencies(cls, call: ToolCall) -> ToolCall:
+        if call.depends_on_call_ids:
+            raise ValueError(
+                f'tool call "{call.id}" lists depends_on_call_ids {call.depends_on_call_ids} '
+                "but a tool-call turn holds one call; use a tool-batch turn to declare dependencies"
+            )
+        return call
+
 
 class ToolBatchTurn(StrictModel):
     """One model turn with an acyclic batch of correlated tool calls."""
@@ -305,6 +316,18 @@ class EpisodeSummary(StrictModel):
     dependency_ids: list[str] = Field(default_factory=list)
 
 
+class CompactedEpisodeStub(StrictModel):
+    """One-line residue of a compacted episode that stays visible to the model."""
+
+    episode_id: str = Field(min_length=1)
+    kind: EpisodeKind
+    summary: str
+    tool_name: str | None = None
+    status: Literal["succeeded", "failed", "blocked"] | None = None
+    iteration: int | None = Field(default=None, ge=1)
+    handle_id: str | None = None
+
+
 class ModelObservation(StrictModel):
     kind: Literal["tool-result", "agent-error"]
     iteration: int = Field(ge=1)
@@ -339,6 +362,7 @@ class ContextProjectionMetadata(StrictModel):
     episode_token_budget: int = Field(ge=0)
     compacted_episode_ids: list[str] = Field(default_factory=list)
     omitted_observation_count: int = Field(default=0, ge=0)
+    omitted_compacted_count: int = Field(default=0, ge=0)
 
 
 class AgentLifecycleEvent(StrictModel):

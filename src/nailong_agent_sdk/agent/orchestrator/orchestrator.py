@@ -18,7 +18,8 @@ multi-agent execution.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace as dataclass_replace
+from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
@@ -293,6 +294,8 @@ class Orchestrator:
         controller = self._controller_runtime.get_controller(record.controller_id)
         if controller.phase.value != "dispatch-ready":
             raise ValueError("The designer must approve the plan before dispatch.")
+        bindings = self._build_bindings(record, binding_factory)
+        executor = GraphAgentExecutor(services, bindings)
         controller, run = self._controller_runtime.dispatch(record.controller_id)
         dispatched = record.model_copy(
             update={
@@ -307,8 +310,6 @@ class Orchestrator:
             dispatched.status.value,
             {"controller_id": dispatched.controller_id, "graph_run_id": dispatched.graph_run_id},
         )
-        bindings = self._build_bindings(record, binding_factory)
-        executor = GraphAgentExecutor(services, bindings)
         executed = await self._controller_runtime.execute_graph(
             controller.controller_id,
             executor.executors(),

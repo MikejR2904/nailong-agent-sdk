@@ -196,15 +196,11 @@ def selected_resume() -> str:
 
 
 def tailor_run(job_id: str, evidence: list[str]) -> list[dict]:
-    resume = f"jobs/{job_id}/resume.tex"
+    body = selected_resume().split(chr(92) + "begin{document}", 1)[1]
     return [
-        call(1, "read_file", path=f"jobs/{job_id}/job_description.md"),
-        call(2, "search_experience", query="Rust storage engine key-value"),
-        call(3, "read_experience", id=evidence[0] if evidence else "gi-missing"),
-        call(4, "write_draft", path=resume, content=selected_resume()),
-        call(5, "check_tailored_resume", path=resume, evidence_ids=evidence),
         final(
-            resume_path=resume,
+            resume_body=body,
+            cover_letter="",
             changes=["Added fastkv from GitHub for the storage-engine requirement"],
             matched_requirements=["Rust", "storage engines"],
             gaps=[],
@@ -230,6 +226,7 @@ def test_tailor_adds_project_from_bank_only_when_cited(tmp_path, config, sources
         return model
 
     config.tailoring.polish_pass = False
+    config.tailoring.write_cover_letter = False
     pipeline = make_pipeline(tmp_path, config, sources, resume_file, factory)
     ingest(pipeline)
     fastkv = next(i for i in pipeline.knowledge.items("github") if "fastkv" in i.title)
@@ -254,7 +251,14 @@ def test_tailor_adds_project_from_bank_only_when_cited(tmp_path, config, sources
     assert pipeline.ledger.get(job_id)["status"] == JobStatus.TAILOR_FAILED.value
 
     # Cited: the same resume passes because the evidence contains the figures.
-    runs[:] = [tailor_run(job_id, [fastkv.id])]
+    from job_agent.claims import claims_to_verify
+
+    claims = claims_to_verify(BASE_RESUME, selected_resume())
+    verdicts = [
+        {"id": claim["id"], "verdict": "supported", "quote": "Benchmarks: 1.8M ops/s on 8 cores"}
+        for claim in claims
+    ]
+    runs[:] = [tailor_run(job_id, [fastkv.id]), [final(verdicts=verdicts)]]
     packet = asyncio.run(pipeline.tailor(job_id))
     assert packet["evidence_ids"] == [fastkv.id]
     assert "fastkv" in (pipeline.root / packet["resume_tex"]).read_text()
@@ -285,3 +289,14 @@ def test_github_listing_failure_keeps_extra_repos():
     items = asyncio.run(ingester.items("alextan", extra_repos=["course-org/pairs"]))
     assert [item.title for item in items] == ["GitHub: course-org/pairs"]
     assert "listing repos of alextan" in ingester.warnings[0]
+
+
+def test_fabricated_verifier_quote_is_not_accepted():
+    from job_agent.claims import unsupported_claims
+
+    claims = [{"id": "b1", "text": "Led a team of 5 engineers"}]
+    verdicts = [{"id": "b1", "verdict": "supported", "quote": "Led a team of 5 engineers"}]
+    problems = unsupported_claims(claims, verdicts, "Built a key-value store in Rust")
+    assert len(problems) == 1 and "Led a team" in problems[0]
+    real = [{"id": "b1", "verdict": "supported", "quote": "Built a key-value store in Rust"}]
+    assert unsupported_claims(claims, real, "Built a key-value store in Rust") == []

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -19,7 +20,12 @@ from pydantic import Field, field_validator
 
 from ..foundations.atomic_io import replace_atomic
 from ..foundations.contracts import StrictModel
-from ..foundations.errors import assert_no_hidden_reasoning, redact_secrets
+from ..foundations.errors import AgentSdkError, assert_no_hidden_reasoning, redact_secrets
+from .telemetry_helpers import first_chain_break
+from .telemetry_models import ChainBreak
+
+_LOCK_TIMEOUT_SECONDS = 30.0
+_LOCK_POLL_SECONDS = 0.005
 
 
 class AuditLogEntry(StrictModel):
@@ -165,31 +171,28 @@ class AuditTranscriptStore:
         return sum(1 for _ in self.iter_entries(run_id, through_sequence=through_sequence))
 
     def verify(self, run_id: str) -> bool:
+        return self.chain_break(run_id) is None
+
+    def chain_break(self, run_id: str) -> ChainBreak | None:
         boundary = self.snapshot_sequence(run_id)
-        return self._verify_entries(self.iter_entries(run_id, through_sequence=boundary))
+        return _entries_chain_break(self.iter_entries(run_id, through_sequence=boundary))
 
     @staticmethod
     def _verify_entries(entries: Iterator[AuditLogEntry]) -> bool:
-        previous: str | None = None
-        for entry in entries:
-            expected = _hash(
-                entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
-            )
-            if entry.previous_hash != previous or entry.integrity_hash != expected:
-                return False
-            previous = entry.integrity_hash
-        return True
+        return _entries_chain_break(entries) is None
 
     def render_markdown(self, run_id: str) -> Path:
         boundary = self.snapshot_sequence(run_id)
         entries = self.list_entries(run_id, through_sequence=boundary)
         entry_count = self.entry_count(run_id, through_sequence=boundary)
-        integrity_valid = self._verify_entries(self.iter_entries(run_id, through_sequence=boundary))
+        failure = _entries_chain_break(self.iter_entries(run_id, through_sequence=boundary))
+        integrity_valid = failure is None
         path = self._root / f"{_safe_name(run_id)}.transcript.md"
         lines = [
             f"# Agent audit transcript: `{run_id}`",
             "",
             f"Integrity chain valid: `{integrity_valid}`",
+            *([] if failure is None else [f"First integrity failure: {failure.message}"]),
             f"Verified transcript entries: `{entry_count}`",
             f"Verified through sequence: `{boundary}`",
             f"Rendered entries: `{len(entries)}`",
@@ -293,29 +296,49 @@ def _interprocess_lock(path: Path) -> Iterator[None]:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
+        descriptor = handle.fileno()
         if os.name == "nt":
-            import msvcrt
-
-            handle.seek(0)
-            if not handle.read(1):
-                handle.seek(0)
-                handle.write(b"0")
-                handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            _acquire_windows_lock(descriptor, path)
             try:
                 yield
             finally:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                _release_windows_lock(descriptor)
         else:
             import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+def _acquire_windows_lock(descriptor: int, path: Path) -> None:
+    import msvcrt
+
+    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+    while True:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            return
+        except PermissionError as error:
+            if time.monotonic() >= deadline:
+                raise AgentSdkError(
+                    "AUDIT_LOCK_TIMEOUT",
+                    f'Could not acquire the audit-log lock "{path.name}" within '
+                    f"{_LOCK_TIMEOUT_SECONDS:g}s: another process is holding it, most likely "
+                    "a writer that hung mid-append or software scanning the lock file.",
+                    {"lock_path": str(path), "timeout_seconds": _LOCK_TIMEOUT_SECONDS},
+                ) from error
+            time.sleep(_LOCK_POLL_SECONDS)
+
+
+def _release_windows_lock(descriptor: int) -> None:
+    import msvcrt
+
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
 
 
 def _canonical_json(value: Any) -> str:
@@ -324,6 +347,17 @@ def _canonical_json(value: Any) -> str:
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _entries_chain_break(entries: Iterator[AuditLogEntry]) -> ChainBreak | None:
+    return first_chain_break(
+        entries,
+        noun="audit entry",
+        previous_attribute="previous_hash",
+        expected_hash=lambda entry: _hash(
+            entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
+        ),
+    )
 
 
 def _safe_name(value: str) -> str:

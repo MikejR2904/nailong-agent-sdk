@@ -75,6 +75,7 @@ from .foundations.contracts import (
     AgentFailure,
     AgentResult,
     AgentRunStatus,
+    CompactedEpisodeStub,
     ContextProjectionMetadata,
     ModelBinding,
     RuntimeOptions,
@@ -184,6 +185,7 @@ from .observability.profiler import (
 )
 from .observability.telemetry_helpers import metric_observation
 from .observability.telemetry_models import (
+    ChainBreak,
     MetricAvailability,
     MetricDefinition,
     MetricObservation,
@@ -415,6 +417,7 @@ __all__ = [
     "CapabilityGrant",
     "CapabilityPolicy",
     "CommandTemplate",
+    "CompactedEpisodeStub",
     "ComplexityRouter",
     "ComplexityRoutingRules",
     "ContextProjection",
@@ -433,7 +436,6 @@ __all__ = [
     "DelegatedRunContext",
     "DelegatedRunFactory",
     "DeterministicLexicalRetrievalIndex",
-    "DependencyProof",
     "DependencyProof",
     "DesignStage",
     "DockerSandbox",
@@ -600,6 +602,7 @@ __all__ = [
     "TaskStatus",
     "TaskSignalUse",
     "TerminationPolicy",
+    "ChainBreak",
     "TelemetryActor",
     "TelemetryAuthority",
     "TelemetryContext",

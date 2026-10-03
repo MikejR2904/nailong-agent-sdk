@@ -99,12 +99,22 @@ def assert_sanitized_interop_value(value: Any, *, _depth: int = 0) -> None:
     )
 
 
+class OptionalDependencyError(RuntimeError):
+    pass
+
+
+def content_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def canonical_digest(value: Any) -> str:
     """Return a SHA-256 digest after sanitization and canonical JSON encoding."""
 
     assert_sanitized_interop_value(value)
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return content_digest(value)
 
 
 def require_optional_module(module_name: str, extra_name: str) -> Any:
@@ -113,7 +123,7 @@ def require_optional_module(module_name: str, extra_name: str) -> Any:
     try:
         return importlib.import_module(module_name)
     except ModuleNotFoundError as error:
-        raise RuntimeError(
+        raise OptionalDependencyError(
             f'Optional dependency "{module_name}" is required; install '
-            f"agent-design-agent-sdk[{extra_name}]."
+            f"nailong-agent-sdk[{extra_name}]."
         ) from error

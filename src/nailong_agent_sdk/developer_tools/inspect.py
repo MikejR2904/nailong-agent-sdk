@@ -21,6 +21,8 @@ class RunInspection(StrictModel):
     run_id: str
     telemetry_chain_valid: bool
     audit_chain_valid: bool
+    telemetry_chain_failure: dict[str, Any] | None = None
+    audit_chain_failure: dict[str, Any] | None = None
     event_count: int
     metric_count: int
     event_types: dict[str, int]
@@ -44,8 +46,10 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
     event_types = _counts(event.event_type for event in events)
     statuses = _counts(event.status for event in events)
     metric_availability = _counts(metric.availability.value for metric in metrics)
-    telemetry_chain_valid = telemetry.verify_run_chain(run_id)
-    audit_chain_valid = audit.verify(run_id)
+    telemetry_failure = telemetry.chain_break(run_id)
+    audit_failure = audit.chain_break(run_id)
+    telemetry_chain_valid = telemetry_failure is None
+    audit_chain_valid = audit_failure is None
     report: dict[str, Any] = {
         "schema_version": "agent-sdk-read-only-run-inspection-v1",
         "run_id": run_id,
@@ -62,6 +66,10 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
         run_id=run_id,
         telemetry_chain_valid=telemetry_chain_valid,
         audit_chain_valid=audit_chain_valid,
+        telemetry_chain_failure=telemetry_failure.model_dump(mode="json")
+        if telemetry_failure
+        else None,
+        audit_chain_failure=audit_failure.model_dump(mode="json") if audit_failure else None,
         event_count=len(events),
         metric_count=len(metrics),
         event_types=event_types,

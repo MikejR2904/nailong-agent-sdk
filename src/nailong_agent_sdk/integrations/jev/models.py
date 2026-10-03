@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, TypeAdapter, field_validator
 
 from ...foundations.contracts import StrictModel
-from .._utils import canonical_digest
+from .._utils import canonical_digest, content_digest
 from ..contracts import InteropOperationStatus, InteropReceipt, assert_sanitized_interop_value
 
 
@@ -63,7 +63,7 @@ class JevQuestionSpec(StrictModel):
 
     @property
     def digest(self) -> str:
-        return canonical_digest(self.model_dump(mode="json"))
+        return content_digest(self.model_dump(mode="json"))
 
 
 class JevDecisionRequest(StrictModel):

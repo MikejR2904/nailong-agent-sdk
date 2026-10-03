@@ -206,6 +206,24 @@ class GitHubIngester:
                 break
         return [repo for repo in repos if include_forks or not repo.get("fork")]
 
+    async def archive(self, full_name: str, *, max_bytes: int) -> bytes:
+        chunks: list[bytes] = []
+        size = 0
+        async with self._http.stream(
+            "GET", f"{GITHUB_API}/repos/{full_name}/tarball", headers=self._headers
+        ) as response:
+            if response.status_code == 403 and "rate limit" in (await response.aread()).decode(
+                errors="replace"
+            ).lower():
+                raise RuntimeError("GitHub API rate limit reached; set a token.")
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ValueError(f"{full_name} archive exceeds {max_bytes // 1_000_000} MB")
+                chunks.append(chunk)
+        return b"".join(chunks)
+
     async def repo(self, full_name: str) -> dict:
         return (await self._get(f"/repos/{full_name}")).json()
 
@@ -243,7 +261,13 @@ class GitHubIngester:
             title=f"GitHub: {full_name}",
             text=text.strip(),
             url=repo.get("html_url") or f"https://github.com/{full_name}",
-            meta={"languages": languages, "stars": repo.get("stargazers_count", 0)},
+            meta={
+                "languages": languages,
+                "stars": repo.get("stargazers_count", 0),
+                "repo": full_name,
+                "pushed_at": repo.get("pushed_at") or "",
+                "fork": bool(repo.get("fork")),
+            },
         )
 
     async def items(

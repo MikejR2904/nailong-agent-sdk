@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 
 from .apply import Applier, ask_yes_no
@@ -31,6 +32,8 @@ def _parser() -> argparse.ArgumentParser:
         "ingest", help="Build the experience bank (documents, GitHub, LinkedIn export, website)."
     )
     ingest.add_argument("--resume", type=Path, help="Base resume .tex (imported once).")
+
+    sub.add_parser("analyze", help="Read the code of your GitHub repos and review it.")
 
     profile = sub.add_parser("profile", help="Analyse the resume and propose target roles.")
     profile.add_argument("--resume", type=Path, help="Base resume .tex (imported once).")
@@ -104,6 +107,8 @@ async def _main(args: argparse.Namespace) -> None:
             pipeline.import_resume(args.resume)
         if args.command == "ingest":
             await pipeline.ingest()
+        elif args.command == "analyze":
+            await pipeline.analyze_code()
         elif args.command == "profile":
             await pipeline.profile()
         elif args.command == "discover":
@@ -116,14 +121,14 @@ async def _main(args: argparse.Namespace) -> None:
             print(f"Open {pipeline.write_overleaf_index()} in a browser logged in to Overleaf.")
         elif args.command == "tailor":
             if args.job:
-                for job_id in args.job:
-                    await pipeline.tailor(job_id)
+                await pipeline.tailor_many(args.job)
             else:
                 await pipeline.tailor_top(args.top)
         elif args.command == "apply":
             await _apply(pipeline, args, _tailored_ids(pipeline, args))
         elif args.command == "run":
             await pipeline.ingest()
+            await pipeline.analyze_code()
             if not pipeline.profile_path.is_file() or args.resume:
                 await pipeline.profile()
             await pipeline.discover()
@@ -135,6 +140,8 @@ async def _main(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(errors="replace")
     try:
         asyncio.run(_main(_parser().parse_args()))
     except (RuntimeError, ValueError, FileNotFoundError, KeyError) as error:

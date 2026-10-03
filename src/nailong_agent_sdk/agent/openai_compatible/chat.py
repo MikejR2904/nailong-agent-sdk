@@ -207,6 +207,12 @@ class OpenAICompatibleAgentModel(AgentModel):
             "episode_summaries": [
                 episode.model_dump(mode="json") for episode in context.episodes
             ],
+            "compacted_episodes": [
+                stub.model_dump(mode="json") for stub in context.compacted_episodes
+            ],
+            "omitted_compacted_count": (
+                context.projection.omitted_compacted_count if context.projection else 0
+            ),
         }
         system = (
             "You are an untrusted proposal component in a governed agent runtime. "
@@ -214,12 +220,15 @@ class OpenAICompatibleAgentModel(AgentModel):
             "return exactly one JSON AgentTurn object: either "
             '{"type":"final","output":...} matching output_schema or '
             '{"type":"blocked","reason":"..."}. Do not emit prose outside JSON. '
-            "The second user message's recent_observations lists your own tool calls so "
-            "far this task, oldest first, each tagged with the iteration it happened on; "
-            "episode_summaries covers older history that has been compacted into short "
-            "summaries. Both are bounded and may omit early history on a long task. Check "
-            "them before choosing your next action so you do not repeat a call whose "
-            "outcome you already have."
+            "The second user message's recent_observations lists your own recent tool calls "
+            "this task, oldest first, each tagged with the iteration it happened on, and "
+            "episode_summaries gives a one-line summary of each call still in memory. "
+            "compacted_episodes lists earlier calls whose full results were dropped to save "
+            "space; each keeps a one-line summary, its status, and a handle_id, and if a "
+            "stored-result reader such as get_tool_result is available you can fetch the "
+            "full result by passing it that handle_id. omitted_compacted_count is how many "
+            "still older compacted calls are not listed. Check all of these before choosing "
+            "your next action so you do not repeat a call whose outcome you already have."
         )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},

@@ -9,6 +9,7 @@ each CLI subcommand can be run on its own and re-runs resume rather than repeat.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -43,9 +44,12 @@ from nailong_agent_sdk.tools.core import WebSearchClient
 
 from .agents import (
     RESUME_INTEGRITY_GATE,
+    TAILOR_GATE,
     polisher_definition,
     profiler_definition,
-    scout_definition,
+    analyst_definition,
+    verifier_definition,
+    scorer_definition,
     tailor_definition,
 )
 from .config import AgentConfig
@@ -56,13 +60,23 @@ from .ingest import (
     resume_items,
     website_items,
 )
-from .knowledge import KnowledgeBase
-from .latex import find_latex_engine
+from .claims import claims_to_verify, unsupported_claims
+from .codebase import analyze_archive, key_excerpts, verified_claims
+from .knowledge import EvidenceItem, KnowledgeBase
+from .latex import find_latex_engine, latex_to_text
 from .overleaf import OverleafEntry, write_launcher
 from .sources import JobSourceClient
+from .visual import render_preview, vision_review
 from .store import JobLedger, JobStatus
-from .tools import JobToolbox, JobToolExecutor, TailoringContext, run_resume_check
+from .tools import (
+    JobToolbox,
+    JobToolExecutor,
+    TailoringContext,
+    assemble_resume,
+    run_resume_check,
+)
 
+MAX_ARCHIVE_BYTES = 40_000_000
 ModelFactory = Callable[[AgentDefinition], AgentModel]
 Logger = Callable[[str], None]
 
@@ -148,6 +162,8 @@ class JobAgentPipeline:
             parameters["max_tokens"] = min(config.model.max_tokens, 32_000)
             if config.model.temperature is not None:
                 parameters["temperature"] = config.model.temperature
+            if config.model.reasoning_effort is not None:
+                parameters["reasoning_effort"] = config.model.reasoning_effort
         self.binding = ModelBinding(
             provider=config.model.provider,
             model=config.model.model or "scripted",
@@ -224,6 +240,89 @@ class JobAgentPipeline:
             self.log(f"  warning: {warning}")
         return counts
 
+    async def analyze_code(self) -> int:
+        """Read the real code of the candidate's GitHub repos and review it (cached)."""
+
+        settings = self.config.knowledge
+        repos = [
+            item
+            for item in self.knowledge.items("github")
+            if item.meta.get("repo") and not item.meta.get("fork")
+        ]
+        if not settings.code_analysis or not repos:
+            return 0
+        repos.sort(key=lambda item: item.meta.get("pushed_at", ""), reverse=True)
+        repos = repos[: settings.max_analyzed_repos]
+        gate = asyncio.Semaphore(3)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0), follow_redirects=True) as client:
+            github = GitHubIngester(client, os.environ.get(settings.github_token_env, ""))
+
+            async def one(item: EvidenceItem) -> EvidenceItem | None:
+                async with gate:
+                    return await self._analyze_repo(github, item)
+
+            results = await asyncio.gather(*(one(item) for item in repos))
+        items = [item for item in results if item is not None]
+        self.knowledge.replace_source("code", items)
+        self.knowledge.save()
+        self.log(f"Code analysis: {len(items)} of {len(repos)} repositories")
+        return len(items)
+
+    async def _analyze_repo(
+        self, github: GitHubIngester, readme_item: EvidenceItem
+    ) -> EvidenceItem | None:
+        full_name = readme_item.meta["repo"]
+        pushed_at = readme_item.meta.get("pushed_at", "")
+        cache = self.root / "knowledge" / "code" / (full_name.replace("/", "__") + ".json")
+        if cache.is_file():
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+            if cached.get("pushed_at") == pushed_at:
+                return EvidenceItem(**cached["item"])
+        try:
+            data = await github.archive(full_name, max_bytes=MAX_ARCHIVE_BYTES)
+        except (httpx.HTTPError, RuntimeError, ValueError) as error:
+            self.log(f"  warning: code analysis of {full_name} skipped: {error}")
+            return None
+        facts, sources = await asyncio.to_thread(analyze_archive, data, full_name)
+        core = self._core()
+        review = await self._run(
+            analyst_definition(self.binding),
+            stage="analyze",
+            key=full_name,
+            instructions=f"Review the repository {full_name} from its real code.",
+            task_input={
+                "facts": facts.to_text(),
+                "readme": readme_item.text[:3000],
+                "excerpts": key_excerpts(facts, sources),
+            },
+            criteria=["Every claim cites files that exist in the repository."],
+            executor=self._executor(core, self._toolbox(core)),
+        )
+        text = facts.to_text()
+        if review.status is AgentRunStatus.COMPLETED:
+            claims = verified_claims(review.output["claims"], facts)
+            text += "\n\nReview of the code: " + review.output["summary"]
+            text += "".join(
+                f"\n- {claim['claim']} (files: {', '.join(claim['evidence_paths'])})"
+                for claim in claims
+            )
+            text += "\nTech stack: " + ", ".join(review.output["tech_stack"])
+        else:
+            self.log(f"  warning: review of {full_name} failed: {review.reason}")
+        item = EvidenceItem(
+            source="code",
+            title=f"Code analysis: {full_name}",
+            text=text,
+            url=readme_item.url,
+            meta={"repo": full_name, "pushed_at": pushed_at},
+        )
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(
+            json.dumps({"pushed_at": pushed_at, "item": item.to_dict()}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return item
+
     def load_profile(self) -> dict[str, Any]:
         if not self.profile_path.is_file():
             raise FileNotFoundError("No profile yet: run the `profile` step first.")
@@ -261,6 +360,7 @@ class JobAgentPipeline:
             location=search.location,
             boards={ats: names for ats, names in boards.items() if names},
             mycareersfuture=search.sources.mycareersfuture,
+            linkedin=search.sources.linkedin,
             exclude_companies=search.exclude_companies,
             exclude_title_keywords=search.exclude_title_keywords,
             knowledge=self.knowledge,
@@ -317,25 +417,26 @@ class JobAgentPipeline:
         if not self.base_resume_path.is_file():
             raise FileNotFoundError("Import a base resume first (--resume path/to/resume.tex).")
         core = self._core()
+        bank = [
+            {"id": item.id, "source": item.source, "title": item.title[:90], "text": item.text[:500]}
+            for item in self.knowledge.items()
+            if item.source != "resume"
+        ][:40]
         result = await self._run(
             profiler_definition(self.binding),
             stage="profile",
             key="resume",
             instructions=(
-                f"Read the resume at {self.base_resume_path.name} and the experience bank, "
-                "summarise the candidate, "
-                f"and propose up to {self.config.search.max_roles} target full-time roles in "
+                "Summarise the candidate and propose up to "
+                f"{self.config.search.max_roles} target full-time roles in "
                 f"{self.config.search.location}."
             ),
             task_input={
-                "resume_path": self.base_resume_path.name,
+                "base_resume_tex": self.base_resume_path.read_text(encoding="utf-8"),
                 "location": self.config.search.location,
                 "preferred_roles": self.config.search.roles,
                 "max_roles": self.config.search.max_roles,
-                "experience_bank": {
-                    "counts": self.knowledge.counts(),
-                    "items": self.knowledge.catalog()[:200],
-                },
+                "experience_bank": {"counts": self.knowledge.counts(), "items": bank},
             },
             criteria=["Every role and skill is supported by the resume or the experience bank."],
             executor=self._executor(core, self._toolbox(core)),
@@ -358,38 +459,99 @@ class JobAgentPipeline:
         if role_titles:
             wanted = {title.lower() for title in role_titles}
             roles = [role for role in roles if role["title"].lower() in wanted]
-        search = self.config.search
+        network = asyncio.Semaphore(3)
+        batches = await asyncio.gather(*(self._scout_role(role, profile, network) for role in roles))
         saved: list[str] = []
-        for role in roles:
-            self.log(f"Scouting: {role['title']}")
-            core = self._core()
-            toolbox = self._toolbox(core, role_category=role["title"])
-            web_enabled = search.sources.web_search and search.max_web_calls_per_role > 0
-            result = await self._run(
-                scout_definition(self.binding, web_search=web_enabled),
-                stage="scout",
-                key=role["title"],
-                instructions=(
-                    f"Find full-time {role['title']} openings in {search.location} and save "
-                    f"up to {search.max_jobs_per_role} that fit the candidate "
-                    f"(fit_score >= {search.min_fit_score})."
-                ),
-                task_input={
-                    "role": role,
-                    "candidate": profile["candidate"],
-                    "location": search.location,
-                    "min_fit_score": search.min_fit_score,
-                    "max_jobs": search.max_jobs_per_role,
-                    "web_search_enabled": web_enabled,
-                    "web_search_sites": search.sources.web_search_sites if web_enabled else [],
-                    "web_budget": search.max_web_calls_per_role if web_enabled else 0,
-                },
-                criteria=["Only real postings seen in tool results are saved."],
-                executor=self._executor(core, toolbox, web_budget=search.max_web_calls_per_role),
-            )
-            # The ledger, not the model's summary, is authoritative for what was saved.
-            saved += [job_id for job_id in toolbox.saved_job_ids if job_id not in saved]
-            self.log(f"  saved {len(toolbox.saved_job_ids)} posting(s) ({result.status.value})")
+        for batch in batches:
+            saved += [job_id for job_id in batch if job_id not in saved]
+        return saved
+
+    async def _scout_role(
+        self, role: dict[str, Any], profile: dict[str, Any], network: asyncio.Semaphore
+    ) -> list[str]:
+        search = self.config.search
+        core = self._core()
+        toolbox = self._toolbox(core, role_category=role["title"])
+        pool: dict[str, dict[str, Any]] = {}
+        for query in role["search_queries"][:3]:
+            async with network:
+                found = await toolbox.search_job_sources(
+                    {"query": query, "title_keywords": role["title_keywords"], "max_results": 15}
+                )
+            for warning in found["warnings"]:
+                self.log(f"  [{role['title']}] {warning}")
+            for result in found["results"]:
+                if not result["already_in_ledger"]:
+                    pool.setdefault(result["candidate_id"], result)
+        candidates = list(pool.values())[: search.max_jobs_per_role * 3]
+
+        async def describe(result: dict[str, Any]) -> dict[str, Any]:
+            posting = toolbox.candidate(result["candidate_id"])
+            text = posting.description
+            if len(text) < 400:
+                try:
+                    async with network:
+                        text = (await toolbox.get_job_description({"url": posting.url}))[
+                            "description"
+                        ]
+                except (ValueError, KeyError):
+                    pass
+            return {
+                "candidate_id": result["candidate_id"],
+                "title": result["title"],
+                "company": result["company"],
+                "location": result["location"],
+                "description": text[:1800],
+            }
+
+        described = await asyncio.gather(*(describe(result) for result in candidates))
+        if not described:
+            self.log(f"  [{role['title']}] no new postings found")
+            return []
+        scored = await self._run(
+            scorer_definition(self.binding),
+            stage="score",
+            key=role["title"],
+            instructions=f"Score these {len(described)} postings for the {role['title']} role.",
+            task_input={
+                "candidate": profile["candidate"],
+                "role": role,
+                "location": search.location,
+                "candidates": described,
+            },
+            criteria=["Every candidate_id is scored once."],
+            executor=self._executor(core, toolbox),
+        )
+        if scored.status is not AgentRunStatus.COMPLETED:
+            self.log(f"  [{role['title']}] scoring failed: {scored.reason}")
+            return []
+        by_id = {item["candidate_id"]: item for item in described}
+        ranked = sorted(scored.output["scores"], key=lambda entry: -entry["fit_score"])
+        saved: list[str] = []
+        for entry in ranked:
+            if len(saved) >= search.max_jobs_per_role or entry["fit_score"] < search.min_fit_score:
+                break
+            info = by_id.get(entry["candidate_id"])
+            if info is None:
+                continue
+            posting = toolbox.candidate(entry["candidate_id"])
+            try:
+                await toolbox.save_job_posting(
+                    {
+                        "candidate_id": entry["candidate_id"],
+                        "url": posting.url,
+                        "title": posting.title,
+                        "company": posting.company,
+                        "location": posting.location,
+                        "fit_score": entry["fit_score"],
+                        "fit_rationale": entry["fit_rationale"][:600],
+                        "description": info["description"],
+                    }
+                )
+                saved.append(entry["candidate_id"])
+            except ValueError as error:
+                self.log(f"  [{role['title']}] skipped {posting.title}: {error}")
+        self.log(f"  [{role['title']}] scored {len(described)}, saved {len(saved)}")
         return saved
 
     # --- stage 3: tailor + polish ------------------------------------------------
@@ -401,25 +563,70 @@ class JobAgentPipeline:
         self.ledger.update(job["id"], description=description)
         return description
 
-    def _integrity_gates(
-        self, resume_path: str, tailoring: TailoringContext, evidence_ids: list[str]
+    def _gates(
+        self,
+        resume_path: str,
+        letter_path: str,
+        tailoring: TailoringContext,
+        evidence_ids: list[str],
     ):
         """``evidence_ids`` is shared state: the tailor's citations, reused by the polisher."""
 
-        def gate(context: VerificationContext) -> VerificationDecision:
+        def tailor_gate(context: VerificationContext) -> VerificationDecision:
+            output = context.output
+            evidence_ids[:] = output.get("evidence_ids", [])
+            tex = assemble_resume(tailoring.base_resume_tex, output.get("resume_body", ""))
+            if " ".join(tex.split()) == " ".join(tailoring.base_resume_tex.split()):
+                return VerificationDecision(
+                    False,
+                    "resume_body is the unchanged base resume: select, reorder or reword "
+                    "content for this job.",
+                )
+            budget = int(len(latex_to_text(tailoring.base_resume_tex)) * 1.03)
+            size = len(latex_to_text(tex))
+            if tailoring.latex_engine is not None and size > budget:
+                return VerificationDecision(
+                    False,
+                    f"resume_body is too long for {tailoring.max_pages} page(s): {size} "
+                    f"rendered characters against a budget of {budget}. Cut at least "
+                    f"{size - budget} characters (drop the least relevant bullets).",
+                )
+            letter = output.get("cover_letter", "").strip()
+            if letter_path:
+                words = len(letter.split())
+                if not 80 <= words <= 260:
+                    return VerificationDecision(
+                        False, f"cover_letter is {words} words; write between 120 and 220."
+                    )
+            (self.root / resume_path).write_text(tex, encoding="utf-8")
+            check = run_resume_check(self.root / resume_path, tailoring, evidence_ids)
+            if not check.passed:
+                return VerificationDecision(False, "; ".join(check.errors))
+            if letter_path:
+                (self.root / letter_path).write_text(letter + chr(10), encoding="utf-8")
+            return VerificationDecision(True)
+
+        def polish_gate(context: VerificationContext) -> VerificationDecision:
             output = context.output
             if output.get("resume_path") != resume_path:
                 return VerificationDecision(False, f"resume_path must be {resume_path}.")
-            if "evidence_ids" in output:
-                evidence_ids[:] = output["evidence_ids"]
             check = run_resume_check(self.root / resume_path, tailoring, evidence_ids)
             if not check.passed:
                 return VerificationDecision(False, "; ".join(check.errors))
             return VerificationDecision(True)
 
         gates = VerificationGateRegistry()
-        gates.register_callable(RESUME_INTEGRITY_GATE, gate)
+        gates.register_callable(TAILOR_GATE, tailor_gate)
+        gates.register_callable(RESUME_INTEGRITY_GATE, polish_gate)
         return gates
+
+    def _evidence_for(self, job: dict[str, Any], description: str, limit: int = 14) -> list[dict]:
+        query = f"{job['title']} {job['company']} {description[:4000]}"
+        return [
+            {"id": item.id, "source": item.source, "title": item.title, "text": item.text[: 1800 if item.source == "code" else 900]}
+            for item, _score in self.knowledge.search(query, limit=limit)
+            if item.source != "resume"
+        ]
 
     async def tailor(self, job_id: str) -> dict[str, Any]:
         job = self.ledger.get(job_id)
@@ -447,23 +654,21 @@ class JobAgentPipeline:
         tailoring = self.tailoring_context(description)
         toolbox.tailoring = tailoring
         evidence_ids: list[str] = []
-        gates = self._integrity_gates(resume_path, tailoring, evidence_ids)
-        task_input = {
-            "base_resume_path": self.base_resume_path.name,
-            "job_description_path": jd_path,
-            "resume_path": resume_path,
-            "cover_letter_path": letter_path,
+        gates = self._gates(resume_path, letter_path, tailoring, evidence_ids)
+        task_input: dict[str, Any] = {
+            "base_resume_tex": tailoring.base_resume_tex,
+            "job_description": description[:8000],
+            "evidence": self._evidence_for(job, description),
             "job": {k: job.get(k) for k in ("title", "company", "location", "url")},
             "candidate_name": self.config.candidate.full_name,
             "max_pages": tailoring.max_pages,
+            "max_project_bullets": tailoring.max_project_bullets,
+            "max_rendered_characters": int(len(latex_to_text(tailoring.base_resume_tex)) * 1.03),
+            "cover_letter_wanted": bool(letter_path),
         }
-        instructions = (
-            f"Tailor the base resume for {job['title']} at {job['company']}. Write it to "
-            f"{resume_path}"
-            + (f" and a cover letter to {letter_path}" if letter_path else "")
-            + "."
-        )
+        instructions = f"Tailor the resume for {job['title']} at {job['company']}."
         result = None
+        problems: list[str] = []
         for _attempt in range(2):
             result = await self._run(
                 tailor_definition(self.binding),
@@ -471,18 +676,32 @@ class JobAgentPipeline:
                 key=job_id,
                 instructions=instructions,
                 task_input=task_input,
-                criteria=["check_tailored_resume passes on the final resume."],
+                criteria=["The assembled resume passes the integrity checks."],
                 executor=executor,
                 gates=gates,
             )
             if result.status is AgentRunStatus.COMPLETED:
-                break
-            instructions += (
-                f"\nA previous attempt was rejected: {result.reason}. If {resume_path} already "
-                "exists, read it and fix it rather than starting over."
-            )
+                problems = await self._unsupported(
+                    job_id, resume_path, tailoring, evidence_ids, executor
+                )
+                if not problems:
+                    break
+                rejection = "Unsupported claims, remove or rewrite them: " + " | ".join(problems)
+            else:
+                rejection = result.reason
+            task_input = {
+                **task_input,
+                "rejection": rejection,
+                "previous_draft": (self.root / resume_path).read_text(encoding="utf-8")
+                if (self.root / resume_path).is_file()
+                else "",
+            }
         if result is None or result.status is not AgentRunStatus.COMPLETED:
             reason = result.reason if result else "not run"
+            self.ledger.update(job_id, status=JobStatus.TAILOR_FAILED, error=reason)
+            raise RuntimeError(f"Tailoring failed for {job_id}: {reason}")
+        if problems:
+            reason = "Unsupported claims remain: " + " | ".join(problems)
             self.ledger.update(job_id, status=JobStatus.TAILOR_FAILED, error=reason)
             raise RuntimeError(f"Tailoring failed for {job_id}: {reason}")
         summary = result.output
@@ -497,7 +716,12 @@ class JobAgentPipeline:
                 instructions=f"Proofread and clean up {resume_path}"
                 + (f" and {letter_path}" if letter_path else "")
                 + ".",
-                task_input=task_input,
+                task_input={
+                    **task_input,
+                    "resume_path": resume_path,
+                    "base_resume_path": self.base_resume_path.name,
+                    "job_description_path": jd_path,
+                },
                 criteria=["check_tailored_resume passes on the final resume."],
                 executor=executor,
                 gates=gates,
@@ -505,11 +729,41 @@ class JobAgentPipeline:
             if polish.status is AgentRunStatus.COMPLETED:
                 summary["polish_fixes"] = polish.output.get("fixes", [])
             else:
-                # A failed polish must not leave a broken resume behind.
                 self.artifacts.write_text(resume_path, snapshot)
                 summary["polish_fixes"] = [f"polish pass discarded: {polish.reason}"]
 
         return self.record_tailored(job_id, summary, tailoring)
+
+    async def _unsupported(
+        self,
+        job_id: str,
+        resume_path: str,
+        tailoring: TailoringContext,
+        evidence_ids: list[str],
+        executor: JobToolExecutor,
+    ) -> list[str]:
+        tex = (self.root / resume_path).read_text(encoding="utf-8")
+        claims = claims_to_verify(tailoring.base_resume_tex, tex)
+        if not claims:
+            return []
+        cited = [item_id for item_id in evidence_ids if item_id in self.knowledge]
+        sources = (
+            latex_to_text(tailoring.base_resume_tex)
+            + chr(10) * 2
+            + self.knowledge.text_for(cited)
+        )[:40_000]
+        verdict = await self._run(
+            verifier_definition(self.binding),
+            stage="verify",
+            key=job_id,
+            instructions=f"Fact-check these {len(claims)} resume bullets against the sources.",
+            task_input={"claims": claims, "sources": sources},
+            criteria=["Every claim has one verdict."],
+            executor=executor,
+        )
+        if verdict.status is not AgentRunStatus.COMPLETED:
+            return [f"the verifier could not run: {verdict.reason}"]
+        return unsupported_claims(claims, verdict.output["verdicts"], sources)
 
     def tailoring_context(self, description: str) -> TailoringContext:
         return TailoringContext(
@@ -517,6 +771,7 @@ class JobAgentPipeline:
             job_description=description,
             latex_engine=find_latex_engine(self.config.tailoring.latex_engine),
             max_pages=self.config.tailoring.max_pages,
+            max_project_bullets=self.config.tailoring.max_project_bullets,
             knowledge=self.knowledge,
         )
 
@@ -553,6 +808,21 @@ class JobAgentPipeline:
             )
             shutil.copyfile(check.pdf_path, self.root / pretty)
             packet["resume_pdf"] = pretty
+        if check.pdf_path:
+            preview = render_preview(Path(check.pdf_path), self.root / directory / "resume_preview.png")
+            packet["preview_png"] = f"{directory}/resume_preview.png" if preview else ""
+            if preview and self.config.tailoring.vision_review and (
+                self.config.model.provider != "anthropic"
+            ):
+                try:
+                    packet["visual_review"] = vision_review(
+                        preview,
+                        base_url=self.config.model.base_url,
+                        api_key=self.config.model.api_key(),
+                        model=self.config.model.model,
+                    )
+                except (httpx.HTTPError, KeyError, ValueError) as error:
+                    packet["visual_review"] = [f"vision review unavailable: {error}"]
         launcher = self.root / directory / "open_in_overleaf.html"
         write_launcher(
             launcher,
@@ -593,14 +863,22 @@ class JobAgentPipeline:
         return jobs[:limit] if limit else jobs
 
     async def tailor_top(self, limit: int) -> list[str]:
-        done = []
-        for job in self.shortlist(limit):
-            try:
-                await self.tailor(job["id"])
-                done.append(job["id"])
-            except RuntimeError as error:
-                self.log(f"  ! {error}")
-        return done
+        return await self.tailor_many([job["id"] for job in self.shortlist(limit)])
+
+    async def tailor_many(self, job_ids: list[str]) -> list[str]:
+        gate = asyncio.Semaphore(3)
+
+        async def one(job_id: str) -> str | None:
+            async with gate:
+                try:
+                    await self.tailor(job_id)
+                except RuntimeError as error:
+                    self.log(f"  ! {error}")
+                    return None
+            return job_id
+
+        done = await asyncio.gather(*(one(job_id) for job_id in job_ids))
+        return [job_id for job_id in done if job_id]
 
     async def aclose(self) -> None:
         await self.sources.aclose()

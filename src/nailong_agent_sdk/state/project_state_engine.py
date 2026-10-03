@@ -10,10 +10,17 @@ events, never model claims.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from ..foundations.contracts import ToolCall, ToolExecutionResult, ToolResultHandle
+from ..foundations.errors import AgentSdkError
 from .project_state_models import (
+    MAX_ARTIFACTS,
+    MAX_BLOCKERS,
+    MAX_DECISIONS,
+    MAX_OPEN_QUESTIONS,
+    MAX_WORK_ITEMS,
     ArtifactStatus,
     DecisionStatus,
     OpenQuestion,
@@ -258,6 +265,28 @@ class ProjectStateReducer:
         else:
             raise ValueError(f"Unsupported state transition {transition.kind.value}.")
 
+        project_id = current.project_id
+        artifacts = _within_capacity(
+            project_id, "artifacts", artifacts, MAX_ARTIFACTS, "relative_path", _always_closed
+        )
+        blocked = _within_capacity(
+            project_id, "blocked", blocked, MAX_BLOCKERS, "blocker_id", _never_closed
+        )
+        work_items = _within_capacity(
+            project_id, "work_items", work_items, MAX_WORK_ITEMS, "work_item_id", _is_closed_work
+        )
+        decisions = _within_capacity(
+            project_id, "decisions", decisions, MAX_DECISIONS, "decision_id", _is_superseded
+        )
+        questions = _within_capacity(
+            project_id,
+            "open_questions",
+            questions,
+            MAX_OPEN_QUESTIONS,
+            "question_id",
+            _never_closed,
+        )
+
         return make_project_state(
             project_id=current.project_id,
             revision=current.revision + 1,
@@ -302,6 +331,58 @@ def _upsert[T](items: list[T], key: str, value: T) -> list[T]:
     value_key = getattr(value, key)
     replacement = [item for item in items if getattr(item, key) != value_key]
     return [*replacement, value]
+
+
+_CLOSED_WORK_STATUSES = frozenset(
+    {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.CANCELLED}
+)
+
+
+def _always_closed(_item: object) -> bool:
+    return True
+
+
+def _never_closed(_item: object) -> bool:
+    return False
+
+
+def _is_closed_work(item: ProjectWorkItem) -> bool:
+    return item.status in _CLOSED_WORK_STATUSES
+
+
+def _is_superseded(decision: ProjectDecision) -> bool:
+    return decision.status is DecisionStatus.SUPERSEDED
+
+
+def _within_capacity[T](
+    project_id: str,
+    collection: str,
+    items: list[T],
+    limit: int,
+    key: str,
+    is_closed: Callable[[T], bool],
+) -> list[T]:
+    overflow = len(items) - limit
+    if overflow <= 0:
+        return items
+    evictable = [index for index, item in enumerate(items[:-1]) if is_closed(item)]
+    if len(evictable) < overflow:
+        raise AgentSdkError(
+            "PROJECT_STATE_CAPACITY_EXCEEDED",
+            f'Project state "{project_id}" cannot record {collection} entry '
+            f'"{getattr(items[-1], key)}": it already holds {limit} {collection} entries and '
+            f"only {len(evictable)} of them are closed and eligible for eviction. Close, "
+            "supersede, or cancel existing entries, or record unrelated work under a new "
+            "project_id.",
+            {
+                "project_id": project_id,
+                "collection": collection,
+                "limit": limit,
+                "evictable_entries": len(evictable),
+            },
+        )
+    dropped = set(evictable[:overflow])
+    return [item for index, item in enumerate(items) if index not in dropped]
 
 
 def _canonical_json(value: Any) -> str:

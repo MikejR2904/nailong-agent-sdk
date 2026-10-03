@@ -18,6 +18,13 @@ from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
 
+MAX_STAGE_FIELDS = 128
+MAX_ARTIFACTS = 1_024
+MAX_DECISIONS = 256
+MAX_OPEN_QUESTIONS = 256
+MAX_BLOCKERS = 256
+MAX_WORK_ITEMS = 1_024
+
 
 class StateAuthority(StrEnum):
     HARNESS = "harness"
@@ -141,12 +148,12 @@ class ProjectState(StrictModel):
     project_id: str = Field(min_length=1)
     revision: int = Field(ge=0)
     stage_schema: StageStateSchema
-    stage_fields: list[StageStateField] = Field(default_factory=list, max_length=128)
-    artifacts: list[ProjectArtifactState] = Field(default_factory=list, max_length=1_024)
-    decisions: list[ProjectDecision] = Field(default_factory=list, max_length=256)
-    open_questions: list[OpenQuestion] = Field(default_factory=list, max_length=256)
-    blocked: list[ProjectBlocker] = Field(default_factory=list, max_length=256)
-    work_items: list[ProjectWorkItem] = Field(default_factory=list, max_length=1_024)
+    stage_fields: list[StageStateField] = Field(default_factory=list, max_length=MAX_STAGE_FIELDS)
+    artifacts: list[ProjectArtifactState] = Field(default_factory=list, max_length=MAX_ARTIFACTS)
+    decisions: list[ProjectDecision] = Field(default_factory=list, max_length=MAX_DECISIONS)
+    open_questions: list[OpenQuestion] = Field(default_factory=list, max_length=MAX_OPEN_QUESTIONS)
+    blocked: list[ProjectBlocker] = Field(default_factory=list, max_length=MAX_BLOCKERS)
+    work_items: list[ProjectWorkItem] = Field(default_factory=list, max_length=MAX_WORK_ITEMS)
     last_action: StateAction | None = None
     step_count: int = Field(default=0, ge=0)
     state_hash: str = Field(min_length=1)

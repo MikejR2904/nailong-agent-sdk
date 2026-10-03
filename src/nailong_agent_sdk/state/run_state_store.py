@@ -97,6 +97,13 @@ class RunStateStore:
     def exists(self, run_id: str) -> bool:
         return (self._root / f"{run_id}.json").is_file()
 
+    def fingerprint(self, run_id: str) -> tuple[int, int, int] | None:
+        try:
+            status = (self._root / f"{run_id}.json").stat()
+        except FileNotFoundError:
+            return None
+        return status.st_ino, status.st_mtime_ns, status.st_size
+
     def _history_path(self, run_id: str) -> Path:
         return self._root / f"{run_id}.history.jsonl"
 

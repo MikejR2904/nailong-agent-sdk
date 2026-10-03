@@ -18,9 +18,9 @@ from typing import Any, Protocol
 
 from pydantic import Field
 
-from ..foundations.atomic_io import replace_atomic
 from ..foundations.contracts import (
     AgentPrompt,
+    CompactedEpisodeStub,
     ContextProjectionMetadata,
     EpisodeSummary,
     ModelObservation,
@@ -40,6 +40,8 @@ class ContextProjectionPolicy(StrictModel):
     context_token_budget: int = Field(default=12_000, ge=256, le=1_000_000)
     episode_token_budget: int = Field(default=6_000, ge=0, le=1_000_000)
     tool_result_preview_chars: int = Field(default=1_024, ge=32, le=100_000)
+    compacted_stub_token_budget: int = Field(default=1_500, ge=0, le=1_000_000)
+    compacted_summary_chars: int = Field(default=160, ge=32, le=2_000)
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
@@ -95,15 +97,28 @@ class FileToolResultJournal(InMemoryToolResultJournal):
         super().__init__()
         self._root = run_root.resolve() / ".agent-tool-results"
         self._root.mkdir(parents=True, exist_ok=True)
+        self._next_id = _next_handle_number(self._root)
 
     def record(self, call: ToolCall, result: ToolExecutionResult) -> ToolResultHandle:
-        handle = super().record(call, result)
-        payload = self.read(handle.handle_id)
-        target = self._root / f"{handle.handle_id}.json"
-        temporary = target.with_name(f".{target.name}.tmp")
-        temporary.write_text(_canonical_json(payload), encoding="utf-8")
-        replace_atomic(temporary, target)
-        return handle
+        payload = {"call": call.model_dump(mode="json"), "result": result.model_dump(mode="json")}
+        encoded = _canonical_json(payload)
+        while True:
+            handle_id = f"result-{self._next_id}"
+            self._next_id += 1
+            try:
+                with (self._root / f"{handle_id}.json").open("x", encoding="utf-8") as stream:
+                    stream.write(encoded)
+            except FileExistsError:
+                continue
+            break
+        raw = encoded.encode("utf-8")
+        self._records[handle_id] = payload
+        return ToolResultHandle(
+            handle_id=handle_id,
+            content_hash=hashlib.sha256(raw).hexdigest(),
+            byte_count=len(raw),
+            truncated=False,
+        )
 
     def read(self, handle_id: str) -> dict[str, Any]:
         if handle_id in self._records:
@@ -122,6 +137,7 @@ class ContextProjection:
     episodes: tuple[EpisodeSummary, ...]
     metadata: ContextProjectionMetadata
     compaction: CompactionResult
+    compacted_episodes: tuple[CompactedEpisodeStub, ...] = ()
 
 
 class ContextProjector:
@@ -183,6 +199,21 @@ class ContextProjector:
             )
         ]
         base_tokens = _estimate_tokens(prompt) + _estimate_tokens(retained_episodes)
+        stubs, omitted_stubs, stub_tokens = _compacted_stubs(
+            [
+                summary
+                for summary in episode_summaries
+                if (record := memory.get(summary.id)) is not None
+                and record.state.value == "compacted"
+            ],
+            observations,
+            self._policy.compacted_summary_chars,
+            min(
+                self._policy.compacted_stub_token_budget,
+                max(0, self._policy.context_token_budget - base_tokens),
+            ),
+        )
+        base_tokens += stub_tokens
         selected: list[ModelObservation] = []
         omitted = len(observations) - len(eligible_observations)
         for observation in reversed(eligible_observations):
@@ -202,8 +233,10 @@ class ContextProjector:
                 episode_token_budget=self._policy.episode_token_budget,
                 compacted_episode_ids=compaction.compacted_episode_ids,
                 omitted_observation_count=omitted,
+                omitted_compacted_count=omitted_stubs,
             ),
             compaction=compaction,
+            compacted_episodes=stubs,
         )
 
     def project_tool_result(
@@ -220,6 +253,42 @@ class ContextProjector:
             preview=preview,
             error=_truncate_text(result.error, self._policy.tool_result_preview_chars),
         )
+
+
+def _compacted_stubs(
+    summaries: Sequence[EpisodeSummary],
+    observations: Sequence[ModelObservation],
+    summary_chars: int,
+    token_allowance: int,
+) -> tuple[tuple[CompactedEpisodeStub, ...], int, int]:
+    results = {
+        observation.episode_id: observation
+        for observation in observations
+        if observation.episode_id is not None and observation.result is not None
+    }
+    selected: list[CompactedEpisodeStub] = []
+    omitted = 0
+    used = 0
+    for summary in reversed(summaries):
+        observation = results.get(summary.id)
+        projected = observation.result if observation is not None else None
+        stub = CompactedEpisodeStub(
+            episode_id=summary.id,
+            kind=summary.kind,
+            summary=_truncate_text(summary.summary, summary_chars) or "",
+            tool_name=observation.tool_name if observation is not None else None,
+            status=projected.status if projected is not None else None,
+            iteration=observation.iteration if observation is not None else None,
+            handle_id=projected.handle.handle_id if projected is not None else None,
+        )
+        cost = _estimate_tokens(stub.model_dump(mode="json"))
+        if used + cost > token_allowance:
+            omitted += 1
+            continue
+        selected.append(stub)
+        used += cost
+    selected.reverse()
+    return tuple(selected), omitted, used
 
 
 def _bounded_preview(value: Any, max_chars: int) -> tuple[Any | None, bool]:
@@ -247,3 +316,12 @@ def _estimate_tokens(value: Any) -> int:
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _next_handle_number(root: Path) -> int:
+    highest = 0
+    for path in root.glob("result-*.json"):
+        suffix = path.stem.removeprefix("result-")
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return highest + 1

@@ -14,7 +14,9 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from .._utils import canonical_digest, require_optional_module
+from pydantic import ValidationError
+
+from .._utils import OptionalDependencyError, content_digest, require_optional_module
 from ..contracts import InteropOperationStatus
 from .models import (
     _JEV_ANSWER_ADAPTER,
@@ -29,6 +31,10 @@ from .models import (
     JevQuestionSpec,
 )
 from .receipts import JevReceiptSink
+
+
+class JevResponseError(ValueError):
+    pass
 
 
 class TypeSafeJevDecisionEvaluator:
@@ -189,7 +195,7 @@ def _normalize_jev_response(
         answers=answers,
         state_digest=request.state_digest,
         question_spec_digest=request.question_spec.digest,
-        response_digest=canonical_digest(
+        response_digest=content_digest(
             {
                 "model": payload.get("model"),
                 "answers": canonical_answers,
@@ -217,7 +223,9 @@ def _to_mapping(value: Any) -> Mapping[str, Any]:
             return dumped
     if hasattr(value, "__dict__"):
         return vars(value)
-    raise TypeError("TypeSafe SDK response is not mapping-compatible.")
+    raise JevResponseError(
+        f"TypeSafe SDK response of type {type(value).__name__} is not mapping-compatible."
+    )
 
 
 def _grouped_answers(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -239,24 +247,41 @@ def _grouped_answers(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _validate_answers_match_spec(answers: Mapping[str, JevAnswer], spec: JevQuestionSpec) -> None:
     if set(answers) != set(spec.questions):
-        raise ValueError(
-            "TypeSafe response question IDs do not match the registered question spec."
+        raise JevResponseError(
+            f"TypeSafe response answered question IDs {sorted(answers)} but the registered "
+            f'question spec "{spec.spec_id}" declares {sorted(spec.questions)}.'
         )
     for question_id, question in spec.questions.items():
         answer = answers[question_id]
         if answer.type != question.type:
-            raise ValueError(f'Jev answer type mismatch for question "{question_id}".')
+            raise JevResponseError(
+                f'Jev answered question "{question_id}" with a "{answer.type.value}" answer '
+                f'but the registered question type is "{question.type.value}".'
+            )
         if isinstance(question, JevChoiceQuestion) and isinstance(answer, JevChoiceAnswer):
             if answer.choice not in question.criteria or set(answer.probabilities) != set(
                 question.criteria
             ):
-                raise ValueError(
-                    f'Jev choice answer does not match registered options for "{question_id}".'
+                raise JevResponseError(
+                    f'Jev choice answer for question "{question_id}" does not match the '
+                    f"registered options {sorted(question.criteria)}: the chosen option or the "
+                    "probability keys are not exactly those options."
                 )
 
 
 def _safe_provider_error(error: Exception) -> str:
-    return f"provider-{type(error).__name__.lower()}"
+    name = type(error).__name__.lower()
+    if isinstance(error, JevResponseError | OptionalDependencyError):
+        return f"provider-{name}: {error}"
+    if isinstance(error, TimeoutError):
+        return f"provider-{name}: no response within the request deadline"
+    if isinstance(error, ValidationError):
+        issues = "; ".join(
+            f"{'.'.join(str(part) for part in issue['loc']) or '(root)'}: {issue['type']}"
+            for issue in error.errors()[:5]
+        )
+        return f"provider-{name}: response does not match the typed answer contract ({issues})"
+    return f"provider-{name}"
 
 
 def _duration_ms(started: float) -> float:

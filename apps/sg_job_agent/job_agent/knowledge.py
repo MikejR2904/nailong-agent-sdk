@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-SOURCES = ("resume", "document", "github", "linkedin", "website")
+SOURCES = ("resume", "document", "github", "code", "linkedin", "website")
 _TOKEN = re.compile(r"[a-z0-9][a-z0-9+#.]*[a-z0-9+#]|[a-z0-9]")
 _STOP = frozenset(
     "a an and are as at be by for from has have in is it its of on or our that the this to "

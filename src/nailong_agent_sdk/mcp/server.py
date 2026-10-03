@@ -45,16 +45,23 @@ def create_mcp_server(run_root: Path | None = None) -> MCPServer:
     resolved_run_root = run_root or Path(os.environ.get("AGENT_RUNTIME_RUN_ROOT", ".agent-runtime"))
     telemetry = TelemetryStore(resolved_run_root)
     register_standard_metric_definitions(telemetry)
-    controller_runtime = ControllerRuntime(resolved_run_root, telemetry=telemetry)
+    coordinator = HarnessCoordinator(resolved_run_root)
+    project_states = FileProjectStateStore(resolved_run_root)
+    controller_runtime = ControllerRuntime(
+        resolved_run_root,
+        telemetry=telemetry,
+        coordinator=coordinator,
+        project_state_store=project_states,
+    )
     specification_root = Path(
         os.environ.get("AGENT_SPECIFICATION_ROOT", str(resolved_run_root / "specifications"))
     )
     ctx = McpContext(
         run_root=resolved_run_root,
-        coordinator=HarnessCoordinator(resolved_run_root),
+        coordinator=coordinator,
         telemetry=telemetry,
         audit_logs=AuditTranscriptStore(resolved_run_root),
-        project_states=FileProjectStateStore(resolved_run_root),
+        project_states=project_states,
         controller_runtime=controller_runtime,
         specification_root=specification_root,
         preprocessor=SpecificationPreprocessor(specification_root),

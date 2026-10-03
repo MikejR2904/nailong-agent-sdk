@@ -165,9 +165,14 @@ def check_tailored_resume(
     return check
 
 
+TEXLIVE_NET = "https://texlive.net/cgi-bin/latexcgi"
+
+
 def find_latex_engine(preference: str = "auto") -> str | None:
     if preference == "none":
         return None
+    if preference == "texlive_net":
+        return preference
     order = ["tectonic", "latexmk", "pdflatex"] if preference == "auto" else [preference]
     for engine in order:
         if shutil.which(engine):
@@ -182,6 +187,8 @@ def compile_latex(
 
     if engine is None:
         return False, None, "No LaTeX engine available (install tectonic or TeX Live)."
+    if engine == "texlive_net":
+        return _compile_texlive_net(tex_path, timeout_seconds)
     workdir = tex_path.parent
     name = tex_path.name
     commands = {
@@ -210,6 +217,36 @@ def compile_latex(
     return pdf.is_file(), (pdf if pdf.is_file() else None), output[-1500:]
 
 
+def _compile_texlive_net(tex_path: Path, timeout_seconds: float) -> tuple[bool, Path | None, str]:
+    import httpx
+
+    source = tex_path.read_text(encoding="utf-8")
+
+    def request(kind: str) -> httpx.Response:
+        return httpx.post(
+            TEXLIVE_NET,
+            data={"engine": "pdflatex", "return": kind, "filename[]": "document.tex"},
+            files={"filecontents[]": (None, source)},
+            timeout=timeout_seconds,
+            follow_redirects=True,
+        )
+
+    try:
+        response = request("pdf")
+    except httpx.HTTPError as error:
+        return False, None, f"texlive.net request failed: {type(error).__name__}: {error}"
+    if response.status_code != 200 or not response.content.startswith(b"%PDF"):
+        detail = response.text[-3000:] if response.status_code == 200 else f"HTTP {response.status_code}"
+        return False, None, f"texlive.net did not return a PDF: {detail}"
+    pdf = tex_path.with_suffix(".pdf")
+    pdf.write_bytes(response.content)
+    try:
+        tex_path.with_suffix(".log").write_text(request("log").text, encoding="utf-8")
+    except httpx.HTTPError:
+        tex_path.with_suffix(".log").unlink(missing_ok=True)
+    return True, pdf, ""
+
+
 _OVERFULL = re.compile(r"Overfull \\hbox \(([\d.]+)pt too wide\) .*?lines? (\d+)")
 
 
@@ -230,3 +267,27 @@ def pdf_page_count(pdf_path: Path) -> int:
     from pypdf import PdfReader
 
     return len(PdfReader(str(pdf_path)).pages)
+
+
+_PROJECT_SECTION = re.compile(r"\\section\*?\{[^}]*project[^}]*\}", re.I)
+_ANY_SECTION = re.compile(r"\\section\*?\{")
+_LIST_BLOCK = re.compile(r"\\begin\{(highlights|itemize)\}(.*?)\\end\{\1\}", re.S)
+_ENTRY_TITLE = re.compile(r"\\textbf\{((?:[^{}]|\{[^{}]*\})*)\}")
+_ITEM = re.compile(r"\\item\b")
+
+
+def project_bullet_counts(tex: str) -> list[tuple[str, int]]:
+    """(entry title, bullet count) for every list in the Projects section."""
+
+    body = _COMMENT.sub("", tex)
+    start = _PROJECT_SECTION.search(body)
+    if not start:
+        return []
+    rest = body[start.end() :]
+    following = _ANY_SECTION.search(rest)
+    section = rest[: following.start()] if following else rest
+    counts = []
+    for block in _LIST_BLOCK.finditer(section):
+        titles = _ENTRY_TITLE.findall(section[: block.start()])
+        counts.append((titles[-1] if titles else "project", len(_ITEM.findall(block.group(2)))))
+    return counts

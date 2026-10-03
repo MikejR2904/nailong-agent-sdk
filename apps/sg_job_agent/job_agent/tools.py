@@ -31,10 +31,12 @@ from .latex import (
     check_tailored_resume,
     compile_latex,
     overfull_lines,
+    project_bullet_counts,
     pdf_page_count,
 )
-from .sources import JobPosting, JobSourceClient, detect_ats, is_in_location
+from .sources import JobPosting, JobSourceClient, detect_ats, html_to_text, is_in_location
 from .store import JobLedger
+from .visual import layout_issues
 
 WEB_TOOLS = frozenset({"web_search", "web_fetch"})
 MAX_JD_CHARS = 15_000
@@ -52,6 +54,12 @@ def _object(required: list[str], properties: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _plain_text(text: str) -> str:
+    if re.search(r"(?i)<!doctype html|<html[\s>]|<body[\s>]", text[:2000]):
+        return html_to_text(text)
+    return text
+
+
 def _tool(name: str, description: str, schema: dict[str, Any], *, write: bool) -> ToolDefinition:
     return ToolDefinition(
         name=name,
@@ -67,8 +75,8 @@ JOB_TOOLS: dict[str, ToolDefinition] = {
     for tool in [
         _tool(
             "search_job_sources",
-            "Search structured job sources (MyCareersFuture, the Singapore government job "
-            "portal, plus configured Greenhouse/Lever/Ashby company boards) for full-time "
+            "Search structured job sources (LinkedIn public job listings, MyCareersFuture, the "
+            "Singapore government job portal, plus configured Greenhouse/Lever/Ashby company boards) for full-time "
             "openings in the target location. Returns candidates with a candidate_id; "
             "this does not use the rate-limited web_search budget.",
             _object(
@@ -174,6 +182,7 @@ class TailoringContext:
     latex_engine: str | None
     max_pages: int
     knowledge: KnowledgeBase | None = None
+    max_project_bullets: int = 2
 
 
 @dataclass
@@ -188,6 +197,7 @@ class JobToolbox:
     location: str = "Singapore"
     boards: dict[str, list[str]] = field(default_factory=dict)
     mycareersfuture: bool = True
+    linkedin: bool = True
     role_category: str = ""
     exclude_companies: list[str] = field(default_factory=list)
     exclude_title_keywords: list[str] = field(default_factory=list)
@@ -218,6 +228,9 @@ class JobToolbox:
                 return f'company "{company}" is excluded'
         return None
 
+    def candidate(self, candidate_id: str) -> JobPosting:
+        return self._candidates[candidate_id]
+
     async def search_job_sources(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = arguments["query"]
         keywords = arguments["title_keywords"]
@@ -226,6 +239,8 @@ class JobToolbox:
         found: list[JobPosting] = []
         if self.mycareersfuture:
             found += await self.sources.search_mycareersfuture(query, limit=limit)
+        if self.linkedin:
+            found += await self.sources.search_linkedin(query, self.location, limit=limit)
         if self.boards:
             found += await self.sources.search_boards(self.boards, keywords, self.location)
         results = []
@@ -260,7 +275,7 @@ class JobToolbox:
         result = await self.web_call("web_fetch", {"url": url, "max_chars": MAX_JD_CHARS})
         if result.status != "succeeded":
             raise ValueError(result.error or "web_fetch failed")
-        return str(result.output.get("content", ""))
+        return _plain_text(str(result.output.get("content", "")))
 
     async def get_job_description(self, arguments: dict[str, Any]) -> dict[str, Any]:
         url = arguments["url"]
@@ -285,10 +300,10 @@ class JobToolbox:
         if candidate is None:
             posting.ats, posting.ats_ref = detect_ats(posting.url)
             posting.apply_url = posting.url
-        if arguments.get("description") and len(arguments["description"]) > len(
+        if arguments.get("description") and len(_plain_text(arguments["description"])) > len(
             posting.description
         ):
-            posting.description = arguments["description"][:MAX_JD_CHARS]
+            posting.description = _plain_text(arguments["description"])[:MAX_JD_CHARS]
         location = posting.location or arguments["location"]
         if not is_in_location(location, self.location):
             raise ValueError(
@@ -344,7 +359,40 @@ class JobToolbox:
         return self.knowledge.get(arguments["id"]).to_dict()
 
 
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _decode_unicode_escapes(tex: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        code = int(match.group(1), 16)
+        return "-" if 0x2010 <= code <= 0x2012 else chr(code)
+
+    return _UNICODE_ESCAPE.sub(replace, tex)
+
+
+DOCUMENT_BEGIN = r"\begin{document}"
+
+
+def _restore_preamble(base_tex: str, tailored_tex: str) -> str:
+    if DOCUMENT_BEGIN not in base_tex or DOCUMENT_BEGIN not in tailored_tex:
+        return tailored_tex
+    return base_tex.split(DOCUMENT_BEGIN, 1)[0] + DOCUMENT_BEGIN + tailored_tex.split(DOCUMENT_BEGIN, 1)[1]
+
+
+def assemble_resume(base_tex: str, body: str) -> str:
+    """Base preamble plus the model's document body, with the begin command normalised."""
+
+    body = _decode_unicode_escapes(body).strip()
+    if DOCUMENT_BEGIN in body:
+        body = body.split(DOCUMENT_BEGIN, 1)[1].strip()
+    return base_tex.split(DOCUMENT_BEGIN, 1)[0] + DOCUMENT_BEGIN + chr(10) + body + chr(10)
+
+
 def run_resume_check(path: Path, tailoring: TailoringContext, evidence_ids=()):
+    raw = path.read_text(encoding="utf-8")
+    fixed = _restore_preamble(tailoring.base_resume_tex, _decode_unicode_escapes(raw))
+    if fixed != raw:
+        path.write_text(fixed, encoding="utf-8")
     evidence_text, unknown = "", []
     if evidence_ids:
         known = [i for i in evidence_ids if tailoring.knowledge and i in tailoring.knowledge]
@@ -352,12 +400,18 @@ def run_resume_check(path: Path, tailoring: TailoringContext, evidence_ids=()):
         evidence_text = tailoring.knowledge.text_for(known) if known else ""
     check = check_tailored_resume(
         tailoring.base_resume_tex,
-        path.read_text(encoding="utf-8"),
+        fixed,
         job_description=tailoring.job_description,
         evidence_text=evidence_text,
     )
     if unknown:
         check.errors.append(f"Unknown evidence ids (cite only ids from the bank): {unknown}")
+    for title, count in project_bullet_counts(fixed):
+        if count > tailoring.max_project_bullets:
+            check.errors.append(
+                f'Project "{title}" has {count} bullets; the limit is '
+                f"{tailoring.max_project_bullets} per project."
+            )
     if tailoring.latex_engine is None:
         check.warnings.append("No LaTeX engine installed; compilation was skipped.")
         return check
@@ -369,6 +423,7 @@ def run_resume_check(path: Path, tailoring: TailoringContext, evidence_ids=()):
         return check
     check.pdf_path = str(pdf)
     check.page_count = pdf_page_count(pdf)
+    check.warnings += layout_issues(pdf)
     overfull = overfull_lines(path.with_suffix(".log"))
     if overfull:
         where = ", ".join(f"line {line} ({width:.0f}pt)" for line, width in overfull)

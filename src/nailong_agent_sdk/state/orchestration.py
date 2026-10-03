@@ -218,6 +218,9 @@ class ControllerStateStore:
         _replace_with_retry(temporary, target)
         self._persisted_event_counts[record.controller_id] = len(record.events)
 
+    def exists(self, controller_id: str) -> bool:
+        return (self._root / f"{controller_id}.json").is_file()
+
     def load(self, controller_id: str) -> ControllerRecord:
         target = self._root / f"{controller_id}.json"
         if not target.is_file():

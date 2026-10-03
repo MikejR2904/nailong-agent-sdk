@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     result = commands[arguments.command]()
     print(json.dumps(_to_json(result), indent=2, sort_keys=True))
-    return 0 if getattr(result, "valid", True) else 1
+    return _exit_status(result)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -80,6 +80,13 @@ def _quality(arguments: argparse.Namespace) -> object:
         arguments.checkout_root,
         check_format=not arguments.no_format_check,
     )
+
+
+_VERDICT_FIELDS = ("valid", "passed", "telemetry_chain_valid", "audit_chain_valid")
+
+
+def _exit_status(result: object) -> int:
+    return 1 if any(getattr(result, name, True) is False for name in _VERDICT_FIELDS) else 0
 
 
 def _to_json(value: object) -> object:

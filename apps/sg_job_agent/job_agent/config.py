@@ -39,6 +39,7 @@ class CandidateConfig(_Strict):
 
 class SourcesConfig(_Strict):
     mycareersfuture: bool = True
+    linkedin: bool = True
     web_search: bool = True
     # Sites the scout targets with `site:` web searches.
     web_search_sites: list[str] = Field(
@@ -63,7 +64,7 @@ class SearchConfig(_Strict):
     roles: list[str] = Field(default_factory=list)
     max_roles: int = Field(default=6, ge=1, le=15)
     max_jobs_per_role: int = Field(default=15, ge=1, le=100)
-    max_web_calls_per_role: int = Field(default=8, ge=0, le=40)
+    max_web_calls_per_role: int = Field(default=10, ge=0, le=40)
     min_fit_score: int = Field(default=60, ge=0, le=100)
     exclude_companies: list[str] = Field(default_factory=list)
     exclude_title_keywords: list[str] = Field(
@@ -83,6 +84,9 @@ class ModelConfig(_Strict):
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     # OpenAI-compatible models only; current Claude models reject sampling parameters.
     temperature: float | None = None
+    # OpenAI-compatible reasoning models: sent as reasoning_effort ("none" disables the
+    # hidden reasoning tokens that dominate latency). None leaves the provider default.
+    reasoning_effort: str | None = None
     max_tokens: int = 64_000
     timeout_seconds: float = 600.0
 
@@ -104,6 +108,9 @@ class KnowledgeConfig(_Strict):
     # owner/repo for repos outside your account (e.g. org or course repos).
     github_extra_repos: list[str] = Field(default_factory=list)
     github_include_forks: bool = False
+    # Download each repo's archive, compute facts from the code and have the model review it.
+    code_analysis: bool = True
+    max_analyzed_repos: int = Field(default=10, ge=1, le=60)
     github_token_env: str = "GITHUB_TOKEN"
     # LinkedIn data export ZIP/folder (Settings > Data privacy > Get a copy of
     # your data) or the profile's "Save to PDF". Profiles are never scraped.
@@ -114,9 +121,13 @@ class KnowledgeConfig(_Strict):
 
 class TailoringConfig(_Strict):
     max_pages: int = Field(default=2, ge=1, le=5)
-    # auto = first available of tectonic, latexmk, pdflatex.
-    latex_engine: Literal["auto", "tectonic", "latexmk", "pdflatex", "none"] = "auto"
-    polish_pass: bool = True
+    max_project_bullets: int = Field(default=2, ge=1, le=6)
+    # auto = first available of tectonic, latexmk, pdflatex (never remote).
+    # texlive_net = compile on the public texlive.net service (uploads the resume text).
+    latex_engine: Literal["auto", "tectonic", "latexmk", "pdflatex", "texlive_net", "none"] = "auto"
+    # Ask an image-capable model to look at the rendered resume (advisory only).
+    vision_review: bool = False
+    polish_pass: bool = False
     write_cover_letter: bool = True
 
 

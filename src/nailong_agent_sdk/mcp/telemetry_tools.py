@@ -40,10 +40,12 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
 
         try:
             events = ctx.telemetry.list_events(run_id, after_sequence=after_sequence, limit=limit)
+            failure = ctx.telemetry.chain_break(run_id)
             return {
                 "ok": True,
                 "events": [item.model_dump(mode="json") for item in events],
-                "integrity_chain_valid": ctx.telemetry.verify_run_chain(run_id),
+                "integrity_chain_valid": failure is None,
+                "integrity_failure": failure.model_dump(mode="json") if failure else None,
             }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
@@ -54,10 +56,12 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
 
         try:
             entries = ctx.audit_logs.list_entries(run_id, limit=limit)
+            failure = ctx.audit_logs.chain_break(run_id)
             return {
                 "ok": True,
                 "events": [entry.model_dump(mode="json") for entry in entries],
-                "integrity_chain_valid": ctx.audit_logs.verify(run_id),
+                "integrity_chain_valid": failure is None,
+                "integrity_failure": failure.model_dump(mode="json") if failure else None,
             }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
@@ -68,11 +72,13 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
 
         try:
             path = ctx.audit_logs.render_markdown(run_id)
+            failure = ctx.audit_logs.chain_break(run_id)
             return {
                 "ok": True,
                 "report": {
                     "transcript_path": str(path.relative_to(ctx.run_root.resolve())),
-                    "integrity_chain_valid": ctx.audit_logs.verify(run_id),
+                    "integrity_chain_valid": failure is None,
+                    "integrity_failure": failure.model_dump(mode="json") if failure else None,
                 },
             }
         except Exception as error:

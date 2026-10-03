@@ -14,10 +14,13 @@ client already does correctly.
 from __future__ import annotations
 
 import json
+import socket
+import ssl
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import httpx
@@ -29,14 +32,27 @@ from ...foundations.errors import AgentSdkError, TransientProviderError
 # merits, so retrying it unchanged would only reproduce the same rejection.
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
+_REDIRECT_HINT = (
+    "the endpoint redirected the request (check base_url, for example a missing path prefix or "
+    "http instead of https); redirects are refused so the credential never leaves the "
+    "configured host"
+)
+
 _HTTP_STATUS_HINTS: dict[int, str] = {
+    301: _REDIRECT_HINT,
+    302: _REDIRECT_HINT,
+    307: _REDIRECT_HINT,
+    308: _REDIRECT_HINT,
     400: "the request body or parameters were malformed for this provider",
     401: "the API key is missing, invalid, or revoked",
     403: "the API key lacks permission for this model or endpoint",
     404: "the model name or endpoint path does not exist on this provider",
     408: "the provider itself timed out waiting for the request",
     413: "the request payload is too large for this provider",
-    422: "the request was well-formed but rejected on semantic grounds, such as an unsupported parameter value",
+    422: (
+        "the request was well-formed but rejected on semantic grounds, such as an "
+        "unsupported parameter value"
+    ),
     429: "the account is rate-limited or has exhausted its quota",
     500: "the provider had an internal error unrelated to this request",
     502: "the provider's upstream gateway failed",
@@ -111,12 +127,13 @@ class UrlLibJsonTransport:
         except URLError as error:
             raise TransientProviderError(
                 "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
-                "OpenAI-compatible provider could not be reached.",
+                f"OpenAI-compatible provider could not be reached at "
+                f"{_transport_failure_detail(url, error)}.",
             ) from error
         except TimeoutError as error:
             raise TransientProviderError(
                 "OPENAI_COMPATIBLE_TRANSPORT_TIMEOUT",
-                f"OpenAI-compatible provider did not respond within {timeout_seconds}s.",
+                _timeout_message(url, timeout_seconds),
             ) from error
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise AgentSdkError(
@@ -168,12 +185,13 @@ class HttpxJsonTransport:
         except httpx.TimeoutException as error:
             raise TransientProviderError(
                 "OPENAI_COMPATIBLE_TRANSPORT_TIMEOUT",
-                f"OpenAI-compatible provider did not respond within {timeout_seconds}s.",
+                _timeout_message(url, timeout_seconds),
             ) from error
         except httpx.TransportError as error:
             raise TransientProviderError(
                 "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
-                "OpenAI-compatible provider could not be reached.",
+                f"OpenAI-compatible provider could not be reached at "
+                f"{_transport_failure_detail(url, error)}.",
             ) from error
         except json.JSONDecodeError as error:
             raise AgentSdkError(
@@ -232,11 +250,72 @@ class HttpxStreamingJsonTransport:
                         continue
                     if isinstance(parsed, dict):
                         yield parsed
+        except httpx.TimeoutException as error:
+            raise TransientProviderError(
+                "OPENAI_COMPATIBLE_TRANSPORT_TIMEOUT",
+                _timeout_message(url, timeout_seconds),
+            ) from error
         except httpx.TransportError as error:
             raise TransientProviderError(
                 "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
-                "OpenAI-compatible provider could not be reached.",
+                f"OpenAI-compatible provider could not be reached at "
+                f"{_transport_failure_detail(url, error)}.",
             ) from error
+
+
+def _provider_target(url: str) -> str:
+    parts = urlsplit(url)
+    target = parts.hostname or "the configured host"
+    return f"{target}:{parts.port}" if parts.port is not None else target
+
+
+def _exception_chain(error: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in chain:
+        chain.append(current)
+        reason = getattr(current, "reason", None)
+        current = (
+            reason
+            if isinstance(reason, BaseException)
+            else current.__cause__ or current.__context__
+        )
+    return chain
+
+
+def _transport_hint(chain: list[BaseException]) -> str:
+    for item in chain:
+        if isinstance(item, socket.gaierror):
+            return "the host name did not resolve (check the base_url spelling, DNS and network)"
+        if isinstance(item, ConnectionRefusedError):
+            return "nothing is listening on that host and port (check base_url and the service)"
+        if isinstance(item, ssl.SSLError):
+            return (
+                "TLS negotiation or certificate verification failed (check the certificate "
+                "chain, the system clock and any intercepting proxy)"
+            )
+        if isinstance(item, ConnectionResetError | ConnectionAbortedError | BrokenPipeError):
+            return "the connection was dropped mid-request (provider restart, proxy or firewall)"
+        if isinstance(item, TimeoutError):
+            return "connecting timed out (the network path is blocked or the host is unreachable)"
+    return "the network path to the provider is unavailable (offline, VPN, proxy or firewall)"
+
+
+def _transport_failure_detail(url: str, error: BaseException) -> str:
+    chain = _exception_chain(error)
+    root = chain[-1]
+    cause = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+    if root is not error:
+        cause += f"; root cause {type(root).__name__}: {root}"
+    return f"{_provider_target(url)} ({cause}); likely cause: {_transport_hint(chain)}"
+
+
+def _timeout_message(url: str, timeout_seconds: float) -> str:
+    return (
+        f"OpenAI-compatible provider at {_provider_target(url)} did not respond within "
+        f"{timeout_seconds}s; it may be overloaded or the request may be too large for its "
+        "current response time."
+    )
 
 
 def _http_status_error(status_code: int, *, retry_after_seconds: float | None) -> AgentSdkError:

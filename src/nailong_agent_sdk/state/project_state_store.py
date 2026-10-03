@@ -72,6 +72,7 @@ class FileProjectStateStore(InMemoryProjectStateStore):
         super().__init__()
         self._root = run_root.resolve() / ".agent-project-state"
         self._root.mkdir(parents=True, exist_ok=True)
+        self._fingerprints: dict[str, tuple[int, int, int] | None] = {}
 
     def ensure(self, project_id: str, stage_schema: StageStateSchema) -> ProjectState:
         target = self._state_path(project_id)
@@ -79,10 +80,12 @@ class FileProjectStateStore(InMemoryProjectStateStore):
             return self.load(project_id)
         state = super().ensure(project_id, stage_schema)
         self._write_json(target, state.model_dump(mode="json"))
+        self._fingerprints[project_id] = self._fingerprint(project_id)
         return state
 
     def load(self, project_id: str) -> ProjectState:
-        if project_id in self._states:
+        fingerprint = self._fingerprint(project_id)
+        if project_id in self._states and self._fingerprints.get(project_id) == fingerprint:
             return super().load(project_id)
         target = self._state_path(project_id)
         if not target.is_file():
@@ -91,6 +94,7 @@ class FileProjectStateStore(InMemoryProjectStateStore):
         self._states[project_id] = state
         self._events[project_id] = self._read_events(project_id)
         self._verify_history(project_id)
+        self._fingerprints[project_id] = fingerprint
         return state
 
     def apply(
@@ -111,7 +115,15 @@ class FileProjectStateStore(InMemoryProjectStateStore):
         self._write_json(self._state_path(project_id), next_state.model_dump(mode="json"))
         self._states[project_id] = next_state
         self._events[project_id].append(event)
+        self._fingerprints[project_id] = self._fingerprint(project_id)
         return next_state
+
+    def _fingerprint(self, project_id: str) -> tuple[int, int, int] | None:
+        try:
+            status = self._state_path(project_id).stat()
+        except FileNotFoundError:
+            return None
+        return status.st_ino, status.st_mtime_ns, status.st_size
 
     def _state_path(self, project_id: str) -> Path:
         return self._root / f"{_safe_id(project_id)}.json"

@@ -28,7 +28,7 @@ from ..agent.verification import VerificationGateRegistry
 from ..foundations.contracts import AgentDefinition, AgentRunStatus, ScopedAgentTask, StrictModel
 from ..state.graph_models import GraphNode, GraphNodeExecutionContext, GraphNodeResult, NodeExecutor
 from ..tools.tools import ToolExecutor
-from ._utils import canonical_digest, require_optional_module
+from ._utils import canonical_digest, content_digest, require_optional_module
 from .contracts import (
     InteropOperationStatus,
     InteropReceipt,
@@ -110,7 +110,7 @@ class LangGraphSdkNode:
                 post_tool_hooks=self._binding.post_tool_hooks,
             )
             result = await agent.run(task)
-            result_digest = canonical_digest(
+            result_digest = content_digest(
                 {
                     "status": result.status.value,
                     "reason": result.reason,
@@ -127,7 +127,7 @@ class LangGraphSdkNode:
                 "remaining_turn_budget": max(0, envelope.remaining_turn_budget - result.iterations),
                 "binding_digest": self._binding.binding_digest,
                 "result_digest": result_digest,
-                "project_state_digest": canonical_digest(result.project_state or {}),
+                "project_state_digest": content_digest(result.project_state or {}),
             }
             await self._emit_receipt(
                 envelope,
@@ -137,7 +137,7 @@ class LangGraphSdkNode:
             )
             return {"agent_sdk_transition": transition}
         except Exception as error:
-            result_digest = canonical_digest({"error_type": type(error).__name__})
+            result_digest = content_digest({"error_type": type(error).__name__})
             await self._emit_receipt(
                 envelope,
                 InteropOperationStatus.FAILED,

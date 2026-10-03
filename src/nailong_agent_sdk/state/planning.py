@@ -307,18 +307,31 @@ class PlanValidator:
         for proof in proofs:
             key = (proof.parent_task_id, proof.child_task_id, proof.applied_rule)
             provided[key].update(proof.shared_signal_ids)
-        if dict(provided) == dict(derived):
-            return
-        missing = set(derived) - set(provided)
-        unexpected = set(provided) - set(derived)
-        for key in sorted(missing | unexpected):
+        mismatched = sorted(
+            (key for key in set(derived) | set(provided) if derived.get(key) != provided.get(key)),
+            key=lambda key: (key[0], key[1], key[2].value),
+        )
+        for key in mismatched:
+            parent, child, rule = key
             expected_signals = sorted(derived.get(key, set()))
             actual_signals = sorted(provided.get(key, set()))
+            edge = f'"{parent}" -> "{child}" ({rule.value})'
+            if key not in provided:
+                detail = f"no dependency proof was supplied for the derived edge {edge}"
+            elif key not in derived:
+                detail = (
+                    f"the proof for {edge} has no matching edge derived from the locked interfaces"
+                )
+            else:
+                detail = (
+                    f"the proof for {edge} cites signals {actual_signals} "
+                    f"but the locked interfaces derive {expected_signals}"
+                )
             errors.append(
                 PlanValidationError(
                     code="DEPENDENCY_PROOF_MISMATCH",
-                    message="Dependency proofs do not match the recomputed signal-derived edge.",
-                    task_ids=[key[0], key[1]],
+                    message=f"Dependency proofs do not match the derived edges: {detail}.",
+                    task_ids=[parent, child],
                     signal_ids=sorted(set(expected_signals) | set(actual_signals)),
                 )
             )

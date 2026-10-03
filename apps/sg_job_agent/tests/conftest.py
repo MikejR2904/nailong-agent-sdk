@@ -127,7 +127,7 @@ def config() -> AgentConfig:
             },
             "search": {
                 "max_roles": 2,
-                "sources": {"web_search": False, "greenhouse_boards": ["acme"]},
+                "sources": {"web_search": False, "linkedin": False, "greenhouse_boards": ["acme"]},
             },
             "tailoring": {"latex_engine": "none"},
         }

@@ -1,14 +1,15 @@
 """Job posting model and structured job-source clients.
 
-Structured sources are public, documented, unauthenticated JSON endpoints:
-MyCareersFuture (Singapore government job portal) and the public job-board APIs
-of Greenhouse, Lever, and Ashby. LinkedIn, eFinancialCareers, JobStreet and the
-rest of the web are reached through the SDK's web_search/web_fetch tools instead.
+Structured sources are public, unauthenticated endpoints: LinkedIn's guest job
+listings, MyCareersFuture (Singapore government job portal) and the public
+job-board APIs of Greenhouse, Lever, and Ashby. eFinancialCareers, JobStreet and
+the rest of the web are reached through the SDK's web_search/web_fetch tools.
 Every client degrades to "no results plus a warning" rather than failing a run.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import re
@@ -18,6 +19,10 @@ from typing import Any
 
 import httpx
 
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) sg-job-agent/0.1 (personal job search)"
 
 
@@ -102,6 +107,31 @@ def html_to_text(raw: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def parse_linkedin_cards(page: str) -> list[JobPosting]:
+    postings = []
+    for card in re.split(r'(?=<div class="base-card)', page)[1:]:
+        urn = re.search(r"jobPosting:(\d{6,})", card)
+        title = re.search(r'(?s)base-search-card__title">(.*?)</h3>', card)
+        company = re.search(r'(?s)base-search-card__subtitle">(.*?)</h4>', card)
+        place = re.search(r'(?s)job-search-card__location">(.*?)</span>', card)
+        posted = re.search(r'<time[^>]*datetime="([^"]+)"', card)
+        if not (urn and title and company):
+            continue
+        postings.append(
+            JobPosting(
+                title=html_to_text(title.group(1)),
+                company=html_to_text(company.group(1)),
+                url=f"https://www.linkedin.com/jobs/view/{urn.group(1)}",
+                location=html_to_text(place.group(1)) if place else "",
+                source="linkedin",
+                ats="linkedin",
+                ats_ref={"job": urn.group(1)},
+                posted_at=posted.group(1) if posted else "",
+            )
+        )
+    return postings
+
+
 def is_in_location(location: str, wanted: str) -> bool:
     haystack = location.lower()
     wanted = wanted.lower()
@@ -129,6 +159,11 @@ class JobSourceClient:
         )
         self.warnings: list[str] = []
         self._board_cache: dict[tuple[str, str], list[JobPosting]] = {}
+        self._linkedin_slots = asyncio.Semaphore(2)
+        self._linkedin_descriptions: dict[str, asyncio.Future[str]] = {}
+
+    LINKEDIN_GUEST = "https://www.linkedin.com/jobs-guest/jobs/api"
+    LINKEDIN_PAGE = 25
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -137,6 +172,60 @@ class JobSourceClient:
         response = await self._http.get(url, **kwargs)
         response.raise_for_status()
         return response.json()
+
+    # --- LinkedIn (public guest endpoints, no login) ------------------------------
+
+    async def _linkedin_get(self, url: str, **kwargs: Any) -> str:
+        last: Exception | None = None
+        for attempt in range(4):
+            async with self._linkedin_slots:
+                response = await self._http.get(
+                    url, headers={"Accept": "text/html", "User-Agent": BROWSER_USER_AGENT}, **kwargs
+                )
+                await asyncio.sleep(0.4)
+            if response.status_code in (429, 999) or response.status_code >= 500:
+                last = httpx.HTTPStatusError(
+                    f"HTTP {response.status_code}", request=response.request, response=response
+                )
+                await asyncio.sleep(2.0 * (attempt + 1))
+                continue
+            response.raise_for_status()
+            return response.text
+        raise last or httpx.HTTPError("LinkedIn request failed")
+
+    async def search_linkedin(self, query: str, location: str, limit: int = 20) -> list[JobPosting]:
+        postings: list[JobPosting] = []
+        start = 0
+        try:
+            while len(postings) < limit and start < 100:
+                page = await self._linkedin_get(
+                    f"{self.LINKEDIN_GUEST}/seeMoreJobPostings/search",
+                    params={"keywords": query, "location": location, "f_JT": "F", "start": start},
+                )
+                cards = parse_linkedin_cards(page)
+                if not cards:
+                    break
+                postings += cards
+                start += self.LINKEDIN_PAGE
+        except (httpx.HTTPError, ValueError) as error:
+            self.warnings.append(f"LinkedIn search failed for {query!r}: {error}")
+        return postings[:limit]
+
+    async def fetch_linkedin_description(self, job_id: str) -> str:
+        task = self._linkedin_descriptions.get(job_id)
+        if task is None:
+            task = asyncio.ensure_future(self._fetch_linkedin_description(job_id))
+            self._linkedin_descriptions[job_id] = task
+        return await task
+
+    async def _fetch_linkedin_description(self, job_id: str) -> str:
+        page = await self._linkedin_get(f"{self.LINKEDIN_GUEST}/jobPosting/{job_id}")
+        match = re.search(
+            r'(?is)<div class="[^"]*description__text[^"]*">(.*?)</div>\s*</section>', page
+        ) or re.search(r'(?is)class="[^"]*show-more-less-html__markup[^"]*">(.*?)</div>', page)
+        if not match:
+            raise ValueError(f"no description block in LinkedIn posting {job_id}")
+        return html_to_text(match.group(1))
 
     # --- MyCareersFuture -------------------------------------------------------
 
@@ -311,6 +400,8 @@ class JobSourceClient:
                     if posting.ats_ref.get("job") == ref["job"]:
                         return posting.description
                 return None
+            if ats == "linkedin":
+                return await self.fetch_linkedin_description(ref["job"])
             if ats == "mycareersfuture":
                 payload = await self._get_json(f"{self.MCF_API}/jobs/{ref['job']}")
                 return html_to_text(payload.get("description", ""))

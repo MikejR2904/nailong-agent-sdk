@@ -61,21 +61,16 @@ def make_pipeline(tmp_path, config, sources, resume_file, models) -> JobAgentPip
     return pipeline
 
 
+def body_of(tex: str) -> str:
+    return tex.split(chr(92) + "begin{document}", 1)[1]
+
+
 def tailor_script(resume_tex: str) -> list[dict]:
+    letter = "Dear Hiring Team, " + "I build production machine learning systems. " * 16 + "Alex Tan"
     return [
-        call(1, "read_file", path="base_resume.tex"),
-        call(2, "read_file", path="jobs/{job}/job_description.md"),
-        call(3, "write_draft", path="jobs/{job}/resume.tex", content=resume_tex),
-        call(
-            4,
-            "write_draft",
-            path="jobs/{job}/cover_letter.txt",
-            content="Dear Hiring Team,\n\nI build production ML systems.\n\nAlex Tan",
-        ),
-        call(5, "check_tailored_resume", path="jobs/{job}/resume.tex", evidence_ids=[]),
         final(
-            resume_path="jobs/{job}/resume.tex",
-            cover_letter_path="jobs/{job}/cover_letter.txt",
+            resume_body=body_of(resume_tex),
+            cover_letter=letter,
             changes=["Led with PyTorch recommendation work"],
             matched_requirements=["Python", "PyTorch", "AWS"],
             gaps=["Kubernetes"],
@@ -93,11 +88,12 @@ def test_profile_discover_tailor_and_manual_apply(tmp_path, config, sources, res
         "Machine learning engineer with", "Production-focused machine learning engineer with"
     )
     models = Models(
-        profiler=[[call(1, "read_file", path="base_resume.tex"), final(**PROFILE)]],
-        scout=[],
+        profiler=[[final(**PROFILE)]],
+        scorer=[],
         tailor=[],
         polisher=[[final(resume_path="jobs/{job}/resume.tex", fixes=[])]],
     )
+    config.tailoring.polish_pass = True
     pipeline = make_pipeline(tmp_path, config, sources, resume_file, models)
 
     from job_agent.sources import job_id_for
@@ -107,24 +103,14 @@ def test_profile_discover_tailor_and_manual_apply(tmp_path, config, sources, res
         "machine-learning-engineer-0123456789abcdef0123456789abcdef"
     )
     gh_id = job_id_for("https://boards.greenhouse.io/acme/jobs/4001")
-    common = {
-        "url": "x",
-        "title": "x",
-        "company": "x",
-        "location": "Singapore",
-        "fit_rationale": "Strong PyTorch match",
-    }
-    models.scripts["scout"].append(
+    models.scripts["scorer"].append(
         [
-            call(
-                1,
-                "search_job_sources",
-                query="machine learning engineer",
-                title_keywords=["machine learning engineer"],
-            ),
-            call(2, "save_job_posting", **common, candidate_id=mcf_id, fit_score=72),
-            call(3, "save_job_posting", **common, candidate_id=gh_id, fit_score=88),
-            final(saved_job_ids=[mcf_id, gh_id]),
+            final(
+                scores=[
+                    {"candidate_id": mcf_id, "fit_score": 72, "fit_rationale": "Good PyTorch match"},
+                    {"candidate_id": gh_id, "fit_score": 88, "fit_rationale": "Strong PyTorch match"},
+                ]
+            )
         ]
     )
 
@@ -151,7 +137,7 @@ def test_profile_discover_tailor_and_manual_apply(tmp_path, config, sources, res
     assert packet["cover_letter"].endswith("cover_letter.txt")
     assert packet["gaps"] == ["Kubernetes"]
     assert "Kubernetes" in (pipeline.root / f"jobs/{gh_id}/job_description.md").read_text()
-    assert models.used == ["profiler", "scout", "tailor", "polisher"]
+    assert models.used == ["profiler", "scorer", "tailor", "polisher"]
 
     # No PDF without a LaTeX engine, so applying is a confirmed manual hand-off.
     opened = []
@@ -160,7 +146,7 @@ def test_profile_discover_tailor_and_manual_apply(tmp_path, config, sources, res
         return True
 
     applier = Applier(
-        config, pipeline.root, pipeline.ledger, confirm=yes, open_url=opened.append, log=print
+        config, pipeline.root, pipeline.ledger, confirm=yes, open_url=opened.append, log=lambda _: None
     )
     outcome = asyncio.run(applier.apply(gh_id))
     assert outcome.status is JobStatus.APPLIED
@@ -306,7 +292,7 @@ def test_real_openai_compatible_adapter_round_trip(tmp_path, config, sources, re
         transport=FakeTransport(),
     )
     pipeline = JobAgentPipeline(
-        config, tmp_path / "ws", model_factory=lambda _d: adapter, sources=sources, log=print
+        config, tmp_path / "ws", model_factory=lambda _d: adapter, sources=sources, log=lambda _: None
     )
     pipeline.import_resume(resume_file)
     profile = asyncio.run(pipeline.profile())
@@ -337,3 +323,53 @@ def test_tailoring_writes_overleaf_launchers(tmp_path, config, sources, resume_f
     assert (pipeline.root / packet["overleaf_launcher"]).is_file()
     index = (pipeline.root / "overleaf.html").read_text()
     assert "ML Engineer" in index and "encoded_snip" in index
+
+
+def test_parse_linkedin_cards_extracts_listing_fields():
+    from job_agent.sources import parse_linkedin_cards
+
+    page = (
+        '<li><div class="base-card base-search-card" data-entity-urn="urn:li:jobPosting:4472838794">'
+        '<h3 class="base-search-card__title"> ML Engineer </h3>'
+        '<h4 class="base-search-card__subtitle"><a href="x"> Acme </a></h4>'
+        '<span class="job-search-card__location"> Singapore, Singapore </span>'
+        '<time datetime="2026-09-30">2 days ago</time></div></li>'
+    )
+    [posting] = parse_linkedin_cards(page)
+    assert (posting.title, posting.company, posting.location) == (
+        "ML Engineer",
+        "Acme",
+        "Singapore, Singapore",
+    )
+    assert posting.url == "https://www.linkedin.com/jobs/view/4472838794"
+    assert posting.ats_ref == {"job": "4472838794"}
+
+
+def test_literal_unicode_escapes_in_tailored_tex_are_decoded():
+    from job_agent.tools import _decode_unicode_escapes
+
+    backslash = chr(92)
+    raw = f"drug{backslash}u2011interaction caf{backslash}u00e9"
+    assert _decode_unicode_escapes(raw) == "drug-interaction caf" + chr(0xE9)
+
+
+def test_tailored_preamble_is_restored_from_base():
+    from job_agent.tools import _restore_preamble
+
+    marker = r"\begin{document}"
+    base = f"PRE-BASE\n{marker}\nBase\nEND"
+    tailored = f"PRE-BROKEN\n{marker}\nTailored\nEND"
+    assert _restore_preamble(base, tailored) == f"PRE-BASE\n{marker}\nTailored\nEND"
+
+
+def test_project_bullet_counts_reads_the_projects_section_only():
+    from job_agent.latex import project_bullet_counts
+
+    bs = chr(92)
+    tex = (
+        f"{bs}section{{Experience}}{bs}begin{{highlights}}{bs}item a{bs}item b{bs}item c{bs}end{{highlights}}"
+        f"{bs}section{{Projects}}{bs}textbf{{Alpha}}{bs}begin{{highlights}}{bs}item x{bs}item y{bs}end{{highlights}}"
+        f"{bs}textbf{{Beta}}{bs}begin{{itemize}}{bs}item z{bs}end{{itemize}}"
+        f"{bs}section{{Skills}}{bs}begin{{highlights}}{bs}item s1{bs}item s2{bs}item s3{bs}end{{highlights}}"
+    )
+    assert project_bullet_counts(tex) == [("Alpha", 2), ("Beta", 1)]

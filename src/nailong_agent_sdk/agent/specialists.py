@@ -117,6 +117,7 @@ def rtl_worker_definition(model_binding: ModelBinding) -> AgentDefinition:
                 description="Run the registered Verilator lint template over declared inputs.",
                 input_schema=empty_object,
                 episode_kind=EpisodeKind.ACTION,
+                requires_manifest=True,
             ),
             ToolDefinition(
                 name="run_yosys",
@@ -125,6 +126,7 @@ def rtl_worker_definition(model_binding: ModelBinding) -> AgentDefinition:
                 ),
                 input_schema=empty_object,
                 episode_kind=EpisodeKind.ACTION,
+                requires_manifest=True,
             ),
             ToolDefinition(
                 name="diff_declared_artifacts",

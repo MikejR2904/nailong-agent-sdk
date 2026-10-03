@@ -83,7 +83,7 @@ class RedisRetrievalCache:
             import redis
         except ImportError as error:  # pragma: no cover - depends on optional extra
             raise RuntimeError(
-                "Redis retrieval caching requires agent-design-agent-sdk[redis-cache]."
+                "Redis retrieval caching requires nailong-agent-sdk[redis-cache]."
             ) from error
         self._client = redis.Redis.from_url(redis_url, decode_responses=True)
         self._namespace = namespace

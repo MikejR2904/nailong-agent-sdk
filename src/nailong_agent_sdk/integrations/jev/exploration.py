@@ -62,10 +62,17 @@ class JevExplorationAdvisor:
         instructions: str,
         deadline_seconds: float = 20,
     ) -> JevExplorationAdvice:
-        if not candidates:
-            raise ValueError("At least one exploration candidate is required.")
+        if len(candidates) < 2:
+            raise ValueError(
+                f"Jev exploration prioritisation needs at least two candidates, got "
+                f"{len(candidates)}; with fewer there is nothing to prioritise, so select the "
+                "only candidate directly."
+            )
         if len(candidates) > self._max_candidates:
-            raise ValueError("Exploration candidate count exceeds the declared Jev bound.")
+            raise ValueError(
+                f"Exploration candidate count {len(candidates)} exceeds the declared Jev bound "
+                f"of {self._max_candidates}."
+            )
         ordered = sorted(
             candidates,
             key=lambda candidate: (candidate.deterministic_rank, candidate.candidate_id),

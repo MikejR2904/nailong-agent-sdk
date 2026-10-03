@@ -16,7 +16,9 @@ from typing import Any
 
 from ..foundations.atomic_io import replace_atomic
 from ..foundations.errors import redact_secrets
+from .telemetry_helpers import first_chain_break
 from .telemetry_models import (
+    ChainBreak,
     MetricAvailability,
     MetricDefinition,
     MetricObservation,
@@ -295,20 +297,15 @@ class TelemetryStore:
         return summaries
 
     def verify_run_chain(self, run_id: str) -> bool:
+        return self.chain_break(run_id) is None
+
+    def chain_break(self, run_id: str) -> ChainBreak | None:
         boundary = self.run_snapshot_sequence(run_id)
-        return self._verify_events(self.iter_events(run_id, through_sequence=boundary))
+        return _events_chain_break(self.iter_events(run_id, through_sequence=boundary))
 
     @staticmethod
     def _verify_events(events: Iterable[TelemetryEvent]) -> bool:
-        previous: str | None = None
-        for event in events:
-            expected = _canonical_hash(
-                event.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
-            )
-            if event.previous_event_hash != previous or event.integrity_hash != expected:
-                return False
-            previous = event.integrity_hash
-        return True
+        return _events_chain_break(events) is None
 
     def create_run_report(self, run_id: str) -> dict[str, Any]:
         boundary = self.run_snapshot_sequence(run_id)
@@ -316,13 +313,15 @@ class TelemetryStore:
         metrics = self.list_metrics(run_id)
         if not events:
             raise ValueError(f'Telemetry run "{run_id}" is unknown.')
+        failure = _events_chain_break(events)
         report = {
             "schema_version": "run-report-v1",
             "run_id": run_id,
             "event_count": len(events),
             "verified_event_count": len(events),
             "verified_through_sequence": boundary,
-            "integrity_chain_valid": self._verify_events(events),
+            "integrity_chain_valid": failure is None,
+            "integrity_failure": failure.model_dump(mode="json") if failure else None,
             "statuses": _count(event.status for event in events),
             "event_types": _count(event.event_type for event in events),
             "watchdog_interventions": sum(
@@ -390,6 +389,17 @@ def _canonical_json(value: Any) -> str:
 
 def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _events_chain_break(events: Iterable[TelemetryEvent]) -> ChainBreak | None:
+    return first_chain_break(
+        events,
+        noun="event",
+        previous_attribute="previous_event_hash",
+        expected_hash=lambda event: _canonical_hash(
+            event.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
+        ),
+    )
 
 
 def _count(values: Iterable[str]) -> dict[str, int]:

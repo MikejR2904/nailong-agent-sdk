@@ -15,6 +15,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
+from ..foundations.dependency_graph import deterministic_cycles
 from .graph_models import (
     TERMINAL_STATUSES,
     GraphEdge,
@@ -699,19 +700,9 @@ class StateGraph:
 
     @staticmethod
     def _assert_acyclic(dependencies: Mapping[str, set[str]]) -> None:
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def visit(node_id: str) -> None:
-            if node_id in visiting:
-                raise ValueError(f'Graph contains a dependency cycle at node "{node_id}".')
-            if node_id in visited:
-                return
-            visiting.add(node_id)
-            for parent in dependencies[node_id]:
-                visit(parent)
-            visiting.remove(node_id)
-            visited.add(node_id)
-
-        for node_id in sorted(dependencies):
-            visit(node_id)
+        cycles = deterministic_cycles(
+            dependencies,
+            [(node_id, parent) for node_id, parents in dependencies.items() for parent in parents],
+        )
+        if cycles:
+            raise ValueError(f'Graph contains a dependency cycle at node "{cycles[0][0]}".')

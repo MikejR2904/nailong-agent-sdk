@@ -132,7 +132,10 @@ class BaseAgent:
         if definition.memory_scope is MemoryScope.CROSS_SESSION:
             raise AgentSdkError(
                 "CROSS_SESSION_STORE_REQUIRED",
-                "Cross-session memory requires an injected persistent episode store.",
+                "Cross-session memory is not supported by BaseAgent yet: it keeps one episode "
+                "graph and store per run and has no path for attaching a persistent episode "
+                "store, so injecting an episode_store_factory does not lift this restriction; "
+                "declare the definition's memory_scope as task-scoped.",
             )
         self.definition = definition
         self.model = model
@@ -334,6 +337,8 @@ class BaseAgent:
                 estimated_tokens=projection.metadata.estimated_tokens,
                 context_token_budget=projection.metadata.context_token_budget,
                 omitted_observation_count=projection.metadata.omitted_observation_count,
+                compacted_stub_count=len(projection.compacted_episodes),
+                omitted_compacted_count=projection.metadata.omitted_compacted_count,
             )
             if self.telemetry is not None:
                 metric_details = {"iteration": iteration, "kind": "sdk-estimate"}
@@ -559,6 +564,7 @@ class BaseAgent:
                     projection=projection.metadata,
                     model_binding=self.definition.model_binding,
                     output_schema=self.definition.output_schema,
+                    compacted_episodes=projection.compacted_episodes,
                 )
                 streaming_ready = self._on_model_stream is not None and isinstance(
                     self.model, StreamingAgentModel
@@ -1078,7 +1084,11 @@ class BaseAgent:
                 )
                 pending.pop(call.id)
                 blocked_reason = blocked_reason or outcomes[call.id].result.error
-                self._apply_tool_outcome_to_project_state(outcomes[call.id], emit, iteration)
+                terminal = self._record_tool_outcome(
+                    outcomes[call.id], task, iteration, prompt, episodes, events, emit
+                )
+                if terminal is not None:
+                    return terminal
 
             executable = [call for call in ready if call not in dependency_blocked]
             if not executable:
@@ -1111,7 +1121,11 @@ class BaseAgent:
             for item in selected_outcomes:
                 outcomes[item.call.id] = item
                 pending.pop(item.call.id)
-                self._apply_tool_outcome_to_project_state(item, emit, iteration)
+                terminal = self._record_tool_outcome(
+                    item, task, iteration, prompt, episodes, events, emit
+                )
+                if terminal is not None:
+                    return terminal
                 if item.result.status == "blocked":
                     blocked_reason = blocked_reason or item.result.error
                 if item.terminal_status is not None:
@@ -1138,7 +1152,11 @@ class BaseAgent:
                         iteration,
                     )
                     pending.pop(call.id)
-                    self._apply_tool_outcome_to_project_state(outcomes[call.id], emit, iteration)
+                    terminal = self._record_tool_outcome(
+                        outcomes[call.id], task, iteration, prompt, episodes, events, emit
+                    )
+                    if terminal is not None:
+                        return terminal
                 break
 
         ordered_outcomes = [outcomes[call_id] for call_id in ordered_ids]
@@ -1379,7 +1397,7 @@ class BaseAgent:
                 self.definition.identity,
                 call.consumed_episode_ids,
                 content=payload,
-                requires_manifest=call.name.startswith("run_"),
+                requires_manifest=tool.requires_manifest,
                 eda_manifest=manifest if isinstance(manifest, dict) else None,
             )
             memory.close(memory_episode.id)
@@ -1582,6 +1600,25 @@ class BaseAgent:
         output: Any = None,
         failure: AgentFailure | None = None,
     ) -> AgentResult:
+        project_state = self._active_project_state
+        recorded = False
+        if project_state is not None and self._active_project_id is not None:
+            try:
+                project_state = self.project_state_store.apply(
+                    self._active_project_id,
+                    ProjectStateReducer.agent_result_transition(
+                        task.id,
+                        status.value,
+                        project_state_hash_from_result(status, output, reason),
+                    ),
+                )
+            except Exception as error:
+                status, reason, failure = _demote_for_state_failure(
+                    status, reason, failure, _state_update_failure(error)
+                )
+            else:
+                self._active_project_state = project_state
+                recorded = True
         escalation = None
         target = self.definition.termination_policy.escalation
         if status is not AgentRunStatus.COMPLETED and target.value != "none":
@@ -1597,14 +1634,7 @@ class BaseAgent:
         )
         if escalation:
             emit("escalated", iterations, target=escalation.target, reason=escalation.reason)
-        project_state = self._active_project_state
-        if project_state is not None and self._active_project_id is not None:
-            result_hash = project_state_hash_from_result(status, output, reason)
-            project_state = self.project_state_store.apply(
-                self._active_project_id,
-                ProjectStateReducer.agent_result_transition(task.id, status.value, result_hash),
-            )
-            self._active_project_state = project_state
+        if recorded and project_state is not None:
             emit(
                 "state-updated",
                 iterations,
@@ -1721,6 +1751,33 @@ class BaseAgent:
         self._active_audit_run_id = None
         return result
 
+    def _record_tool_outcome(
+        self,
+        outcome: ToolCallOutcome,
+        task: ScopedAgentTask,
+        iteration: int,
+        prompt: Any,
+        episodes: InMemoryEpisodeGraph,
+        events: list[AgentLifecycleEvent],
+        emit: Callable[..., None],
+    ) -> AgentResult | None:
+        try:
+            self._apply_tool_outcome_to_project_state(outcome, emit, iteration)
+        except Exception as error:
+            failure = _state_update_failure(error)
+            return self._terminate(
+                AgentRunStatus.FAILED,
+                task,
+                iteration,
+                failure.message,
+                prompt,
+                episodes,
+                events,
+                emit,
+                failure=failure,
+            )
+        return None
+
     def _apply_tool_outcome_to_project_state(
         self,
         outcome: ToolCallOutcome,
@@ -1734,7 +1791,9 @@ class BaseAgent:
         projected = outcome.observation.result
         if projected is None:
             raise RuntimeError("Tool outcomes must carry a projected journal result.")
-        action_output_summary_chars = self.project_state_projector.policy.action_output_summary_chars
+        action_output_summary_chars = (
+            self.project_state_projector.policy.action_output_summary_chars
+        )
         state = self.project_state_store.apply(
             self._active_project_id,
             ProjectStateReducer.tool_transition(
@@ -1808,6 +1867,35 @@ class BaseAgent:
         projection_history: Sequence[ContextProjectionMetadata],
     ) -> AgentResult:
         return result.model_copy(update={"projection_history": list(projection_history)})
+
+
+def _state_update_failure(error: Exception) -> AgentFailure:
+    if isinstance(error, AgentSdkError):
+        return AgentFailure.from_sdk_error(error)
+    return AgentFailure(
+        code="PROJECT_STATE_UPDATE_FAILED",
+        message=f"Project state update raised {type(error).__name__}: {error}",
+        details={"error_type": type(error).__name__},
+    )
+
+
+def _demote_for_state_failure(
+    status: AgentRunStatus,
+    reason: str | None,
+    failure: AgentFailure | None,
+    state_failure: AgentFailure,
+) -> tuple[AgentRunStatus, str, AgentFailure | None]:
+    if status is AgentRunStatus.COMPLETED:
+        return (
+            AgentRunStatus.FAILED,
+            "The agent finished and its output was accepted, but the result could not be "
+            f"recorded in project state: {state_failure.message}",
+            state_failure,
+        )
+    detail = (
+        f"Additionally, the result could not be recorded in project state: {state_failure.message}"
+    )
+    return status, f"{reason} {detail}" if reason else detail, failure
 
 
 def project_state_hash_from_result(

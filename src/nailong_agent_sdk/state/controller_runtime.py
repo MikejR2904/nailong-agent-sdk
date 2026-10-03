@@ -67,10 +67,17 @@ class ControllerRuntime:
     substrate and never permits agent-to-agent conversation.
     """
 
-    def __init__(self, run_root: Path, *, telemetry: TelemetryStore | None = None) -> None:
+    def __init__(
+        self,
+        run_root: Path,
+        *,
+        telemetry: TelemetryStore | None = None,
+        coordinator: HarnessCoordinator | None = None,
+        project_state_store: FileProjectStateStore | None = None,
+    ) -> None:
         self._controller_store = ControllerStateStore(run_root)
-        self._project_state_store = FileProjectStateStore(run_root)
-        self._harness = HarnessCoordinator(run_root)
+        self._project_state_store = project_state_store or FileProjectStateStore(run_root)
+        self._harness = coordinator or HarnessCoordinator(run_root)
         self._controllers: dict[str, ControllerStateMachine] = {}
         self._counter = 1
         self._telemetry = telemetry
@@ -86,8 +93,7 @@ class ControllerRuntime:
         *,
         max_repair_attempts: int,
     ) -> ControllerRecord:
-        controller_id = f"controller-{self._counter}"
-        self._counter += 1
+        controller_id = self._next_controller_id()
         project_state_id = snapshot.snapshot_id
         self._project_state_store.ensure(
             project_state_id,
@@ -378,6 +384,13 @@ class ControllerRuntime:
         """Return the current-state working memory for this controller's project."""
 
         return self._project_state_store.load(self._machine(controller_id).record.project_state_id)
+
+    def _next_controller_id(self) -> str:
+        while True:
+            candidate = f"controller-{self._counter}"
+            self._counter += 1
+            if candidate not in self._controllers and not self._controller_store.exists(candidate):
+                return candidate
 
     def _machine(self, controller_id: str) -> ControllerStateMachine:
         if controller_id not in self._controllers:

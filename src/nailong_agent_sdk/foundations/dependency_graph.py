@@ -31,24 +31,30 @@ def deterministic_cycles(nodes: Iterable[str], edges: Iterable[DependencyPair]) 
         values.sort()
 
     found: list[list[str]] = []
-    visiting: set[str] = set()
     visited: set[str] = set()
 
-    def visit(node: str, trail: list[str]) -> None:
-        if node in visiting:
-            start = trail.index(node)
-            found.append([*trail[start:], node])
-            return
-        if node in visited:
-            return
-        visiting.add(node)
-        for dependency in dependencies[node]:
-            visit(dependency, [*trail, node])
-        visiting.remove(node)
-        visited.add(node)
-
-    for node in sorted(dependencies):
-        visit(node, [])
+    for root in sorted(dependencies):
+        if root in visited:
+            continue
+        path = [root]
+        position = {root: 0}
+        stack = [iter(dependencies[root])]
+        while stack:
+            advanced = False
+            for dependency in stack[-1]:
+                if dependency in position:
+                    found.append([*path[position[dependency] :], dependency])
+                elif dependency not in visited:
+                    position[dependency] = len(path)
+                    path.append(dependency)
+                    stack.append(iter(dependencies[dependency]))
+                    advanced = True
+                    break
+            if not advanced:
+                stack.pop()
+                node = path.pop()
+                del position[node]
+                visited.add(node)
     return found
 
 

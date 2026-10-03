@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from ..foundations.contracts import (
     AgentPrompt,
     AgentTurn,
+    CompactedEpisodeStub,
     ContextProjectionMetadata,
     EpisodeSummary,
     ModelBinding,
@@ -120,6 +121,7 @@ class ModelContext:
     # request, so a host cannot silently use a client for a different model.
     model_binding: ModelBinding | None = None
     output_schema: dict[str, Any] | None = None
+    compacted_episodes: Sequence[CompactedEpisodeStub] = ()
 
 
 @dataclass(frozen=True)
@@ -259,6 +261,7 @@ class FailoverAgentModel:
     async def _call_with_failover(
         self, call_model: Callable[[AgentModel], Awaitable[Any]]
     ) -> Any:
+        first_attempt_index = len(self.attempts)
         for index, model in enumerate(self._models):
             for retry_number in range(self._max_retries_per_model + 1):
                 try:
@@ -279,7 +282,8 @@ class FailoverAgentModel:
                         )
                     )
                     break
-        last_attempt = self.attempts[-1] if self.attempts else None
+        call_attempts = self.attempts[first_attempt_index:]
+        last_attempt = call_attempts[-1] if call_attempts else None
         last_detail = (
             f" Last error (adapter index {last_attempt.index}, "
             f"retry {last_attempt.retry_number}): {last_attempt.error}"
@@ -289,7 +293,7 @@ class FailoverAgentModel:
         raise AgentSdkError(
             "MODEL_FALLBACK_EXHAUSTED",
             f"Primary model and all {len(self._models) - 1} configured fallback adapter(s) "
-            f"failed after {len(self.attempts)} attempt(s) total.{last_detail}",
+            f"failed after {len(call_attempts)} attempt(s) total.{last_detail}",
             {
                 "attempts": [
                     {
@@ -298,7 +302,7 @@ class FailoverAgentModel:
                         "retryable": attempt.retryable,
                         "retry_number": attempt.retry_number,
                     }
-                    for attempt in self.attempts
+                    for attempt in call_attempts
                 ]
             },
         )
