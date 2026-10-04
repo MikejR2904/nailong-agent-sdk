@@ -10,6 +10,8 @@ import json
 import re
 from typing import Any
 
+from ..foundations.errors import contains_secret_text
+
 _FORBIDDEN_KEYS = {
     "access_key",
     "access_token",
@@ -60,29 +62,49 @@ def _canonical_key(value: Any) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", token).strip("_").lower()
 
 
-def assert_sanitized_interop_value(value: Any, *, _depth: int = 0) -> None:
+def assert_sanitized_interop_value(value: Any, *, _depth: int = 0, _path: str = "$") -> None:
     """Reject authority material and values unsafe for a framework boundary."""
 
     if _depth > _MAX_INTEROP_DEPTH:
-        raise ValueError("Interoperability projection exceeds the maximum nesting depth.")
+        raise ValueError(
+            f"Interoperability projection exceeds the maximum nesting depth of "
+            f"{_MAX_INTEROP_DEPTH} at {_path}."
+        )
     if value is None or isinstance(value, (int, float, bool)):
         return
     if isinstance(value, str):
         if len(value) > _MAX_INTEROP_STRING_CHARS:
-            raise ValueError("Interoperability projection string exceeds the maximum length.")
+            raise ValueError(
+                f"Interoperability projection string exceeds the maximum length of "
+                f"{_MAX_INTEROP_STRING_CHARS} characters at {_path} (got {len(value)})."
+            )
+        if contains_secret_text(value):
+            raise ValueError(
+                f"Interoperability projection string at {_path} contains credential-shaped "
+                "text; remove it before it crosses the framework boundary."
+            )
         return
     if isinstance(value, list):
         if len(value) > _MAX_INTEROP_LIST_ITEMS:
-            raise ValueError("Interoperability projection list exceeds the maximum size.")
-        for item in value:
-            assert_sanitized_interop_value(item, _depth=_depth + 1)
+            raise ValueError(
+                f"Interoperability projection list exceeds the maximum size of "
+                f"{_MAX_INTEROP_LIST_ITEMS} items at {_path} (got {len(value)})."
+            )
+        for index, item in enumerate(value):
+            assert_sanitized_interop_value(item, _depth=_depth + 1, _path=f"{_path}[{index}]")
         return
     if isinstance(value, dict):
         if len(value) > _MAX_INTEROP_MAPPING_ENTRIES:
-            raise ValueError("Interoperability projection object exceeds the maximum size.")
+            raise ValueError(
+                f"Interoperability projection object exceeds the maximum size of "
+                f"{_MAX_INTEROP_MAPPING_ENTRIES} entries at {_path} (got {len(value)})."
+            )
         for key, item in value.items():
             if len(str(key)) > 256:
-                raise ValueError("Interoperability projection key exceeds the maximum length.")
+                raise ValueError(
+                    f"Interoperability projection key exceeds the maximum length of 256 "
+                    f"characters at {_path}."
+                )
             normalized = _canonical_key(key)
             if (
                 normalized in _FORBIDDEN_KEYS
@@ -90,13 +112,22 @@ def assert_sanitized_interop_value(value: Any, *, _depth: int = 0) -> None:
                 or "secret" in normalized
             ):
                 raise ValueError(
-                    f'Unsafe key "{key}" is forbidden in an interoperability projection.'
+                    f'Unsafe key "{key}" at {_path} is forbidden in an interoperability projection.'
                 )
-            assert_sanitized_interop_value(item, _depth=_depth + 1)
+            assert_sanitized_interop_value(item, _depth=_depth + 1, _path=f"{_path}.{key}")
         return
     raise TypeError(
-        "Interoperability projections must contain JSON-compatible scalar, list, or dict values."
+        "Interoperability projections must contain JSON-compatible scalar, list, or dict "
+        f"values; got {type(value).__name__} at {_path}."
     )
+
+
+def checked_interop_value(value: Any) -> Any:
+    try:
+        assert_sanitized_interop_value(value)
+    except TypeError as error:
+        raise ValueError(str(error)) from error
+    return value
 
 
 class OptionalDependencyError(RuntimeError):

@@ -23,6 +23,8 @@ from ..observability.telemetry_models import TelemetryActor, TelemetryAuthority,
 from ..observability.telemetry_store import TelemetryStore
 from .sandbox_models import EnvironmentPolicy
 
+_OUTPUT_DRAIN_GRACE_SECONDS = 1.0
+
 
 class ProcessExitKind(StrEnum):
     SUCCEEDED = "succeeded"
@@ -163,8 +165,10 @@ class ProcessSupervisor:
             raise ValueError(f'Command working directory "{cwd}" does not exist.')
         # An explicit call-site override wins; otherwise a template-declared
         # policy scrubs the environment; otherwise the host is fully inherited.
-        effective_env = env if env is not None else (
-            template.environment.resolve() if template.environment is not None else None
+        effective_env = (
+            env
+            if env is not None
+            else (template.environment.resolve() if template.environment is not None else None)
         )
 
         attempts = 0
@@ -207,27 +211,41 @@ class ProcessSupervisor:
             WatchdogState.REGISTERED, payload={"template": template.name, "attempt": attempts}
         )
         preexec, enforced, unsupported = _resource_preexec(template.resource_limits)
-        process = await asyncio.create_subprocess_exec(
-            *template.command,
-            cwd=str(cwd),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-            **_subprocess_launch_options(preexec),
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *template.command,
+                cwd=str(cwd),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+                **_subprocess_launch_options(preexec),
+            )
+        except OSError as error:
+            detail = (
+                f'Registered command "{template.name}" could not start '
+                f"{template.command[0]!r}: {type(error).__name__}: {error}"
+            )
+            watchdog.emit(
+                WatchdogState.FAILED,
+                payload={"template": template.name, "attempt": attempts, "error": detail},
+            )
+            if isinstance(error, FileNotFoundError):
+                raise FileNotFoundError(error.errno, detail) from error
+            if isinstance(error, PermissionError):
+                raise PermissionError(error.errno, detail) from error
+            raise
         watchdog.emit(
             WatchdogState.STARTED,
             payload={"template": template.name, "attempt": attempts, "pid": process.pid},
         )
-        output_task = asyncio.create_task(
-            _capture_bounded_output(process.stdout, template.max_output_bytes)
-        )
+        capture = _OutputCapture(process.stdout, template.max_output_bytes)
+        output_task = asyncio.create_task(capture.run())
         termination_path: list[str] = []
         exit_kind = ProcessExitKind.SUCCEEDED
         error_code: str | None = None
         try:
-            await asyncio.wait_for(process.wait(), timeout=template.timeout_seconds)
+            await asyncio.wait_for(_wait_for_exit(process), timeout=template.timeout_seconds)
         except TimeoutError:
             exit_kind = ProcessExitKind.TIMED_OUT
             error_code = "PROCESS_TIMEOUT"
@@ -248,11 +266,14 @@ class ProcessSupervisor:
                 payload={"template": template.name, "reason": error_code},
             )
             termination_path = await self._terminate_process_group(process)
+            await _abandon_output(output_task, process)
             watchdog.emit(
                 WatchdogState.CANCELLED,
                 payload={"template": template.name, "termination_path": termination_path},
             )
-        output, total_bytes = await output_task
+            raise
+        termination_path.extend(await _drain_output(output_task, process))
+        output, total_bytes = bytes(capture.retained), capture.total
         return_code = process.returncode
         exit_signal = _signal_name(return_code)
         if exit_kind is ProcessExitKind.SUCCEEDED:
@@ -312,14 +333,14 @@ class ProcessSupervisor:
         except (OSError, ProcessLookupError):
             return ["process-not-found"]
         try:
-            await asyncio.wait_for(process.wait(), timeout=1)
+            await asyncio.wait_for(_wait_for_exit(process), timeout=1)
         except TimeoutError:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
                 termination_path.append("SIGKILL")
             except (OSError, ProcessLookupError):
                 return termination_path
-            await process.wait()
+            await _wait_for_exit(process)
         return termination_path
 
 
@@ -358,7 +379,7 @@ async def _terminate_windows_process_tree(process: asyncio.subprocess.Process) -
         await taskkill.wait()
         return ["TASKKILL_TIMEOUT"]
     try:
-        await asyncio.wait_for(process.wait(), timeout=5)
+        await asyncio.wait_for(_wait_for_exit(process), timeout=5)
     except TimeoutError:
         return ["TASKKILL_RETURNED_PROCESS_STILL_RUNNING"]
     if taskkill.returncode == 0:
@@ -366,20 +387,49 @@ async def _terminate_windows_process_tree(process: asyncio.subprocess.Process) -
     return [f"TASKKILL_EXIT_{taskkill.returncode}"]
 
 
-async def _capture_bounded_output(
-    stream: asyncio.StreamReader | None,
-    limit: int,
-) -> tuple[bytes, int]:
-    if stream is None:
-        return b"", 0
-    retained = bytearray()
-    total = 0
-    while chunk := await stream.read(65_536):
-        total += len(chunk)
-        remaining = limit - len(retained)
-        if remaining > 0:
-            retained.extend(chunk[:remaining])
-    return bytes(retained), total
+class _OutputCapture:
+    def __init__(self, stream: asyncio.StreamReader | None, limit: int) -> None:
+        self._stream = stream
+        self._limit = limit
+        self.retained = bytearray()
+        self.total = 0
+
+    async def run(self) -> None:
+        if self._stream is None:
+            return
+        while chunk := await self._stream.read(65_536):
+            self.total += len(chunk)
+            remaining = self._limit - len(self.retained)
+            if remaining > 0:
+                self.retained.extend(chunk[:remaining])
+
+
+async def _wait_for_exit(process: asyncio.subprocess.Process) -> None:
+    delay = 0.005
+    while process.returncode is None:
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 0.05)
+
+
+async def _drain_output(
+    output_task: asyncio.Task[None], process: asyncio.subprocess.Process
+) -> list[str]:
+    _done, pending = await asyncio.wait({output_task}, timeout=_OUTPUT_DRAIN_GRACE_SECONDS)
+    if not pending:
+        output_task.result()
+        return []
+    await _abandon_output(output_task, process)
+    return ["OUTPUT_PIPE_HELD_BY_DESCENDANT"]
+
+
+async def _abandon_output(
+    output_task: asyncio.Task[None], process: asyncio.subprocess.Process
+) -> None:
+    output_task.cancel()
+    await asyncio.gather(output_task, return_exceptions=True)
+    transport = getattr(process, "_transport", None)
+    if transport is not None:
+        transport.close()
 
 
 def _resource_preexec(

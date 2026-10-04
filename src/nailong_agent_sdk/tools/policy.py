@@ -29,6 +29,17 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "*/.netrc",
     "*/id_rsa",
     "*/id_ed25519",
+    "*/id_ecdsa",
+    "*/id_dsa",
+    "*/.env",
+    "*/.env.*",
+    "*/.npmrc",
+    "*/.pypirc",
+    "*/.git-credentials",
+    "*/.pgpass",
+    "*.pem",
+    "*.p12",
+    "*.pfx",
 )
 
 
@@ -57,6 +68,12 @@ class CapabilityPolicy:
 
     def __init__(self, grants: list[CapabilityGrant]) -> None:
         self._grants = {grant.role: grant for grant in grants}
+
+    def read_scope(self, role: str) -> tuple[str, ...]:
+        grant = self._grants.get(role)
+        if grant is None or "filesystem.read" not in grant.capabilities:
+            return ()
+        return tuple(grant.allowed_paths)
 
     def evaluate(
         self,
@@ -126,10 +143,10 @@ class CapabilityPolicy:
         patterns like ``*/.ssh/*``.
         """
 
-        resolved = str((run_root.resolve() / requested_path).resolve()).replace("\\", "/")
+        resolved = str((run_root.resolve() / requested_path).resolve()).replace("\\", "/").lower()
         candidates = (resolved, resolved + "/")
         for pattern in SENSITIVE_PATH_PATTERNS:
-            if any(fnmatch.fnmatch(candidate, pattern) for candidate in candidates):
+            if any(fnmatch.fnmatchcase(candidate, pattern.lower()) for candidate in candidates):
                 return pattern
         return None
 

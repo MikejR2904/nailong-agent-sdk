@@ -32,6 +32,7 @@ from .transport import (
     OpenAICompatibleEndpoint,
     StreamingJsonHttpTransport,
     UrlLibJsonTransport,
+    provider_error_detail,
 )
 
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
@@ -204,9 +205,7 @@ class OpenAICompatibleAgentModel(AgentModel):
             "recent_observations": [
                 observation.model_dump(mode="json") for observation in context.observations
             ],
-            "episode_summaries": [
-                episode.model_dump(mode="json") for episode in context.episodes
-            ],
+            "episode_summaries": [episode.model_dump(mode="json") for episode in context.episodes],
             "compacted_episodes": [
                 stub.model_dump(mode="json") for stub in context.compacted_episodes
             ],
@@ -238,14 +237,11 @@ class OpenAICompatibleAgentModel(AgentModel):
         if context.continuation is not None:
             messages.extend(self._continuation_messages(context.continuation))
         tools = _chat_tools(context)
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
-            **parameters,
-        }
-        if not tools:
+        payload: dict[str, Any] = {"model": self._model, "messages": messages, **parameters}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        else:
             payload["response_format"] = {"type": "json_object"}
         return payload
 
@@ -360,6 +356,7 @@ def _chat_tools(context: ModelContext) -> list[dict[str, Any]]:
 
 def _agent_turn_from_chat_response(response: Mapping[str, Any]) -> AgentTurn:
     message = _chat_message(response)
+    _raise_for_incomplete_completion(response)
     raw_tool_calls = message.get("tool_calls")
     if isinstance(raw_tool_calls, list) and raw_tool_calls:
         calls = []
@@ -428,7 +425,37 @@ def _agent_turn_from_chat_response(response: Mapping[str, Any]) -> AgentTurn:
         ) from error
 
 
+def _raise_for_incomplete_completion(response: Mapping[str, Any]) -> None:
+    choices = response.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else None
+    finish_reason = first.get("finish_reason") if isinstance(first, Mapping) else None
+    if finish_reason == "length":
+        raise AgentSdkError(
+            "OPENAI_COMPATIBLE_RESPONSE_TRUNCATED",
+            'The provider stopped at its output limit (finish_reason "length") before the '
+            "turn was complete; raise max_tokens in the model binding parameters or ask for "
+            "less output per turn.",
+        )
+    if finish_reason == "content_filter":
+        raise AgentSdkError(
+            "OPENAI_COMPATIBLE_RESPONSE_FILTERED",
+            'The provider withheld the response (finish_reason "content_filter"); its content '
+            "policy blocked this turn.",
+        )
+
+
+def _provider_error_message(error: Any) -> str:
+    detail = provider_error_detail(json.dumps({"error": error}, default=str))
+    return detail or "the provider sent an error object without a message"
+
+
 def _chat_message(response: Mapping[str, Any]) -> Mapping[str, Any]:
+    if "error" in response and not response.get("choices"):
+        raise AgentSdkError(
+            "OPENAI_COMPATIBLE_PROVIDER_ERROR",
+            "Provider returned an error instead of a completion: "
+            f"{_provider_error_message(response['error'])}",
+        )
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
         raise AgentSdkError(
@@ -501,17 +528,26 @@ class _ChatStreamAccumulator:
         self._content_parts: list[str] = []
         self._tool_calls: dict[int, dict[str, Any]] = {}
         self._usage: dict[str, Any] | None = None
+        self._finish_reason: str | None = None
 
     def consume(self, chunk: Mapping[str, Any]) -> list[ModelTextDelta | ModelToolCallDelta]:
         events: list[ModelTextDelta | ModelToolCallDelta] = []
+        if "error" in chunk and not chunk.get("choices"):
+            raise AgentSdkError(
+                "OPENAI_COMPATIBLE_PROVIDER_ERROR",
+                "Provider reported an error in the middle of the stream: "
+                f"{_provider_error_message(chunk['error'])}",
+            )
         if isinstance(chunk.get("id"), str):
             self._response_id = chunk["id"]
         raw_usage = chunk.get("usage")
         if isinstance(raw_usage, Mapping):
             self._usage = dict(raw_usage)
         choices = chunk.get("choices")
-        if not isinstance(choices, list) or not choices:
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
             return events
+        if isinstance(choices[0].get("finish_reason"), str):
+            self._finish_reason = choices[0]["finish_reason"]
         delta = choices[0].get("delta")
         if not isinstance(delta, Mapping):
             return events
@@ -524,9 +560,7 @@ class _ChatStreamAccumulator:
             events.extend(self._consume_tool_call_deltas(raw_tool_calls))
         return events
 
-    def _consume_tool_call_deltas(
-        self, raw_tool_calls: list[Any]
-    ) -> list[ModelToolCallDelta]:
+    def _consume_tool_call_deltas(self, raw_tool_calls: list[Any]) -> list[ModelToolCallDelta]:
         events: list[ModelToolCallDelta] = []
         for raw_call in raw_tool_calls:
             if not isinstance(raw_call, Mapping) or not isinstance(raw_call.get("index"), int):
@@ -562,7 +596,10 @@ class _ChatStreamAccumulator:
             message["tool_calls"] = [self._tool_calls[index] for index in sorted(self._tool_calls)]
         else:
             message["content"] = "".join(self._content_parts)
-        response: dict[str, Any] = {"choices": [{"message": message}]}
+        choice: dict[str, Any] = {"message": message}
+        if self._finish_reason is not None:
+            choice["finish_reason"] = self._finish_reason
+        response: dict[str, Any] = {"choices": [choice]}
         if self._response_id is not None:
             response["id"] = self._response_id
         if self._usage is not None:

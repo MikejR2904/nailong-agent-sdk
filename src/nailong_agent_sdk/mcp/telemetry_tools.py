@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 
 
 def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="list_telemetry_runs", structured_output=True)
-    async def list_telemetry_runs(limit: int = 100) -> dict[str, Any]:
+    @ctx.tool(server, "list_telemetry_runs", exclusive=False)
+    def list_telemetry_runs(limit: int = 100) -> dict[str, Any]:
         """List durable Python runtime telemetry runs without exposing hidden reasoning."""
 
         try:
@@ -30,8 +30,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_telemetry_events", structured_output=True)
-    async def get_telemetry_events(
+    @ctx.tool(server, "get_telemetry_events", exclusive=False)
+    def get_telemetry_events(
         run_id: str,
         after_sequence: int = 0,
         limit: int = 250,
@@ -50,8 +50,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_audit_log", structured_output=True)
-    async def get_audit_log(run_id: str, limit: int = 1_000) -> dict[str, Any]:
+    @ctx.tool(server, "get_audit_log", exclusive=False)
+    def get_audit_log(run_id: str, limit: int = 1_000) -> dict[str, Any]:
         """Read bounded, redacted public interaction logs outside model working memory."""
 
         try:
@@ -66,8 +66,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="render_audit_transcript", structured_output=True)
-    async def render_audit_transcript(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "render_audit_transcript", exclusive=False)
+    def render_audit_transcript(run_id: str) -> dict[str, Any]:
         """Render a readable Markdown review transcript from hash-linked audit entries."""
 
         try:
@@ -84,8 +84,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="register_metric_definition", structured_output=True)
-    async def register_metric_definition(definition: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "register_metric_definition", exclusive=False)
+    def register_metric_definition(definition: dict[str, Any]) -> dict[str, Any]:
         """Register a versioned metric formula before observations are interpreted."""
 
         try:
@@ -98,8 +98,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="list_metric_definitions", structured_output=True)
-    async def list_metric_definitions() -> dict[str, Any]:
+    @ctx.tool(server, "list_metric_definitions", exclusive=False)
+    def list_metric_definitions() -> dict[str, Any]:
         """List metric formulas and missing-data rules known to the telemetry store."""
 
         return {
@@ -109,8 +109,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
             ],
         }
 
-    @server.tool(name="record_metric_observation", structured_output=True)
-    async def record_metric_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "record_metric_observation", exclusive=False)
+    def record_metric_observation(observation: dict[str, Any]) -> dict[str, Any]:
         """Record an observed or explicitly unavailable metric; values are never synthesized."""
 
         try:
@@ -121,8 +121,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_telemetry_metrics", structured_output=True)
-    async def get_telemetry_metrics(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "get_telemetry_metrics", exclusive=False)
+    def get_telemetry_metrics(run_id: str) -> dict[str, Any]:
         """Return recorded metric observations and their explicit availability states."""
 
         try:
@@ -135,8 +135,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="create_telemetry_report", structured_output=True)
-    async def create_telemetry_report(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "create_telemetry_report", exclusive=False)
+    def create_telemetry_report(run_id: str) -> dict[str, Any]:
         """Create a reproducible trace and metric-completeness report from observed facts."""
 
         try:

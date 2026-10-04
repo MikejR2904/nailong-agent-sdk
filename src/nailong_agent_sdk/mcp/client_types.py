@@ -21,6 +21,11 @@ class McpConnectionState(StrEnum):
     PENDING = "pending"
     CONNECTED = "connected"
     FAILED = "failed"
+    CLOSED = "closed"
+
+
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 30.0
+MAX_CONNECT_TIMEOUT_SECONDS = 3_600.0
 
 
 class McpStdioServerConfig(StrictModel):
@@ -31,6 +36,9 @@ class McpStdioServerConfig(StrictModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] | None = None
     cwd: str | None = None
+    connect_timeout_seconds: float = Field(
+        default=DEFAULT_CONNECT_TIMEOUT_SECONDS, gt=0, le=MAX_CONNECT_TIMEOUT_SECONDS
+    )
 
 
 class McpHttpServerConfig(StrictModel):
@@ -39,6 +47,9 @@ class McpHttpServerConfig(StrictModel):
     name: str = Field(min_length=1)
     url: str = Field(min_length=1)
     headers: dict[str, str] | None = None
+    connect_timeout_seconds: float = Field(
+        default=DEFAULT_CONNECT_TIMEOUT_SECONDS, gt=0, le=MAX_CONNECT_TIMEOUT_SECONDS
+    )
 
 
 McpServerConfig = McpStdioServerConfig | McpHttpServerConfig

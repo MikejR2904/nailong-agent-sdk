@@ -15,6 +15,10 @@ from pathlib import Path
 from ..foundations.contracts import StrictModel
 
 
+class RuffUnavailableError(RuntimeError):
+    pass
+
+
 class QualityCheckReport(StrictModel):
     """Machine-readable result from the repository's configured Ruff checks."""
 
@@ -38,7 +42,9 @@ def check_source_quality(checkout_root: Path, *, check_format: bool = True) -> Q
     paths = _checked_paths(root)
     ruff = shutil.which("ruff")
     if ruff is None:
-        raise RuntimeError("Ruff is unavailable; install the SDK development dependency group.")
+        raise RuffUnavailableError(
+            "Ruff is unavailable; install the SDK development dependency group."
+        )
 
     commands = [
         [
@@ -60,7 +66,8 @@ def check_source_quality(checkout_root: Path, *, check_format: bool = True) -> Q
             cwd=root,
             check=False,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         outputs.append(completed.stdout)
         outputs.append(completed.stderr)
@@ -81,5 +88,5 @@ def _checked_paths(root: Path) -> list[str]:
     candidates = ["src", "tests", "examples", "scripts"]
     paths = [candidate for candidate in candidates if (root / candidate).is_dir()]
     if not (root / "src" / "nailong_agent_sdk").is_dir():
-        raise ValueError("The checkout root must contain src/nailong_agent_sdk.")
+        raise ValueError(f'The checkout root "{root}" must contain src/nailong_agent_sdk.')
     return paths

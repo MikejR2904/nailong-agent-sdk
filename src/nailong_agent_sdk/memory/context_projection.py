@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,8 @@ from ..foundations.contracts import (
 )
 from .episode_models import CompactionResult, CompactionStatus
 from .episode_store import InMemoryEpisodeStore
+
+_HANDLE_ID = re.compile(r"result-[0-9]{1,12}")
 
 
 class ContextProjectionPolicy(StrictModel):
@@ -123,10 +126,20 @@ class FileToolResultJournal(InMemoryToolResultJournal):
     def read(self, handle_id: str) -> dict[str, Any]:
         if handle_id in self._records:
             return super().read(handle_id)
+        if _HANDLE_ID.fullmatch(handle_id) is None:
+            raise ValueError(
+                f"Tool result handle {handle_id!r} is not valid: handles look like "
+                '"result-<number>".'
+            )
         target = self._root / f"{handle_id}.json"
         if not target.is_file():
             raise ValueError(f'Unknown tool result handle "{handle_id}".')
-        payload = json.loads(target.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError as error:
+            raise ValueError(
+                f'Tool result handle "{handle_id}" is corrupt: {type(error).__name__}: {error}'
+            ) from error
         self._records[handle_id] = payload
         return payload
 
@@ -316,6 +329,23 @@ def _estimate_tokens(value: Any) -> int:
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def journal_content_hash(journal_root: Path, handle_id: str) -> str:
+    if _HANDLE_ID.fullmatch(handle_id) is None:
+        raise ValueError(
+            f'Tool result handle {handle_id!r} is not valid: handles look like "result-<number>".'
+        )
+    target = journal_root / f"{handle_id}.json"
+    if not target.is_file():
+        raise ValueError(f'Tool result handle "{handle_id}" has no journal file at "{target}".')
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except ValueError as error:
+        raise ValueError(
+            f'Tool result handle "{handle_id}" is corrupt: {type(error).__name__}: {error}'
+        ) from error
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _next_handle_number(root: Path) -> int:

@@ -9,7 +9,7 @@ not a lossy summary or a generic RAG index (systems-design framework, pp. 22-30)
 from __future__ import annotations
 
 from enum import StrEnum
-from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
@@ -109,9 +109,17 @@ class SpecificationDocument(StrictModel):
     @field_validator("path")
     @classmethod
     def path_is_relative(cls, value: str) -> str:
-        if Path(value).is_absolute() or ".." in Path(value).parts:
+        windows = PureWindowsPath(value)
+        posix = PurePosixPath(value.replace("\\", "/"))
+        if (
+            value.startswith(("/", "\\"))
+            or windows.is_absolute()
+            or windows.drive
+            or ".." in posix.parts
+        ):
             raise ValueError(
-                "specification document paths must be relative and may not escape the root"
+                f"specification document path {value!r} must be relative and may not escape "
+                "the root"
             )
         return value
 

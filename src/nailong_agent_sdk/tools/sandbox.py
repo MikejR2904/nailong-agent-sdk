@@ -13,26 +13,33 @@ return the same ``ProcessExecutionRecord`` shape produced by ``ProcessSupervisor
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import tempfile
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic_ns
 from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
-from .sandbox_models import DockerSandboxOptions, EnvironmentPolicy
+from .sandbox_models import DockerSandboxOptions, EnvironmentPolicy, default_native_environment
 from .supervisor import (
     CommandTemplate,
     ProcessExecutionRecord,
     ProcessExitKind,
     ProcessSupervisor,
-    _capture_bounded_output,
+    _abandon_output,
+    _drain_output,
+    _OutputCapture,
+    _wait_for_exit,
 )
 
 _CONTAINER_WORKDIR = "/workspace"
 _DOCKER_SIGKILL_EXIT_CODE = 137
+_DOCKER_KILL_TIMEOUT_SECONDS = 10.0
+_DOCKER_POST_KILL_WAIT_SECONDS = 5.0
 
 
 class DockerUnavailableError(RuntimeError):
@@ -69,7 +76,7 @@ class NativeSandbox:
         parent.mkdir(parents=True, exist_ok=True)
         scratch = Path(tempfile.mkdtemp(prefix="nailong-sandbox-", dir=str(parent)))
         try:
-            env = environment.resolve() if environment is not None else None
+            env = (environment or default_native_environment()).resolve()
             supervisor = ProcessSupervisor([template])
             return await supervisor.execute(template.name, cwd=scratch, env=env)
         finally:
@@ -99,8 +106,9 @@ class DockerSandbox:
             raise ValueError(f'Command working directory "{cwd}" does not exist.')
         container_name = f"nailong-sandbox-{uuid4().hex}"
         env_file = self._write_env_file(environment) if environment is not None else None
+        inherited = self._inherited_variables(environment) if environment is not None else {}
         try:
-            return await self._run_with_env_file(template, cwd, container_name, env_file)
+            return await self._run_with_env_file(template, cwd, container_name, env_file, inherited)
         finally:
             if env_file is not None:
                 env_file.unlink(missing_ok=True)
@@ -111,8 +119,10 @@ class DockerSandbox:
         cwd: Path,
         container_name: str,
         env_file: Path | None,
+        inherited: dict[str, str],
     ) -> ProcessExecutionRecord:
-        argv = self._build_argv(template, cwd, env_file, container_name)
+        argv = self._build_argv(template, cwd, env_file, container_name, sorted(inherited))
+        cli_env = {**os.environ, **inherited} if inherited else None
 
         started_at = datetime.now(UTC).isoformat()
         started_ns = monotonic_ns()
@@ -122,27 +132,31 @@ class DockerSandbox:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=cli_env,
             )
         except FileNotFoundError as error:
             raise DockerUnavailableError(
                 f'Docker binary "{self._docker_binary}" was not found on PATH.'
             ) from error
 
-        output_task = asyncio.create_task(
-            _capture_bounded_output(process.stdout, template.max_output_bytes)
-        )
+        capture = _OutputCapture(process.stdout, template.max_output_bytes)
+        output_task = asyncio.create_task(capture.run())
         termination_path: list[str] = []
         exit_kind = ProcessExitKind.SUCCEEDED
         error_code: str | None = None
         try:
-            await asyncio.wait_for(process.wait(), timeout=template.timeout_seconds)
+            await asyncio.wait_for(_wait_for_exit(process), timeout=template.timeout_seconds)
         except TimeoutError:
             exit_kind = ProcessExitKind.TIMED_OUT
             error_code = "PROCESS_TIMEOUT"
-            termination_path = await self._kill_container(container_name)
-            await process.wait()
+            termination_path = await self._stop_container(process, container_name)
+        except asyncio.CancelledError:
+            await self._stop_container(process, container_name)
+            await _abandon_output(output_task, process)
+            raise
 
-        output, total_bytes = await output_task
+        termination_path.extend(await _drain_output(output_task, process))
+        output, total_bytes = bytes(capture.retained), capture.total
         return_code = process.returncode
         if exit_kind is ProcessExitKind.SUCCEEDED:
             if return_code == 0:
@@ -186,6 +200,7 @@ class DockerSandbox:
         cwd: Path,
         env_file: Path | None,
         container_name: str,
+        inherited_names: Sequence[str] = (),
     ) -> list[str]:
         options = self._options
         argv = [self._docker_binary, "run", "--rm", "--name", container_name]
@@ -202,6 +217,8 @@ class DockerSandbox:
             argv += ["-v", bind]
         if env_file is not None:
             argv += ["--env-file", str(env_file)]
+        for name in inherited_names:
+            argv += ["-e", name]
         argv.append(options.image)
         argv += list(template.command)
         return argv
@@ -220,8 +237,30 @@ class DockerSandbox:
         path = Path(raw_path)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             for name, value in scrubbed.items():
-                handle.write(f"{name}={value}\n")
+                if DockerSandbox._fits_env_file(name, value):
+                    handle.write(f"{name}={value}\n")
         return path
+
+    @staticmethod
+    def _fits_env_file(name: str, value: str) -> bool:
+        DockerSandbox._check_variable_name(name)
+        return not any(character in value for character in "\r\n\x00")
+
+    @staticmethod
+    def _check_variable_name(name: str) -> None:
+        if not name or "=" in name or any(not c.isprintable() or c.isspace() for c in name):
+            raise ValueError(
+                f"Environment variable name {name!r} cannot be passed to a container: it must "
+                "be non-empty and contain no whitespace, control characters or equals sign."
+            )
+
+    @staticmethod
+    def _inherited_variables(environment: EnvironmentPolicy) -> dict[str, str]:
+        return {
+            name: value
+            for name, value in environment.resolve().items()
+            if not DockerSandbox._fits_env_file(name, value)
+        }
 
     def _enforced_limit_names(self) -> list[str]:
         names = []
@@ -231,17 +270,47 @@ class DockerSandbox:
             names.append("cpu_limit")
         return names
 
-    async def _kill_container(self, container_name: str) -> list[str]:
+    async def _stop_container(
+        self, process: asyncio.subprocess.Process, container_name: str
+    ) -> list[str]:
+        termination_path = await self._docker_admin(container_name, "kill", "DOCKER_KILL")
         try:
-            killer = await asyncio.create_subprocess_exec(
+            await asyncio.wait_for(_wait_for_exit(process), timeout=_DOCKER_POST_KILL_WAIT_SECONDS)
+        except TimeoutError:
+            termination_path += await self._docker_admin(
+                container_name, "rm", "DOCKER_RM", "--force"
+            )
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            termination_path.append("DOCKER_CLI_KILLED")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    _wait_for_exit(process), timeout=_DOCKER_KILL_TIMEOUT_SECONDS
+                )
+        return termination_path
+
+    async def _kill_container(self, container_name: str) -> list[str]:
+        return await self._docker_admin(container_name, "kill", "DOCKER_KILL")
+
+    async def _docker_admin(
+        self, container_name: str, verb: str, label: str, *flags: str
+    ) -> list[str]:
+        try:
+            admin = await asyncio.create_subprocess_exec(
                 self._docker_binary,
-                "kill",
+                verb,
+                *flags,
                 container_name,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await asyncio.wait_for(killer.wait(), timeout=10)
-        except (OSError, TimeoutError):
-            return ["DOCKER_KILL_FAILED"]
-        return ["DOCKER_KILL"]
+        except OSError:
+            return [f"{label}_FAILED"]
+        try:
+            await asyncio.wait_for(admin.wait(), timeout=_DOCKER_KILL_TIMEOUT_SECONDS)
+        except TimeoutError:
+            admin.kill()
+            await admin.wait()
+            return [f"{label}_FAILED"]
+        return [label] if admin.returncode == 0 else [f"{label}_FAILED"]

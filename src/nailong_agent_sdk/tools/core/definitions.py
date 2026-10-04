@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...foundations.contracts import EpisodeKind, ToolConcurrency, ToolDefinition
+from ...state.elastic import ELASTIC_REQUEST_TOOL_NAME, MAX_ELASTIC_DEPENDENCIES
 
 
 def core_tool_definitions() -> list[ToolDefinition]:
@@ -281,6 +282,53 @@ def core_tool_definitions() -> list[ToolDefinition]:
                 "type": "object",
                 "properties": {"template_name": {"type": "string"}},
                 "required": ["template_name"],
+                "additionalProperties": False,
+            },
+            write=True,
+        ),
+        definition(
+            ELASTIC_REQUEST_TOOL_NAME,
+            "Queue one extra exploration node for the controller. It runs after this task "
+            "finishes, inherits this task's authority and cannot see more than this task can; "
+            "a join node then resumes this task with every exploration result. A request that "
+            "exceeds the plan's elastic capacity is refused here or held for a controller "
+            "decision when this task ends.",
+            {
+                "type": "object",
+                "properties": {
+                    "request_id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9]([A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$",
+                        "description": "Unique within this task; letters, digits, '.', '_', '-'.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                        "description": "The area the exploration is limited to.",
+                    },
+                    "instructions": {"type": "string", "minLength": 1, "maxLength": 8000},
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    "dependencies": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
+                        "maxItems": MAX_ELASTIC_DEPENDENCIES,
+                        "description": "Nodes this task already depends on whose results the "
+                        "exploration also needs.",
+                    },
+                    "routing_refs": {
+                        "type": "object",
+                        "properties": {
+                            "requirement_ids": {"type": "array", "items": {"type": "string"}},
+                            "signal_ids": {"type": "array", "items": {"type": "string"}},
+                            "task_ids": {"type": "array", "items": {"type": "string"}},
+                            "schema_ids": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["request_id", "scope", "instructions", "reason"],
                 "additionalProperties": False,
             },
             write=True,

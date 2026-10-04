@@ -206,7 +206,9 @@ class StructuralContextSelector:
         if graph.snapshot_id != request.snapshot_id:
             raise ValueError("Evidence selection request references an unexpected graph snapshot.")
         nodes = {node.node_id: node for node in graph.nodes}
-        target_ids, target_diagnostics = self._resolve_targets(nodes, request.target_ids)
+        target_ids, target_diagnostics = self._resolve_targets(
+            nodes, request.target_ids, strict=request.strict
+        )
         mandatory, witnesses = self._mandatory_closure(graph, target_ids, policy)
         mandatory_cost = sum(nodes[node_id].token_cost for node_id in mandatory)
         graph_hash = graph.content_hash
@@ -272,7 +274,7 @@ class StructuralContextSelector:
 
     @staticmethod
     def _resolve_targets(
-        nodes: dict[str, EvidenceNode], requested: list[str]
+        nodes: dict[str, EvidenceNode], requested: list[str], *, strict: bool = True
     ) -> tuple[list[str], list[str]]:
         aliases: dict[str, list[str]] = defaultdict(list)
         for node in nodes.values():
@@ -289,9 +291,19 @@ class StructuralContextSelector:
                 resolved.append(candidates[0])
                 diagnostics.append(f'Approved alias "{target}" resolved to "{candidates[0]}".')
                 continue
-            if not candidates:
-                raise ValueError(f'Evidence target "{target}" is unknown.')
-            raise ValueError(f'Evidence target alias "{target}" is ambiguous: {candidates}')
+            problem = (
+                f'Evidence target "{target}" is unknown.'
+                if not candidates
+                else f'Evidence target alias "{target}" is ambiguous: {candidates}'
+            )
+            if strict:
+                raise ValueError(problem)
+            diagnostics.append(f"{problem[:-1] if problem.endswith('.') else problem} (ignored).")
+        if not resolved:
+            raise ValueError(
+                f"Evidence selection has no resolvable target among {requested}; "
+                "none exists in the graph."
+            )
         return sorted(set(resolved)), diagnostics
 
     @staticmethod

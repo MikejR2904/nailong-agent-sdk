@@ -4,9 +4,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import inspect
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -20,6 +24,9 @@ from ..state.controller_runtime import ControllerRuntime
 from ..state.harness_coordinator import HarnessCoordinator
 from ..state.planning import PlanValidator
 from ..state.project_state_store import FileProjectStateStore
+
+if TYPE_CHECKING:
+    from mcp.server import MCPServer
 
 
 def _validation_errors(error: ValidationError) -> list[dict[str, Any]]:
@@ -50,6 +57,53 @@ class McpContext:
     plan_validator: PlanValidator
     versioning: SpecificationVersionService
     orchestrators: dict[str, Orchestrator] = field(default_factory=dict)
+    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def tool(
+        self, server: MCPServer, name: str, *, exclusive: bool = True
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+            return server.tool(name=name, structured_output=True)(
+                self._offloaded(function, name, exclusive)
+            )
+
+        return decorate
+
+    def _offloaded(
+        self, function: Callable[..., Any], name: str, exclusive: bool
+    ) -> Callable[..., Any]:
+        awaitable = inspect.iscoroutinefunction(function)
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            if awaitable:
+                return asyncio.run(function(*args, **kwargs))
+            return function(*args, **kwargs)
+
+        async def run(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await asyncio.to_thread(call, *args, **kwargs)
+            except ValidationError as error:
+                return {"ok": False, "errors": _validation_errors(error)}
+            except Exception as error:
+                return {
+                    "ok": False,
+                    "errors": [
+                        {
+                            "message": f'MCP tool "{name}" failed: {error}',
+                            "type": type(error).__name__,
+                        }
+                    ],
+                }
+
+        @functools.wraps(function)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if not exclusive:
+                return await run(*args, **kwargs)
+            async with self.state_lock:
+                return await run(*args, **kwargs)
+
+        setattr(wrapper, "__signature__", inspect.signature(function, eval_str=True))
+        return wrapper
 
     def repository_for(self, relative_path: str) -> GitRepositoryAdapter:
         candidate = Path(relative_path)

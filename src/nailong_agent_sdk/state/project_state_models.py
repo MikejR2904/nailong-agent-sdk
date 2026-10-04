@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.json_limits import assert_json_depth
 
 MAX_STAGE_FIELDS = 128
 MAX_ARTIFACTS = 1_024
@@ -89,6 +90,11 @@ class StageStateField(StrictModel):
     value: Any
     evidence: list[StateEvidence] = Field(min_length=1, max_length=32)
 
+    @field_validator("value")
+    @classmethod
+    def value_is_bounded(cls, value: Any) -> Any:
+        return assert_json_depth(value, "stage state field value")
+
 
 class ProjectDecision(StrictModel):
     decision_id: str = Field(min_length=1)
@@ -136,6 +142,7 @@ class StateAction(StrictModel):
     @field_validator("summary")
     @classmethod
     def summary_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
+        assert_json_depth(value, "state action summary")
         if len(_canonical_json(value)) > 4_096:
             raise ValueError("state action summary exceeds the 4,096-character bound")
         return value
@@ -222,6 +229,7 @@ class StateTransitionKind(StrEnum):
     QUESTION_OPENED = "question-opened"
     WORK_ITEM_UPDATED = "work-item-updated"
     STAGE_CHANGED = "stage-changed"
+    ARTIFACT_STATUS_UPDATED = "artifact-status-updated"
 
 
 class StateTransition(StrictModel):
@@ -232,6 +240,11 @@ class StateTransition(StrictModel):
     action_id: str = Field(min_length=1)
     payload: dict[str, Any]
     evidence: list[StateEvidence] = Field(min_length=1, max_length=32)
+
+    @field_validator("payload")
+    @classmethod
+    def payload_is_bounded(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        return assert_json_depth(payload, "state transition payload")
 
 
 class ProjectStateEvent(StrictModel):

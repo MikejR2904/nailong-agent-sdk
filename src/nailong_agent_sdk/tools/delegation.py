@@ -47,6 +47,7 @@ class SubagentCoordinator:
         self._tasks = tasks
         self._worktrees = worktrees
         self._delegated_task_ids: list[str] = []
+        self._cleanup_warnings: dict[str, list[str]] = {}
 
     async def delegate(
         self,
@@ -79,20 +80,34 @@ class SubagentCoordinator:
                 repository_path, worktree_slug, agent_id=agent_id
             )
 
+        warnings: list[str] = []
+
+        async def cleanup() -> None:
+            if worktree is None or not remove_worktree_when_done or self._worktrees is None:
+                return
+            try:
+                await self._worktrees.remove_worktree(worktree.slug)
+            except Exception as error:
+                warnings.append(
+                    f'Worktree "{worktree.slug}" was not removed: {type(error).__name__}: {error}'
+                )
+
         async def run_with_cleanup() -> Any:
             try:
-                return await run_factory(DelegatedRunContext(worktree=worktree))
-            finally:
-                if (
-                    worktree is not None
-                    and remove_worktree_when_done
-                    and self._worktrees is not None
-                ):
-                    await self._worktrees.remove_worktree(worktree.slug)
+                outcome = await run_factory(DelegatedRunContext(worktree=worktree))
+            except BaseException:
+                await cleanup()
+                raise
+            await cleanup()
+            return outcome
 
         record = self._tasks.start_agent_task(description, run_with_cleanup(), summarize=summarize)
         self._delegated_task_ids.append(record.task_id)
+        self._cleanup_warnings[record.task_id] = warnings
         return record
+
+    def cleanup_warnings(self, task_id: str) -> list[str]:
+        return list(self._cleanup_warnings.get(task_id, []))
 
     def get_delegation(self, task_id: str) -> TaskRecord | None:
         return self._tasks.get_task(task_id)

@@ -83,10 +83,15 @@ def validate_contract_file(path: Path, artifact_type: str) -> ValidationReport:
 
 def _load_structured_file(path: Path) -> Any:
     if not path.is_file():
-        raise FileNotFoundError(path)
-    text = path.read_text(encoding="utf-8")
-    if path.suffix.lower() == ".json":
-        return json.loads(text)
-    if path.suffix.lower() in {".yaml", ".yml"}:
-        return yaml.safe_load(text)
-    raise ValueError("Contract files must use .json, .yaml, or .yml.")
+        raise FileNotFoundError(f'Contract file "{path}" does not exist.')
+    suffix = path.suffix.lower()
+    if suffix not in {".json", ".yaml", ".yml"}:
+        raise ValueError(
+            f'Contract file "{path}" must use .json, .yaml, or .yml, got "{path.suffix}".'
+        )
+    text = path.read_text(encoding="utf-8-sig")
+    try:
+        return json.loads(text) if suffix == ".json" else yaml.safe_load(text)
+    except (ValueError, yaml.YAMLError) as error:
+        kind = "JSON" if suffix == ".json" else "YAML"
+        raise ValueError(f'Contract file "{path}" is not valid {kind}: {error}') from error

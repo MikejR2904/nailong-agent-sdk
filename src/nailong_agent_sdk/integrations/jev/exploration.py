@@ -12,6 +12,7 @@ from ...foundations.contracts import StrictModel
 from ..contracts import ExternalDecisionProvider, InteropFailureMode, InteropOperationStatus
 from .models import (
     _JEV_ANSWER_ADAPTER,
+    MAX_CHOICE_CRITERIA,
     JevAnswer,
     JevChoiceAnswer,
     JevChoiceQuestion,
@@ -49,6 +50,11 @@ class JevExplorationAdvisor:
         max_candidates: int = 64,
         on_unavailable: InteropFailureMode = InteropFailureMode.FALLBACK_DETERMINISTIC,
     ) -> None:
+        if not 2 <= max_candidates <= MAX_CHOICE_CRITERIA:
+            raise ValueError(
+                f"max_candidates {max_candidates} must be between 2 and {MAX_CHOICE_CRITERIA}, "
+                "the number of choices a Jev question can carry."
+            )
         self._evaluator = evaluator
         self._model = model
         self._max_candidates = max_candidates
@@ -73,6 +79,10 @@ class JevExplorationAdvisor:
                 f"Exploration candidate count {len(candidates)} exceeds the declared Jev bound "
                 f"of {self._max_candidates}."
             )
+        identifiers = [candidate.candidate_id for candidate in candidates]
+        duplicated = sorted({item for item in identifiers if identifiers.count(item) > 1})
+        if duplicated:
+            raise ValueError(f"Exploration candidate ids must be unique; repeated: {duplicated}.")
         ordered = sorted(
             candidates,
             key=lambda candidate: (candidate.deterministic_rank, candidate.candidate_id),

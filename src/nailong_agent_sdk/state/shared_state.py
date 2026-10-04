@@ -18,10 +18,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
+from ..foundations.identifiers import validate_identifier
+from ..foundations.json_limits import assert_json_depth
 
 
 class DiscoveryKind(StrEnum):
@@ -101,6 +103,11 @@ class ExploratoryDiscovery(StrictModel):
     closed: bool = True
     kind: DiscoveryKind = DiscoveryKind.EXPLORATORY
 
+    @field_validator("payload")
+    @classmethod
+    def payload_is_bounded(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        return assert_json_depth(payload, "discovery payload")
+
 
 class LateralDependencyRequest(StrictModel):
     consumer_node_id: str = Field(min_length=1)
@@ -115,6 +122,11 @@ class SharedStateWrite(StrictModel):
     key: str = Field(min_length=1)
     value: dict[str, Any]
     provenance_hash: str = Field(min_length=1)
+
+    @field_validator("value")
+    @classmethod
+    def value_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return assert_json_depth(value, "shared state value")
 
 
 class ProvenanceRecord(StrictModel):
@@ -250,8 +262,8 @@ class SharedStateStore:
         self._root.mkdir(parents=True, exist_ok=True)
 
     def save(self, run_id: str, state: RunSharedState) -> None:
-        target = self._root / f"{run_id}.json"
-        temporary = target.with_name(f".{target.name}.tmp")
+        target = self._root / f"{validate_identifier(run_id, 'Run id')}.json"
+        temporary = unique_temporary_path(target)
         temporary.write_text(
             json.dumps(state.snapshot_state(), sort_keys=True, separators=(",", ":")),
             encoding="utf-8",
@@ -259,7 +271,7 @@ class SharedStateStore:
         replace_atomic(temporary, target)
 
     def load(self, run_id: str) -> RunSharedState:
-        target = self._root / f"{run_id}.json"
+        target = self._root / f"{validate_identifier(run_id, 'Run id')}.json"
         if not target.is_file():
             raise ValueError(f'Shared state for run "{run_id}" is unknown.')
         payload = json.loads(target.read_text(encoding="utf-8"))

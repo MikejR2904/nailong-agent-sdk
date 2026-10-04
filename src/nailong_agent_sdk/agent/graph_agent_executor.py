@@ -19,6 +19,7 @@ from typing import Any
 from ..foundations.contracts import AgentDefinition, AgentRunStatus, ScopedAgentTask
 from ..memory.context_projection import ContextProjectionPolicy
 from ..memory.episode_store import InMemoryEpisodeStore
+from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
 from ..state.graph_models import (
     GraphNode,
     GraphNodeExecutionContext,
@@ -28,8 +29,10 @@ from ..state.graph_models import (
     NodeExecutor,
 )
 from ..state.project_state_models import ProjectStateProjectionPolicy
+from ..tools.elastic_requests import ElasticRequestBuffer, ElasticRequestToolExecutor
 from ..tools.tools import ToolExecutor
 from .base_agent import AgentWatchdogPolicy, PostToolHook, PreToolHook
+from .elastic_context import render_elastic_instructions
 from .model import AgentModel
 from .runtime import AgentRuntimeServices
 from .verification import VerificationGateRegistry
@@ -67,6 +70,7 @@ class GraphAgentBinding:
     ) = None
     project_state_projection_policy: ProjectStateProjectionPolicy | None = None
     episode_store_factory: Callable[[], InMemoryEpisodeStore] | None = None
+    escalate_elastic_overflow: bool = False
 
     @property
     def binding_hash(self) -> str:
@@ -82,6 +86,9 @@ class GraphAgentBinding:
         ).hexdigest()
 
 
+ElasticBindingFactory = Callable[[GraphNode, GraphNodeExecutionContext], GraphAgentBinding]
+
+
 class GraphAgentExecutor:
     """Run registered BaseAgent bindings through one durable SDK service root."""
 
@@ -89,8 +96,11 @@ class GraphAgentExecutor:
         self,
         services: AgentRuntimeServices,
         bindings: Mapping[str, GraphAgentBinding],
+        *,
+        elastic_binding_factory: ElasticBindingFactory | None = None,
     ) -> None:
         self._services = services
+        self._elastic_binding_factory = elastic_binding_factory
         self._bindings = dict(bindings)
         if len(self._bindings) != len(bindings):
             raise ValueError("Graph agent bindings must use unique node IDs")
@@ -118,18 +128,32 @@ class GraphAgentExecutor:
     ) -> GraphNodeResult:
         binding = self._bindings.get(node.node_id)
         if binding is None:
-            return GraphNodeResult(
-                status=GraphNodeStatus.FAILED,
-                reason=f'No GraphAgentBinding is registered for node "{node.node_id}".',
-            )
+            resolved = self._resolve_missing_binding(node, context)
+            if isinstance(resolved, GraphNodeResult):
+                return resolved
+            binding = resolved
+        buffer: ElasticRequestBuffer | None = None
         try:
             task = binding.task_adapter(node, context)
+            if node.kind is GraphNodeKind.ELASTIC:
+                elastic_text = render_elastic_instructions(node, context)
+                task = task.model_copy(
+                    update={"instructions": f"{task.instructions}\n\n{elastic_text}"}
+                )
             model = binding.model_factory(node, context)
             tool_executor = (
                 binding.tool_executor_factory(node, context)
                 if binding.tool_executor_factory is not None
                 else None
             )
+            if any(tool.name == ELASTIC_REQUEST_TOOL_NAME for tool in binding.definition.tools):
+                buffer = ElasticRequestBuffer(
+                    node,
+                    context.elastic_capacity,
+                    set(context.dependencies),
+                    escalate_overflow=binding.escalate_elastic_overflow,
+                )
+                tool_executor = ElasticRequestToolExecutor(tool_executor, buffer)
             projection_policy = (
                 binding.context_projection_policy(node, context)
                 if callable(binding.context_projection_policy)
@@ -155,6 +179,8 @@ class GraphAgentExecutor:
                 diagnostics=[f"error-type:{type(error).__name__}"],
             )
         status = _graph_status(result.status)
+        queued = buffer.requests if buffer is not None else []
+        spawn_requests = queued if status is GraphNodeStatus.COMPLETED else []
         payload = {
             "agent_identity": binding.definition.identity,
             "binding_hash": binding.binding_hash,
@@ -167,17 +193,54 @@ class GraphAgentExecutor:
             else None,
             "project_state_hash": _hash_payload(result.project_state),
         }
+        diagnostics = [
+            f"agent-status:{result.status.value}",
+            f"agent-iterations:{result.iterations}",
+            f"binding-hash:{binding.binding_hash}",
+        ]
+        if spawn_requests:
+            payload["elastic_request_ids"] = [request.request_id for request in spawn_requests]
+            diagnostics.append(f"elastic-requests:{len(spawn_requests)}")
+        elif queued:
+            diagnostics.append(f"elastic-requests-dropped:{len(queued)}")
         return GraphNodeResult(
             status=status,
             output=result.output,
             reason=result.reason,
-            diagnostics=[
-                f"agent-status:{result.status.value}",
-                f"agent-iterations:{result.iterations}",
-                f"binding-hash:{binding.binding_hash}",
-            ],
+            diagnostics=diagnostics,
             provenance_hash=_hash_payload(payload),
+            spawn_requests=spawn_requests,
         )
+
+    def _resolve_missing_binding(
+        self, node: GraphNode, context: GraphNodeExecutionContext
+    ) -> GraphAgentBinding | GraphNodeResult:
+        reason = f'No GraphAgentBinding is registered for node "{node.node_id}".'
+        if node.kind is not GraphNodeKind.ELASTIC:
+            return GraphNodeResult(status=GraphNodeStatus.FAILED, reason=reason)
+        if self._elastic_binding_factory is None:
+            return GraphNodeResult(
+                status=GraphNodeStatus.FAILED,
+                reason=f"{reason} Elastic nodes are created while the run executes, so pass "
+                "elastic_binding_factory to GraphAgentExecutor to build their bindings.",
+            )
+        try:
+            binding = self._elastic_binding_factory(node, context)
+        except Exception as error:
+            return GraphNodeResult(
+                status=GraphNodeStatus.FAILED,
+                reason=f"Elastic binding factory raised {type(error).__name__} for node "
+                f'"{node.node_id}": {error}',
+                diagnostics=[f"error-type:{type(error).__name__}"],
+            )
+        if binding.node_id != node.node_id:
+            return GraphNodeResult(
+                status=GraphNodeStatus.FAILED,
+                reason="The elastic binding factory returned a binding for node "
+                f'"{binding.node_id}" instead of "{node.node_id}".',
+            )
+        self._bindings[node.node_id] = binding
+        return binding
 
 
 def _graph_status(status: AgentRunStatus) -> GraphNodeStatus:

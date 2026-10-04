@@ -17,7 +17,8 @@ from typing import Any, Protocol
 from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
-from ._utils import assert_sanitized_interop_value, canonical_digest
+from ._utils import assert_sanitized_interop_value as assert_sanitized_interop_value
+from ._utils import canonical_digest, checked_interop_value
 
 
 class InteropFailureMode(StrEnum):
@@ -59,8 +60,7 @@ class InteropRunEnvelope(StrictModel):
     @field_validator("projection")
     @classmethod
     def projection_is_safe(cls, projection: dict[str, Any]) -> dict[str, Any]:
-        assert_sanitized_interop_value(projection)
-        return projection
+        return checked_interop_value(projection)
 
     @model_validator(mode="after")
     def projection_digest_matches_projection(self) -> InteropRunEnvelope:
@@ -111,8 +111,7 @@ class ExternalDecisionRequest(StrictModel):
     @field_validator("state")
     @classmethod
     def state_is_safe(cls, state: dict[str, Any]) -> dict[str, Any]:
-        assert_sanitized_interop_value(state)
-        return state
+        return checked_interop_value(state)
 
 
 class ExternalDecisionResult(StrictModel):
@@ -133,8 +132,7 @@ class ExternalDecisionResult(StrictModel):
     @field_validator("answers")
     @classmethod
     def answers_are_safe(cls, answers: dict[str, Any]) -> dict[str, Any]:
-        assert_sanitized_interop_value(answers)
-        return answers
+        return checked_interop_value(answers)
 
 
 class ExternalDecisionProvider(Protocol):

@@ -14,8 +14,9 @@ from pathlib import Path
 from time import monotonic_ns
 from typing import Any
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.errors import redact_secrets
+from ..foundations.identifiers import file_safe_name
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import (
     ChainBreak,
@@ -30,15 +31,32 @@ from .telemetry_models import (
     TelemetrySeverity,
 )
 
+_EVENT_TIME = "json_extract(event_json, '$.occurred_at_utc')"
+_EVENT_STATUS = "json_extract(event_json, '$.status')"
+_EVENT_TYPE = "json_extract(event_json, '$.event_type')"
+
 
 class TelemetryStore:
     """Append-only SQLite ledger with an integrity hash chain and metric observations."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, read_only: bool = False) -> None:
         self._root = root.resolve() / ".agent-telemetry"
-        self._root.mkdir(parents=True, exist_ok=True)
         self._database_path = self._root / "telemetry.sqlite3"
         self._lock = threading.RLock()
+        if read_only:
+            if not self._database_path.is_file():
+                raise FileNotFoundError(
+                    f'Telemetry database "{self._database_path}" does not exist.'
+                )
+            self._connection = sqlite3.connect(
+                f"{self._database_path.as_uri()}?mode=ro",
+                uri=True,
+                timeout=10,
+                isolation_level=None,
+                check_same_thread=False,
+            )
+            return
+        self._root.mkdir(parents=True, exist_ok=True)
         # One connection is shared only while `_lock` is held. `check_same_thread=False`
         # permits that serialized use; it does not make unprotected access safe.
         self._connection = sqlite3.connect(
@@ -238,13 +256,13 @@ class TelemetryStore:
         *,
         page_size: int = 1_000,
         through_sequence: int | None = None,
+        after_sequence: int = 0,
     ) -> Iterator[TelemetryEvent]:
         """Stream a complete ordered run sequence through one fixed sequence boundary."""
 
         boundary = (
             self.run_snapshot_sequence(run_id) if through_sequence is None else through_sequence
         )
-        after_sequence = 0
         while page := self.list_events(
             run_id,
             limit=page_size,
@@ -268,20 +286,20 @@ class TelemetryStore:
             raise ValueError("Telemetry run page size must be between 1 and 1000.")
         with self._lock, self._connection as connection:
             rows = connection.execute(
-                """
-                SELECT run_id, COUNT(*), MIN(occurred_at_utc), MAX(occurred_at_utc)
-                FROM events GROUP BY run_id ORDER BY MAX(occurred_at_utc) DESC LIMIT ?
+                f"""
+                SELECT run_id, COUNT(*), MIN({_EVENT_TIME}), MAX({_EVENT_TIME})
+                FROM events GROUP BY run_id ORDER BY MAX({_EVENT_TIME}) DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
             summaries: list[TelemetryRunSummary] = []
             for run_id, count, started, last in rows:
                 status_rows = connection.execute(
-                    "SELECT status, COUNT(*) FROM events WHERE run_id = ? GROUP BY status",
+                    f"SELECT {_EVENT_STATUS}, COUNT(*) FROM events WHERE run_id = ? GROUP BY 1",
                     (run_id,),
                 ).fetchall()
                 type_rows = connection.execute(
-                    "SELECT event_type, COUNT(*) FROM events WHERE run_id = ? GROUP BY event_type",
+                    f"SELECT {_EVENT_TYPE}, COUNT(*) FROM events WHERE run_id = ? GROUP BY 1",
                     (run_id,),
                 ).fetchall()
                 summaries.append(
@@ -334,7 +352,7 @@ class TelemetryStore:
         }
         reports = self._root / "reports"
         reports.mkdir(exist_ok=True)
-        target = reports / f"{_safe_name(run_id)}.run-report.json"
+        target = reports / f"{file_safe_name(run_id)}.run-report.json"
         _atomic_write(target, json.dumps(report, indent=2, sort_keys=True).encode("utf-8"))
         return {**report, "report_path": str(target.relative_to(self._root))}
 
@@ -454,13 +472,7 @@ def _summarize_metrics(
     return summary
 
 
-def _safe_name(value: str) -> str:
-    return "".join(
-        character if character.isalnum() or character in "-_." else "_" for character in value
-    )
-
-
 def _atomic_write(target: Path, content: bytes) -> None:
-    temporary = target.with_name(f".{target.name}.tmp")
+    temporary = unique_temporary_path(target)
     temporary.write_bytes(content)
     replace_atomic(temporary, target)

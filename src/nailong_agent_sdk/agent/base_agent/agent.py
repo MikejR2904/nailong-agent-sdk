@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from ...foundations.contracts import (
     AgentRunStatus,
     AgentTurn,
     ContextProjectionMetadata,
+    EpisodeKind,
     MemoryScope,
     ModelObservation,
     ScopedAgentTask,
@@ -34,7 +36,7 @@ from ...foundations.contracts import (
     validate_task_input,
     validate_tool_arguments,
 )
-from ...foundations.errors import AgentSdkError, TransientProviderError
+from ...foundations.errors import AgentSdkError, TransientProviderError, redact_hidden_reasoning
 from ...memory.context import assemble_initial_context
 from ...memory.context_projection import (
     ContextProjectionPolicy,
@@ -42,7 +44,7 @@ from ...memory.context_projection import (
     InMemoryToolResultJournal,
     ToolResultJournal,
 )
-from ...memory.episode_models import CompactionStatus, CompactionStrategy
+from ...memory.episode_models import CompactionStatus, CompactionStrategy, EpisodeState
 from ...memory.episode_store import InMemoryEpisodeStore
 from ...memory.episodes import InMemoryEpisodeGraph
 from ...observability.audit_log import AuditTranscriptStore
@@ -93,6 +95,7 @@ from .types import (
     PreToolHook,
     ToolBatchExecution,
     ToolCallOutcome,
+    WatchdogExpired,
 )
 
 # AgentTurn is a fixed discriminated union, so one module-level adapter safely
@@ -162,6 +165,8 @@ class BaseAgent:
         self._profile_root_span: ProfileSpanHandle | None = None
         self._provider_usage_reported = False
         self._active_audit_run_id: str | None = None
+        self._owns_profiler = profiler is None
+        self._telemetry_start_sequence = 0
 
     async def run(
         self,
@@ -172,6 +177,23 @@ class BaseAgent:
 
         if self._active_project_id is not None:
             raise RuntimeError("A BaseAgent instance may execute only one task at a time.")
+        try:
+            return await self._run(task, cancellation)
+        except BaseException:
+            self._clear_active_run()
+            raise
+
+    def _clear_active_run(self) -> None:
+        self._active_project_id = None
+        self._active_project_state = None
+        self._profile_root_span = None
+        self._active_audit_run_id = None
+
+    async def _run(
+        self,
+        task: ScopedAgentTask,
+        cancellation: CancellationToken | None,
+    ) -> AgentResult:
         validate_task_input(self.definition, task)
         prompt = assemble_initial_context(self.definition, task)
         episodes = InMemoryEpisodeGraph(self._now)
@@ -182,28 +204,40 @@ class BaseAgent:
         continuation: ProviderContinuation | None = None
         self._provider_usage_reported = False
         protected_episode_ids: frozenset[str] = frozenset()
-        project_id = self._project_id_for(task)
-        project_state = self.project_state_store.ensure(project_id, self._stage_schema_for(task))
-        self._active_project_id = project_id
-        self._active_project_state = project_state
-        deadline = (
-            asyncio.get_running_loop().time() + self.watchdog_policy.run_deadline_seconds
-            if self.watchdog_policy.run_deadline_seconds is not None
-            else None
-        )
         telemetry_context = self.telemetry_context or TelemetryContext(
             run_id=task.id,
             task_id=task.id,
             agent_id=self.definition.identity,
         )
-        self._active_audit_run_id = telemetry_context.run_id
-        self._profile_root_span = self.profiler.begin_run(
-            telemetry_context.run_id,
-            task.id,
-            self.definition.identity,
+        if self._owns_profiler:
+            self.profiler = AgentRunProfiler()
+        try:
+            root_span = self.profiler.begin_run(
+                telemetry_context.run_id,
+                task.id,
+                self.definition.identity,
+            )
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"This BaseAgent was given an AgentRunProfiler that already profiled a run "
+                f"({error}); pass a new profiler or create a new BaseAgent for each task."
+            ) from error
+        project_id = self._project_id_for(task)
+        project_state = self.project_state_store.ensure(project_id, self._stage_schema_for(task))
+        self._active_project_id = project_id
+        self._active_project_state = project_state
+        self._profile_root_span = root_span
+        deadline = (
+            asyncio.get_running_loop().time() + self.watchdog_policy.run_deadline_seconds
+            if self.watchdog_policy.run_deadline_seconds is not None
+            else None
         )
+        self._active_audit_run_id = telemetry_context.run_id
         if self.telemetry is not None:
             register_standard_metric_definitions(self.telemetry)
+            self._telemetry_start_sequence = self.telemetry.run_snapshot_sequence(
+                telemetry_context.run_id
+            )
 
         def emit(event_type: str, iteration: int, **details: Any) -> None:
             event = AgentLifecycleEvent(
@@ -228,14 +262,14 @@ class BaseAgent:
                     if event_type in {"terminated", "escalated"}
                     and details.get("status") != "completed"
                     else TelemetrySeverity.INFO,
-                    payload={"iteration": iteration, "details": details},
+                    payload={"iteration": iteration, "details": redact_hidden_reasoning(details)},
                 )
             if self.audit_logs is not None:
                 self.audit_logs.append(
                     telemetry_context.run_id,
                     event_type,
                     {
-                        "details": details,
+                        "details": redact_hidden_reasoning(details),
                         "telemetry_event_id": telemetry_event.event_id if telemetry_event else None,
                     },
                     task_id=task.id,
@@ -247,12 +281,14 @@ class BaseAgent:
             self.audit_logs.append(
                 telemetry_context.run_id,
                 "task-received",
-                {
-                    "identity": self.definition.identity,
-                    "task_instructions": task.instructions,
-                    "acceptance_criteria": task.acceptance_criteria,
-                    "scope": task.scope.model_dump(mode="json"),
-                },
+                redact_hidden_reasoning(
+                    {
+                        "identity": self.definition.identity,
+                        "task_instructions": task.instructions,
+                        "acceptance_criteria": task.acceptance_criteria,
+                        "scope": task.scope.model_dump(mode="json"),
+                    }
+                ),
                 task_id=task.id,
                 iteration=0,
             )
@@ -265,6 +301,7 @@ class BaseAgent:
             state_hash=project_state.state_hash,
         )
 
+        transient_failures = 0
         for iteration in range(1, self.definition.termination_policy.max_iterations + 1):
             if deadline is not None and asyncio.get_running_loop().time() >= deadline:
                 run_deadline_seconds = self.watchdog_policy.run_deadline_seconds
@@ -566,11 +603,9 @@ class BaseAgent:
                     output_schema=self.definition.output_schema,
                     compacted_episodes=projection.compacted_episodes,
                 )
-                streaming_ready = self._on_model_stream is not None and isinstance(
-                    self.model, StreamingAgentModel
-                )
-                if streaming_ready:
-                    model_call = self.model.stream_turn(model_context, self._on_model_stream)
+                stream_listener = self._guarded_stream_listener(emit, iteration)
+                if stream_listener is not None and isinstance(self.model, StreamingAgentModel):
+                    model_call = self.model.stream_turn(model_context, stream_listener)
                 else:
                     model_call = self.model.next_turn(model_context)
                 try:
@@ -579,7 +614,7 @@ class BaseAgent:
                         self.watchdog_policy.model_turn_timeout_seconds,
                         deadline,
                     )
-                except TimeoutError:
+                except WatchdogExpired:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.TIMED_OUT)
                     raise
                 except Exception:
@@ -587,34 +622,56 @@ class BaseAgent:
                     raise
                 else:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.COMPLETED)
-            except TimeoutError:
-                turn_timeout = self.watchdog_policy.model_turn_timeout_seconds
-                timeout_detail = (
-                    f"its {turn_timeout}s per-turn watchdog timeout"
-                    if turn_timeout is not None
-                    else "the run's configured deadline"
+                transient_failures = 0
+            except WatchdogExpired as expired:
+                reason = (
+                    "WATCHDOG_MODEL_TIMEOUT: model turn exceeded "
+                    f"{_watchdog_detail(expired, 'per-turn watchdog timeout')}; "
+                    "the provider may be overloaded, the request may be too large for its "
+                    "current response time, or the network path may be degraded."
+                )
+                failure = AgentFailure(
+                    code="WATCHDOG_MODEL_TIMEOUT",
+                    message=reason,
+                    details={
+                        "limit": expired.source,
+                        "watchdog_seconds": expired.seconds,
+                        "completed_iterations": iteration - 1,
+                    },
                 )
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration,
-                    f"WATCHDOG_MODEL_TIMEOUT: model turn exceeded {timeout_detail}; "
-                    "the provider may be overloaded, the request may be too large for its "
-                    "current response time, or the network path may be degraded.",
+                    reason,
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
+                    failure=failure,
                 )
             except TransientProviderError as error:
+                transient_failures += 1
+                delay = self._transient_retry_delay(error, transient_failures)
                 observations.append(
                     ModelObservation(
                         kind="agent-error",
                         iteration=iteration,
-                        message=f"Model turn failed, retrying ({error.code}): {error.message}",
+                        message=(
+                            f"Model turn failed, retrying in {delay:g}s "
+                            f"({error.code}): {error.message}"
+                        ),
                     )
                 )
+                emit(
+                    "model-turn-retrying",
+                    iteration,
+                    code=error.code,
+                    attempt=transient_failures,
+                    delay_seconds=delay,
+                )
+                await self._sleep_before_retry(delay, deadline, cancellation)
                 continue
             except AgentSdkError as error:
                 return self._terminate(
@@ -657,10 +714,12 @@ class BaseAgent:
                     self.audit_logs.append(
                         telemetry_context.run_id,
                         "model-turn",
-                        {
-                            "turn": turn.model_dump(mode="json"),
-                            "provider_usage_reported": usage is not None,
-                        },
+                        redact_hidden_reasoning(
+                            {
+                                "turn": turn.model_dump(mode="json"),
+                                "provider_usage_reported": usage is not None,
+                            }
+                        ),
                         task_id=task.id,
                         iteration=iteration,
                     )
@@ -734,17 +793,12 @@ class BaseAgent:
                         self.watchdog_policy.model_turn_timeout_seconds,
                         deadline,
                     )
-                except TimeoutError:
-                    turn_timeout = self.watchdog_policy.model_turn_timeout_seconds
-                    timeout_detail = (
-                        f"its {turn_timeout}s per-turn watchdog timeout"
-                        if turn_timeout is not None
-                        else "the run's configured deadline"
-                    )
+                except WatchdogExpired as expired:
+                    timeout_detail = _watchdog_detail(expired, "per-turn watchdog timeout")
                     failure = AgentFailure(
                         code="WATCHDOG_MODEL_TIMEOUT",
                         message=f"Provider tool-result continuation exceeded {timeout_detail}.",
-                        details={"watchdog_seconds": turn_timeout},
+                        details={"limit": expired.source, "watchdog_seconds": expired.seconds},
                     )
                     return self._terminate(
                         AgentRunStatus.FAILED,
@@ -882,14 +936,10 @@ class BaseAgent:
                     self.watchdog_policy.verification_timeout_seconds,
                     deadline,
                 )
-            except TimeoutError:
+            except WatchdogExpired as expired:
                 self.profiler.finish_span(verification_span, ProfileSpanStatus.TIMED_OUT)
-                verification_timeout = self.watchdog_policy.verification_timeout_seconds
-                timeout_detail = (
-                    f"its {verification_timeout}s verification watchdog timeout"
-                    if verification_timeout is not None
-                    else "the run's configured deadline"
-                )
+                verification_timeout = expired.seconds
+                timeout_detail = _watchdog_detail(expired, "verification watchdog timeout")
                 reason = (
                     f"WATCHDOG_VERIFICATION_TIMEOUT: verification gate "
                     f"{self.definition.verification_gate_id!r} exceeded {timeout_detail}; the "
@@ -901,6 +951,7 @@ class BaseAgent:
                     message=reason,
                     details={
                         "verification_gate_id": self.definition.verification_gate_id,
+                        "limit": expired.source,
                         "watchdog_seconds": verification_timeout,
                     },
                 )
@@ -1074,16 +1125,27 @@ class BaseAgent:
                 )
             ]
             for call in dependency_blocked:
+                upstream = next(
+                    outcomes[dependency]
+                    for dependency in call.depends_on_call_ids
+                    if outcomes[dependency].result.status != "succeeded"
+                )
+                skipped_reason = (
+                    f'Tool call "{call.id}" ("{call.name}") was not run because its dependency '
+                    f'"{upstream.call.id}" ("{upstream.call.name}") {upstream.result.status}: '
+                    f"{upstream.result.error or 'no reason supplied'}."
+                )
                 outcomes[call.id] = self._record_unexecuted_result(
                     call,
                     ToolExecutionResult(
-                        status="blocked",
-                        error="A declared tool-call dependency did not succeed.",
+                        status="blocked" if upstream.result.status == "blocked" else "failed",
+                        error=skipped_reason,
                     ),
                     iteration,
                 )
                 pending.pop(call.id)
-                blocked_reason = blocked_reason or outcomes[call.id].result.error
+                if outcomes[call.id].result.status == "blocked":
+                    blocked_reason = blocked_reason or skipped_reason
                 terminal = self._record_tool_outcome(
                     outcomes[call.id], task, iteration, prompt, episodes, events, emit
                 )
@@ -1102,7 +1164,11 @@ class BaseAgent:
                 ),
                 None,
             )
-            selected = [serial] if serial is not None else executable
+            selected = (
+                [serial]
+                if serial is not None
+                else executable[: self.watchdog_policy.max_parallel_tool_calls]
+            )
             selected_outcomes = await asyncio.gather(
                 *(
                     self._execute_profiled_tool_call(
@@ -1266,10 +1332,22 @@ class BaseAgent:
                     failure=AgentFailure.from_sdk_error(error),
                 ),
                 iteration,
-                terminal_status=AgentRunStatus.FAILED,
             )
 
         effective_call = self._effective_call(call, prior_outcomes)
+        if tool.episode_kind is EpisodeKind.ACTION:
+            unavailable = self._unavailable_consumed_episodes(effective_call, episodes, memory)
+            if unavailable:
+                return self._record_unexecuted_result(
+                    call,
+                    ToolExecutionResult(
+                        status="failed",
+                        error=f'Tool "{call.name}" was not run: its consumed_episode_ids refer to '
+                        f"unavailable episodes ({'; '.join(unavailable)}). Consume only "
+                        "exploratory episodes that are still part of the working context.",
+                    ),
+                    iteration,
+                )
         context = ToolInvocationContext(
             agent_identity=self.definition.identity,
             task=task,
@@ -1302,18 +1380,17 @@ class BaseAgent:
                 await self._await_with_watchdog(
                     hook(context, result), self.watchdog_policy.tool_call_timeout_seconds, deadline
                 )
-        except TimeoutError:
-            tool_timeout = self.watchdog_policy.tool_call_timeout_seconds
-            timeout_detail = (
-                f"its {tool_timeout}s tool-call watchdog timeout"
-                if tool_timeout is not None
-                else "the run's configured deadline"
-            )
+        except WatchdogExpired as expired:
+            timeout_detail = _watchdog_detail(expired, "tool-call watchdog timeout")
             failure = AgentFailure(
                 code="WATCHDOG_TOOL_TIMEOUT",
                 message=f'Tool "{call.name}" (pre-tool hook, execution, or post-tool hook) '
                 f"exceeded {timeout_detail}.",
-                details={"tool": call.name, "watchdog_seconds": tool_timeout},
+                details={
+                    "tool": call.name,
+                    "limit": expired.source,
+                    "watchdog_seconds": expired.seconds,
+                },
             )
             result = ToolExecutionResult(status="failed", error=failure.message, failure=failure)
             return self._record_unexecuted_result(
@@ -1348,22 +1425,44 @@ class BaseAgent:
                 terminal_status=AgentRunStatus.FAILED,
             )
 
-        outcome = self._record_executed_result(
-            tool, effective_call, result, iteration, episodes, memory
-        )
+        try:
+            outcome = self._record_executed_result(
+                tool, effective_call, result, iteration, episodes, memory
+            )
+        except Exception as error:
+            failure = AgentFailure(
+                code="EPISODE_RECORDING_FAILED",
+                message=f'Tool "{call.name}" (call "{call.id}") ran with status '
+                f"{result.status}, but recording its episode raised {type(error).__name__}: "
+                f"{error}; the tool's side effects were applied.",
+                details={
+                    "tool": call.name,
+                    "tool_call_id": call.id,
+                    "executed_status": result.status,
+                    "error_type": type(error).__name__,
+                },
+            )
+            return self._record_unexecuted_result(
+                call,
+                ToolExecutionResult(status="failed", error=failure.message, failure=failure),
+                iteration,
+                terminal_status=AgentRunStatus.FAILED,
+            )
         if self.audit_logs is not None and self._active_audit_run_id is not None:
             self.audit_logs.append(
                 self._active_audit_run_id,
                 "tool-result",
-                {
-                    "tool": call.name,
-                    "tool_call_id": call.id,
-                    "arguments": effective_call.arguments,
-                    "result": result.model_dump(mode="json"),
-                    "result_handle_id": outcome.observation.result.handle.handle_id
-                    if outcome.observation.result is not None
-                    else None,
-                },
+                redact_hidden_reasoning(
+                    {
+                        "tool": call.name,
+                        "tool_call_id": call.id,
+                        "arguments": effective_call.arguments,
+                        "result": result.model_dump(mode="json"),
+                        "result_handle_id": outcome.observation.result.handle.handle_id
+                        if outcome.observation.result is not None
+                        else None,
+                    }
+                ),
                 task_id=task.id,
                 iteration=iteration,
             )
@@ -1371,6 +1470,29 @@ class BaseAgent:
             "tool-completed", iteration, tool=call.name, tool_call_id=call.id, status=result.status
         )
         return outcome
+
+    @staticmethod
+    def _unavailable_consumed_episodes(
+        call: ToolCall,
+        episodes: InMemoryEpisodeGraph,
+        memory: InMemoryEpisodeStore,
+    ) -> list[str]:
+        known = {summary.id: summary for summary in episodes.list()}
+        problems: list[str] = []
+        for episode_id in call.consumed_episode_ids:
+            summary = known.get(episode_id)
+            if summary is None:
+                problems.append(f'"{episode_id}" is not an episode of this run')
+            elif summary.kind is not EpisodeKind.EXPLORATORY:
+                problems.append(
+                    f'"{episode_id}" is an {summary.kind.value} episode and actions may consume '
+                    "only exploratory episodes"
+                )
+            else:
+                record = memory.get(episode_id)
+                if record is not None and record.state is EpisodeState.COMPACTED:
+                    problems.append(f'"{episode_id}" was compacted out of the working context')
+        return problems
 
     def _record_executed_result(
         self,
@@ -1515,14 +1637,90 @@ class BaseAgent:
         deadline: float | None,
     ) -> Any:
         timeout = operation_timeout_seconds
+        source = "operation"
         if deadline is not None:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise TimeoutError
-            timeout = min(timeout, remaining) if timeout is not None else remaining
+                if inspect.iscoroutine(operation):
+                    operation.close()
+                raise WatchdogExpired("run-deadline", None)
+            if timeout is None or remaining < timeout:
+                timeout = remaining
+                source = "run-deadline"
         if timeout is None:
             return await operation
-        return await asyncio.wait_for(operation, timeout=timeout)
+        scope = asyncio.timeout(timeout)
+        try:
+            async with scope:
+                result = await operation
+        except TimeoutError as error:
+            if scope.expired():
+                raise WatchdogExpired(source, operation_timeout_seconds) from error
+            raise
+        if scope.expired():
+            raise WatchdogExpired(source, operation_timeout_seconds)
+        return result
+
+    def _transient_retry_delay(self, error: TransientProviderError, attempt: int) -> float:
+        policy = self.watchdog_policy
+        if error.retry_after_seconds is not None:
+            requested = max(error.retry_after_seconds, 0.0)
+        else:
+            requested = policy.transient_retry_base_seconds * 2 ** (attempt - 1)
+        return min(requested, policy.transient_retry_max_seconds)
+
+    @staticmethod
+    async def _sleep_before_retry(
+        delay: float,
+        deadline: float | None,
+        cancellation: CancellationToken | None,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        end = loop.time() + delay
+        if deadline is not None:
+            end = min(end, deadline)
+        while (remaining := end - loop.time()) > 0:
+            if cancellation is not None and cancellation.is_cancelled():
+                return
+            await asyncio.sleep(min(remaining, 0.25))
+
+    def _guarded_stream_listener(
+        self, emit: Callable[..., None], iteration: int
+    ) -> ModelStreamListener | None:
+        listener = self._on_model_stream
+        if listener is None:
+            return None
+        failed = False
+
+        def report(error: Exception) -> None:
+            nonlocal failed
+            failed = True
+            emit(
+                "stream-listener-failed",
+                iteration,
+                error_type=type(error).__name__,
+                message=str(error)[:512],
+            )
+
+        async def finish(pending: Awaitable[Any]) -> None:
+            try:
+                await pending
+            except Exception as error:
+                report(error)
+
+        def guarded(event: Any) -> Awaitable[None] | None:
+            if failed:
+                return None
+            try:
+                outcome = listener(event)
+            except Exception as error:
+                report(error)
+                return None
+            if inspect.isawaitable(outcome):
+                return finish(outcome)
+            return None
+
+        return guarded
 
     def _record_provider_usage(
         self,
@@ -1710,7 +1908,9 @@ class BaseAgent:
             record_terminal_agent_metrics(
                 self.telemetry,
                 telemetry_context,
-                self.telemetry.list_events(telemetry_context.run_id, limit=1_000),
+                self.telemetry.iter_events(
+                    telemetry_context.run_id, after_sequence=self._telemetry_start_sequence
+                ),
                 profile.model_dump(mode="json"),
                 completed=status is AgentRunStatus.COMPLETED,
                 terminal_reason=reason,
@@ -1867,6 +2067,12 @@ class BaseAgent:
         projection_history: Sequence[ContextProjectionMetadata],
     ) -> AgentResult:
         return result.model_copy(update={"projection_history": list(projection_history)})
+
+
+def _watchdog_detail(expired: WatchdogExpired, label: str) -> str:
+    if expired.source == "run-deadline":
+        return "the run's configured deadline"
+    return f"its {expired.seconds}s {label}"
 
 
 def _state_update_failure(error: Exception) -> AgentFailure:

@@ -20,7 +20,9 @@ from jsonschema.exceptions import SchemaError
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .dependency_graph import deterministic_cycles
 from .errors import AgentSdkError, sanitize_failure_details
+from .json_limits import assert_json_depth
 
 
 class StrictModel(BaseModel):
@@ -182,6 +184,11 @@ class ToolCall(StrictModel):
     consumed_episode_ids: list[str] = Field(default_factory=list)
     depends_on_call_ids: list[str] = Field(default_factory=list)
 
+    @field_validator("arguments")
+    @classmethod
+    def arguments_are_bounded(cls, arguments: dict[str, Any]) -> dict[str, Any]:
+        return assert_json_depth(arguments, "tool call arguments")
+
     @model_validator(mode="after")
     def dependencies_are_unique_and_external(self) -> ToolCall:
         if len(self.depends_on_call_ids) != len(set(self.depends_on_call_ids)):
@@ -213,6 +220,11 @@ class ToolExecutionResult(StrictModel):
     output: Any | None = None
     error: str | None = None
     failure: AgentFailure | None = None
+
+    @field_validator("output")
+    @classmethod
+    def output_is_bounded(cls, output: Any) -> Any:
+        return assert_json_depth(output, "tool result output")
 
 
 class ToolCallTurn(StrictModel):
@@ -248,29 +260,22 @@ class ToolBatchTurn(StrictModel):
                 raise ValueError(
                     f'tool call "{call.id}" depends on unknown batch call IDs: {sorted(unknown)}'
                 )
-        visiting: set[str] = set()
-        visited: set[str] = set()
-        by_id = {call.id: call for call in self.calls}
-
-        def visit(call_id: str) -> None:
-            if call_id in visited:
-                return
-            if call_id in visiting:
-                raise ValueError("tool batch dependencies must be acyclic")
-            visiting.add(call_id)
-            for dependency_id in by_id[call_id].depends_on_call_ids:
-                visit(dependency_id)
-            visiting.remove(call_id)
-            visited.add(call_id)
-
-        for call_id in call_ids:
-            visit(call_id)
+        edges = [
+            (call.id, dependency) for call in self.calls for dependency in call.depends_on_call_ids
+        ]
+        if deterministic_cycles(call_ids, edges):
+            raise ValueError("tool batch dependencies must be acyclic")
         return self
 
 
 class FinalTurn(StrictModel):
     type: Literal["final"] = "final"
     output: Any
+
+    @field_validator("output")
+    @classmethod
+    def output_is_bounded(cls, output: Any) -> Any:
+        return assert_json_depth(output, "final output")
 
 
 class BlockedTurn(StrictModel):
@@ -379,6 +384,8 @@ class AgentLifecycleEvent(StrictModel):
         "tool-requested",
         "tool-completed",
         "provider-tool-results-forwarded",
+        "model-turn-retrying",
+        "stream-listener-failed",
         "output-rejected",
         "verification-completed",
         "terminated",

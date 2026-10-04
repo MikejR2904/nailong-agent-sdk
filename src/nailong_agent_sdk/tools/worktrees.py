@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .worktree_models import AgentWorktreeInfo
 
-_VALID_SLUG_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
+_VALID_SLUG_SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 _MAX_SLUG_LENGTH = 64
 
 
@@ -35,7 +35,7 @@ def validate_worktree_slug(slug: str) -> str:
     for segment in slug.split("/"):
         if segment in (".", ".."):
             raise ValueError(f'Worktree slug "{slug}" must not contain "." or ".." segments.')
-        if not _VALID_SLUG_SEGMENT.match(segment):
+        if not _VALID_SLUG_SEGMENT.fullmatch(segment):
             raise ValueError(
                 f'Worktree slug "{slug}" segments must contain only letters, digits, '
                 "dots, underscores, and dashes."
@@ -49,6 +49,7 @@ class AgentWorktreeManager:
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir
         self._worktrees: dict[str, AgentWorktreeInfo] = {}
+        self._slug_locks: dict[str, asyncio.Lock] = {}
 
     async def create_worktree(
         self,
@@ -61,11 +62,31 @@ class AgentWorktreeManager:
         """Create a new worktree for ``slug``, or return the one already tracked for it."""
 
         validate_worktree_slug(slug)
-        tracked = self._worktrees.get(slug)
-        if tracked is not None:
-            return tracked
+        async with self._slug_locks.setdefault(slug, asyncio.Lock()):
+            tracked = self._worktrees.get(slug)
+            if tracked is not None:
+                return tracked
+            return await self._create_untracked(repository_path, slug, branch, agent_id)
 
+    async def _create_untracked(
+        self,
+        repository_path: Path,
+        slug: str,
+        branch: str | None,
+        agent_id: str | None,
+    ) -> AgentWorktreeInfo:
+        colliding = next(
+            (other for other in self._worktrees if other.lower() == slug.lower() and other != slug),
+            None,
+        )
+        if colliding is not None:
+            raise ValueError(
+                f'Worktree slug "{slug}" differs from the tracked slug "{colliding}" only by '
+                "letter case, so both would use the same directory on a case-insensitive "
+                "file system; choose a distinct slug."
+            )
         resolved_repository = repository_path.resolve()
+        await _require_repository_root(resolved_repository)
         self._base_dir.mkdir(parents=True, exist_ok=True)
         flat_slug = _flatten_slug(slug)
         worktree_path = self._base_dir / flat_slug
@@ -75,16 +96,19 @@ class AgentWorktreeManager:
                 "manager; remove it manually before reusing this slug."
             )
         worktree_branch = branch or f"agent-worktree-{flat_slug}"
-
-        code, _stdout, error = await _run_git(
-            "worktree",
-            "add",
-            "-B",
-            worktree_branch,
-            str(worktree_path),
-            "HEAD",
+        branch_exists, _stdout, _error = await _run_git(
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/heads/{worktree_branch}",
             cwd=resolved_repository,
         )
+        arguments = (
+            ("worktree", "add", str(worktree_path), worktree_branch)
+            if branch_exists == 0
+            else ("worktree", "add", "-b", worktree_branch, str(worktree_path), "HEAD")
+        )
+        code, _stdout, error = await _run_git(*arguments, cwd=resolved_repository)
         if code != 0:
             raise RuntimeError(f"git worktree add failed: {error}")
 
@@ -118,6 +142,18 @@ class AgentWorktreeManager:
 
     def list_worktrees(self) -> list[AgentWorktreeInfo]:
         return sorted(self._worktrees.values(), key=lambda info: info.slug)
+
+
+async def _require_repository_root(repository: Path) -> None:
+    code, top_level, error = await _run_git("rev-parse", "--show-toplevel", cwd=repository)
+    if code != 0:
+        raise RuntimeError(f"git worktree add failed: {error}")
+    if Path(top_level).resolve() != repository:
+        raise ValueError(
+            f'repository_path "{repository}" is not the root of a git repository: git reports '
+            f'the enclosing repository "{top_level}". Pass that root explicitly so worktrees and '
+            "branches are never created in a repository the caller did not name."
+        )
 
 
 def _flatten_slug(slug: str) -> str:

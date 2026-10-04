@@ -13,6 +13,7 @@ from .types import (
     ToolBatchExecution,
     ToolCallOutcome,
     ToolHookDecision,
+    WatchdogExpired,
 )
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "ToolBatchExecution",
     "ToolCallOutcome",
     "ToolHookDecision",
+    "WatchdogExpired",
     "project_state_hash_from_result",
 ]

@@ -15,6 +15,7 @@ from time import perf_counter_ns
 
 from pydantic import Field
 
+from .atomic_io import replace_atomic, unique_temporary_path
 from .contracts import StrictModel
 from .optimization import ExactPckpSolver, GreedyPckpBaseline, PckpProblem, PckpSolution
 
@@ -80,8 +81,8 @@ def write_pckp_benchmark_report(report: PckpBenchmarkReport, path: Path) -> None
     """Write canonical JSON for later comparison and data-analysis reporting."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
+    temporary = unique_temporary_path(path)
     temporary.write_text(
         json.dumps(report.model_dump(mode="json"), sort_keys=True, indent=2), encoding="utf-8"
     )
-    temporary.replace(path)
+    replace_atomic(temporary, path)

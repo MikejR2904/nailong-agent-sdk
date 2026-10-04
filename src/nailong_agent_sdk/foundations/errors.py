@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import re
 from dataclasses import dataclass
 from typing import Any
+
+from .text import scrub_surrogates
 
 _SECRET_KEY = re.compile(
     r"(authorization|api[_-]?key|password|secret"
@@ -28,16 +31,17 @@ _MAX_FAILURE_DETAIL_CHARS = 2_048
 # ``KEYWORD=value`` case that needs an unanchored identifier boundary is
 # handled separately by ``_redact_assignments`` instead of a regex here; see
 # that function's docstring for why.
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 _SECRET_CONTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\bsk-[A-Za-z0-9]{20,}"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{10,}=*"),
 )
-_ASSIGNMENT_TAIL = re.compile(r"\s*[:=]\s*['\"]?[^\s'\";,}]{4,}")
-_IDENTIFIER_CHAR = re.compile(r"[A-Za-z0-9_]")
+_ASSIGNMENT_TAIL = re.compile(r"['\"]?\s*[:=]\s*['\"]?[^\s'\";,}]{4,}")
+_IDENTIFIER_RUN = re.compile(r"[A-Za-z0-9_-]+")
 # Lowercase literal substrings every pattern above (and _SECRET_KEY, used by
 # _redact_assignments) requires; used as the fast pre-filter in _redact_content.
 _CONTENT_HINT_SUBSTRINGS = (
@@ -132,7 +136,9 @@ def redact_secrets(value: Any) -> Any:
 
     if isinstance(value, dict):
         return {
-            str(key): "[REDACTED]" if _SECRET_KEY.search(str(key)) else redact_secrets(item)
+            scrub_surrogates(str(key)): "[REDACTED]"
+            if _SECRET_KEY.search(str(key))
+            else redact_secrets(item)
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -142,57 +148,74 @@ def redact_secrets(value: Any) -> Any:
     return value
 
 
+def contains_secret_text(text: str) -> bool:
+    return _redact_content(text) != scrub_surrogates(text)
+
+
 def _redact_content(text: str) -> str:
-    # Every pattern below requires at least one of these literal substrings,
-    # so a miss here means none of them can possibly match. Plain substring
-    # search is far cheaper than even a "safe" regex engine's per-character,
-    # per-alternative cost, and on a large string with nothing to redact —
-    # the common case for captured tool output — this skips the regex work
-    # entirely instead of paying to prove there is nothing to find.
+    text = scrub_surrogates(text)
     lowered = text.lower()
     if not any(hint in lowered for hint in _CONTENT_HINT_SUBSTRINGS):
         return text
+    text = _redact_pem_blocks(text)
     for pattern in _SECRET_CONTENT_PATTERNS:
         text = pattern.sub("[REDACTED]", text)
     return _redact_assignments(text)
 
 
-def _redact_assignments(text: str) -> str:
-    """Redact a ``SOME_SECRET_NAME=value`` / ``"api_key": "value"`` style assignment.
-
-    This used to be one regex: an unanchored ``[A-Za-z0-9_]*`` run wrapped
-    around the keyword alternation, so it could match a keyword embedded
-    anywhere inside a longer identifier (``AWS_SECRET_ACCESS_KEY``). Measured
-    on a realistic 60KB captured-output string, that pattern cost ~15ms per
-    call — regex engines backtrack that leading run character-by-character at
-    every position when nothing matches, which is most of a long string of
-    ordinary text. This reaches the same result in linear time instead: find
-    the cheap keyword match first (the same fast ``_SECRET_KEY`` alternation
-    used for dict keys), extend it left/right through identifier characters
-    by hand, then check whether an assignment immediately follows.
-    """
-
+def _redact_pem_blocks(text: str) -> str:
+    if "-----BEGIN" not in text:
+        return text
+    ends = list(_PEM_END.finditer(text))
+    if not ends:
+        return text
+    end_starts = [match.start() for match in ends]
     pieces: list[str] = []
     cursor = 0
-    for match in _SECRET_KEY.finditer(text):
-        if match.start() < cursor:
-            continue  # inside a span this loop already consumed.
-        start, end = match.start(), match.end()
-        while start > 0 and _IDENTIFIER_CHAR.match(text[start - 1]):
-            start -= 1
-        while end < len(text) and _IDENTIFIER_CHAR.match(text[end]):
-            end += 1
-        tail = _ASSIGNMENT_TAIL.match(text, end)
+    for begin in _PEM_BEGIN.finditer(text):
+        if begin.start() < cursor:
+            continue
+        index = bisect.bisect_left(end_starts, begin.end())
+        if index == len(ends):
+            break
+        pieces.append(text[cursor : begin.start()])
+        pieces.append("[REDACTED]")
+        cursor = ends[index].end()
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def _redact_assignments(text: str) -> str:
+    pieces: list[str] = []
+    cursor = 0
+    for run in _IDENTIFIER_RUN.finditer(text):
+        if run.start() < cursor or _SECRET_KEY.search(run.group()) is None:
+            continue
+        tail = _ASSIGNMENT_TAIL.match(text, run.end())
         if tail is None:
             continue
-        pieces.append(text[cursor:start])
+        pieces.append(text[cursor : run.start()])
         pieces.append("[REDACTED]")
         cursor = tail.end()
     pieces.append(text[cursor:])
     return "".join(pieces)
 
 
-def assert_no_hidden_reasoning(value: Any) -> None:
+def redact_hidden_reasoning(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key).lower() in _HIDDEN_REASONING_KEYS:
+                redacted[f"{key}_redacted"] = "[REDACTED]"
+            else:
+                redacted[str(key)] = redact_hidden_reasoning(item)
+        return redacted
+    if isinstance(value, list | tuple):
+        return [redact_hidden_reasoning(item) for item in value]
+    return value
+
+
+def assert_no_hidden_reasoning(value: Any, path: str = "$") -> None:
     """Raise if ``value`` contains a key reserved for private model reasoning.
 
     Telemetry and the audit log are permanent, review-facing records; unlike
@@ -203,8 +226,11 @@ def assert_no_hidden_reasoning(value: Any) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if str(key).lower() in _HIDDEN_REASONING_KEYS:
-                raise ValueError("Durable records must not persist hidden model reasoning.")
-            assert_no_hidden_reasoning(item)
+                raise ValueError(
+                    f'Durable records must not persist hidden model reasoning: key "{key}" at '
+                    f"{path}."
+                )
+            assert_no_hidden_reasoning(item, f"{path}.{key}")
     elif isinstance(value, list):
-        for item in value:
-            assert_no_hidden_reasoning(item)
+        for index, item in enumerate(value):
+            assert_no_hidden_reasoning(item, f"{path}[{index}]")

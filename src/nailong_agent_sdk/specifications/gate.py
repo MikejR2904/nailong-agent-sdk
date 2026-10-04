@@ -16,13 +16,13 @@ from typing import Any
 
 import yaml
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.dependency_graph import (
     deterministic_cycles,
     reverse_reachable_count,
     reverse_reachable_nodes,
 )
-from .documents import SourceRef, SpecificationCategory
+from .documents import DocumentNodeKind, SourceRef, SpecificationCategory, VisionStatus
 from .gate_models import (
     DependencyEdge,
     DependencyGraph,
@@ -37,6 +37,8 @@ from .gate_models import (
     VersionChangeKind,
     VersionMetadata,
 )
+
+_UNRESOLVED_VISION = frozenset({VisionStatus.PENDING, VisionStatus.REVIEW_REQUIRED})
 
 
 class SpecificationGate:
@@ -66,6 +68,27 @@ class SpecificationGate:
                     source="manifest-category-presence",
                 )
             )
+        for tree in specification.documents:
+            for node in tree.nodes:
+                if node.kind is DocumentNodeKind.IMAGE and node.vision_status in _UNRESOLVED_VISION:
+                    gaps.append(
+                        Gap(
+                            type=GapType.VERIFIABILITY,
+                            locations=[f"{tree.document_id}:{node.source.location}"],
+                            description=(
+                                f'Image node "{node.node_id}" of document "{tree.document_id}" has '
+                                f'vision status "{node.vision_status.value}"; its content is not '
+                                "part of the machine-verified specification."
+                            ),
+                            categories_touched=[tree.category],
+                            suggested_fix=(
+                                "Review the image and resolve its structure, or record a "
+                                "designer decision about it."
+                            ),
+                            severity=GapSeverity.IMPORTANT,
+                            source="vision-resolution-presence",
+                        )
+                    )
         edges: list[DependencyEdge] = []
         for requirement in specification.requirements:
             if not requirement.text.strip():
@@ -351,19 +374,40 @@ class Gate1ArtifactStore:
         metadata: VersionMetadata,
         plans: list[dict[str, Any]] = (),
     ) -> None:
-        self._write("unified-specification.yaml", specification.model_dump(mode="json"))
-        self._write("dependency-graph.yaml", dependency_graph.model_dump(mode="json"))
-        self._write(
-            "gap-report.yaml",
-            {**gap_report.model_dump(mode="json"), "summary": gap_report.summary()},
-        )
-        self._write("version-metadata.yaml", metadata.model_dump(mode="json"))
-        for index, plan in enumerate(plans, start=1):
-            self._write(f"plans/plan-{index}.yaml", plan)
+        payloads: dict[str, dict[str, Any]] = {
+            "unified-specification.yaml": specification.model_dump(mode="json"),
+            "dependency-graph.yaml": dependency_graph.model_dump(mode="json"),
+            "gap-report.yaml": {
+                **gap_report.model_dump(mode="json"),
+                "summary": gap_report.summary(),
+            },
+            "version-metadata.yaml": metadata.model_dump(mode="json"),
+            **{f"plans/plan-{index}.yaml": plan for index, plan in enumerate(plans, start=1)},
+        }
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for relative, payload in payloads.items():
+                staged.append((self._stage(relative, payload), self._root / relative))
+        except BaseException:
+            for temporary, _target in staged:
+                temporary.unlink(missing_ok=True)
+            raise
+        for temporary, target in staged:
+            replace_atomic(temporary, target)
+        self._remove_stale_plans(len(plans))
 
-    def _write(self, relative: str, payload: dict[str, Any]) -> None:
+    def _stage(self, relative: str, payload: dict[str, Any]) -> Path:
         target = self._root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.tmp")
+        temporary = unique_temporary_path(target)
         temporary.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        replace_atomic(temporary, target)
+        return temporary
+
+    def _remove_stale_plans(self, retained_count: int) -> None:
+        plan_root = self._root / "plans"
+        if not plan_root.is_dir():
+            return
+        for path in plan_root.glob("plan-*.yaml"):
+            number = path.stem.removeprefix("plan-")
+            if number.isdigit() and int(number) > retained_count:
+                path.unlink(missing_ok=True)

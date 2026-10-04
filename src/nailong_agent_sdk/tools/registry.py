@@ -10,13 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from ..foundations.contracts import AgentFailure, ToolDefinition, ToolExecutionResult
+from ..foundations.text import split_lines
 from ..memory.context_projection import ToolResultJournal
+from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
 from ..state.planning import PlanTask
 from .approvals import ApprovalRegistry
 from .artifacts import ArtifactStore
 from .core import CoreToolDispatcher, CoreToolServices, HumanQuestionResponder, WebSearchClient
 from .policy import CapabilityPolicy, SideEffectClass
-from .supervisor import ProcessSupervisor
+from .supervisor import ProcessExecutionRecord, ProcessExitKind, ProcessSupervisor
 from .tools import ToolExecutor, ToolInvocationContext
 
 
@@ -93,6 +95,9 @@ class HarnessToolRegistry:
             RegisteredTool("sleep", "utility.wait", SideEffectClass.READ_ONLY),
             RegisteredTool("brief", "utility.brief", SideEffectClass.READ_ONLY),
             RegisteredTool("ask_human_question", "human.question", SideEffectClass.READ_ONLY),
+            RegisteredTool(
+                ELASTIC_REQUEST_TOOL_NAME, "graph.elastic.request", SideEffectClass.READ_ONLY
+            ),
             RegisteredTool("run_registered_command", "process.execute", SideEffectClass.PROCESS),
             RegisteredTool("run_verilator", "rtl.verilator", SideEffectClass.PROCESS, "verilator"),
             RegisteredTool("run_yosys", "rtl.yosys", SideEffectClass.PROCESS, "yosys"),
@@ -139,6 +144,7 @@ class HarnessToolExecutor(ToolExecutor):
                     "node_id": context.node_id,
                     "task_id": context.plan_task.task_id,
                 },
+                read_scope=context.policy.read_scope(context.role),
                 result_journal=context.result_journal,
                 search_client=context.search_client,
                 ask_human=context.ask_human,
@@ -201,7 +207,9 @@ class HarnessToolExecutor(ToolExecutor):
 
     def _approval_for(self, capability: str):
         approval_id = self._context.approval_ids_by_capability.get(capability)
-        return self._context.approvals.get(approval_id) if approval_id else None
+        if approval_id:
+            return self._context.approvals.get(approval_id)
+        return self._context.approvals.find(self._context.run_id, self._context.node_id, capability)
 
     async def _execute_registered(self, tool: RegisteredTool, arguments: dict[str, Any]) -> Any:
         if handler := self._registry.handler_for(tool.name):
@@ -215,6 +223,13 @@ class HarnessToolExecutor(ToolExecutor):
                 raise ValueError("Scoped specification snapshot is unavailable.")
             return {"pointer": pointer, "content": self._context.spec_snapshots[pointer]}
 
+        if tool.name == ELASTIC_REQUEST_TOOL_NAME:
+            raise ValueError(
+                f'Tool "{ELASTIC_REQUEST_TOOL_NAME}" only works for an agent run as a graph '
+                "node through GraphAgentExecutor, which queues the request for the controller; "
+                "this agent was not started that way."
+            )
+
         if tool.name == "run_registered_command":
             template_name = _string_argument(arguments, "template_name")
             process = await self._context.supervisor.execute(
@@ -225,8 +240,7 @@ class HarnessToolExecutor(ToolExecutor):
                 return ToolExecutionResult(
                     status="failed",
                     output=payload,
-                    error=process.error_code
-                    or f'Registered command "{template_name}" ended as {process.exit_kind.value}.',
+                    error=_process_failure_message(template_name, process),
                 )
             return payload
 
@@ -261,7 +275,7 @@ class HarnessToolExecutor(ToolExecutor):
             needle = _string_argument(arguments, "needle")
             if artifact_id not in self._context.plan_task.authorized_artifact_ids:
                 raise ValueError("Artifact is not authorized for this PlanTask.")
-            lines = self._context.artifacts.read_text(artifact_id).splitlines()
+            lines = split_lines(self._context.artifacts.read_text(artifact_id))
             return {
                 "artifact_id": artifact_id,
                 "matches": [index + 1 for index, line in enumerate(lines) if needle in line],
@@ -301,8 +315,7 @@ class HarnessToolExecutor(ToolExecutor):
                 return ToolExecutionResult(
                     status="failed",
                     output=payload,
-                    error=process.error_code
-                    or f'Process tool "{tool.name}" ended as {process.exit_kind.value}.',
+                    error=_process_failure_message(tool.name, process),
                 )
             return payload
 
@@ -314,6 +327,18 @@ class HarnessToolExecutor(ToolExecutor):
             path = arguments.get("path")
             return [path] if isinstance(path, str) else []
         return []
+
+
+def _process_failure_message(name: str, process: ProcessExecutionRecord) -> str:
+    detail = {
+        ProcessExitKind.EXIT_NONZERO: f"exited with code {process.return_code}",
+        ProcessExitKind.TIMED_OUT: "was terminated after exceeding its timeout",
+        ProcessExitKind.CANCELLED: "was cancelled",
+        ProcessExitKind.RESOURCE_LIMIT: (
+            f"was stopped by a resource limit ({process.exit_signal or process.return_code})"
+        ),
+    }.get(process.exit_kind, f"ended as {process.exit_kind.value}")
+    return f'{process.error_code or process.exit_kind.value}: registered command "{name}" {detail}.'
 
 
 def _string_argument(arguments: dict[str, Any], key: str) -> str:

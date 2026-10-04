@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import EpisodeKind
 from ..foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem, PckpStatus
 from .episode_models import (
@@ -852,6 +852,6 @@ class FileEpisodeStore(InMemoryEpisodeStore):
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
-        temporary = path.with_name(f".{path.name}.tmp")
+        temporary = unique_temporary_path(path)
         temporary.write_text(content, encoding="utf-8")
         replace_atomic(temporary, path)

@@ -169,19 +169,28 @@ class ProjectStateReducer:
         payload = transition.payload
         action_status = str(payload.get("status", "recorded"))
 
+        def required(key: str) -> Any:
+            if key not in payload:
+                raise ValueError(
+                    f'State transition "{transition.kind.value}" (action '
+                    f'"{transition.action_id}") is missing the required payload field "{key}".'
+                )
+            return payload[key]
+
         if transition.kind is StateTransitionKind.TOOL_OUTCOME:
             artifact = payload.get("artifact")
             if isinstance(artifact, dict):
-                artifacts = _upsert(
-                    artifacts,
-                    "relative_path",
-                    ProjectArtifactState.model_validate(
-                        {
-                            **artifact,
-                            "evidence": transition.evidence,
-                        }
-                    ),
+                recorded = ProjectArtifactState.model_validate(
+                    {**artifact, "evidence": transition.evidence}
                 )
+                if recorded.status is ArtifactStatus.COMPLETE:
+                    raise ValueError(
+                        f'Artifact "{recorded.relative_path}" cannot be recorded as complete by a '
+                        f'tool outcome (action "{transition.action_id}"); completion needs an '
+                        f'"{StateTransitionKind.ARTIFACT_STATUS_UPDATED.value}" transition from '
+                        "the controller or a human."
+                    )
+                artifacts = _upsert(artifacts, "relative_path", recorded)
             if action_status == "blocked":
                 blocked = _upsert(
                     blocked,
@@ -195,12 +204,12 @@ class ProjectStateReducer:
                 )
 
         elif transition.kind is StateTransitionKind.AGENT_RESULT:
-            status = str(payload["status"])
+            status = str(required("status"))
             work_items = _upsert(
                 work_items,
                 "work_item_id",
                 ProjectWorkItem(
-                    work_item_id=str(payload["task_id"]),
+                    work_item_id=str(required("task_id")),
                     status=WorkItemStatus.COMPLETED
                     if status == "completed"
                     else WorkItemStatus.BLOCKED
@@ -220,9 +229,9 @@ class ProjectStateReducer:
                 decisions,
                 "decision_id",
                 ProjectDecision(
-                    decision_id=str(payload["decision_id"]),
-                    content=str(payload["content"]),
-                    status=DecisionStatus(payload["status"]),
+                    decision_id=str(required("decision_id")),
+                    content=str(required("content")),
+                    status=DecisionStatus(required("status")),
                     authority=StateAuthority.HUMAN,
                     evidence=transition.evidence,
                 ),
@@ -233,9 +242,9 @@ class ProjectStateReducer:
                 questions,
                 "question_id",
                 OpenQuestion(
-                    question_id=str(payload["question_id"]),
-                    content=str(payload["content"]),
-                    owner=QuestionOwner(payload["owner"]),
+                    question_id=str(required("question_id")),
+                    content=str(required("content")),
+                    owner=QuestionOwner(required("owner")),
                     evidence=transition.evidence,
                 ),
             )
@@ -247,9 +256,9 @@ class ProjectStateReducer:
                 work_items,
                 "work_item_id",
                 ProjectWorkItem(
-                    work_item_id=str(payload["work_item_id"]),
-                    status=WorkItemStatus(payload["status"]),
-                    owner=str(payload["owner"]),
+                    work_item_id=str(required("work_item_id")),
+                    status=WorkItemStatus(required("status")),
+                    owner=str(required("owner")),
                     evidence=transition.evidence,
                 ),
             )
@@ -257,10 +266,23 @@ class ProjectStateReducer:
         elif transition.kind is StateTransitionKind.STAGE_CHANGED:
             if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
                 raise ValueError("Only controller or human authority may change project stage.")
-            stage_schema = StageStateSchema.model_validate(payload["stage_schema"])
+            stage_schema = StageStateSchema.model_validate(required("stage_schema"))
             stage_fields = [
                 StageStateField.model_validate(item) for item in payload.get("stage_fields", [])
             ]
+
+        elif transition.kind is StateTransitionKind.ARTIFACT_STATUS_UPDATED:
+            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
+                raise ValueError(
+                    "Only controller or human authority may change the status of an artifact."
+                )
+            artifacts = _with_artifact_status(
+                artifacts,
+                str(required("relative_path")),
+                str(required("artifact_id")),
+                ArtifactStatus(required("status")),
+                transition.evidence,
+            )
 
         else:
             raise ValueError(f"Unsupported state transition {transition.kind.value}.")
@@ -308,16 +330,27 @@ class ProjectStateReducer:
         )
 
 
+_ARTIFACT_WRITE_TOOLS: dict[str, str | None] = {
+    "write_draft": None,
+    "edit_draft": "artifact",
+    "notebook_edit": "artifact",
+}
+
+
 def _artifact_from_result(
     call: ToolCall,
     result: ToolExecutionResult,
 ) -> dict[str, Any] | None:
-    if call.name != "write_draft" or result.status != "succeeded":
+    if call.name not in _ARTIFACT_WRITE_TOOLS or result.status != "succeeded":
         return None
     if not isinstance(result.output, dict):
         return None
-    artifact_id = result.output.get("artifact_id")
-    relative_path = result.output.get("relative_path")
+    nested_key = _ARTIFACT_WRITE_TOOLS[call.name]
+    record = result.output if nested_key is None else result.output.get(nested_key)
+    if not isinstance(record, dict):
+        return None
+    artifact_id = record.get("artifact_id")
+    relative_path = record.get("relative_path")
     if not isinstance(artifact_id, str) or not isinstance(relative_path, str):
         return None
     return {
@@ -325,6 +358,31 @@ def _artifact_from_result(
         "artifact_id": artifact_id,
         "status": ArtifactStatus.IN_PROGRESS.value,
     }
+
+
+def _with_artifact_status(
+    artifacts: list[ProjectArtifactState],
+    relative_path: str,
+    artifact_id: str,
+    status: ArtifactStatus,
+    evidence: list[StateEvidence],
+) -> list[ProjectArtifactState]:
+    current = next((item for item in artifacts if item.relative_path == relative_path), None)
+    if current is None:
+        raise ValueError(
+            f'Artifact "{relative_path}" is not recorded in the project state, so its status '
+            "cannot be updated."
+        )
+    if current.artifact_id != artifact_id:
+        raise ValueError(
+            f'Artifact "{relative_path}" is recorded as {current.artifact_id}, but the status '
+            f"update names {artifact_id}; the artifact changed after the decision was prepared."
+        )
+    return _upsert(
+        artifacts,
+        "relative_path",
+        current.model_copy(update={"status": status, "evidence": evidence}),
+    )
 
 
 def _upsert[T](items: list[T], key: str, value: T) -> list[T]:

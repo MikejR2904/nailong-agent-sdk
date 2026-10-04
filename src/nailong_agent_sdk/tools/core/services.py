@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ...foundations.contracts import AgentFailure, ToolExecutionResult
+from ...foundations.text import split_lines
 from ...memory.context_projection import ToolResultJournal
 from ..artifacts import ArtifactStore
 from ..policy import SENSITIVE_PATH_PATTERNS
@@ -35,14 +36,17 @@ from .helpers import (
     _required_text,
     _sha256,
     _strip_html,
+    _text_argument,
 )
+
+_INTERNAL_STATE_PREFIX = ".agent-"
 
 
 def _matches_sensitive_pattern(path: Path) -> bool:
     """Return whether ``path`` names a credential location denied in every run root."""
 
-    posix = str(path).replace("\\", "/")
-    return any(fnmatch.fnmatch(posix, pattern) for pattern in SENSITIVE_PATH_PATTERNS)
+    posix = str(path).replace("\\", "/").lower()
+    return any(fnmatch.fnmatchcase(posix, pattern.lower()) for pattern in SENSITIVE_PATH_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -99,9 +103,7 @@ class DuckDuckGoHtmlClient:
                 continue
             title = _strip_html(match.group("title"))
             chunk_end = (
-                title_matches[index + 1].start()
-                if index + 1 < len(title_matches)
-                else len(body)
+                title_matches[index + 1].start() if index + 1 < len(title_matches) else len(body)
             )
             snippet_match = snippet_pattern.search(body, match.end(), chunk_end)
             snippet = _strip_html(snippet_match.group("snippet")) if snippet_match else ""
@@ -129,6 +131,8 @@ class CoreToolServices:
     # The timeout covers isolated-worker startup as well as regex matching. Keep it
     # finite but above the supported-environment startup budget for valid searches.
     max_grep_seconds: float = 8.0
+    max_fetch_seconds: float = 30.0
+    read_scope: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         self.root = self.root.resolve()
@@ -140,6 +144,7 @@ class CoreToolServices:
             or self.max_grep_files < 1
             or self.max_grep_total_bytes < 1
             or self.max_grep_seconds <= 0
+            or self.max_fetch_seconds <= 0
         ):
             raise ValueError("Core tool read limits must be positive and safe.")
 
@@ -165,7 +170,7 @@ class CoreToolDispatcher:
     async def _dispatch(self, name: str, arguments: dict[str, Any]) -> Any:
         if name == "read_file":
             relative_path = _required_text(arguments, "path")
-            path = self._path(relative_path)
+            path = self._read_path(relative_path)
             offset = _nonnegative_int(arguments.get("offset", 0), "offset")
             limit = _bounded_int(arguments.get("limit", 200), "limit", 1, 2_000)
             result = _read_lines(path, offset, limit, self._services.max_read_bytes)
@@ -222,6 +227,32 @@ class CoreToolDispatcher:
             raise ValueError(f'Tool path "{relative_path}" is a denied credential path.')
         return target
 
+    def _read_path(self, relative_path: str) -> Path:
+        target = self._path(relative_path)
+        if not self._is_readable(target):
+            scope = self._services.read_scope
+            raise ValueError(
+                f'Tool path "{relative_path}" is not readable: it is SDK-internal run state or '
+                f"outside the read scope {list(scope) if scope is not None else 'of this run'}."
+            )
+        return target
+
+    def _is_readable(self, resolved: Path) -> bool:
+        root = self._services.root
+        relative = resolved.relative_to(root)
+        if relative.parts and relative.parts[0].lower().startswith(_INTERNAL_STATE_PREFIX):
+            return False
+        scope = self._services.read_scope
+        if scope is None:
+            return True
+        for allowed in scope:
+            try:
+                resolved.relative_to((root / allowed).resolve())
+            except ValueError:
+                continue
+            return True
+        return False
+
     def _glob(self, pattern: str, limit: int) -> list[str]:
         if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
             raise ValueError("Glob pattern must remain below the configured run root.")
@@ -232,7 +263,7 @@ class CoreToolDispatcher:
                 resolved.relative_to(self._services.root)
             except ValueError:
                 continue
-            if _matches_sensitive_pattern(resolved):
+            if _matches_sensitive_pattern(resolved) or not self._is_readable(resolved):
                 continue
             matches.append(str(resolved.relative_to(self._services.root)))
             if len(matches) == limit:
@@ -260,7 +291,7 @@ class CoreToolDispatcher:
         total_bytes = 0
         scan_truncated = False
         for relative in self._glob(file_glob, self._services.max_grep_files):
-            path = self._path(relative)
+            path = self._read_path(relative)
             if not path.is_file() or path.stat().st_size > self._services.max_read_bytes:
                 continue
             size_bytes = path.stat().st_size
@@ -277,32 +308,38 @@ class CoreToolDispatcher:
 
     def _write_draft(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = _required_text(arguments, "path")
-        if path not in self._services.declared_output_paths:
-            raise ValueError("Draft path was not declared for this governed task.")
+        self._require_declared(path, "Draft")
         record = self._services.artifacts.write_text(
             path,
-            _required_text(arguments, "content"),
+            _text_argument(arguments, "content"),
             manifest=self._services.write_manifest,
         )
         return record.model_dump(mode="json")
 
+    def _require_declared(self, path: str, label: str) -> None:
+        if path not in self._services.declared_output_paths:
+            raise ValueError(
+                f'{label} path "{path}" was not declared for this governed task; declared '
+                f"output paths: {list(self._services.declared_output_paths)}."
+            )
+
     def _edit_draft(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = _required_text(arguments, "path")
-        if path not in self._services.declared_output_paths:
-            raise ValueError("Draft path was not declared for this governed task.")
+        self._require_declared(path, "Draft")
         target = self._path(path)
         if not target.is_file():
-            raise ValueError("Declared draft file does not exist.")
+            raise ValueError(f'Declared draft file "{path}" does not exist.')
         old = _required_text(arguments, "old_text")
-        new = _required_text(arguments, "new_text")
+        new = _text_argument(arguments, "new_text")
         replace_all = bool(arguments.get("replace_all", False))
         content = target.read_text(encoding="utf-8")
         count = content.count(old)
         if count == 0:
-            raise ValueError("edit_draft old_text was not found.")
+            raise ValueError(f'edit_draft old_text was not found in "{path}".')
         if count > 1 and not replace_all:
             raise ValueError(
-                "edit_draft old_text is ambiguous; set replace_all only when intended."
+                f'edit_draft old_text is ambiguous: it occurs {count} times in "{path}"; set '
+                "replace_all only when intended."
             )
         updated = content.replace(old, new) if replace_all else content.replace(old, new, 1)
         record = self._services.artifacts.write_text(
@@ -333,7 +370,7 @@ class CoreToolDispatcher:
         matches = [
             index
             for index, line in enumerate(
-                self._services.artifacts.read_text(artifact_id).splitlines(), start=1
+                split_lines(self._services.artifacts.read_text(artifact_id)), start=1
             )
             if needle in line
         ]
@@ -369,6 +406,7 @@ class CoreToolDispatcher:
             page=page,
             image_cache=self._services.pdf_image_cache,
             pdf_bytes_cache=self._services.pdf_bytes_cache,
+            deadline_seconds=self._services.max_fetch_seconds,
         )
 
     async def _render_pdf_page(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -406,28 +444,24 @@ class CoreToolDispatcher:
 
     def _notebook_edit(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = _required_text(arguments, "path")
-        if path not in self._services.declared_output_paths:
-            raise ValueError("Notebook path was not declared for this governed task.")
+        self._require_declared(path, "Notebook")
         # A sparse index materializes every preceding cell, so bound it even when
         # a host calls this dispatcher directly without schema validation.
         cell_index = _bounded_int(arguments.get("cell_index", 0), "cell_index", 0, 2_000)
-        source = _required_text(arguments, "new_source")
+        source = _text_argument(arguments, "new_source")
         mode = str(arguments.get("mode", "replace"))
         if mode not in {"replace", "append"}:
             raise ValueError("Notebook mode must be replace or append.")
         target = self._path(path)
-        document = (
-            json.loads(target.read_text(encoding="utf-8"))
-            if target.exists()
-            else {"cells": [], "nbformat": 4, "nbformat_minor": 5, "metadata": {}}
-        )
-        cells = document.setdefault("cells", [])
+        document = self._load_notebook(path, target)
+        cells = document["cells"]
         while len(cells) <= cell_index:
             cells.append({"cell_type": "code", "metadata": {}, "outputs": [], "source": []})
         cell = cells[cell_index]
-        existing = "".join(cell.get("source", []))
-        cell["source"] = (existing + source if mode == "append" else source).splitlines(
-            keepends=True
+        existing = cell.get("source", [])
+        existing_text = existing if isinstance(existing, str) else "".join(existing)
+        cell["source"] = split_lines(
+            existing_text + source if mode == "append" else source, keepends=True
         )
         record = self._services.artifacts.write_text(
             path,
@@ -435,3 +469,21 @@ class CoreToolDispatcher:
             manifest=self._services.write_manifest,
         )
         return {"cell_index": cell_index, "artifact": record.model_dump(mode="json")}
+
+    @staticmethod
+    def _load_notebook(path: str, target: Path) -> dict[str, Any]:
+        if not target.exists():
+            return {"cells": [], "nbformat": 4, "nbformat_minor": 5, "metadata": {}}
+        try:
+            document = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError as error:
+            raise ValueError(
+                f'Notebook "{path}" is not valid JSON: {type(error).__name__}: {error}'
+            ) from error
+        if not isinstance(document, dict) or not isinstance(document.get("cells", []), list):
+            raise ValueError(
+                f'Notebook "{path}" must hold a JSON object whose "cells" is a list; found '
+                f"{type(document).__name__}."
+            )
+        document.setdefault("cells", [])
+        return document

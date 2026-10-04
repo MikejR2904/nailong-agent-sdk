@@ -8,7 +8,13 @@ from .catalog import (
     build_public_api_catalog,
     write_public_api_catalog,
 )
-from .inspect import RunInspection, inspect_run
+from .inspect import (
+    EvidenceMismatch,
+    EvidenceVerification,
+    RunInspection,
+    inspect_run,
+    verify_project_evidence,
+)
 from .quality import QualityCheckReport, check_source_quality
 from .validate import (
     ValidationIssue,
@@ -18,6 +24,8 @@ from .validate import (
 )
 
 __all__ = [
+    "EvidenceMismatch",
+    "EvidenceVerification",
     "PublicApiCatalog",
     "PublicApiSymbol",
     "QualityCheckReport",
@@ -29,5 +37,6 @@ __all__ = [
     "inspect_run",
     "supported_contract_types",
     "validate_contract_file",
+    "verify_project_evidence",
     "write_public_api_catalog",
 ]

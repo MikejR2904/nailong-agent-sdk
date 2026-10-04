@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ...foundations.contracts import StrictModel
 from ..contracts import ExternalDecisionProvider, InteropFailureMode, InteropOperationStatus
@@ -35,6 +35,18 @@ class JevArchitectureRoutingPolicy(StrictModel):
     minimum_confidence: float = Field(default=0.8, ge=0, le=1)
     on_unavailable: InteropFailureMode = InteropFailureMode.FALLBACK_DETERMINISTIC
     policy_version: str = "jev-architecture-routing-v1"
+
+    @field_validator("on_unavailable")
+    @classmethod
+    def on_unavailable_has_a_routing_meaning(cls, mode: InteropFailureMode) -> InteropFailureMode:
+        if mode is InteropFailureMode.ESCALATE:
+            raise ValueError(
+                f'on_unavailable "{mode.value}" is not supported by the architecture router, '
+                "which returns advice and has no escalation channel; use "
+                f'"{InteropFailureMode.FALLBACK_DETERMINISTIC.value}" or '
+                f'"{InteropFailureMode.REJECT.value}".'
+            )
+        return mode
 
 
 class JevArchitectureAdvice(StrictModel):

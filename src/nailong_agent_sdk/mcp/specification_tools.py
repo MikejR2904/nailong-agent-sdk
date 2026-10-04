@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 
 
 def register_specification_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="process_specification_manifest", structured_output=True)
-    async def process_specification_manifest(
+    @ctx.tool(server, "process_specification_manifest", exclusive=False)
+    def process_specification_manifest(
         manifest_path: str = "specification-manifest.yaml",
     ) -> dict[str, Any]:
         """Parse manifest sources into persisted ordered source-referenced document trees."""
@@ -48,8 +48,8 @@ def register_specification_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="select_task_context", structured_output=True)
-    async def select_task_context(
+    @ctx.tool(server, "select_task_context", exclusive=False)
+    def select_task_context(
         trees: list[dict[str, Any]],
         stage: str,
         task_text: str,
@@ -70,8 +70,8 @@ def register_specification_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="validate_gate_one", structured_output=True)
-    async def validate_gate_one(
+    @ctx.tool(server, "validate_gate_one", exclusive=False)
+    def validate_gate_one(
         specification: dict[str, Any],
         required_categories: list[str],
         semantic_findings: list[dict[str, Any]] | None = None,
@@ -97,8 +97,8 @@ def register_specification_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="soft_lock_specification", structured_output=True)
-    async def soft_lock_specification(
+    @ctx.tool(server, "soft_lock_specification")
+    def soft_lock_specification(
         specification: dict[str, Any],
         dependency_graph: dict[str, Any],
         gap_report: dict[str, Any],

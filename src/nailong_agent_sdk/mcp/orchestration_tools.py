@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 
 def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="validate_plan", structured_output=True)
-    async def validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "validate_plan", exclusive=False)
+    def validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
         """Validate a PlanTask DAG by recomputing signal-derived dependencies."""
 
         try:
@@ -28,8 +28,8 @@ def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
         report = ctx.plan_validator.validate(parsed)
         return {"ok": True, "report": report.model_dump(mode="json")}
 
-    @server.tool(name="start_run", structured_output=True)
-    async def start_run(plan: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "start_run")
+    def start_run(plan: dict[str, Any]) -> dict[str, Any]:
         """Create and persist a validated typed-DAG run in the pending/runnable state."""
 
         try:
@@ -41,7 +41,7 @@ def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="prepare_orchestration", structured_output=True)
+    @ctx.tool(server, "prepare_orchestration")
     async def prepare_orchestration(
         policy: dict[str, Any],
         request: dict[str, Any],
@@ -68,8 +68,8 @@ def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="submit_orchestration_for_approval", structured_output=True)
-    async def submit_orchestration_for_approval(orchestration_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "submit_orchestration_for_approval")
+    def submit_orchestration_for_approval(orchestration_id: str) -> dict[str, Any]:
         """Bind a compiled orchestration to a controller and present it for approval."""
 
         try:
@@ -78,8 +78,8 @@ def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="approve_orchestration", structured_output=True)
-    async def approve_orchestration(
+    @ctx.tool(server, "approve_orchestration")
+    def approve_orchestration(
         orchestration_id: str,
         approved: bool,
         reason: str | None = None,
@@ -94,8 +94,8 @@ def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_orchestration", structured_output=True)
-    async def get_orchestration(orchestration_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "get_orchestration")
+    def get_orchestration(orchestration_id: str) -> dict[str, Any]:
         """Return a persisted policy, routing, assignment, and approval record."""
 
         try:
@@ -104,8 +104,8 @@ def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="cancel_orchestration", structured_output=True)
-    async def cancel_orchestration(orchestration_id: str, reason: str) -> dict[str, Any]:
+    @ctx.tool(server, "cancel_orchestration")
+    def cancel_orchestration(orchestration_id: str, reason: str) -> dict[str, Any]:
         """Cancel a submitted orchestration and its bound controller/graph when present."""
 
         try:

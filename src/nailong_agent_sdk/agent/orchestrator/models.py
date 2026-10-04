@@ -16,6 +16,7 @@ from pydantic import Field, model_validator
 
 from ...foundations.contracts import ModelBinding, SkillContext, StrictModel
 from ...integrations.jev.architecture import JevArchitectureAdvice
+from ...state.elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from ...state.orchestration_models import ComplexityRoutingRules, GapMetadata, WorkflowArchitecture
 from ...state.planning import ModelTier, Plan
 from ...state.shared_state import SharedSubstrateSnapshot
@@ -28,6 +29,8 @@ class OrchestrationStatus(StrEnum):
     APPROVED = "approved"
     DISPATCHED = "dispatched"
     EXECUTED = "executed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
     CANCELLED = "cancelled"
 
 
@@ -92,6 +95,8 @@ class OrchestrationPolicy(StrictModel):
     max_parallel_agents: int = Field(default=4, ge=1)
     max_repair_attempts: int = Field(default=1, ge=0)
     multi_agent_enabled: bool = True
+    max_elastic_depth: int = Field(default=1, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT)
+    max_elastic_nodes: int = Field(default=2, ge=0, le=MAX_ELASTIC_NODES_LIMIT)
 
     @model_validator(mode="after")
     def configuration_ids_are_consistent(self) -> OrchestrationPolicy:

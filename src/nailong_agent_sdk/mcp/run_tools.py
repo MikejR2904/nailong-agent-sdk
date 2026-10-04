@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 
 
 def register_run_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="get_run_state", structured_output=True)
-    async def get_run_state(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "get_run_state")
+    def get_run_state(run_id: str) -> dict[str, Any]:
         """Return a hash-verified run record and current graph status."""
 
         try:
@@ -25,8 +25,8 @@ def register_run_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="cancel_run", structured_output=True)
-    async def cancel_run(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "cancel_run")
+    def cancel_run(run_id: str) -> dict[str, Any]:
         """Cancel runnable nodes through deterministic typed terminal states."""
 
         try:
@@ -34,8 +34,8 @@ def register_run_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="submit_approval", structured_output=True)
-    async def submit_approval(
+    @ctx.tool(server, "submit_approval")
+    def submit_approval(
         run_id: str,
         approval_id: str,
         approved: bool,
@@ -49,8 +49,8 @@ def register_run_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="resume_run", structured_output=True)
-    async def resume_run(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "resume_run")
+    def resume_run(run_id: str) -> dict[str, Any]:
         """Integrity-check persisted graph state before returning it for scheduler resumption."""
 
         try:

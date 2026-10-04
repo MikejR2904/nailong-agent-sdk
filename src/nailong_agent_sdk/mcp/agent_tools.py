@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 
 def register_agent_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="validate_agent_definition", structured_output=True)
-    async def validate_agent_definition(definition: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "validate_agent_definition", exclusive=False)
+    def validate_agent_definition(definition: dict[str, Any]) -> dict[str, Any]:
         """Validate the serializable BaseAgent contract and return field-level errors."""
 
         try:
@@ -38,8 +38,8 @@ def register_agent_tools(server: MCPServer, ctx: McpContext) -> None:
             "tool_names": [tool.name for tool in parsed.tools],
         }
 
-    @server.tool(name="assemble_initial_context", structured_output=True)
-    async def assemble_initial_context_tool(
+    @ctx.tool(server, "assemble_initial_context", exclusive=False)
+    def assemble_initial_context_tool(
         definition: dict[str, Any],
         task: dict[str, Any],
     ) -> dict[str, Any]:
@@ -53,7 +53,7 @@ def register_agent_tools(server: MCPServer, ctx: McpContext) -> None:
         context = assemble_initial_context(parsed_definition, parsed_task)
         return {"ok": True, "context": context.model_dump(mode="json")}
 
-    @server.tool(name="run_agent_task", structured_output=True)
+    @ctx.tool(server, "run_agent_task", exclusive=False)
     async def run_agent_task(
         definition: dict[str, Any],
         task: dict[str, Any],

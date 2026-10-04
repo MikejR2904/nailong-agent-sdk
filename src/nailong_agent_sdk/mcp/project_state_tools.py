@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 
 def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="initialize_project_state", structured_output=True)
-    async def initialize_project_state(
+    @ctx.tool(server, "initialize_project_state", exclusive=False)
+    def initialize_project_state(
         project_id: str,
         stage_schema: dict[str, Any],
     ) -> dict[str, Any]:
@@ -40,8 +40,8 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_project_state", structured_output=True)
-    async def get_project_state(project_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "get_project_state", exclusive=False)
+    def get_project_state(project_id: str) -> dict[str, Any]:
         """Return current project state; history remains separate audit evidence."""
 
         try:
@@ -52,8 +52,8 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="record_human_project_decision", structured_output=True)
-    async def record_human_project_decision(
+    @ctx.tool(server, "record_human_project_decision", exclusive=False)
+    def record_human_project_decision(
         project_id: str,
         decision_id: str,
         content: str,
@@ -86,8 +86,8 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="open_project_question", structured_output=True)
-    async def open_project_question(
+    @ctx.tool(server, "open_project_question", exclusive=False)
+    def open_project_question(
         project_id: str,
         question_id: str,
         content: str,

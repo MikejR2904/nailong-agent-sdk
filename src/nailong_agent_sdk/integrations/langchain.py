@@ -20,9 +20,17 @@ from pydantic import TypeAdapter
 
 from ..agent.base_agent import BaseAgent
 from ..agent.model import ModelContext, ModelTurnResponse
-from ..foundations.contracts import AgentResult, AgentTurn, ScopedAgentTask, ToolDefinition
+from ..foundations.contracts import (
+    AgentResult,
+    AgentTurn,
+    ScopedAgentTask,
+    ToolDefinition,
+    ToolExecutionResult,
+    validate_tool_arguments,
+)
+from ..foundations.errors import AgentSdkError
 from ..tools.tools import ToolExecutor, ToolInvocationContext
-from ._utils import require_optional_module
+from ._utils import _MAX_INTEROP_STRING_CHARS, require_optional_module
 from .contracts import assert_sanitized_interop_value
 
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
@@ -128,6 +136,11 @@ class LangChainSdkToolFacade:
         payload = dict(arguments)
         invocation = self._invocation_factory(payload)
         self._validate_invocation(invocation, payload)
+        try:
+            validate_tool_arguments(self._tool, payload)
+        except AgentSdkError as error:
+            rejected = ToolExecutionResult(status="failed", error=error.message)
+            return rejected.model_dump(mode="json", exclude={"failure"})
         if self._preflight is not None:
             preflight_result = self._preflight(invocation)
             if inspect.isawaitable(preflight_result):
@@ -198,17 +211,36 @@ def _assert_safe_langchain_prompt(prompt: Any) -> None:
     messages = safe_prompt.pop("messages")
     assert_sanitized_interop_value(safe_prompt)
     if not isinstance(messages, list) or not 1 <= len(messages) <= 2:
-        raise ValueError("LangChain prompt messages must contain one or two declared messages.")
+        found = (
+            f"{len(messages)} messages" if isinstance(messages, list) else type(messages).__name__
+        )
+        raise ValueError(
+            f"LangChain prompt messages must be a list of one or two declared messages, "
+            f"got {found}."
+        )
     seen_roles: set[str] = set()
-    for message in messages:
+    for index, message in enumerate(messages):
         if not isinstance(message, Mapping) or set(message) != {"role", "content"}:
-            raise ValueError("LangChain prompt messages must contain only role and content fields.")
+            fields = sorted(message) if isinstance(message, Mapping) else type(message).__name__
+            raise ValueError(
+                f"LangChain prompt message {index} must contain only role and content fields, "
+                f"got {fields}."
+            )
         role = message["role"]
         content = message["content"]
         if role not in {"system", "user"} or role in seen_roles:
-            raise ValueError("LangChain prompt message roles must be unique system/user roles.")
-        if not isinstance(content, str) or not content or len(content) > 16_384:
-            raise ValueError("LangChain prompt message content must be a bounded non-empty string.")
+            raise ValueError(
+                f'LangChain prompt message {index} has role "{role}"; roles must be unique and '
+                "one of system or user."
+            )
+        if not isinstance(content, str) or not content or len(content) > _MAX_INTEROP_STRING_CHARS:
+            found = (
+                f"{len(content)} characters" if isinstance(content, str) else type(content).__name__
+            )
+            raise ValueError(
+                f"LangChain prompt message {index} content must be a non-empty string of at most "
+                f"{_MAX_INTEROP_STRING_CHARS} characters, got {found}."
+            )
         seen_roles.add(role)
 
 

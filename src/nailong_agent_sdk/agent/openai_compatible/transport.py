@@ -13,6 +13,7 @@ client already does correctly.
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import ssl
@@ -25,7 +26,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import httpx
 
-from ...foundations.errors import AgentSdkError, TransientProviderError
+from ...foundations.errors import AgentSdkError, TransientProviderError, redact_secrets
 
 # 429 (rate limited) and 5xx (server-side) are conventionally safe to retry;
 # other 4xx codes reflect a request the server has already rejected on its
@@ -114,20 +115,30 @@ class UrlLibJsonTransport:
         timeout_seconds: float,
     ) -> Mapping[str, Any]:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        request = Request(url, data=body, method="POST", headers=dict(headers))
+        secrets = _header_secrets(headers)
         try:
+            request = Request(url, data=body, method="POST", headers=dict(headers))
             with build_opener(_NoRedirectHandler()).open(
                 request, timeout=timeout_seconds
             ) as response:
                 decoded = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             raise _http_status_error(
-                error.code, retry_after_seconds=_parse_retry_after(error.headers.get("Retry-After"))
+                error.code,
+                retry_after_seconds=_parse_retry_after(error.headers.get("Retry-After")),
+                body=_read_error_body(error),
+                secrets=secrets,
             ) from error
         except URLError as error:
             raise TransientProviderError(
                 "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
                 f"OpenAI-compatible provider could not be reached at "
+                f"{_transport_failure_detail(url, error)}.",
+            ) from error
+        except (http.client.HTTPException, ConnectionError) as error:
+            raise TransientProviderError(
+                "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
+                f"OpenAI-compatible provider connection failed mid-request at "
                 f"{_transport_failure_detail(url, error)}.",
             ) from error
         except TimeoutError as error:
@@ -139,6 +150,12 @@ class UrlLibJsonTransport:
             raise AgentSdkError(
                 "OPENAI_COMPATIBLE_RESPONSE_INVALID",
                 "OpenAI-compatible provider returned malformed JSON.",
+            ) from error
+        except ValueError as error:
+            raise AgentSdkError(
+                "OPENAI_COMPATIBLE_REQUEST_INVALID",
+                "OpenAI-compatible request could not be sent: "
+                f"{type(error).__name__}: {_scrub(str(error), secrets)}",
             ) from error
         if not isinstance(decoded, Mapping):
             raise AgentSdkError(
@@ -180,6 +197,8 @@ class HttpxJsonTransport:
                 raise _http_status_error(
                     response.status_code,
                     retry_after_seconds=_parse_retry_after(response.headers.get("Retry-After")),
+                    body=response.text,
+                    secrets=_header_secrets(headers),
                 )
             decoded = response.json()
         except httpx.TimeoutException as error:
@@ -237,6 +256,8 @@ class HttpxStreamingJsonTransport:
                     raise _http_status_error(
                         response.status_code,
                         retry_after_seconds=_parse_retry_after(response.headers.get("Retry-After")),
+                        body=response.text,
+                        secrets=_header_secrets(headers),
                     )
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -318,12 +339,72 @@ def _timeout_message(url: str, timeout_seconds: float) -> str:
     )
 
 
-def _http_status_error(status_code: int, *, retry_after_seconds: float | None) -> AgentSdkError:
+def _header_secrets(headers: Mapping[str, str]) -> tuple[str, ...]:
+    secrets: list[str] = []
+    for name, value in headers.items():
+        if name.lower() in {"authorization", "x-api-key", "api-key"} and value:
+            secrets.append(value)
+            token = value.partition(" ")[2]
+            if token:
+                secrets.append(token.strip())
+    return tuple(secret for secret in secrets if len(secret) >= 4)
+
+
+def _scrub(text: str, secrets: tuple[str, ...]) -> str:
+    for secret in secrets:
+        text = text.replace(secret, "[REDACTED]")
+    scrubbed = redact_secrets(text)
+    return scrubbed if isinstance(scrubbed, str) else text
+
+
+def _read_error_body(error: HTTPError) -> str | None:
+    try:
+        return error.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def provider_error_detail(body: Any, secrets: tuple[str, ...] = ()) -> str | None:
+    if body is None:
+        return None
+    text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+    if not text.strip():
+        return None
+    message: Any = None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        error = parsed.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("code") or error.get("type")
+        elif isinstance(error, str):
+            message = error
+        elif isinstance(parsed.get("message"), str):
+            message = parsed["message"]
+    elif parsed is None and not text.lstrip().startswith("<"):
+        message = text
+    if not isinstance(message, str) or not message.strip():
+        return None
+    return _scrub(" ".join(message.split()), secrets)[:500]
+
+
+def _http_status_error(
+    status_code: int,
+    *,
+    retry_after_seconds: float | None,
+    body: Any = None,
+    secrets: tuple[str, ...] = (),
+) -> AgentSdkError:
     """Classify one HTTP failure status as transient (retryable) or terminal."""
 
     hint = _HTTP_STATUS_HINTS.get(status_code)
     message = f"OpenAI-compatible provider returned HTTP {status_code}"
     message += f" - likely cause: {hint}." if hint else "."
+    detail = provider_error_detail(body, secrets)
+    if detail:
+        message += f" Provider message: {detail}"
     if status_code in _RETRYABLE_HTTP_STATUS_CODES:
         return TransientProviderError(
             "OPENAI_COMPATIBLE_HTTP_ERROR", message, retry_after_seconds=retry_after_seconds
@@ -363,8 +444,15 @@ class OpenAICompatibleEndpoint:
             raise ValueError(
                 "OpenAI-compatible base_url must use HTTPS unless allow_insecure_http is explicit."
             )
-        if not self.api_key.strip():
+        cleaned_key = self.api_key.strip()
+        if not cleaned_key:
             raise ValueError("OpenAI-compatible api_key must be non-empty.")
+        if any(character.isspace() or not character.isprintable() for character in cleaned_key):
+            raise ValueError(
+                "OpenAI-compatible api_key must not contain whitespace or control characters "
+                "inside the key."
+            )
+        object.__setattr__(self, "api_key", cleaned_key)
         if self.timeout_seconds <= 0:
             raise ValueError("OpenAI-compatible timeout_seconds must be positive.")
 

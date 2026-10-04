@@ -20,7 +20,7 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
 
 
@@ -262,7 +262,7 @@ class AgentRunProfiler:
         if profile.finished_at_utc is None:
             raise RuntimeError("finish_run() is required before writing a profile.")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_suffix(f"{destination.suffix}.tmp")
+        temporary = unique_temporary_path(destination)
         temporary.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
         replace_atomic(temporary, destination)
         return destination

@@ -22,13 +22,15 @@ dependencies = [
   "defusedxml>=0.7,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
-  "mcp[cli]>=2.0,<3",
+  "mcp[cli]>=2.2,<3",
   "openpyxl>=3.1,<4",
   "pydantic>=2.9,<3",
   "pypdf[image]>=5.0,<6",
   "pypdfium2>=4.30,<5",
   "python-docx>=1.1,<2",
   "pyyaml>=6.0,<7",
+  "starlette>=0.27",
+  "uvicorn>=0.31.1",
 ]
 
 [project.scripts]
@@ -63,6 +65,7 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+testpaths = ["tests"]
 addopts = ["-q"]
 
 [tool.ruff]
@@ -71,6 +74,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/nailong_agent_sdk/__init__.py" = ["F401"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nailong_agent_sdk"]

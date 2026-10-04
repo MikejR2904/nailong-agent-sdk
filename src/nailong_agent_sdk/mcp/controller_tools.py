@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 
 
 def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="create_controller", structured_output=True)
-    async def create_controller(
+    @ctx.tool(server, "create_controller")
+    def create_controller(
         snapshot: dict[str, Any],
         profile: dict[str, Any],
         routing_rules: dict[str, Any],
@@ -48,8 +48,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="submit_controller_plan", structured_output=True)
-    async def submit_controller_plan(controller_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "submit_controller_plan")
+    def submit_controller_plan(controller_id: str, plan: dict[str, Any]) -> dict[str, Any]:
         """Present a deterministically validated plan upward for designer approval."""
 
         try:
@@ -60,8 +60,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="approve_controller_plan", structured_output=True)
-    async def approve_controller_plan(
+    @ctx.tool(server, "approve_controller_plan")
+    def approve_controller_plan(
         controller_id: str,
         approved: bool,
         reason: str | None = None,
@@ -74,8 +74,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="dispatch_controller", structured_output=True)
-    async def dispatch_controller(controller_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "dispatch_controller")
+    def dispatch_controller(controller_id: str) -> dict[str, Any]:
         """Create the approved graph run and immutable lateral shared substrate."""
 
         try:
@@ -88,8 +88,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="record_controller_node_result", structured_output=True)
-    async def record_controller_node_result(
+    @ctx.tool(server, "record_controller_node_result")
+    def record_controller_node_result(
         controller_id: str,
         node_id: str,
         result: dict[str, Any],
@@ -106,8 +106,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="publish_exploratory_discovery", structured_output=True)
-    async def publish_exploratory_discovery(
+    @ctx.tool(server, "publish_exploratory_discovery")
+    def publish_exploratory_discovery(
         controller_id: str,
         discovery: dict[str, Any],
     ) -> dict[str, Any]:
@@ -123,8 +123,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="request_lateral_dependency", structured_output=True)
-    async def request_lateral_dependency(
+    @ctx.tool(server, "request_lateral_dependency")
+    def request_lateral_dependency(
         controller_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
@@ -140,8 +140,44 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_controller_state", structured_output=True)
-    async def get_controller_state(controller_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "grant_elastic_capacity")
+    def grant_elastic_capacity(
+        controller_id: str,
+        reason: str,
+        max_elastic_depth: int | None = None,
+        max_elastic_nodes: int | None = None,
+    ) -> dict[str, Any]:
+        """Raise a run's elastic caps by a recorded decision and run deferred requests that fit."""
+
+        try:
+            run = ctx.controller_runtime.grant_elastic_capacity(
+                controller_id,
+                max_elastic_depth=max_elastic_depth,
+                max_elastic_nodes=max_elastic_nodes,
+                reason=reason,
+            )
+            return {"ok": True, "run": run.model_dump(mode="json")}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
+    @ctx.tool(server, "decline_elastic_requests")
+    def decline_elastic_requests(
+        controller_id: str,
+        parent_node_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Discard one node's deferred elastic requests and release the dependents they held."""
+
+        try:
+            run = ctx.controller_runtime.decline_elastic_requests(
+                controller_id, parent_node_id, reason
+            )
+            return {"ok": True, "run": run.model_dump(mode="json")}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
+    @ctx.tool(server, "get_controller_state")
+    def get_controller_state(controller_id: str) -> dict[str, Any]:
         """Return the durable user-visible vertical controller state and event log."""
 
         try:
@@ -154,8 +190,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_shared_state", structured_output=True)
-    async def get_shared_state(controller_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "get_shared_state")
+    def get_shared_state(controller_id: str) -> dict[str, Any]:
         """Return typed lateral discoveries and writes without worker transcripts."""
 
         try:
@@ -163,8 +199,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="verify_provenance_contract", structured_output=True)
-    async def verify_provenance_contract(
+    @ctx.tool(server, "verify_provenance_contract")
+    def verify_provenance_contract(
         controller_id: str,
         records: list[dict[str, Any]],
         required_schema_version: str,
@@ -183,8 +219,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="record_controller_stage_failure", structured_output=True)
-    async def record_controller_stage_failure(
+    @ctx.tool(server, "record_controller_stage_failure")
+    def record_controller_stage_failure(
         controller_id: str,
         reason: str,
     ) -> dict[str, Any]:
@@ -196,8 +232,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="complete_controller", structured_output=True)
-    async def complete_controller(controller_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "complete_controller")
+    def complete_controller(controller_id: str) -> dict[str, Any]:
         """Record the typed completion of a vertical controller run."""
 
         try:
@@ -206,8 +242,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="cancel_controller", structured_output=True)
-    async def cancel_controller(controller_id: str, reason: str) -> dict[str, Any]:
+    @ctx.tool(server, "cancel_controller")
+    def cancel_controller(controller_id: str, reason: str) -> dict[str, Any]:
         """Cancel the active graph run and its vertical controller record."""
 
         try:

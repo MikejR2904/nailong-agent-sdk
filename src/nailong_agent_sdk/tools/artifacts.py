@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -13,8 +14,12 @@ from typing import Any
 
 from pydantic import Field
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
+from ..foundations.text import split_lines
+
+_ARTIFACT_ID = re.compile(r"sha256:[0-9a-f]{64}")
+_OCCURRENCE_ID = re.compile(r"occ-[0-9a-f]{32}")
 
 
 class ArtifactRecord(StrictModel):
@@ -116,12 +121,16 @@ class ArtifactStore:
         return content.decode("utf-8")
 
     def get(self, artifact_id: str) -> ArtifactRecord | None:
+        if _ARTIFACT_ID.fullmatch(artifact_id) is None:
+            return None
         path = self._existing_manifest_path(artifact_id)
         if path is None:
             return None
         return ArtifactRecord.model_validate_json(path.read_text(encoding="utf-8"))
 
     def get_occurrence(self, occurrence_id: str) -> ArtifactWriteOccurrence | None:
+        if _OCCURRENCE_ID.fullmatch(occurrence_id) is None:
+            return None
         path = self._occurrence_root / f"{occurrence_id}.json"
         if not path.is_file():
             return None
@@ -153,8 +162,8 @@ class ArtifactStore:
     def diff(self, base_artifact_id: str, draft_artifact_id: str) -> dict[str, Any]:
         import difflib
 
-        base = self.read_text(base_artifact_id).splitlines(keepends=True)
-        draft = self.read_text(draft_artifact_id).splitlines(keepends=True)
+        base = split_lines(self.read_text(base_artifact_id), keepends=True)
+        draft = split_lines(self.read_text(draft_artifact_id), keepends=True)
         return {
             "base_artifact_id": base_artifact_id,
             "draft_artifact_id": draft_artifact_id,
@@ -238,7 +247,7 @@ class ArtifactStore:
     @staticmethod
     def _atomic_write_bytes(target: Path, content: bytes) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.tmp")
+        temporary = unique_temporary_path(target)
         temporary.write_bytes(content)
         _replace_with_retry(temporary, target)
 

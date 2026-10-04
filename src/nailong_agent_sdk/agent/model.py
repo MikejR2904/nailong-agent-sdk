@@ -192,6 +192,9 @@ class ScriptedModel:
         return self._turns[index]
 
 
+_MAX_RETAINED_ATTEMPTS = 1_000
+
+
 @dataclass(frozen=True)
 class ModelFailoverAttempt:
     index: int
@@ -258,10 +261,8 @@ class FailoverAgentModel:
 
         return await self._call_with_failover(call_one)
 
-    async def _call_with_failover(
-        self, call_model: Callable[[AgentModel], Awaitable[Any]]
-    ) -> Any:
-        first_attempt_index = len(self.attempts)
+    async def _call_with_failover(self, call_model: Callable[[AgentModel], Awaitable[Any]]) -> Any:
+        call_attempts: list[ModelFailoverAttempt] = []
         for index, model in enumerate(self._models):
             for retry_number in range(self._max_retries_per_model + 1):
                 try:
@@ -270,7 +271,8 @@ class FailoverAgentModel:
                     self._record(
                         ModelFailoverAttempt(
                             index=index, error=str(error), retryable=True, retry_number=retry_number
-                        )
+                        ),
+                        call_attempts,
                     )
                     if retry_number >= self._max_retries_per_model:
                         break  # Retries exhausted for this model; fall over to the next one.
@@ -279,10 +281,10 @@ class FailoverAgentModel:
                     self._record(
                         ModelFailoverAttempt(
                             index=index, error=str(error), retry_number=retry_number
-                        )
+                        ),
+                        call_attempts,
                     )
                     break
-        call_attempts = self.attempts[first_attempt_index:]
         last_attempt = call_attempts[-1] if call_attempts else None
         last_detail = (
             f" Last error (adapter index {last_attempt.index}, "
@@ -307,8 +309,13 @@ class FailoverAgentModel:
             },
         )
 
-    def _record(self, attempt: ModelFailoverAttempt) -> None:
+    def _record(
+        self, attempt: ModelFailoverAttempt, call_attempts: list[ModelFailoverAttempt]
+    ) -> None:
+        call_attempts.append(attempt)
         self.attempts.append(attempt)
+        if len(self.attempts) > _MAX_RETAINED_ATTEMPTS:
+            del self.attempts[:-_MAX_RETAINED_ATTEMPTS]
         if self._on_attempt is None:
             return
         try:

@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
 
 def register_git_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="get_git_repository_state", structured_output=True)
-    async def get_git_repository_state(repository_path: str) -> dict[str, Any]:
+    @ctx.tool(server, "get_git_repository_state", exclusive=False)
+    def get_git_repository_state(repository_path: str) -> dict[str, Any]:
         """Inspect a runtime-root-contained local Git repository without mutation."""
 
         try:
@@ -34,8 +34,8 @@ def register_git_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="classify_specification_version", structured_output=True)
-    async def classify_specification_version(
+    @ctx.tool(server, "classify_specification_version", exclusive=False)
+    def classify_specification_version(
         repository_path: str,
         version: str,
         specification: dict[str, Any],
@@ -54,8 +54,8 @@ def register_git_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="create_specification_git_lock", structured_output=True)
-    async def create_specification_git_lock(
+    @ctx.tool(server, "create_specification_git_lock")
+    def create_specification_git_lock(
         repository_path: str,
         specification: dict[str, Any],
         dependency_graph: dict[str, Any],
@@ -80,8 +80,8 @@ def register_git_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="create_variant_worktree", structured_output=True)
-    async def create_variant_worktree(
+    @ctx.tool(server, "create_variant_worktree")
+    def create_variant_worktree(
         repository_path: str,
         name: str,
         branch: str,

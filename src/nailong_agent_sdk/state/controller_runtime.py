@@ -37,6 +37,7 @@ from .orchestration_models import (
 )
 from .planning import Plan
 from .project_state_models import (
+    ArtifactStatus,
     ProjectState,
     StageStateSchema,
     StateAuthority,
@@ -219,6 +220,7 @@ class ControllerRuntime:
         machine = self._machine(controller_id)
         if machine.record.run_id is None:
             raise ValueError("Node results require a dispatched graph run.")
+        spawned_before = self._spawn_record_count(machine.record.run_id)
         run = self._harness.record_node_result(machine.record.run_id, node_id, result)
         self._project_state_store.apply(
             machine.record.project_state_id,
@@ -241,6 +243,59 @@ class ControllerRuntime:
             ),
         )
         self._emit(machine.record, "graph.node-result", result.status.value, {"node_id": node_id})
+        self._emit_spawn_records(
+            machine.record, run.graph.get("spawn_records", [])[spawned_before:]
+        )
+        return run
+
+    def grant_elastic_capacity(
+        self,
+        controller_id: str,
+        *,
+        max_elastic_depth: int | None = None,
+        max_elastic_nodes: int | None = None,
+        reason: str,
+    ) -> RunRecord:
+        machine = self._machine(controller_id)
+        run_id = self._require_elastic_decision(machine.record)
+        run = self._harness.grant_elastic_capacity(
+            run_id,
+            max_elastic_depth=max_elastic_depth,
+            max_elastic_nodes=max_elastic_nodes,
+            reason=reason,
+        )
+        grant = run.graph["capacity_grants"][-1]
+        self._emit(machine.record, "graph.elastic-capacity-granted", "granted", grant)
+        self._emit_spawn_records(
+            machine.record,
+            [
+                item
+                for item in run.graph["spawn_records"]
+                if item.get("grant_sequence") == grant["sequence"]
+            ],
+        )
+        return run
+
+    def decline_elastic_requests(
+        self, controller_id: str, parent_node_id: str, reason: str
+    ) -> RunRecord:
+        machine = self._machine(controller_id)
+        run_id = self._require_elastic_decision(machine.record)
+        run = self._harness.decline_elastic_requests(run_id, parent_node_id, reason)
+        self._emit(
+            machine.record,
+            "graph.elastic-requests-declined",
+            "declined",
+            {
+                "parent_node_id": parent_node_id,
+                "request_ids": [
+                    item["request"]["request_id"]
+                    for item in run.graph["spawn_records"]
+                    if item["parent_node_id"] == parent_node_id and item["status"] == "discarded"
+                ],
+                "reason": reason,
+            },
+        )
         return run
 
     async def execute_graph(
@@ -263,10 +318,14 @@ class ControllerRuntime:
             raise ValueError("Graph execution requires an executing controller.")
         if machine.record.run_id is None:
             raise ValueError("Graph execution requires a dispatched graph run.")
+        spawned_before = self._spawn_record_count(machine.record.run_id)
         run = await self._harness.execute_run(
             machine.record.run_id,
             executors,
             max_parallelism=max_parallelism,
+        )
+        self._emit_spawn_records(
+            machine.record, run.graph.get("spawn_records", [])[spawned_before:]
         )
         results = {
             node_id: GraphNodeResult.model_validate(payload)
@@ -274,19 +333,20 @@ class ControllerRuntime:
         }
         for node_id in sorted(results):
             self._reduce_graph_result(machine.record, node_id, results[node_id])
-        failed = [
-            node_id
-            for node_id, result in sorted(results.items())
-            if result.status is GraphNodeStatus.FAILED
-        ]
+        failed = _node_ids_with_status(results, GraphNodeStatus.FAILED)
+        blocked = _node_ids_with_status(results, GraphNodeStatus.BLOCKED)
         if failed and machine.record.phase is ControllerPhase.EXECUTING:
             machine.record_stage_failure(f"Graph execution failed at nodes: {', '.join(failed)}")
             self._controller_store.save(machine.record)
         self._emit(
             machine.record,
             "graph.executed",
-            "failed" if failed else "completed",
-            {"terminal_node_count": len(results), "failed_node_ids": failed},
+            "failed" if failed else "blocked" if blocked else "completed",
+            {
+                "terminal_node_count": len(results),
+                "failed_node_ids": failed,
+                "blocked_node_ids": blocked,
+            },
         )
         return run
 
@@ -358,6 +418,8 @@ class ControllerRuntime:
 
     def complete(self, controller_id: str) -> ControllerRecord:
         machine = self._machine(controller_id)
+        if machine.record.phase is ControllerPhase.EXECUTING:
+            self._require_completed_graph(machine.record)
         record = machine.complete()
         self._controller_store.save(record)
         self._emit(record, "controller.completed", record.phase.value)
@@ -385,12 +447,106 @@ class ControllerRuntime:
 
         return self._project_state_store.load(self._machine(controller_id).record.project_state_id)
 
+    def set_artifact_status(
+        self,
+        controller_id: str,
+        relative_path: str,
+        status: ArtifactStatus,
+        *,
+        reason: str,
+    ) -> ProjectState:
+        machine = self._machine(controller_id)
+        project_state_id = machine.record.project_state_id
+        current = self._project_state_store.load(project_state_id)
+        artifact = next(
+            (item for item in current.artifacts if item.relative_path == relative_path), None
+        )
+        if artifact is None or artifact.artifact_id is None:
+            raise ValueError(
+                f'Artifact "{relative_path}" is not recorded with an artifact id in the project '
+                f'state "{project_state_id}" of controller "{controller_id}".'
+            )
+        decision = {
+            "relative_path": relative_path,
+            "artifact_id": artifact.artifact_id,
+            "status": status.value,
+        }
+        state = self._project_state_store.apply(
+            project_state_id,
+            StateTransition(
+                kind=StateTransitionKind.ARTIFACT_STATUS_UPDATED,
+                actor=StateAuthority.CONTROLLER,
+                action_id=f"artifact-status:{relative_path}:{status.value}:{current.revision}",
+                payload={**decision, "reason": reason},
+                evidence=[
+                    StateEvidence(
+                        evidence_id=f"artifact-status:{controller_id}:{current.revision}",
+                        kind="controller-artifact-decision",
+                        content_hash=canonical_hash(decision),
+                    )
+                ],
+            ),
+        )
+        self._emit(
+            machine.record,
+            "controller.artifact-status-set",
+            status.value,
+            {"relative_path": relative_path, "artifact_id": artifact.artifact_id, "reason": reason},
+        )
+        return state
+
+    def _spawn_record_count(self, run_id: str) -> int:
+        if self._telemetry is None:
+            return 0
+        return len(self._harness.get_run_state(run_id).graph.get("spawn_records", []))
+
+    def _require_elastic_decision(self, record: ControllerRecord) -> str:
+        if record.run_id is None:
+            raise ValueError("Elastic capacity decisions require a dispatched graph run.")
+        if record.phase is not ControllerPhase.EXECUTING:
+            raise ValueError(
+                "Elastic capacity decisions require an executing controller; "
+                f'"{record.controller_id}" is in phase "{record.phase.value}".'
+            )
+        return record.run_id
+
+    def _emit_spawn_records(self, record: ControllerRecord, items: list[dict[str, Any]]) -> None:
+        for item in items:
+            self._emit(
+                record,
+                "graph.elastic-spawn",
+                item["status"],
+                {
+                    "sequence": item["sequence"],
+                    "parent_node_id": item["parent_node_id"],
+                    "request_id": item["request"]["request_id"],
+                    "depth": item["depth"],
+                    "child_node_id": item["child_node_id"],
+                    "join_node_id": item["join_node_id"],
+                    "code": item["code"],
+                },
+            )
+
     def _next_controller_id(self) -> str:
-        while True:
-            candidate = f"controller-{self._counter}"
-            self._counter += 1
-            if candidate not in self._controllers and not self._controller_store.exists(candidate):
-                return candidate
+        controller_id, self._counter = self._controller_store.reserve_controller_id(
+            start=self._counter
+        )
+        return controller_id
+
+    def _require_completed_graph(self, record: ControllerRecord) -> None:
+        if record.run_id is None:
+            return
+        statuses = self._harness.get_run_state(record.run_id).graph["statuses"]
+        unfinished = [
+            f"{node_id} ({status})"
+            for node_id, status in sorted(statuses.items())
+            if status != GraphNodeStatus.COMPLETED.value
+        ]
+        if unfinished:
+            raise ValueError(
+                f'Controller "{record.controller_id}" cannot complete: graph run '
+                f'"{record.run_id}" has nodes that did not complete: {", ".join(unfinished)}.'
+            )
 
     def _machine(self, controller_id: str) -> ControllerStateMachine:
         if controller_id not in self._controllers:
@@ -473,6 +629,12 @@ class ControllerRuntime:
                 "count",
                 source_event_id=event.event_id,
             )
+
+
+def _node_ids_with_status(
+    results: Mapping[str, GraphNodeResult], status: GraphNodeStatus
+) -> list[str]:
+    return [node_id for node_id, result in sorted(results.items()) if result.status is status]
 
 
 def _project_work_item_status(graph_status: str) -> str:

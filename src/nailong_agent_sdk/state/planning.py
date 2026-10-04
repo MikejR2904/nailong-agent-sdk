@@ -9,7 +9,8 @@ It contains no model calls and never infers an unproven dependency.
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
+from collections.abc import Mapping
 from enum import StrEnum
 from itertools import combinations
 from typing import Any
@@ -18,6 +19,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
 from ..foundations.dependency_graph import deterministic_cycles
+from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .shared_state import DiscoveryRoutingRefs
 
 
@@ -116,8 +118,8 @@ class Plan(StrictModel):
     plan_id: str = Field(min_length=1)
     tasks: list[PlanTask] = Field(min_length=1)
     dependency_proofs: list[DependencyProof] = Field(default_factory=list)
-    max_elastic_depth: int = Field(default=1, ge=0)
-    max_elastic_nodes: int = Field(default=2, ge=0)
+    max_elastic_depth: int = Field(default=1, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT)
+    max_elastic_nodes: int = Field(default=2, ge=0, le=MAX_ELASTIC_NODES_LIMIT)
 
     @model_validator(mode="after")
     def task_ids_are_unique(self) -> Plan:
@@ -140,18 +142,25 @@ class PlanValidationReport(StrictModel):
     recomputed_dependencies: dict[str, list[str]] = Field(default_factory=dict)
 
 
+_MAX_RENDERED_ERRORS = 10
+_PRODUCING_ROLES = frozenset({SignalRole.DEFINE, SignalRole.PRODUCE})
+
+_EdgeKey = tuple[str, str, DependencyRule]
+
+
 class PlanValidator:
     """Recompute task edges from exact signal-use evidence.
 
     The planner may propose a DAG, but it cannot authoritatively choose its
-    dependencies. This validator derives the expected edge union and requires
-    the proposal and cited proofs to match it exactly.
+    dependencies. Every declared dependency must be derived from shared
+    signals and carry a matching proof, and every derived ordering must be
+    implied by the declared dependencies, directly or through other tasks.
     """
 
     def validate(self, plan: Plan) -> PlanValidationReport:
         errors: list[PlanValidationError] = []
         tasks = {task.task_id: task for task in plan.tasks}
-        derived: dict[tuple[str, str, DependencyRule], set[str]] = defaultdict(set)
+        signal_sets = {task.task_id: task.signal_ids() for task in plan.tasks}
 
         for task in plan.tasks:
             unknown = sorted(set(task.dependencies) - set(tasks))
@@ -159,7 +168,7 @@ class PlanValidator:
                 errors.append(
                     PlanValidationError(
                         code="UNKNOWN_TASK_DEPENDENCY",
-                        message=f'Task "{task.task_id}" depends on unknown tasks.',
+                        message=f'Task "{task.task_id}" depends on unknown tasks {unknown}.',
                         task_ids=[task.task_id, *unknown],
                     )
                 )
@@ -171,96 +180,150 @@ class PlanValidator:
                         task_ids=[task.task_id],
                     )
                 )
-            undeclared = sorted({use.signal_id for use in task.signal_uses} - task.signal_ids())
+            undeclared = sorted(
+                {use.signal_id for use in task.signal_uses} - signal_sets[task.task_id]
+            )
             if undeclared:
                 errors.append(
                     PlanValidationError(
                         code="SIGNAL_NOT_IN_LOCKED_INTERFACE",
                         message=(
-                            f'Task "{task.task_id}" cites signals absent from its locked interface.'
+                            f'Task "{task.task_id}" cites signals {undeclared} absent from its '
+                            "locked interface."
                         ),
                         task_ids=[task.task_id],
                         signal_ids=undeclared,
                     )
                 )
 
-        for left, right in combinations(sorted(plan.tasks, key=lambda item: item.task_id), 2):
-            for signal_id in sorted(left.signal_ids() & right.signal_ids()):
-                self._derive_signal_edge(left, right, signal_id, derived, errors)
-
-        expected_dependencies: dict[str, set[str]] = {task.task_id: set() for task in plan.tasks}
-        for (parent, child, _rule), _signals in derived.items():
-            expected_dependencies[child].add(parent)
-
-        for task in plan.tasks:
-            actual = set(task.dependencies)
-            expected = expected_dependencies[task.task_id]
-            if actual != expected:
-                errors.append(
-                    PlanValidationError(
-                        code="DEPENDENCY_SET_MISMATCH",
-                        message=(
-                            f'Task "{task.task_id}" dependencies do not equal '
-                            "the recomputed edge set."
-                        ),
-                        task_ids=[task.task_id, *sorted(actual ^ expected)],
-                    )
-                )
-
-        self._validate_proofs(plan.dependency_proofs, derived, errors)
-        self._validate_cycles(expected_dependencies, errors)
+        derived = self._derive_edges(plan.tasks, signal_sets, errors)
+        derived_parents: dict[str, set[str]] = {task.task_id: set() for task in plan.tasks}
+        for parent, child, _rule in derived:
+            derived_parents[child].add(parent)
+        declared = {task.task_id: set(task.dependencies) for task in plan.tasks}
+        self._validate_dependency_sets(declared, derived_parents, errors)
+        self._validate_proofs(plan.dependency_proofs, derived, declared, errors)
+        self._validate_cycles(derived_parents, errors)
 
         return PlanValidationReport(
             valid=not errors,
             errors=errors,
             recomputed_dependencies={
                 task_id: sorted(dependencies)
-                for task_id, dependencies in sorted(expected_dependencies.items())
+                for task_id, dependencies in sorted(derived_parents.items())
             },
         )
 
     def assert_valid(self, plan: Plan) -> PlanValidationReport:
         report = self.validate(plan)
         if not report.valid:
-            rendered = "; ".join(f"{error.code}: {error.message}" for error in report.errors)
-            raise ValueError(f"Plan validation failed: {rendered}")
+            raise ValueError(f"Plan validation failed: {render_plan_errors(report.errors)}")
         return report
+
+    def _derive_edges(
+        self,
+        tasks: list[PlanTask],
+        signal_sets: Mapping[str, set[str]],
+        errors: list[PlanValidationError],
+    ) -> dict[_EdgeKey, set[str]]:
+        by_id = {task.task_id: task for task in tasks}
+        holders: dict[str, list[str]] = defaultdict(list)
+        for task_id in sorted(by_id):
+            for signal_id in signal_sets[task_id]:
+                holders[signal_id].append(task_id)
+        roles = _signal_roles(tasks)
+        pairs = sorted(
+            (left, right, signal_id)
+            for signal_id, group in holders.items()
+            for left, right in combinations(group, 2)
+        )
+        derived: dict[_EdgeKey, set[str]] = defaultdict(set)
+        for left_id, right_id, signal_id in pairs:
+            self._derive_signal_edge(
+                by_id[left_id], by_id[right_id], signal_id, roles, derived, errors
+            )
+        return derived
+
+    @staticmethod
+    def _validate_dependency_sets(
+        declared: Mapping[str, set[str]],
+        derived_parents: Mapping[str, set[str]],
+        errors: list[PlanValidationError],
+    ) -> None:
+        candidates = {
+            task_id: derived_parents[task_id] - parents for task_id, parents in declared.items()
+        }
+        ancestors = _ancestor_bitsets(declared) if any(candidates.values()) else {}
+        index = {task_id: position for position, task_id in enumerate(sorted(declared))}
+        for task_id, parents in declared.items():
+            unjustified = parents - derived_parents[task_id]
+            unordered = {
+                parent
+                for parent in candidates[task_id]
+                if ancestors is None or not (ancestors[task_id] >> index[parent]) & 1
+            }
+            if not unjustified and not unordered:
+                continue
+            details = []
+            if unjustified:
+                details.append(
+                    f"declares dependencies {sorted(unjustified)} that no shared locked-interface "
+                    "signal derives"
+                )
+            if unordered:
+                details.append(
+                    f"does not depend, directly or transitively, on {sorted(unordered)}, which "
+                    "its shared signals require"
+                )
+            errors.append(
+                PlanValidationError(
+                    code="DEPENDENCY_SET_MISMATCH",
+                    message=f'Task "{task_id}" {" and ".join(details)}.',
+                    task_ids=[task_id, *sorted(unjustified | unordered)],
+                )
+            )
 
     def _derive_signal_edge(
         self,
         left: PlanTask,
         right: PlanTask,
         signal_id: str,
-        derived: dict[tuple[str, str, DependencyRule], set[str]],
+        roles: Mapping[tuple[str, str], tuple[bool, bool]],
+        derived: dict[_EdgeKey, set[str]],
         errors: list[PlanValidationError],
     ) -> None:
-        left_uses = [use for use in left.signal_uses if use.signal_id == signal_id]
-        right_uses = [use for use in right.signal_uses if use.signal_id == signal_id]
-        if not left_uses or not right_uses:
+        left_roles = roles.get((left.task_id, signal_id))
+        right_roles = roles.get((right.task_id, signal_id))
+        if left_roles is None or right_roles is None:
+            uncited = [
+                task.task_id
+                for task, cited in ((left, left_roles), (right, right_roles))
+                if cited is None
+            ]
             errors.append(
                 PlanValidationError(
                     code="MISSING_SIGNAL_CITATION",
-                    message="A shared locked-interface signal lacks a cited task role.",
+                    message=(
+                        f'Tasks "{left.task_id}" and "{right.task_id}" share locked-interface '
+                        f'signal "{signal_id}" but {uncited} cite no role for it.'
+                    ),
                     task_ids=[left.task_id, right.task_id],
                     signal_ids=[signal_id],
                 )
             )
             return
 
-        left_produces = any(
-            use.role in {SignalRole.DEFINE, SignalRole.PRODUCE} for use in left_uses
-        )
-        right_produces = any(
-            use.role in {SignalRole.DEFINE, SignalRole.PRODUCE} for use in right_uses
-        )
-        left_consumes = any(use.role is SignalRole.CONSUME for use in left_uses)
-        right_consumes = any(use.role is SignalRole.CONSUME for use in right_uses)
+        left_produces, left_consumes = left_roles
+        right_produces, right_consumes = right_roles
 
         if left_produces and right_produces:
             errors.append(
                 PlanValidationError(
                     code="SIGNAL_OWNERSHIP_AMBIGUITY",
-                    message="Two tasks claim to define or produce the same locked signal.",
+                    message=(
+                        f'Tasks "{left.task_id}" and "{right.task_id}" both define or produce '
+                        f'locked signal "{signal_id}".'
+                    ),
                     task_ids=[left.task_id, right.task_id],
                     signal_ids=[signal_id],
                 )
@@ -278,10 +341,14 @@ class PlanValidator:
             )
             return
         if left_produces or right_produces:
+            producer, other = (left, right) if left_produces else (right, left)
             errors.append(
                 PlanValidationError(
                     code="MISSING_SIGNAL_CONSUMER",
-                    message="A declared signal producer has no corresponding consumer citation.",
+                    message=(
+                        f'Task "{producer.task_id}" produces signal "{signal_id}" but '
+                        f'"{other.task_id}" shares it without a consumer citation.'
+                    ),
                     task_ids=[left.task_id, right.task_id],
                     signal_ids=[signal_id],
                 )
@@ -300,15 +367,24 @@ class PlanValidator:
     @staticmethod
     def _validate_proofs(
         proofs: list[DependencyProof],
-        derived: dict[tuple[str, str, DependencyRule], set[str]],
+        derived: dict[_EdgeKey, set[str]],
+        declared: Mapping[str, set[str]],
         errors: list[PlanValidationError],
     ) -> None:
-        provided: dict[tuple[str, str, DependencyRule], set[str]] = defaultdict(set)
+        provided: dict[_EdgeKey, set[str]] = defaultdict(set)
         for proof in proofs:
             key = (proof.parent_task_id, proof.child_task_id, proof.applied_rule)
             provided[key].update(proof.shared_signal_ids)
+        declared_edges = {
+            (parent, child) for child, parents in declared.items() for parent in parents
+        }
         mismatched = sorted(
-            (key for key in set(derived) | set(provided) if derived.get(key) != provided.get(key)),
+            (
+                key
+                for key in set(derived) | set(provided)
+                if derived.get(key) != provided.get(key)
+                and (key in provided or (key[0], key[1]) in declared_edges)
+            ),
             key=lambda key: (key[0], key[1], key[2].value),
         )
         for key in mismatched:
@@ -317,7 +393,7 @@ class PlanValidator:
             actual_signals = sorted(provided.get(key, set()))
             edge = f'"{parent}" -> "{child}" ({rule.value})'
             if key not in provided:
-                detail = f"no dependency proof was supplied for the derived edge {edge}"
+                detail = f"no dependency proof was supplied for the declared edge {edge}"
             elif key not in derived:
                 detail = (
                     f"the proof for {edge} has no matching edge derived from the locked interfaces"
@@ -351,8 +427,61 @@ class PlanValidator:
         errors.extend(
             PlanValidationError(
                 code="DEPENDENCY_CYCLE",
-                message="The recomputed task graph contains a dependency cycle.",
+                message=f"The recomputed task graph contains the dependency cycle {cycle}.",
                 task_ids=cycle,
             )
             for cycle in cycles
         )
+
+
+def render_plan_errors(errors: list[PlanValidationError]) -> str:
+    rendered = [_render_plan_error(error) for error in errors[:_MAX_RENDERED_ERRORS]]
+    omitted = len(errors) - len(rendered)
+    if omitted > 0:
+        rendered.append(f"{omitted} more errors omitted")
+    return "; ".join(rendered)
+
+
+def _render_plan_error(error: PlanValidationError) -> str:
+    scope = []
+    if error.task_ids:
+        scope.append(f"tasks {error.task_ids}")
+    if error.signal_ids:
+        scope.append(f"signals {error.signal_ids}")
+    suffix = f" ({', '.join(scope)})" if scope else ""
+    return f"{error.code}: {error.message}{suffix}"
+
+
+def _signal_roles(tasks: list[PlanTask]) -> dict[tuple[str, str], tuple[bool, bool]]:
+    produces: dict[tuple[str, str], bool] = {}
+    consumes: dict[tuple[str, str], bool] = {}
+    for task in tasks:
+        for use in task.signal_uses:
+            key = (task.task_id, use.signal_id)
+            produces[key] = produces.get(key, False) or use.role in _PRODUCING_ROLES
+            consumes[key] = consumes.get(key, False) or use.role is SignalRole.CONSUME
+    return {key: (produces[key], consumes[key]) for key in produces}
+
+
+def _ancestor_bitsets(dependencies: Mapping[str, set[str]]) -> dict[str, int] | None:
+    index = {task_id: position for position, task_id in enumerate(sorted(dependencies))}
+    children: dict[str, list[str]] = defaultdict(list)
+    remaining: dict[str, int] = {}
+    for task_id, parents in dependencies.items():
+        known = [parent for parent in parents if parent in index]
+        remaining[task_id] = len(known)
+        for parent in known:
+            children[parent].append(task_id)
+    ancestors = dict.fromkeys(dependencies, 0)
+    ready = deque(sorted(task_id for task_id, count in remaining.items() if count == 0))
+    visited = 0
+    while ready:
+        current = ready.popleft()
+        visited += 1
+        contribution = ancestors[current] | (1 << index[current])
+        for child in children[current]:
+            ancestors[child] |= contribution
+            remaining[child] -= 1
+            if remaining[child] == 0:
+                ready.append(child)
+    return ancestors if visited == len(dependencies) else None

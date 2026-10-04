@@ -9,7 +9,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import (
+    read_text_retrying,
+    replace_atomic,
+    unique_temporary_path,
+)
+from ..foundations.identifiers import (
+    is_valid_identifier,
+    reserve_sequential_identifier,
+    validate_identifier,
+)
 from .orchestration_models import (
     ComplexityRouter,
     ComplexityRoutingRules,
@@ -188,7 +197,11 @@ class ControllerStateStore:
     def __init__(self, root: Path) -> None:
         self._root = root.resolve() / ".agent-controllers"
         self._root.mkdir(parents=True, exist_ok=True)
+        self._claims = self._root / ".claims"
         self._persisted_event_counts: dict[str, int] = {}
+
+    def reserve_controller_id(self, *, start: int = 1) -> tuple[str, int]:
+        return reserve_sequential_identifier(self._claims, "controller", self.exists, start=start)
 
     def save(self, record: ControllerRecord) -> None:
         persisted = self._persisted_event_counts.get(record.controller_id)
@@ -205,8 +218,8 @@ class ControllerStateStore:
         event_count, event_hash = _event_boundary(event_path)
         if event_count != len(record.events):
             raise ValueError("Controller event boundary does not match the record event count.")
-        target = self._root / f"{record.controller_id}.json"
-        temporary = target.with_name(f".{target.name}.tmp")
+        target = self._record_path(record.controller_id)
+        temporary = unique_temporary_path(target)
         snapshot = record.model_copy(
             update={
                 "events": [],
@@ -219,13 +232,13 @@ class ControllerStateStore:
         self._persisted_event_counts[record.controller_id] = len(record.events)
 
     def exists(self, controller_id: str) -> bool:
-        return (self._root / f"{controller_id}.json").is_file()
+        return is_valid_identifier(controller_id) and self._record_path(controller_id).is_file()
 
     def load(self, controller_id: str) -> ControllerRecord:
-        target = self._root / f"{controller_id}.json"
+        target = self._record_path(controller_id)
         if not target.is_file():
             raise ValueError(f'Controller "{controller_id}" is unknown.')
-        snapshot = ControllerRecord.model_validate_json(target.read_text(encoding="utf-8"))
+        snapshot = ControllerRecord.model_validate_json(read_text_retrying(target))
         if snapshot.events_integrity_hash is None:
             self._persisted_event_counts[controller_id] = 0
             return snapshot
@@ -244,8 +257,12 @@ class ControllerStateStore:
         self._persisted_event_counts[controller_id] = len(events)
         return record
 
+    def _record_path(self, controller_id: str) -> Path:
+        return self._root / f"{validate_identifier(controller_id, 'Controller id')}.json"
+
     def _events_path(self, controller_id: str) -> Path:
-        return self._root / f"{controller_id}.events.jsonl"
+        validated = validate_identifier(controller_id, "Controller id")
+        return self._root / f"{validated}.events.jsonl"
 
     def _append_events(self, controller_id: str, events: list[ControllerEvent]) -> None:
         path = self._events_path(controller_id)
@@ -258,7 +275,7 @@ class ControllerStateStore:
 
     def _write_events(self, controller_id: str, events: list[ControllerEvent]) -> None:
         path = self._events_path(controller_id)
-        temporary = path.with_name(f".{path.name}.tmp")
+        temporary = unique_temporary_path(path)
         with temporary.open("w", encoding="utf-8") as handle:
             for event in events:
                 handle.write(event.model_dump_json())
@@ -284,10 +301,10 @@ class ControllerStateStore:
         return events, _event_hash(events)
 
     def _committed_event_count(self, controller_id: str) -> int:
-        target = self._root / f"{controller_id}.json"
+        target = self._record_path(controller_id)
         if not target.is_file():
             return 0
-        snapshot = ControllerRecord.model_validate_json(target.read_text(encoding="utf-8"))
+        snapshot = ControllerRecord.model_validate_json(read_text_retrying(target))
         if snapshot.events_integrity_hash is None:
             return 0
         events, event_hash = self._read_events(

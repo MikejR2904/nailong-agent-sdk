@@ -114,6 +114,7 @@ class RetrievalResult(StrictModel):
     candidates: list[RetrievalCandidate] = Field(default_factory=list)
     backend: str = Field(min_length=1)
     failure_reason: str | None = None
+    cache_warning: str | None = None
 
 
 class ResolvedRetrieval(StrictModel):

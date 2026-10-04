@@ -13,6 +13,7 @@ from enum import StrEnum
 from pydantic import Field, model_validator
 
 from ..contracts import StrictModel
+from ..dependency_graph import deterministic_cycles
 
 
 class PckpStatus(StrEnum):
@@ -80,19 +81,11 @@ class PckpSolution(StrictModel):
 
 
 def _assert_acyclic(dependencies: dict[str, set[str]]) -> None:
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(item_id: str) -> None:
-        if item_id in visiting:
-            raise ValueError(f'PCKP dependencies contain a cycle at "{item_id}".')
-        if item_id in visited:
-            return
-        visiting.add(item_id)
-        for prerequisite in sorted(dependencies[item_id]):
-            visit(prerequisite)
-        visiting.remove(item_id)
-        visited.add(item_id)
-
-    for item_id in sorted(dependencies):
-        visit(item_id)
+    edges = [
+        (item_id, prerequisite)
+        for item_id, values in dependencies.items()
+        for prerequisite in values
+    ]
+    cycles = deterministic_cycles(dependencies, edges)
+    if cycles:
+        raise ValueError(f'PCKP dependencies contain a cycle at "{cycles[0][0]}".')

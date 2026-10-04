@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from .gate_models import DependencyGraph, GapReport, UnifiedSpecification, VersionMetadata
 from .git_models import (
     GitApproval,
@@ -27,6 +27,8 @@ from .git_models import (
 )
 
 _SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+_SPECIFICATION_TAG = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+_RUNTIME_STATE_PATHSPEC = ":(exclude).agent-*"
 _SAFE_BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,120}$")
 
 
@@ -49,11 +51,13 @@ class GitRepositoryAdapter:
         head = self._git("rev-parse", "HEAD").strip()
         tree = self._git("rev-parse", "HEAD^{tree}").strip()
         branch = self._git("symbolic-ref", "--short", "-q", "HEAD", check=False).strip() or None
-        clean = not bool(self._git("status", "--porcelain").strip())
+        clean = not bool(
+            self._git("status", "--porcelain", "--", ".", _RUNTIME_STATE_PATHSPEC).strip()
+        )
         tags = [
             item
             for item in self._git("tag", "--list", "v*", "--sort=v:refname").splitlines()
-            if item
+            if _SPECIFICATION_TAG.fullmatch(item)
         ]
         return GitRepositoryState(
             repository_root=str(self._root),
@@ -72,7 +76,13 @@ class GitRepositoryAdapter:
         return [line for line in output.splitlines() if line]
 
     def tag_exists(self, tag_name: str) -> bool:
-        return bool(self._git("tag", "--list", tag_name).strip())
+        code, _stdout, _stderr = self._run(
+            "rev-parse", "--verify", "--quiet", f"refs/tags/{tag_name}"
+        )
+        return code == 0
+
+    def tag_message(self, tag_name: str) -> str:
+        return self._git("tag", "--list", "--format=%(contents)", tag_name).strip()
 
     def create_annotated_tag(self, tag_name: str, message: str) -> None:
         self._git("tag", "-a", tag_name, "-m", message)
@@ -93,6 +103,12 @@ class GitRepositoryAdapter:
     def create_worktree(self, path: Path, branch: str, base_ref: str) -> None:
         self._git("worktree", "add", "-b", branch, str(path), base_ref)
 
+    def remove_worktree(self, path: Path) -> None:
+        self._git("worktree", "remove", "--force", str(path))
+
+    def delete_branch(self, branch: str) -> None:
+        self._git("branch", "-D", branch)
+
     def worktrees(self) -> list[dict[str, str]]:
         output = self._git("worktree", "list", "--porcelain")
         values: list[dict[str, str]] = []
@@ -109,18 +125,25 @@ class GitRepositoryAdapter:
             values.append(current)
         return values
 
-    def _git(self, *arguments: str, check: bool = True) -> str:
+    def _run(self, *arguments: str) -> tuple[int, str, str]:
         completed = subprocess.run(
-            ["git", *arguments],
+            ["git", "-c", "core.quotepath=false", *arguments],
             cwd=self._root,
             capture_output=True,
-            text=True,
             check=False,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
-        if check and completed.returncode != 0:
-            raise GitCommandError(tuple(arguments), completed.stdout, completed.stderr)
-        return completed.stdout
+        return (
+            completed.returncode,
+            completed.stdout.decode("utf-8", errors="replace"),
+            completed.stderr.decode("utf-8", errors="replace"),
+        )
+
+    def _git(self, *arguments: str, check: bool = True) -> str:
+        code, stdout, stderr = self._run(*arguments)
+        if check and code != 0:
+            raise GitCommandError(tuple(arguments), stdout, stderr)
+        return stdout
 
 
 class SpecificationVersionService:
@@ -182,8 +205,10 @@ class SpecificationVersionService:
         )
 
     def _snapshot_path(self, tag_name: str) -> Path:
-        if not re.fullmatch(r"v" + _SEMVER.pattern[1:-1], tag_name):
-            raise ValueError("Specification snapshot tags must use vMAJOR.MINOR.PATCH.")
+        if not _SPECIFICATION_TAG.fullmatch(tag_name):
+            raise ValueError(
+                f'Specification snapshot tag "{tag_name}" must use vMAJOR.MINOR.PATCH.'
+            )
         return self._snapshots / f"{tag_name}.snapshot.json"
 
     def _load_snapshot(self, tag_name: str) -> SpecificationSnapshotRecord:
@@ -252,8 +277,20 @@ class SpecificationVersionService:
                 "Specification repository must be clean before creating a version tag."
             )
         tag_name = f"v{metadata.version}"
+        tag_message = (
+            f"Gate 1 soft-lock specification {metadata.version}; approval {approval.approval_id}"
+        )
+        lock_target = self._lock_root / f"{metadata.version}.lock.json"
         if repository.tag_exists(tag_name):
-            raise ValueError(f'Specification tag "{tag_name}" already exists.')
+            interrupted = (
+                not lock_target.exists()
+                and repository.tag_message(tag_name) == tag_message
+                and repository.resolve_commit(tag_name) == state.head_commit
+            )
+            if not interrupted:
+                raise ValueError(f'Specification tag "{tag_name}" already exists.')
+            repository.delete_tag(tag_name)
+            state = repository.state()
         classification = self.classify(
             repository,
             metadata.version,
@@ -281,11 +318,7 @@ class SpecificationVersionService:
             raise ValueError(
                 "Version metadata unified_specification_hash does not match supplied specification."
             )
-        repository.create_annotated_tag(
-            tag_name,
-            f"Gate 1 soft-lock specification {metadata.version}; approval {approval.approval_id}",
-        )
-        lock_target = self._lock_root / f"{metadata.version}.lock.json"
+        repository.create_annotated_tag(tag_name, tag_message)
         snapshot_target = self._snapshot_path(tag_name)
         try:
             record = SpecificationLockRecord(
@@ -356,20 +389,27 @@ class SpecificationVersionService:
         if target.exists():
             raise ValueError("Variant worktree path already exists.")
         repository.create_worktree(target, branch, resolved_base)
-        state = GitRepositoryAdapter(target).state()
-        record = VariantWorktreeRecord(
-            name=name,
-            path=str(target),
-            branch=branch,
-            head_commit=state.head_commit,
-            specification_tag=specification_tag,
-            base_ref=base_ref,
-            base_commit=resolved_base,
-            purpose=purpose,
-            approval=approval,
-            created_at_utc=datetime.now(UTC).isoformat(),
-        )
-        _atomic_json(self._lock_root / "worktrees" / f"{name}.json", record.model_dump(mode="json"))
+        try:
+            state = GitRepositoryAdapter(target).state()
+            record = VariantWorktreeRecord(
+                name=name,
+                path=str(target),
+                branch=branch,
+                head_commit=state.head_commit,
+                specification_tag=specification_tag,
+                base_ref=base_ref,
+                base_commit=resolved_base,
+                purpose=purpose,
+                approval=approval,
+                created_at_utc=datetime.now(UTC).isoformat(),
+            )
+            _atomic_json(
+                self._lock_root / "worktrees" / f"{name}.json", record.model_dump(mode="json")
+            )
+        except BaseException:
+            repository.remove_worktree(target)
+            repository.delete_branch(branch)
+            raise
         return record
 
 
@@ -459,6 +499,6 @@ def _sha256(value: Any) -> str:
 
 def _atomic_json(target: Path, value: dict[str, Any]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.tmp")
+    temporary = unique_temporary_path(target)
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
     replace_atomic(temporary, target)

@@ -15,10 +15,11 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from ..foundations.errors import redact_secrets
 from ..observability.metrics import record_metric_value
 from ..observability.telemetry_models import TelemetryActor, TelemetryAuthority, TelemetryContext
 from ..observability.telemetry_store import TelemetryStore
-from .documents import DocumentNode, DocumentTree, SpecificationCategory
+from .documents import DocumentNode, DocumentTree, SpecificationCategory, VisionStatus
 from .preprocessing import keywords_from_task
 from .retrieval_models import (
     ResolvedRetrieval,
@@ -29,6 +30,8 @@ from .retrieval_models import (
     RetrievalResult,
     RetrievalStatus,
 )
+
+_QDRANT_UPSERT_BATCH_SIZE = 256
 
 
 class EmbeddingProvider(Protocol):
@@ -169,20 +172,23 @@ class QdrantRetrievalIndex:
         if not values:
             return
         self._ensure_collection()
-        points = []
-        for document in values:
-            vector = self._embedding_provider.embed(document.text)
-            self._assert_dimensions(vector)
-            points.append(
-                {
-                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, document.stable_id)),
-                    "vector": vector,
-                    "payload": _document_payload(document),
-                }
+        for start in range(0, len(values), _QDRANT_UPSERT_BATCH_SIZE):
+            points = []
+            for document in values[start : start + _QDRANT_UPSERT_BATCH_SIZE]:
+                vector = self._embedding_provider.embed(document.text)
+                self._assert_dimensions(vector)
+                points.append(
+                    {
+                        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, document.stable_id)),
+                        "vector": vector,
+                        "payload": _document_payload(document),
+                    }
+                )
+            self._request(
+                "PUT",
+                f"/collections/{self._collection_name}/points?wait=true",
+                {"points": points},
             )
-        self._request(
-            "PUT", f"/collections/{self._collection_name}/points?wait=true", {"points": points}
-        )
 
     def search(self, query: RetrievalQuery) -> list[RetrievalCandidate]:
         self._ensure_collection()
@@ -262,12 +268,26 @@ class QdrantRetrievalIndex:
         )
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
-                parsed = json.loads(response.read().decode("utf-8"))
+                raw = response.read().decode("utf-8")
         except HTTPError as error:
-            raise RuntimeError(f"Qdrant HTTP {error.code} for {method} {path}.") from error
+            detail = _qdrant_error_detail(_read_error_body(error))
+            raise RuntimeError(
+                f"Qdrant HTTP {error.code} for {method} {path}." + (f" {detail}" if detail else "")
+            ) from error
         except URLError as error:
             raise RuntimeError(
                 f"Qdrant transport failure for {method} {path}: {error.reason}"
+            ) from error
+        except TimeoutError as error:
+            raise RuntimeError(
+                f"Qdrant did not answer {method} {path} within {self._timeout_seconds}s."
+            ) from error
+        try:
+            parsed = json.loads(raw)
+        except ValueError as error:
+            raise RuntimeError(
+                f"Qdrant returned a non-JSON body for {method} {path} (base URL "
+                f"{self._base_url}): {raw[:200]!r}"
             ) from error
         if not isinstance(parsed, dict) or parsed.get("status") not in {"ok", "success"}:
             raise RuntimeError("Qdrant response did not report success.")
@@ -304,6 +324,7 @@ class RetrievalTelemetrySink:
                 "backend": result.backend,
                 "candidate_count": len(result.candidates),
                 "failure_reason": result.failure_reason,
+                "cache_warning": result.cache_warning,
             },
         )
         record_metric_value(
@@ -354,8 +375,13 @@ class GroundedRetrievalService:
         failure_mode: RetrievalFailureMode = RetrievalFailureMode.FALLBACK_LEXICAL,
     ) -> RetrievalResult:
         cache_key = query.query_digest
+        warnings: list[str] = []
         if self._cache is not None:
-            cached = self._cache.get(cache_key)
+            cached: RetrievalResult | None = None
+            try:
+                cached = self._cache.get(cache_key)
+            except Exception as error:
+                warnings.append(f"cache read failed: {type(error).__name__}: {error}")
             if cached is not None:
                 result = _validated_result(query, cached).model_copy(
                     update={"status": RetrievalStatus.CACHE_HIT}
@@ -383,7 +409,12 @@ class GroundedRetrievalService:
                 failure_reason=f"{type(error).__name__}: {error}",
             )
         if self._cache is not None and result.status is RetrievalStatus.RETRIEVED:
-            self._cache.set(cache_key, result, self._cache_ttl_seconds)
+            try:
+                self._cache.set(cache_key, result, self._cache_ttl_seconds)
+            except Exception as error:
+                warnings.append(f"cache write failed: {type(error).__name__}: {error}")
+        if warnings:
+            result = result.model_copy(update={"cache_warning": "; ".join(warnings)})
         self._record(query, result)
         return result
 
@@ -425,7 +456,7 @@ def specification_retrieval_documents(
     documents: list[RetrievalDocument] = []
     for tree in trees:
         for node in tree.nodes:
-            text = str(node.content).strip()
+            text = _node_text(node)
             if text:
                 documents.append(
                     RetrievalDocument(
@@ -438,6 +469,14 @@ def specification_retrieval_documents(
                     )
                 )
     return sorted(documents, key=lambda document: (document.document_id, document.node_id))
+
+
+def _node_text(node: DocumentNode) -> str:
+    text = str(node.content).strip()
+    if node.vision_status is VisionStatus.ACCEPTED and node.resolved_structure:
+        structure = json.dumps(node.resolved_structure, sort_keys=True, ensure_ascii=False)
+        return f"{text}\n{structure}".strip()
+    return text
 
 
 def _validated_result(query: RetrievalQuery, result: RetrievalResult) -> RetrievalResult:
@@ -453,6 +492,30 @@ def _validated_result(query: RetrievalQuery, result: RetrievalResult) -> Retriev
         key=lambda candidate: (-candidate.score, candidate.document_id, candidate.node_id)
     )
     return result.model_copy(update={"candidates": candidates[: query.limit]})
+
+
+def _read_error_body(error: HTTPError) -> str:
+    try:
+        return error.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _qdrant_error_detail(body: str) -> str:
+    if not body.strip():
+        return ""
+    message: Any = None
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        status = parsed.get("status")
+        message = status.get("error") if isinstance(status, dict) else status
+    if not isinstance(message, str):
+        message = body
+    scrubbed = redact_secrets(" ".join(message.split()))
+    return f"Qdrant said: {scrubbed[:300]}" if scrubbed else ""
 
 
 def _document_payload(document: RetrievalDocument) -> dict[str, Any]:

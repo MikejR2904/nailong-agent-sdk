@@ -10,8 +10,10 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, TypeAdapter, field_validator
 
 from ...foundations.contracts import StrictModel
-from .._utils import canonical_digest, content_digest
-from ..contracts import InteropOperationStatus, InteropReceipt, assert_sanitized_interop_value
+from .._utils import canonical_digest, checked_interop_value, content_digest
+from ..contracts import InteropOperationStatus, InteropReceipt
+
+MAX_CHOICE_CRITERIA = 255
 
 
 class JevQuestionKind(StrEnum):
@@ -31,7 +33,7 @@ class JevChoiceQuestion(StrictModel):
     instructions: str | dict[str, Any] | list[Any]
     criteria: dict[str, str | dict[str, Any] | list[Any] | None] = Field(
         min_length=2,
-        max_length=255,
+        max_length=MAX_CHOICE_CRITERIA,
     )
 
 
@@ -81,8 +83,7 @@ class JevDecisionRequest(StrictModel):
     @field_validator("state")
     @classmethod
     def state_is_redacted_json(cls, state: dict[str, Any]) -> dict[str, Any]:
-        assert_sanitized_interop_value(state)
-        return state
+        return checked_interop_value(state)
 
     @property
     def state_digest(self) -> str:

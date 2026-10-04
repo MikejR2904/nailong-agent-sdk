@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,11 @@ from .git_tools import register_git_tools
 from .orchestration_tools import register_orchestration_tools
 from .project_state_tools import register_project_state_tools
 from .run_tools import register_run_tools
+from .security import (
+    BearerTokenMiddleware,
+    ServerConfigurationError,
+    load_http_service_settings,
+)
 from .specification_tools import register_specification_tools
 from .telemetry_tools import register_telemetry_tools
 
@@ -113,18 +119,24 @@ def __dir__() -> list[str]:
 
 
 def main() -> None:
-    """Run the Python agent runtime as a loopback-only Streamable HTTP service."""
+    """Run the Python agent runtime as a bearer-authenticated Streamable HTTP service."""
 
-    host = os.environ.get("AGENT_RUNTIME_HOST", "127.0.0.1")
-    port = int(os.environ.get("AGENT_RUNTIME_PORT", "8001"))
-    create_mcp_server().run(
-        transport="streamable-http",
-        host=host,
-        port=port,
+    try:
+        settings = load_http_service_settings(os.environ)
+    except ServerConfigurationError as error:
+        print(f"nailong-agent-sdk MCP server cannot start: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
+    import uvicorn
+
+    app = create_mcp_server().streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,
         stateless_http=True,
+        transport_security=settings.transport_security(),
+        host=settings.host,
     )
+    app.add_middleware(BearerTokenMiddleware, token=settings.token)
+    uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")
 
 
 if __name__ == "__main__":

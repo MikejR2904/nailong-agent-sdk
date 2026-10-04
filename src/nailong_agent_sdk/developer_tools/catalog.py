@@ -15,6 +15,7 @@ import json
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
 
 
@@ -53,12 +54,12 @@ def write_public_api_catalog(path: Path) -> PublicApiCatalog:
 
     catalog = build_public_api_catalog()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
+    temporary = unique_temporary_path(path)
     temporary.write_text(
         json.dumps(catalog.model_dump(mode="json"), indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    temporary.replace(path)
+    replace_atomic(temporary, path)
     return catalog
 
 

@@ -168,6 +168,15 @@ class OpenAICompatibleSemanticGapAnalyzer:
             ) from error
         try:
             raw_findings = _UntrustedSemanticGapAnalysis.model_validate(decoded).findings
+            findings = [
+                SemanticGapFinding(
+                    **finding.model_dump(mode="python"),
+                    analysis_provider=self._provider,
+                    analysis_model=self._model,
+                    analysis_receipt_digest=_semantic_finding_receipt(source_hash, finding),
+                )
+                for finding in raw_findings
+            ]
         except ValidationError as error:
             field_errors = [
                 f"{'.'.join(str(part) for part in issue['loc']) or '(root)'}: {issue['msg']}"
@@ -180,15 +189,6 @@ class OpenAICompatibleSemanticGapAnalyzer:
                 + ".",
                 {"field_errors": field_errors, "raw_content": content[:2_000]},
             ) from error
-        findings = [
-            SemanticGapFinding(
-                **finding.model_dump(mode="python"),
-                analysis_provider=self._provider,
-                analysis_model=self._model,
-                analysis_receipt_digest=_semantic_finding_receipt(source_hash, finding),
-            )
-            for finding in raw_findings
-        ]
         return SemanticGapAnalysis(findings=findings)
 
 

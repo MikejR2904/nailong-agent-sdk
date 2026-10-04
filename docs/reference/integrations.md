@@ -1,20 +1,20 @@
 # `integrations/` - optional, authority-preserving bridges to external frameworks and evaluators
 
-Nothing in this package is imported by the core runtime. Each adapter loads its optional dependency lazily (`require_optional_module`) and keeps one rule: the SDK owns authority, evidence and durable state, and only a bounded, sanitised projection plus digests cross the boundary. `contracts.py` and `_utils.py` define that boundary (an `InteropRunEnvelope`, `InteropReceipt`, the key-name sanitiser and the digest helper); `jev/` wraps the TypeSafe Jev evaluator as read-only advice (verification, exploration ordering, single-to-multi routing lift) that local policy may accept, reject or escalate; `langchain.py` and `langgraph.py` run SDK agents inside those frameworks or run a framework graph inside an SDK graph node.
+Nothing in this package is imported by the core runtime. Each adapter loads its optional dependency lazily (`require_optional_module`) and keeps one rule: the SDK owns authority, evidence and durable state, and only a bounded, sanitised projection plus digests cross the boundary. `contracts.py` and `_utils.py` define that boundary (an `InteropRunEnvelope`, `InteropReceipt`, the sanitiser for key names and credential-shaped values, and the digest helper); `jev/` wraps the TypeSafe Jev evaluator as read-only advice (verification, exploration ordering, single-to-multi routing lift) that local policy may accept, reject or escalate; `langchain.py` and `langgraph.py` run SDK agents inside those frameworks or run a framework graph inside an SDK graph node.
 
 | File | Lines | Role |
 |---|---:|---|
 | [`integrations/__init__.py`](#integrations__init__py---public-surface-of-the-integrations-package) | 113 | public surface of the integrations package |
-| [`integrations/_utils.py`](#integrations_utilspy---private-sanitiser-digest-and-optional-import-helpers) | 129 | private sanitiser, digest and optional-import helpers |
-| [`integrations/contracts.py`](#integrationscontractspy---framework-neutral-interop-contracts) | 147 | framework-neutral interop contracts |
+| [`integrations/_utils.py`](#integrations_utilspy---private-sanitiser-digest-and-optional-import-helpers) | 160 | private sanitiser, digest and optional-import helpers |
+| [`integrations/contracts.py`](#integrationscontractspy---framework-neutral-interop-contracts) | 145 | framework-neutral interop contracts |
 | [`integrations/jev/__init__.py`](#integrationsjev__init__py---public-surface-of-the-jev-package) | 59 | public surface of the Jev package |
 | [`integrations/jev/advisory.py`](#integrationsjevadvisorypy---verification-gate-that-adds-a-non-authoritative-jev-signal) | 116 | verification gate that adds a non-authoritative Jev signal |
-| [`integrations/jev/architecture.py`](#integrationsjevarchitecturepy---monotonic-single-to-multi-routing-advice) | 151 | monotonic single-to-multi routing advice |
+| [`integrations/jev/architecture.py`](#integrationsjevarchitecturepy---monotonic-single-to-multi-routing-advice) | 163 | monotonic single-to-multi routing advice |
 | [`integrations/jev/decision.py`](#integrationsjevdecisionpy---optional-typesafe-jev-evaluator) | 296 | optional TypeSafe Jev evaluator |
-| [`integrations/jev/exploration.py`](#integrationsjevexplorationpy---optional-prioritisation-of-an-already-approved-candidate-set) | 139 | optional prioritisation of an already-approved candidate set |
-| [`integrations/jev/models.py`](#integrationsjevmodelspy---jev-question-answer-request-result-and-receipt-contracts) | 163 | Jev question, answer, request, result and receipt contracts |
+| [`integrations/jev/exploration.py`](#integrationsjevexplorationpy---optional-prioritisation-of-an-already-approved-candidate-set) | 149 | optional prioritisation of an already-approved candidate set |
+| [`integrations/jev/models.py`](#integrationsjevmodelspy---jev-question-answer-request-result-and-receipt-contracts) | 164 | Jev question, answer, request, result and receipt contracts |
 | [`integrations/jev/receipts.py`](#integrationsjevreceiptspy---receipt-sinks-for-jev-evaluations) | 57 | receipt sinks for Jev evaluations |
-| [`integrations/langchain.py`](#integrationslangchainpy---optional-langchain-adapters) | 226 | optional LangChain adapters |
+| [`integrations/langchain.py`](#integrationslangchainpy---optional-langchain-adapters) | 258 | optional LangChain adapters |
 | [`integrations/langgraph.py`](#integrationslanggraphpy---optional-langgraph-adapters) | 298 | optional LangGraph adapters |
 | [`integrations/receipts.py`](#integrationsreceiptspy---receipt-sinks-for-external-operations) | 65 | receipt sinks for external operations |
 
@@ -30,14 +30,15 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/_utils.py` - private sanitiser, digest and optional-import helpers
 
-*129 lines · depends on: nothing in the package · used by: `integrations/contracts.py`, `integrations/jev/decision.py`, `integrations/jev/models.py`, `integrations/langchain.py`, `integrations/langgraph.py` · not re-exported at the package root*
+*160 lines · depends on: `foundations/errors.py` · used by: `integrations/contracts.py`, `integrations/jev/decision.py`, `integrations/jev/models.py`, `integrations/langchain.py`, `integrations/langgraph.py` · not re-exported at the package root*
 
 **Role in the workflow.** Every contract validator and every receipt digest in this package calls these.
 
 **Contents**
 
 - `_canonical_key(value: Any) -> str` - Normalises a key (camelCase, kebab, spaces, case) to lowercase snake form so variants of a forbidden name cannot slip through. · *Called by:* `integrations/_utils.py::assert_sanitized_interop_value`
-- `assert_sanitized_interop_value(value: Any, *, _depth: int=0) -> None` - Rejects values unsafe for a framework boundary: non-JSON types (tuples and non-dict mappings are rejected), nesting deeper than 16, lists over 256 items, objects over 128 entries, keys over 256 characters, strings over 16,384 characters, and any dictionary key that is a credential or transcript name (token, secret, password, message, messages, approval, audit, capability and similar, including collapsed variants). Only keys are inspected, never string values. · *Called by:* `integrations/_utils.py::canonical_digest`, `integrations/contracts.py::ExternalDecisionRequest.state_is_safe`, `integrations/contracts.py::ExternalDecisionResult.answers_are_safe`, `integrations/contracts.py::InteropRunEnvelope.projection_is_safe` (+5 more)
+- `assert_sanitized_interop_value(value: Any, *, _depth: int=0, _path: str='$') -> None` - Rejects values unsafe for a framework boundary: non-JSON types (tuples, sets, bytes and non-dict mappings raise `TypeError` naming the type and JSON path), nesting deeper than 16, lists over 256 items, objects over 128 entries, keys over 256 characters, strings over 16,384 characters, any dictionary key that is a credential or transcript name (token, secret, password, message, messages, approval, audit, capability and similar, including collapsed variants) and any string value that looks like a credential (`Bearer ...`, `sk-...`, `password=...`, private-key blocks, the shapes `redact_secrets` masks). Every message names the offending JSON path (`$.a[1].b`). · *Called by:* `integrations/_utils.py::canonical_digest`, `integrations/contracts.py::ExternalDecisionRequest.state_is_safe`, `integrations/contracts.py::ExternalDecisionResult.answers_are_safe`, `integrations/contracts.py::InteropRunEnvelope.projection_is_safe` (+5 more)
+- `checked_interop_value(value: Any) -> Any` - Runs the sanitiser and re-raises its `TypeError` as `ValueError`, so a pydantic validator reports a `ValidationError` instead of leaking a raw `TypeError`; returns the value. · *Called by:* `integrations/contracts.py::ExternalDecisionRequest.state_is_safe`, `integrations/contracts.py::ExternalDecisionResult.answers_are_safe`, `integrations/contracts.py::InteropRunEnvelope.projection_is_safe`, `integrations/jev/models.py::JevDecisionRequest.state_is_redacted_json`
 - **class `OptionalDependencyError`** *(exception; bases: RuntimeError)* - `RuntimeError` subclass raised when an optional dependency is missing; its message names the module and the exact `nailong-agent-sdk[<extra>]` install hint, and Jev reports it verbatim. · *Instantiated by:* `integrations/_utils.py::require_optional_module`
 - `content_digest(value: Any) -> str` - SHA-256 over canonical JSON (sorted keys, no spaces, ASCII, `default=str`) without the key sanitiser; for hashing content that is not itself exported, such as an agent's output or a question spec. · *Called by:* `integrations/_utils.py::canonical_digest`, `jev/decision.py::_normalize_jev_response`, `jev/models.py::JevQuestionSpec.digest`, `integrations/langgraph.py::LangGraphSdkNode.__call__`
 - `canonical_digest(value: Any) -> str` - Sanitises, then hashes with `content_digest`. Use it only for values that really cross the boundary; hashing a value whose keys include a forbidden name raises. · *Called by:* `integrations/contracts.py::InteropRunEnvelope.projection_digest_matches_projection`, `jev/models.py::JevDecisionRequest.state_digest`, `integrations/langgraph.py::LangGraphSdkNodeBinding.binding_digest`
@@ -49,7 +50,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/contracts.py` - framework-neutral interop contracts
 
-*147 lines · depends on: `foundations/contracts.py`, `integrations/_utils.py` · used by: `integrations/__init__.py`, `integrations/jev/advisory.py`, `integrations/jev/architecture.py`, `integrations/jev/decision.py`, `integrations/jev/exploration.py`, `integrations/jev/models.py`, `integrations/jev/receipts.py`, `integrations/langchain.py` (+2 more) · re-exported at the package root: 4 name(s)*
+*145 lines · depends on: `foundations/contracts.py`, `integrations/_utils.py` · used by: `integrations/__init__.py`, `integrations/jev/advisory.py`, `integrations/jev/architecture.py`, `integrations/jev/decision.py`, `integrations/jev/exploration.py`, `integrations/jev/models.py`, `integrations/jev/receipts.py`, `integrations/langchain.py` (+2 more) · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** `InteropRunEnvelope` carries sanitised state into a framework node, `InteropReceipt` records what an external operation did, and `ExternalDecisionProvider` is the read-only evaluator protocol the Jev classes consume.
 
@@ -61,16 +62,16 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
   - members: `SUCCEEDED`, `REJECTED`, `ESCALATED`, `UNAVAILABLE`, `FAILED`
 - **class `InteropRunEnvelope`** *(pydantic model; bases: StrictModel)* - Sanitised state crossing a boundary: run, task and graph node ids, external thread id, remaining turn budget, state reference, projection and its digest.
   - fields: `schema_version`, `run_id`, `task_id`, `graph_node_id`, `external_thread_id`, `remaining_turn_budget`, `state_reference`, `projection`, `projection_digest`, `ledger_event_hash`
-  - `InteropRunEnvelope.projection_is_safe(projection: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the projection passes the sanitiser.
+  - `InteropRunEnvelope.projection_is_safe(projection: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the projection passes the sanitiser, and an unsupported type is reported as a `ValidationError`.
   - `InteropRunEnvelope.projection_digest_matches_projection() -> InteropRunEnvelope` *(validator)* - Validator: fills the digest when absent and rejects a wrong caller-supplied digest.
 - **class `InteropReceipt`** *(pydantic model; bases: StrictModel)* - Digest-only evidence record of an external operation: provider, operation, status, run id, projection and result digests, model, request and checkpoint ids, duration, retries and a detail code. · *Instantiated by:* `integrations/langgraph.py::LangGraphSdkNode._emit_receipt`
   - fields: `schema_version`, `provider`, `operation`, `status`, `run_id`, `projection_digest`, `result_digest`, `provider_model`, `provider_request_id`, `external_checkpoint_id`, `external_parent_checkpoint_id`, `duration_ms`, `retry_count`, `detail_code`
 - **class `ExternalDecisionRequest`** *(pydantic model; bases: StrictModel)* - Bounded evaluator request: purpose, run id, sanitised state with digest, question spec id, version and digest, model and a deadline of at most 300 seconds.
   - fields: `schema_version`, `purpose`, `run_id`, `state`, `state_digest`, `question_spec_id`, `question_spec_version`, `question_spec_digest`, `model`, `deadline_seconds`
-  - `ExternalDecisionRequest.state_is_safe(state: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the state passes the sanitiser.
+  - `ExternalDecisionRequest.state_is_safe(state: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the state passes the sanitiser, and an unsupported type is reported as a `ValidationError`.
 - **class `ExternalDecisionResult`** *(pydantic model; bases: StrictModel)* - Normalised evaluator result: status, model, request id, answers, response digest, token counts, duration, retries and an unavailable reason.
   - fields: `schema_version`, `status`, `model`, `provider_request_id`, `answers`, `response_digest`, `input_tokens`, `output_tokens`, `duration_ms`, `retry_count`, `unavailable_reason`
-  - `ExternalDecisionResult.answers_are_safe(answers: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the answers pass the sanitiser.
+  - `ExternalDecisionResult.answers_are_safe(answers: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the answers pass the sanitiser, and an unsupported type is reported as a `ValidationError`.
 - **class `ExternalDecisionProvider`** *(Protocol; bases: Protocol)* - Read-only evaluator protocol; implementations never receive authority objects.
   - `ExternalDecisionProvider.evaluate(request: ExternalDecisionRequest) -> ExternalDecisionResult` *(async)* - Evaluate one request and return a result.
 
@@ -111,20 +112,21 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/jev/architecture.py` - monotonic single-to-multi routing advice
 
-*151 lines · depends on: `foundations/contracts.py`, `integrations/contracts.py`, `integrations/jev/models.py` · used by: `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py`, `integrations/jev/__init__.py` · re-exported at the package root: 3 name(s)*
+*163 lines · depends on: `foundations/contracts.py`, `integrations/contracts.py`, `integrations/jev/models.py` · used by: `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py`, `integrations/jev/__init__.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** `Orchestrator.prepare` calls `advise` after the deterministic route; Jev may lift single-agent to multi-agent when its choice confidence meets the minimum and can never lower a multi-agent route.
 
 **Contents**
 
-- **class `JevArchitectureRoutingPolicy`** *(pydantic model; bases: StrictModel)* - Model, minimum confidence (default 0.8), unavailable mode and version.
+- **class `JevArchitectureRoutingPolicy`** *(pydantic model; bases: StrictModel)* - Model, minimum confidence (default 0.8), unavailable mode (fallback-deterministic or reject; escalate is refused) and version.
   - fields: `model`, `minimum_confidence`, `on_unavailable`, `policy_version`
+  - `JevArchitectureRoutingPolicy.on_unavailable_has_a_routing_meaning(mode: InteropFailureMode) -> InteropFailureMode` *(validator, classmethod)* - Validator: refuses `escalate`, because the router returns advice and has no escalation channel, naming the two supported modes.
 - **class `JevArchitectureAdvice`** *(pydantic model; bases: StrictModel)* - Receipt-backed advice: deterministic and chosen architecture, whether the deterministic fallback was used, a reason and the Jev result. · *Instantiated by:* `jev/architecture.py::JevArchitectureRouter._unavailable_advice`, `jev/architecture.py::JevArchitectureRouter.advise`
   - fields: `deterministic_architecture`, `architecture`, `used_deterministic_fallback`, `reason`, `result`
 - **class `JevArchitectureRouter`** *(class)* - Maps a typed Jev answer to a route under the local policy.
   - `JevArchitectureRouter.__init__(evaluator: ExternalDecisionProvider, policy: JevArchitectureRoutingPolicy) -> None` - Stores the evaluator and policy.
   - `JevArchitectureRouter.advise(*, run_id: str, deterministic_architecture: Literal['single-agent', 'multi-agent'], state: dict[str, Any], deadline_seconds: float=20) -> JevArchi...` *(async)* - Returns a no-op advice (no Jev call) for a deterministic multi-agent route; otherwise asks a fixed single-versus-multi choice question and lifts only on a high-confidence multi-agent answer. · *Called by:* `orchestrator/orchestrator.py::Orchestrator.prepare`
-  - `JevArchitectureRouter._unavailable_advice(result: JevDecisionResult, detail: str | None=None) -> JevArchitectureAdvice` - Raises `RuntimeError` in reject mode; any other mode, escalate included, keeps the single-agent route with the reason. · *Called by:* `jev/architecture.py::JevArchitectureRouter.advise`
+  - `JevArchitectureRouter._unavailable_advice(result: JevDecisionResult, detail: str | None=None) -> JevArchitectureAdvice` - Raises `RuntimeError` in reject mode; in fallback mode keeps the single-agent route with the reason. · *Called by:* `jev/architecture.py::JevArchitectureRouter.advise`
 
 ---
 
@@ -157,7 +159,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/jev/exploration.py` - optional prioritisation of an already-approved candidate set
 
-*139 lines · depends on: `foundations/contracts.py`, `integrations/contracts.py`, `integrations/jev/models.py` · used by: `integrations/jev/__init__.py` · re-exported at the package root: 2 name(s)*
+*149 lines · depends on: `foundations/contracts.py`, `integrations/contracts.py`, `integrations/jev/models.py` · used by: `integrations/jev/__init__.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** A host passes candidates it already authorised; Jev picks one; the result cannot create nodes or change state, and failure falls back to the best deterministic rank.
 
@@ -168,14 +170,14 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 - **class `JevExplorationAdvice`** *(pydantic model; bases: StrictModel)* - The selected candidate id (or None), whether the deterministic fallback was used and the Jev result. · *Instantiated by:* `jev/exploration.py::JevExplorationAdvisor.prioritize`
   - fields: `selected_candidate_id`, `used_deterministic_fallback`, `result`
 - **class `JevExplorationAdvisor`** *(class)* - Prioritises a bounded candidate set with a Jev choice question.
-  - `JevExplorationAdvisor.__init__(evaluator: ExternalDecisionProvider, *, model: str, max_candidates: int=64, on_unavailable: InteropFailureMode=InteropFailureMode.FALLBACK_DETERMI...` - Stores the evaluator, model, candidate limit and unavailable mode.
-  - `JevExplorationAdvisor.prioritize(run_id: str, candidates: Sequence[ExplorationCandidate], *, instructions: str, deadline_seconds: float=20) -> JevExplorationAdvice` *(async)* - Rejects fewer than two candidates or more than the bound (messages give the counts), orders candidates by rank then id, asks a choice question over their ids, and returns Jev's pick if it names a known candidate; otherwise rejects or falls back to the first candidate. · *No in-package callers (public API, entry point, or protocol hook).*
+  - `JevExplorationAdvisor.__init__(evaluator: ExternalDecisionProvider, *, model: str, max_candidates: int=64, on_unavailable: InteropFailureMode=InteropFailureMode.FALLBACK_DETERMI...` - Rejects a `max_candidates` outside 2 to 255 (the options a Jev choice question can carry) with a `ValueError` naming the value; stores the evaluator, model, candidate limit and unavailable mode.
+  - `JevExplorationAdvisor.prioritize(run_id: str, candidates: Sequence[ExplorationCandidate], *, instructions: str, deadline_seconds: float=20) -> JevExplorationAdvice` *(async)* - Rejects fewer than two candidates, more than the bound (messages give the counts) and repeated candidate ids, orders candidates by rank then id, asks a choice question over their ids, and returns Jev's pick if it names a known candidate; otherwise rejects or falls back to the first candidate. · *No in-package callers (public API, entry point, or protocol hook).*
 
 ---
 
 ### `integrations/jev/models.py` - Jev question, answer, request, result and receipt contracts
 
-*163 lines · depends on: `foundations/contracts.py`, `integrations/_utils.py`, `integrations/contracts.py` · used by: `integrations/jev/__init__.py`, `integrations/jev/advisory.py`, `integrations/jev/architecture.py`, `integrations/jev/decision.py`, `integrations/jev/exploration.py`, `integrations/jev/receipts.py` · re-exported at the package root: 5 name(s)*
+*164 lines · depends on: `foundations/contracts.py`, `integrations/_utils.py`, `integrations/contracts.py` · used by: `integrations/jev/__init__.py`, `integrations/jev/advisory.py`, `integrations/jev/architecture.py`, `integrations/jev/decision.py`, `integrations/jev/exploration.py`, `integrations/jev/receipts.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** A host fixes a `JevQuestionSpec` per purpose; the evaluator sends a `JevDecisionRequest` and validates the response into typed answers; a `JevDecisionReceipt` records the outcome.
 
@@ -185,7 +187,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
   - members: `NOUL`, `CHOICE`, `SCORE`
 - **class `JevNoulQuestion`** *(pydantic model; bases: StrictModel)* - A yes/no probability question with optional true and false criteria.
   - fields: `type`, `instructions`, `criteria`
-- **class `JevChoiceQuestion`** *(pydantic model; bases: StrictModel)* - A choice among 2-255 labelled options. · *Instantiated by:* `jev/architecture.py::JevArchitectureRouter.advise`, `jev/exploration.py::JevExplorationAdvisor.prioritize`
+- **class `JevChoiceQuestion`** *(pydantic model; bases: StrictModel)* - A choice among 2-255 labelled options (`MAX_CHOICE_CRITERIA`). · *Instantiated by:* `jev/architecture.py::JevArchitectureRouter.advise`, `jev/exploration.py::JevExplorationAdvisor.prioritize`
   - fields: `type`, `instructions`, `criteria`
 - **class `JevScoreQuestion`** *(pydantic model; bases: StrictModel)* - A score with 2-10 criteria.
   - fields: `type`, `instructions`, `criteria`
@@ -195,7 +197,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
   - `JevQuestionSpec.digest() -> str` *(property)* - Property: content digest of the spec (option labels are not sanitised). · *Called by:* `jev/decision.py::_normalize_jev_response`, `jev/models.py::JevDecisionResult.unavailable`, `observability/telemetry_store.py::TelemetryStore.append`, `specifications/preprocessing.py::SpecificationPreprocessor.process_document` (+6 more)
 - **class `JevDecisionRequest`** *(pydantic model; bases: StrictModel)* - One bounded, redacted evaluation request: purpose, run id, sanitised state, question spec, model, deadline and up to three attempts. · *Instantiated by:* `jev/architecture.py::JevArchitectureRouter.advise`, `jev/exploration.py::JevExplorationAdvisor.prioritize`
   - fields: `schema_version`, `purpose`, `run_id`, `state`, `question_spec`, `model`, `deadline_seconds`, `max_attempts`
-  - `JevDecisionRequest.state_is_redacted_json(state: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the state passes the sanitiser.
+  - `JevDecisionRequest.state_is_redacted_json(state: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the state passes the sanitiser, and an unsupported type is reported as a `ValidationError`.
   - `JevDecisionRequest.state_digest() -> str` *(property)* - Property: digest of the state. · *Called by:* `jev/decision.py::TypeSafeJevDecisionEvaluator._record_receipt`, `jev/decision.py::_normalize_jev_response`, `jev/models.py::JevDecisionResult.unavailable`
 - **class `JevNoulAnswer`** *(pydantic model; bases: StrictModel)* - A probability in [0, 1].
   - fields: `type`, `noul`
@@ -236,7 +238,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/langchain.py` - optional LangChain adapters
 
-*226 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `foundations/contracts.py`, `integrations/_utils.py`, `integrations/contracts.py`, `tools/tools.py` · used by: `integrations/__init__.py` · re-exported at the package root: 4 name(s)*
+*258 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `foundations/contracts.py`, `foundations/errors.py`, `integrations/_utils.py`, `integrations/contracts.py`, `tools/tools.py` · used by: `integrations/__init__.py` · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** A LangChain Runnable can serve as the SDK model, an SDK run can be exposed as a Runnable, and an SDK tool can be exposed as a LangChain tool that re-enters the host's governed `ToolExecutor`. LangChain is never the security monitor.
 
@@ -253,12 +255,12 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
   - `LangChainSdkRunnable.as_runnable() -> Any` - Wraps `ainvoke` in a real `RunnableLambda` (needs `langchain_core`). · *No in-package callers (public API, entry point, or protocol hook).*
 - **class `LangChainSdkToolFacade`** *(class)* - A schema-only LangChain tool whose calls go through the SDK executor after a local preflight.
   - `LangChainSdkToolFacade.__init__(tool: ToolDefinition, executor: ToolExecutor, invocation_factory: LangChainToolInvocationFactory, *, preflight: LangChainToolPreflight | None=None...` - Stores the tool, executor, invocation factory and optional preflight.
-  - `LangChainSdkToolFacade.ainvoke(arguments: Mapping[str, Any]) -> dict[str, Any]` *(async)* - Builds the invocation, checks it matches the declared tool and payload, runs the optional preflight (a returned value short-circuits) and otherwise executes through the executor, dropping the `failure` field. · *Called within this file by:* `integrations/langchain.py::LangChainSdkToolFacade.as_tool.call`
+  - `LangChainSdkToolFacade.ainvoke(arguments: Mapping[str, Any]) -> dict[str, Any]` *(async)* - Builds the invocation, checks it matches the declared tool and payload, validates the arguments against the tool's input schema (a mismatch returns a failed result naming the tool and the schema path, and the executor is never called), runs the optional preflight (a returned value short-circuits) and otherwise executes through the executor, dropping the `failure` field. · *Called within this file by:* `integrations/langchain.py::LangChainSdkToolFacade.as_tool.call`
   - `LangChainSdkToolFacade.as_tool() -> Any` - Builds a `StructuredTool` with the SDK JSON schema unchanged. · *No in-package callers (public API, entry point, or protocol hook).*
     - `LangChainSdkToolFacade.as_tool.call(**kwargs: Any) -> dict[str, Any]` *(async)* - The tool coroutine; dispatches only through `ainvoke`. · *Called by:* `base_agent/agent.py::BaseAgent._apply_tool_outcome_to_project_state`, `base_agent/agent.py::BaseAgent._effective_call`, `base_agent/agent.py::BaseAgent._episode_summary_text`, `base_agent/agent.py::BaseAgent._execute_profiled_tool_call` (+19 more)
   - `LangChainSdkToolFacade._validate_invocation(invocation: ToolInvocationContext, payload: dict[str, Any]) -> None` - Requires the invocation's tool name and arguments to equal the declared tool and dispatched payload. · *Called by:* `integrations/langchain.py::LangChainSdkToolFacade.ainvoke`
 - `parse_structured_sdk_turn(response: Any, _: ModelContext) -> AgentTurn` - Accepts a mapping or pydantic-style response and validates it as an `AgentTurn`; anything else raises `TypeError`. · *No in-package callers (public API, entry point, or protocol hook).*
-- `_assert_safe_langchain_prompt(prompt: Any) -> None` - Allows at most one system and one user message with only role and content, each non-empty and at most 16,384 characters; everything else must pass the generic sanitiser. · *Called by:* `integrations/langchain.py::LangChainAgentModelAdapter.next_turn`
+- `_assert_safe_langchain_prompt(prompt: Any) -> None` - Allows at most one system and one user message with only role and content, each a non-empty string of at most 16,384 characters (errors name the message index and what was found); everything else must pass the generic sanitiser. · *Called by:* `integrations/langchain.py::LangChainAgentModelAdapter.next_turn`
 - `_agent_result_projection(result: AgentResult) -> dict[str, Any]` - The full `AgentResult` JSON dump. · *Called by:* `integrations/langchain.py::LangChainSdkRunnable.ainvoke`
 - `_result_mapping(result: Any) -> dict[str, Any]` - Converts a preflight result (model or mapping) to a dictionary. · *Called by:* `integrations/langchain.py::LangChainSdkToolFacade.ainvoke`
 
@@ -316,4 +318,3 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
   - `TelemetryInteropReceiptSink.__call__(receipt: InteropReceipt) -> None` - Emits the receipt with INFO severity when it succeeded and WARNING otherwise.
 
 *Module-level names:* `InteropReceiptSink`
-

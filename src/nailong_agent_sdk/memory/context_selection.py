@@ -105,15 +105,16 @@ class TaskAwareContextSelector:
         nodes: list[DocumentNode] = []
         document_ids: list[str] = []
         reasons: dict[str, list[str]] = {}
+        lowered_pointers = [pointer.lower() for pointer in scope_pointers]
         for tree in trees:
             if tree.category not in categories:
                 continue
             matches = []
             for node in tree.nodes:
                 serialized = str(node.content).lower()
+                location = node.source.location.lower()
                 exact = any(
-                    pointer in node.source.location or pointer in serialized
-                    for pointer in scope_pointers
+                    pointer in location or pointer in serialized for pointer in lowered_pointers
                 )
                 keyword_hits = sorted(keyword for keyword in keywords if keyword in serialized)
                 if exact or keyword_hits:

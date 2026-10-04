@@ -39,6 +39,15 @@ class EnvironmentPolicy(StrictModel):
         return scrubbed
 
 
+def default_native_environment() -> EnvironmentPolicy:
+    names = (
+        ["SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "COMSPEC", "TEMP", "TMP"]
+        if os.name == "nt"
+        else ["PATH", "LANG", "LC_ALL", "TMPDIR"]
+    )
+    return EnvironmentPolicy(allowed_variable_names=names)
+
+
 class DockerSandboxOptions(StrictModel):
     """Per-template container settings for :class:`DockerSandbox`."""
 
