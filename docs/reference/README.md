@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **131 files, 425 classes and 1,214 functions** (methods and nested closures included).
+covers **132 files, 427 classes and 1,246 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -131,6 +131,9 @@ shared state, routed by exact reference to consumers that have not started. A fa
 the controller to bounded repair, then escalation. The orchestration ends FAILED, BLOCKED,
 CANCELLED or EXECUTED according to the node statuses, and a controller cannot complete while a
 node has not completed. An agent can also ask for exploration beyond the plan (Workflow 7).
+After a crash, `recover_execution` continues a DISPATCHED orchestration: a node whose binding
+is declared idempotent is replayed (elastic nodes included), any other interrupted node fails,
+and the remaining waves run.
 
 ## Workflow 7 - exploring beyond the plan (elastic nodes)
 
@@ -143,10 +146,12 @@ completes, `GraphAgentExecutor` puts the queued requests in its `GraphNodeResult
 
 1. Each request is checked (unique id, visible dependencies, narrowing references, a free node
    id); an invalid one is refused and recorded, the rest continue.
-2. The valid ones are checked together against the plan's caps. If they fit, the scheduler
-   creates one exploration node per request (`elastic:<node>:<id>`, one level deeper) and one
-   join (`join:<node>`) that waits for all of them, and puts the node's not-yet-started
-   dependents behind the join. Every request gets a `GraphSpawnRecord`.
+2. The valid ones are checked together against the plan's caps, and the join counts: a batch of
+   N requests costs N + 1 of `max_elastic_nodes` (default 3, so up to two requests fit by default).
+   If they fit, the scheduler creates one exploration node per request
+   (`elastic:<node>:<id>`, one level deeper) and one join (`join:<node>`) that waits for all
+   of them, and puts the node's not-yet-started dependents behind the join. Every request
+   gets a `GraphSpawnRecord`.
 3. The children run in the following waves through `GraphAgentExecutor`, which builds their
    bindings (through the `Orchestrator`: the root's profile, model, skills, tools and
    capabilities, never more). A failed child does not stop the join; a blocked or cancelled
@@ -158,6 +163,22 @@ completes, `GraphAgentExecutor` puts the queued requests in its `GraphNodeResult
    `grant_elastic_capacity` (raise the caps and run the batch) or `decline_elastic_requests`
    (complete the join without running it). By default an agent is told at once when no room
    remains; a binding with `escalate_elastic_overflow` queues the request for that decision.
+   Every run also has ceilings, which the orchestrator takes from `OrchestrationPolicy`, that
+   bound a plan's caps and every grant. A batch that would pass a ceiling is never deferred:
+   each of its requests is refused with `ELASTIC_NODE_CEILING_REACHED` or
+   `ELASTIC_DEPTH_CEILING_REACHED`, and the agent is told at once.
+6. **Siblings.** The agents of one wave run at the same time, so the scheduler keeps a per-wave
+   ledger and hands each agent an `ElasticReservation`. `request_elastic_node` reserves the
+   agent's whole queue (its requests plus the join) against what the other running agents
+   already hold, first come, first served, and the receipt reports what is left. A node that
+   does not complete gives its hold back. The commit stays the authority, but a request an
+   agent was told is queued is not refused at commit because of a sibling.
+7. **Crash.** A node persisted as RUNNING when the process died is replayed only when the
+   caller names it or the replay policy accepts it (`GraphAgentExecutor.is_replayable`: the
+   binding is declared idempotent, and an elastic node's binding is built from the factory
+   for the check); every other one fails with `interrupted-non-idempotent`.
+   `Orchestrator.recover_execution` does this for a DISPATCHED orchestration and runs the
+   remaining waves.
 
 ## Workflow 5 - specification to retrievable, versioned requirements
 
@@ -197,7 +218,8 @@ evidence with the exact PCKP solver.
 | add a verification gate | register on a `VerificationGateRegistry` (`agent/verification.py`) |
 | add a project-state transition | `state/project_state_models.py` (`StateTransitionKind`), `ProjectStateReducer.apply` in `state/project_state_engine.py` |
 | add a graph node kind or executor | `state/graph_models.py` (`GraphNodeKind`), the executor map passed to `execute_graph` |
-| let agents explore beyond the plan, or change the elastic rules | `state/elastic.py` (requests, limits, admission checks), `StateGraph._apply_spawn_requests` (commit-time handling), `tools/elastic_requests.py` (agent queue), `agent/orchestrator/` (policy ceilings, derived bindings) |
+| let agents explore beyond the plan, or change the elastic rules | `state/elastic.py` (requests, limits, admission checks), `StateGraph._apply_spawn_requests` (commit-time handling), `StateGraph._reserve_elastic` (per-wave ledger), `tools/elastic_requests.py` (agent queue), `agent/orchestrator/` (policy ceilings, derived bindings) |
+| change what happens to nodes a crash interrupted | `StateGraph.recover_interrupted`, `GraphAgentExecutor.is_replayable`, `Orchestrator.recover_execution` |
 | add a metric | `observability/metric_definitions.py` and the emit site (`record_metric_value`) |
 | add an MCP tool | the matching `mcp/*_tools.py` `register_*` function, registering with `ctx.tool(server, name, exclusive=...)` |
 | support a new specification format | `specifications/documents.py` (`DocumentFormat`) and `SpecificationPreprocessor._parse` |
@@ -225,23 +247,23 @@ evidence with the exact PCKP solver.
 
 | File | Lines | Role |
 |---|---:|---|
-| [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 823 | the public API surface (lazy re-exports) |
+| [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 831 | the public API surface (lazy re-exports) |
 | [`agent/__init__.py`](agent.md#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2124 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2120 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 95 | small value types used by the BaseAgent loop |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 97 | bounded task text for exploration and continuation nodes |
-| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 258 | runs registered BaseAgent bindings as graph nodes |
+| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 283 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 333 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 44 | public surface of the OpenAI-compatible adapters |
 | [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 613 | Chat Completions adapter for the agent model contract |
 | [`agent/openai_compatible/embeddings.py`](agent.md#agentopenai_compatibleembeddingspy---synchronous-embedding-provider-for-retrieval-indexes) | 68 | synchronous embedding provider for retrieval indexes |
-| [`agent/openai_compatible/semantic_gap.py`](agent.md#agentopenai_compatiblesemantic_gappy---model-proposed-semantic-findings-for-gate-1) | 232 | model-proposed semantic findings for Gate 1 |
-| [`agent/openai_compatible/transport.py`](agent.md#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 467 | JSON HTTP transports and endpoint configuration |
+| [`agent/openai_compatible/semantic_gap.py`](agent.md#agentopenai_compatiblesemantic_gappy---model-proposed-semantic-findings-for-gate-1) | 234 | model-proposed semantic findings for Gate 1 |
+| [`agent/openai_compatible/transport.py`](agent.md#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 472 | JSON HTTP transports and endpoint configuration |
 | [`agent/openai_compatible/vision.py`](agent.md#agentopenai_compatiblevisionpy---image-proposals-through-a-verified-byte-loader) | 162 | image proposals through a verified byte loader |
 | [`agent/orchestrator/__init__.py`](agent.md#agentorchestrator__init__py---public-surface-of-the-orchestrator-package) | 31 | public surface of the orchestrator package |
-| [`agent/orchestrator/models.py`](agent.md#agentorchestratormodelspy---user-owned-orchestration-policy-request-and-record-contracts) | 175 | user-owned orchestration policy, request and record contracts |
-| [`agent/orchestrator/orchestrator.py`](agent.md#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 774 | deterministic composition of policy, plan, controller and graph execution |
+| [`agent/orchestrator/models.py`](agent.md#agentorchestratormodelspy---user-owned-orchestration-policy-request-and-record-contracts) | 180 | user-owned orchestration policy, request and record contracts |
+| [`agent/orchestrator/orchestrator.py`](agent.md#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 809 | deterministic composition of policy, plan, controller and graph execution |
 | [`agent/orchestrator/state_store.py`](agent.md#agentorchestratorstate_storepy---atomic-local-persistence-of-orchestration-records-and-policies) | 81 | atomic local persistence of orchestration records and policies |
 | [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 100 | composition root for the durable stores around an agent |
 | [`agent/specialists.py`](agent.md#agentspecialistspy---declarative-agent-definitions-for-the-frameworks-roles) | 178 | declarative agent definitions for the framework's roles |
@@ -253,29 +275,30 @@ evidence with the exact PCKP solver.
 | [`developer_tools/quality.py`](developer_tools.md#developer_toolsqualitypy---closed-ruff-quality-check) | 92 | closed Ruff quality check |
 | [`developer_tools/validate.py`](developer_tools.md#developer_toolsvalidatepy---contract-file-validation) | 97 | contract-file validation |
 | [`foundations/__init__.py`](foundations.md#foundations__init__py---package-marker-for-the-dependency-free-layer) | 4 | package marker for the dependency-free layer |
-| [`foundations/atomic_io.py`](foundations.md#foundationsatomic_iopy---crash-safe-file-publication-exclusive-claims-and-cross-process-locks) | 114 | crash-safe file publication, exclusive claims and cross-process locks |
+| [`foundations/atomic_io.py`](foundations.md#foundationsatomic_iopy---crash-safe-file-publication-exclusive-claims-and-cross-process-locks) | 138 | crash-safe file publication, exclusive claims and cross-process locks |
 | [`foundations/benchmarks.py`](foundations.md#foundationsbenchmarkspy---reproducible-exact-vs-greedy-pckp-benchmark-harness) | 88 | reproducible exact-vs-greedy PCKP benchmark harness |
-| [`foundations/contracts.py`](foundations.md#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 488 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
+| [`foundations/contracts.py`](foundations.md#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 510 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
 | [`foundations/dependency_graph.py`](foundations.md#foundationsdependency_graphpy---deterministic-cycle-and-blast-radius-traversal-over-dependent-prerequisite-edges) | 100 | deterministic cycle and blast-radius traversal over (dependent, prerequisite) edges |
-| [`foundations/errors.py`](foundations.md#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 236 | typed SDK errors and secret/reasoning redaction for durable records |
-| [`foundations/identifiers.py`](foundations.md#foundationsidentifierspy---identifier-validation-injective-file-names-and-collision-free-sequential-ids) | 60 | identifier validation, injective file names and collision-free sequential ids |
+| [`foundations/errors.py`](foundations.md#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 286 | typed SDK errors and secret/reasoning redaction for durable records |
+| [`foundations/identifiers.py`](foundations.md#foundationsidentifierspy---identifier-validation-injective-file-names-and-collision-free-sequential-ids) | 81 | identifier validation, injective file names and collision-free sequential ids |
 | [`foundations/json_limits.py`](foundations.md#foundationsjson_limitspy---depth-bound-for-untrusted-json-like-payloads) | 25 | depth bound for untrusted JSON-like payloads |
 | [`foundations/logging.py`](foundations.md#foundationsloggingpy---opt-in-stdlib-logging-namespace-for-the-few-paths-outside-structured-telemetry) | 25 | opt-in stdlib logging namespace for the few paths outside structured telemetry |
 | [`foundations/optimization/__init__.py`](foundations.md#foundationsoptimization__init__py---re-exports-the-pckp-models-and-solvers) | 17 | re-exports the PCKP models and solvers |
-| [`foundations/optimization/models.py`](foundations.md#foundationsoptimizationmodelspy---pckp-problem-item-and-solution-contracts) | 91 | PCKP problem, item and solution contracts |
+| [`foundations/optimization/models.py`](foundations.md#foundationsoptimizationmodelspy---pckp-problem-item-and-solution-contracts) | 90 | PCKP problem, item and solution contracts |
 | [`foundations/optimization/solvers.py`](foundations.md#foundationsoptimizationsolverspy---exact-tree-dp--branch-and-bound-and-greedy-pckp-solvers) | 490 | exact (tree DP / branch-and-bound) and greedy PCKP solvers |
 | [`foundations/text.py`](foundations.md#foundationstextpy---newline-only-line-splitting-and-utf-8-well-formedness-for-durable-text) | 36 | newline-only line splitting and UTF-8 well-formedness for durable text |
-| [`integrations/__init__.py`](integrations.md#integrations__init__py---public-surface-of-the-integrations-package) | 113 | public surface of the integrations package |
+| [`foundations/version.py`](foundations.md#foundationsversionpy---the-installed-package-name-and-version-and-the-identity-strings-derived-from-them) | 22 | the installed package name and version, and the identity strings derived from them |
+| [`integrations/__init__.py`](integrations.md#integrations__init__py---public-surface-of-the-integrations-package) | 115 | public surface of the integrations package |
 | [`integrations/_utils.py`](integrations.md#integrations_utilspy---private-sanitiser-digest-and-optional-import-helpers) | 160 | private sanitiser, digest and optional-import helpers |
 | [`integrations/contracts.py`](integrations.md#integrationscontractspy---framework-neutral-interop-contracts) | 145 | framework-neutral interop contracts |
-| [`integrations/jev/__init__.py`](integrations.md#integrationsjev__init__py---public-surface-of-the-jev-package) | 59 | public surface of the Jev package |
-| [`integrations/jev/advisory.py`](integrations.md#integrationsjevadvisorypy---verification-gate-that-adds-a-non-authoritative-jev-signal) | 116 | verification gate that adds a non-authoritative Jev signal |
-| [`integrations/jev/architecture.py`](integrations.md#integrationsjevarchitecturepy---monotonic-single-to-multi-routing-advice) | 163 | monotonic single-to-multi routing advice |
+| [`integrations/jev/__init__.py`](integrations.md#integrationsjev__init__py---public-surface-of-the-jev-package) | 61 | public surface of the Jev package |
+| [`integrations/jev/advisory.py`](integrations.md#integrationsjevadvisorypy---verification-gate-that-adds-a-non-authoritative-jev-signal) | 118 | verification gate that adds a non-authoritative Jev signal |
+| [`integrations/jev/architecture.py`](integrations.md#integrationsjevarchitecturepy---monotonic-single-to-multi-routing-advice) | 164 | monotonic single-to-multi routing advice |
 | [`integrations/jev/decision.py`](integrations.md#integrationsjevdecisionpy---optional-typesafe-jev-evaluator) | 296 | optional TypeSafe Jev evaluator |
 | [`integrations/jev/exploration.py`](integrations.md#integrationsjevexplorationpy---optional-prioritisation-of-an-already-approved-candidate-set) | 149 | optional prioritisation of an already-approved candidate set |
-| [`integrations/jev/models.py`](integrations.md#integrationsjevmodelspy---jev-question-answer-request-result-and-receipt-contracts) | 164 | Jev question, answer, request, result and receipt contracts |
+| [`integrations/jev/models.py`](integrations.md#integrationsjevmodelspy---jev-question-answer-request-result-and-receipt-contracts) | 170 | Jev question, answer, request, result and receipt contracts |
 | [`integrations/jev/receipts.py`](integrations.md#integrationsjevreceiptspy---receipt-sinks-for-jev-evaluations) | 57 | receipt sinks for Jev evaluations |
-| [`integrations/langchain.py`](integrations.md#integrationslangchainpy---optional-langchain-adapters) | 258 | optional LangChain adapters |
+| [`integrations/langchain.py`](integrations.md#integrationslangchainpy---optional-langchain-adapters) | 266 | optional LangChain adapters |
 | [`integrations/langgraph.py`](integrations.md#integrationslanggraphpy---optional-langgraph-adapters) | 298 | optional LangGraph adapters |
 | [`integrations/receipts.py`](integrations.md#integrationsreceiptspy---receipt-sinks-for-external-operations) | 65 | receipt sinks for external operations |
 | [`mcp/__init__.py`](mcp.md#mcp__init__py---package-marker-for-the-mcp-surface) | 3 | package marker for the MCP surface |
@@ -284,80 +307,80 @@ evidence with the exact PCKP solver.
 | [`mcp/client.py`](mcp.md#mcpclientpy---outbound-mcp-client-lifecycle) | 401 | outbound MCP client lifecycle |
 | [`mcp/client_bridge.py`](mcp.md#mcpclient_bridgepy---opt-in-bridge-from-external-mcp-tools-to-governed-harness-tools) | 92 | opt-in bridge from external MCP tools to governed harness tools |
 | [`mcp/client_types.py`](mcp.md#mcpclient_typespy---typed-configuration-and-status-for-the-outbound-mcp-client) | 79 | typed configuration and status for the outbound MCP client |
-| [`mcp/controller_tools.py`](mcp.md#mcpcontroller_toolspy---mcp-tools-for-the-deterministic-controller) | 253 | MCP tools for the deterministic controller |
+| [`mcp/controller_tools.py`](mcp.md#mcpcontroller_toolspy---mcp-tools-for-the-deterministic-controller) | 258 | MCP tools for the deterministic controller |
 | [`mcp/git_tools.py`](mcp.md#mcpgit_toolspy---mcp-tools-for-local-git-inspection-and-specification-version-locks) | 109 | MCP tools for local Git inspection and specification version locks |
 | [`mcp/orchestration_tools.py`](mcp.md#mcporchestration_toolspy---mcp-tools-for-plan-validation-graph-runs-and-orchestration-compilation) | 115 | MCP tools for plan validation, graph runs and orchestration compilation |
-| [`mcp/project_state_tools.py`](mcp.md#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 126 | MCP tools for project working memory |
+| [`mcp/project_state_tools.py`](mcp.md#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 192 | MCP tools for project working memory |
 | [`mcp/run_tools.py`](mcp.md#mcprun_toolspy---mcp-tools-for-graph-run-state-cancellation-approvals-and-resumption) | 59 | MCP tools for graph run state, cancellation, approvals and resumption |
-| [`mcp/security.py`](mcp.md#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 131 | bearer-token authentication and host checks for the HTTP service |
-| [`mcp/server.py`](mcp.md#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 143 | MCP server factory and loopback entry point |
+| [`mcp/security.py`](mcp.md#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 135 | bearer-token authentication and host checks for the HTTP service |
+| [`mcp/server.py`](mcp.md#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 144 | MCP server factory and loopback entry point |
 | [`mcp/specification_tools.py`](mcp.md#mcpspecification_toolspy---mcp-tools-for-the-specification-pipeline-and-gate-1) | 132 | MCP tools for the specification pipeline and Gate 1 |
 | [`mcp/telemetry_tools.py`](mcp.md#mcptelemetry_toolspy---mcp-tools-for-telemetry-audit-logs-and-metrics) | 145 | MCP tools for telemetry, audit logs and metrics |
 | [`memory/__init__.py`](memory.md#memory__init__py---package-marker-for-episode-memory-and-context-assembly) | 3 | package marker for episode memory and context assembly |
 | [`memory/context.py`](memory.md#memorycontextpy---builds-the-fixed-initial-prompt-for-a-run) | 51 | builds the fixed initial prompt for a run |
 | [`memory/context_projection.py`](memory.md#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 357 | per-turn bounded context projection and the tool-result journal |
-| [`memory/context_selection.py`](memory.md#memorycontext_selectionpy---pre-run-specification-selection-by-design-stage-eda) | 171 | pre-run specification selection by design stage (EDA) |
+| [`memory/context_selection.py`](memory.md#memorycontext_selectionpy---pre-run-specification-selection-by-design-stage-eda) | 175 | pre-run specification selection by design stage (EDA) |
 | [`memory/episode_models.py`](memory.md#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 176 | episode records, compaction policy and the retention contracts |
 | [`memory/episode_scoring.py`](memory.md#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 54 | deterministic lexical relevance and cost helpers for retention |
 | [`memory/episode_store.py`](memory.md#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 857 | episode lifecycle and the three deterministic compaction strategies |
 | [`memory/episodes.py`](memory.md#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 76 | task-scoped episode graph of one-line summaries |
 | [`observability/__init__.py`](observability.md#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
-| [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 374 | append-only, hash-chained, per-run JSONL audit transcript |
+| [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 388 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/metric_definitions.py`](observability.md#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 481 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](observability.md#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
 | [`observability/profiler.py`](observability.md#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 318 | privacy-conscious timing profile for one agent run |
 | [`observability/telemetry_helpers.py`](observability.md#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
 | [`observability/telemetry_models.py`](observability.md#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 129 | telemetry event, context, actor and metric contracts |
-| [`observability/telemetry_store.py`](observability.md#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 478 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
+| [`observability/telemetry_store.py`](observability.md#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 495 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
 | [`specifications/__init__.py`](specifications.md#specifications__init__py---package-marker-for-the-specification-pipeline) | 3 | package marker for the specification pipeline |
 | [`specifications/documents.py`](specifications.md#specificationsdocumentspy---manifest-document-node-and-source-locator-contracts) | 136 | manifest, document, node and source-locator contracts |
-| [`specifications/evidence_graph.py`](specifications.md#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 361 | source-preserving evidence graph with required closure and bounded packing |
-| [`specifications/gate.py`](specifications.md#specificationsgatepy---gate-1-deterministic-checks-soft-lock-decision-and-artifact-persistence) | 413 | Gate 1 deterministic checks, soft-lock decision and artifact persistence |
-| [`specifications/gate_models.py`](specifications.md#specificationsgate_modelspy---gate-1-requirement-gap-and-version-metadata-contracts) | 167 | Gate 1 requirement, gap and version-metadata contracts |
+| [`specifications/evidence_graph.py`](specifications.md#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 363 | source-preserving evidence graph with required closure and bounded packing |
+| [`specifications/gate.py`](specifications.md#specificationsgatepy---gate-1-deterministic-checks-soft-lock-decision-and-artifact-persistence) | 426 | Gate 1 deterministic checks, soft-lock decision and artifact persistence |
+| [`specifications/gate_models.py`](specifications.md#specificationsgate_modelspy---gate-1-requirement-gap-and-version-metadata-contracts) | 166 | Gate 1 requirement, gap and version-metadata contracts |
 | [`specifications/git_models.py`](specifications.md#specificationsgit_modelspy---git-backed-version-and-variant-worktree-contracts) | 120 | Git-backed version and variant-worktree contracts |
-| [`specifications/git_versioning.py`](specifications.md#specificationsgit_versioningpy---local-only-git-adapter-and-the-specification-version-lock-service) | 504 | local-only Git adapter and the specification version-lock service |
-| [`specifications/preprocessing.py`](specifications.md#specificationspreprocessingpy---manifest-driven-source-preserving-specification-parsing) | 420 | manifest-driven, source-preserving specification parsing |
+| [`specifications/git_versioning.py`](specifications.md#specificationsgit_versioningpy---local-only-git-adapter-and-the-specification-version-lock-service) | 512 | local-only Git adapter and the specification version-lock service |
+| [`specifications/preprocessing.py`](specifications.md#specificationspreprocessingpy---manifest-driven-source-preserving-specification-parsing) | 417 | manifest-driven, source-preserving specification parsing |
 | [`specifications/retrieval.py`](specifications.md#specificationsretrievalpy---provenance-grounded-candidate-retrieval-with-caches-and-optional-vector-backends) | 548 | provenance-grounded candidate retrieval with caches and optional vector backends |
 | [`specifications/retrieval_models.py`](specifications.md#specificationsretrieval_modelspy---retrieval-document-query-candidate-and-result-contracts) | 131 | retrieval document, query, candidate and result contracts |
 | [`specifications/vision.py`](specifications.md#specificationsvisionpy---vision-extraction-adapter-protocol-and-trivial-adapters) | 43 | vision-extraction adapter protocol and trivial adapters |
 | [`state/__init__.py`](state.md#state__init__py---package-marker-for-durable-run-state) | 3 | package marker for durable run state |
-| [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 650 | durable facade over the controller, the graph run, project state and telemetry |
+| [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 785 | durable facade over the controller, the graph run, project state and telemetry |
 | [`state/coordination_records.py`](state.md#statecoordination_recordspy---durable-run-record-and-its-integrity-hash) | 45 | durable run record and its integrity hash |
-| [`state/elastic.py`](state.md#stateelasticpy---typed-elastic-node-requests-specs-spawn-records-and-the-admission-checks) | 275 | typed elastic-node requests, specs, spawn records and the admission checks |
-| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1331 | deterministic wave scheduler and authoritative typed run state |
-| [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 220 | typed node, edge, event and shared-state contracts for the run graph |
+| [`state/elastic.py`](state.md#stateelasticpy---typed-elastic-node-requests-specs-spawn-records-and-the-admission-checks) | 337 | typed elastic-node requests, specs, spawn records and the admission checks |
+| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1443 | deterministic wave scheduler and authoritative typed run state |
+| [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 227 | typed node, edge, event and shared-state contracts for the run graph |
 | [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 347 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
-| [`state/orchestration.py`](state.md#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 380 | controller state machine and its crash-safe store |
-| [`state/orchestration_models.py`](state.md#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 93 | controller phase, routing-rule and record contracts |
-| [`state/planning.py`](state.md#stateplanningpy---typed-plan-contracts-and-the-deterministic-plan-validator) | 487 | typed plan contracts and the deterministic plan validator |
-| [`state/project_state_engine.py`](state.md#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 473 | mechanical reducer and token-bounded projector over `ProjectState` |
-| [`state/project_state_models.py`](state.md#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 367 | bounded, hash-sealed working-memory contracts |
+| [`state/orchestration.py`](state.md#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 401 | controller state machine and its crash-safe store |
+| [`state/orchestration_models.py`](state.md#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 100 | controller phase, routing-rule and record contracts |
+| [`state/planning.py`](state.md#stateplanningpy---typed-plan-contracts-and-the-deterministic-plan-validator) | 496 | typed plan contracts and the deterministic plan validator |
+| [`state/project_state_engine.py`](state.md#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 517 | mechanical reducer and token-bounded projector over `ProjectState` |
+| [`state/project_state_models.py`](state.md#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 373 | bounded, hash-sealed working-memory contracts |
 | [`state/project_state_store.py`](state.md#stateproject_state_storepy---in-memory-and-file-backed-project-state-stores-with-a-hash-chained-audit-trail) | 249 | in-memory and file-backed project-state stores with a hash-chained audit trail |
 | [`state/run_state_store.py`](state.md#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 405 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
-| [`state/shared_state.py`](state.md#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 345 | typed lateral-state payloads, exact routing references and provenance records |
+| [`state/shared_state.py`](state.md#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 344 | typed lateral-state payloads, exact routing references and provenance records |
 | [`state/stage_gates.py`](state.md#statestage_gatespy---deterministic-stage-completeness-gate) | 94 | deterministic stage-completeness gate |
 | [`tools/__init__.py`](tools.md#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
 | [`tools/approvals.py`](tools.md#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 178 | typed approval gates for state-changing actions |
 | [`tools/artifacts.py`](tools.md#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution) | 264 | content-addressed artifact store with immutable write attribution |
 | [`tools/core/__init__.py`](tools.md#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
-| [`tools/core/definitions.py`](tools.md#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 336 | typed declarations of the governed core tool set |
-| [`tools/core/helpers.py`](tools.md#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 570 | private validation, HTTP and isolated-regex helpers behind the core tools |
+| [`tools/core/definitions.py`](tools.md#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 340 | typed declarations of the governed core tool set |
+| [`tools/core/helpers.py`](tools.md#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 578 | private validation, HTTP and isolated-regex helpers behind the core tools |
 | [`tools/core/regex_worker.py`](tools.md#toolscoreregex_workerpy---standalone-regex-worker-run-in-an-isolated-interpreter) | 38 | standalone regex worker run in an isolated interpreter |
-| [`tools/core/services.py`](tools.md#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 489 | portable governed tools: dispatcher, services and web search |
+| [`tools/core/services.py`](tools.md#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 490 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](tools.md#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
-| [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 145 | agent-side queue and tool executor for elastic spawn requests |
+| [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 159 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 170 | deny-by-default capability policy |
 | [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 348 | capability-bound harness tool registry and its BaseAgent executor |
-| [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 316 | pluggable execution backends for registered command templates |
+| [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](tools.md#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 487 | registered-command execution with timeout, bounded output and process-tree kill |
 | [`tools/task_models.py`](tools.md#toolstask_modelspy---records-for-background-tasks) | 43 | records for background tasks |
-| [`tools/tasks.py`](tools.md#toolstaskspy---background-task-lifecycle-start-poll-stop) | 254 | background task lifecycle: start, poll, stop |
+| [`tools/tasks.py`](tools.md#toolstaskspy---background-task-lifecycle-start-poll-stop) | 258 | background task lifecycle: start, poll, stop |
 | [`tools/tools.py`](tools.md#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 72 | the ToolExecutor protocol and two deterministic test executors |
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 25 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 181 | git worktree isolation for concurrent agents |
 
-*Coverage: 131 files, 425 classes and 1214 functions (including methods and nested closures), each with a written description.*
+*Coverage: 132 files, 427 classes and 1246 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 
@@ -366,7 +389,7 @@ evidence with the exact PCKP solver.
 | `pyproject.toml` | Package metadata (`nailong-agent-sdk` 0.17.0, Python >= 3.12), hatchling build, console script `nailong-agent-sdk-dev`, optional extras `langgraph`, `langchain`, `jev`, `redis-cache`, `interop`, Ruff and pytest settings |
 | `examples/` | Eight runnable scripts using a scripted model: custom verification and profiling, developer tools, durable runtime with PASK, elastic exploration, framework interoperability, governed core tools, grounded retrieval, orchestration |
 | `scripts/run_pckp_benchmark.py`, `benchmarks/` | Runs the frozen PCKP comparison cases in `pckp_cases.json` and writes `results/pckp-report.json` |
-| `tests/` | The pytest suite (`python -m pytest tests`, more than 600 tests): unit and integration tests per package folder, cross-module, concurrency and long-run checks in `tests/links/`, and a spawned MCP server and a stub evaluator in `tests/support/`. No test calls a real model provider |
+| `tests/` | The pytest suite (`python -m pytest tests`, more than 900 tests): unit and integration tests per package folder, cross-module, concurrency and long-run checks in `tests/links/`, and a spawned MCP server and a stub evaluator in `tests/support/`. No test calls a real model provider |
 | `test/` | Outputs of real-workload validation scenarios run against a live OpenAI-compatible provider (generated documents and a generated game). It is not a pytest suite |
 | `apps/sg_job_agent/` | A Singapore job-search application built on the SDK (separate `pyproject.toml`) |
 | `docs/reference/` | This reference |
@@ -381,7 +404,10 @@ reproduced it before any change; **[inspected]** means the code path was read bu
 Everything in the first table was repaired in the same pass and its reproduction re-run; the
 descriptions in this reference describe the code after those repairs. A later audit that ran
 every module against its documented behaviour found 113 further problems; the second table
-summarises how they were resolved, each with a test in `tests/`.
+summarises how they were resolved, each with a test in `tests/`. A re-audit of the whole
+package, started from the four known limits of the elastic-node design, closed those limits
+and the further defects it found; the third table lists them, again each with a test in
+`tests/`.
 
 ### Fixed during this audit
 
@@ -421,6 +447,21 @@ summarises how they were resolved, each with a test in `tests/`.
 | Elastic nodes | `StateGraph.spawn_elastic_child`, which nothing could call, is replaced by continuation: an agent queues typed requests with `request_elastic_node`, the scheduler validates them when it commits the result, creates the exploration children and a join that resumes the requester, holds the requester's dependents behind the join and records every request; a child can depend only on what its requester can see and may only narrow its routing references; exhausting the caps defers the batch behind a blocked join until the controller grants capacity or declines (MCP `grant_elastic_capacity`, `decline_elastic_requests`); the orchestrator derives elastic bindings from the root's authority and bounds plans with policy ceilings; earlier discoveries reach late-spawned nodes; spawns are persisted with the run and reported as telemetry |
 | Packaging | `py.typed` ships; the package root is lazy (importing it loads 58 modules in about 10 ms and neither `pydantic` nor `mcp`) |
 
+### Resolved by the re-audit
+
+| Area | Resolved |
+|---|---|
+| Elastic nodes | The four known limits are closed. (1) A grant is bounded by per-run ceilings, not only by the hard limits: `OrchestrationPolicy.max_elastic_depth` and `max_elastic_nodes` become the controller's `elastic_depth_ceiling` and `elastic_nodes_ceiling` (default: the hard limits), a plan cannot declare caps above them, a grant cannot pass them, and a batch that would pass a ceiling is refused (`ELASTIC_NODE_CEILING_REACHED`, `ELASTIC_DEPTH_CEILING_REACHED`) instead of deferred. (2) Tasks that run at the same time see each other's queued requests: the scheduler keeps a per-wave reservation ledger that agents reach through `ElasticReservation`, first come, first served, released when a node does not complete. (3) After a crash an interrupted node is replayed when the caller names it or `is_replayable` accepts it (`GraphAgentExecutor.is_replayable` builds an elastic node's binding from the factory), and `Orchestrator.recover_execution` resumes a DISPATCHED orchestration. (4) Joins count against `max_elastic_nodes`, so a batch of N requests costs N + 1 and a run never holds more elastic agents than the cap; the default cap is therefore 3 (it was 2). A snapshot written by an earlier build whose elastic nodes now exceed the cap fails to load with a message naming both numbers |
+| Foundations | A schema's `$ref` can no longer make validation fetch a URL or read a file: references resolve only inside the schema and the JSON Schema metaschemas, otherwise `SCHEMA_REFERENCE_UNRESOLVABLE`; redaction also covers tuples, sets and bytes, `Authorization: Basic`, `Digest` and `Token` credentials, URL passwords, current token formats (GitHub fine-grained, GitLab, Hugging Face, Google, npm, Fireworks, `sk_live_`/`sk_test_`, AWS session ids, JSON web tokens), `passwd`, `passphrase`, access and signing keys and quoted values that contain spaces, and `redact_hidden_reasoning` and `assert_no_hidden_reasoning` look inside sets and tuples; the package name and version come from one module (`foundations/version.py`); `exclusive_file_lock` honours its timeout on POSIX as it already did on Windows (it blocked for ever there); every validator that rejects a repeated id now names what repeats (`require_unique`: `plan task IDs must be unique; repeated: "T1"`), and a self-dependency, identical endpoints or an unknown relation endpoint name the id involved |
+| Observability | Several processes opening one run root at once no longer fail with `database is locked` (the WAL switch and the schema creation retry for up to ten seconds); the run report and the Markdown transcript count only the events or entries before the first integrity break as verified, and the verified-through sequence stops there |
+| Specifications | `SpecificationGate.soft_lock` ignored its `specification` argument, so a designer could soft-lock a specification with a gap report or version metadata written for another version; it now refuses both, naming the two versions, and the Git lock names both versions in its metadata error and checks the gap report's version too |
+| State | A question and a blocker can be closed (`QUESTION_RESOLVED`, `BLOCKER_CLEARED`; `ControllerRuntime.resolve_question` and `clear_blocker`), so stage requirements on them can be met; every stage failure records the repair-attempt and escalation metrics, whether it comes from the explicit request, a failed graph, a rejected provenance check or an incomplete stage; the per-node executor wrapper exists once (`StateGraph.execute_node`); the `ProjectStateRepository` protocol now declares the `summary_max_chars` argument that `BaseAgent` passes, so a store written to the protocol no longer fails on its first tool outcome; cancelling a completed or cancelled controller is refused before its graph run is touched (`ControllerStateMachine.require_cancellable`), where it used to mark the finished run cancelled and then raise; publishing a discovery, writing a shared value, recording a node result or adding a lateral dependency is refused once the controller is completed or cancelled (they used to change the finished run, and a node result its project state); a controller transition or a run write whose save raises no longer leaves the cached controller or graph ahead of the disk (`ControllerRuntime` restores the machine, `HarnessCoordinator._save` drops the cached graph), so retrying the call works instead of failing on a state it never stored |
+| Agent | The OpenAI-compatible transports treat a redirect on a streaming call as a failure instead of an empty success, classify any socket error as transient and report a body that cannot be decoded as `OPENAI_COMPATIBLE_RESPONSE_INVALID` |
+| Tools | `stop_task` no longer swallows the caller's own cancellation; the Docker env file that holds secrets is checked before it is created and removed when writing fails; a PDF page longer than `max_chars` is reported as cut (`text_truncated`, `omitted_chars`) instead of looking complete |
+| MCP | The HTTP service refuses a websocket without the token (it only checked HTTP requests); the server reports the installed package's name and version and the web clients identify as `nailong-agent-sdk/<version>`; `resolve_project_question` and `clear_project_blocker` close questions and blockers, so the server registers 52 tools |
+| Integrations | `LangChainSdkRunnable` returns the run's outcome only; the prompt context, episodes, events and profile need `include_trace=True`; the Jev gate, router and advisor are typed against the new `JevDecisionProvider` protocol (they were annotated with the generic `ExternalDecisionProvider`, whose request and result are not the Jev types they pass, so a type checker rejected `TypeSafeJevDecisionEvaluator`) |
+| Packaging | `jsonschema-specifications` and `referencing` are declared dependencies; `# noqa` directives for rules that are not enabled were removed |
+
 ### Still open
 
 1. **[inspected] Record stores are single-writer for their contents.** Ids, approvals, audit
@@ -440,32 +481,26 @@ summarises how they were resolved, each with a test in `tests/`.
    `asyncio.timeout`; a cancelled call leaves the session usable) and learns that a server died
    only when a call fails. The HTTP service speaks plain HTTP and its token identifies the host,
    not an approver: whoever holds it can record human decisions.
-5. **[inspected] Declared but unreachable:** no transition closes a blocker or open question, so
-   `StageCompletenessGate` requirements on them cannot be met from reducer-recorded state;
-   `ControllerPhase.INTAKE` is never used; `RunSharedState` and `SharedStateStore` are legacy
-   and unused.
+5. **[inspected] Declared but unused:** `ControllerPhase.INTAKE` is never entered;
+   `RunSharedState` and `SharedStateStore` are legacy and unused; `ExternalDecisionProvider`,
+   `ExternalDecisionRequest` and `ExternalDecisionResult` are exported generic contracts that
+   nothing in the package consumes.
 6. **[inspected] Duplication:** `_canonical_json` is defined in eight modules and wrapped by
    differently named SHA-256 helpers; the token estimate (`len(json) // 4`) is copied four times;
-   the per-node executor wrapper is duplicated in `StateGraph.execute` and
-   `HarnessCoordinator.execute_run`; `_normalize_verification` repeats `_normalize_decision`; two
-   artifact tool implementations exist.
-7. **[inspected] Metrics and exports:** repair-attempt metrics are recorded only by an explicit
-   `record_stage_failure`, not when graph failure, provenance rejection or a completeness check
-   triggers the repair; `verified_event_count` in the run report always equals `event_count`;
-   `LangChainSdkRunnable` returns the whole `AgentResult` dump (prompt context, episode
-   summaries, events, profile) to the framework without sanitising it.
-8. **[inspected] Naming:** `SERVER_NAME` (`agent-design-python-runtime`), `SERVER_VERSION` and
-   the HTTP user agents (`agent-design-sdk/0.8`) still carry the old name or a duplicated
-   version.
-9. **[inspected] Platform coverage:** the checkout was developed and tested on Windows. The POSIX
+   `_normalize_verification` repeats `_normalize_decision`; two artifact tool implementations
+   exist.
+7. **[inspected] Platform coverage:** the checkout was developed and tested on Windows. The POSIX
    paths (`flock`, process groups and `preexec_fn`, signal-based termination), WSL, and the
    Docker sandbox against a real daemon are covered only by the stubs in `tests/support/` and
    by code reading.
-10. **[inspected] Elastic nodes.** A capacity grant is limited only by the hard limits (depth 8,
-    256 nodes), not by `OrchestrationPolicy`, whose ceilings bound what a plan may declare. The
-    agent-side capacity check uses the capacity at the start of the wave, so siblings that
-    finish in the same wave can still defer a batch the agent was told would fit. A join
-    re-runs the requester's definition with the findings in its task text, not the original
-    conversation. After a crash a RUNNING elastic node is failed rather than replayed, because
-    `idempotent_node_ids()` only knows bindings built in the current process. Joins do not
-    count against `max_elastic_nodes`, so a run can use up to twice that many elastic agents.
+8. **[inspected] Elastic nodes.** A join re-runs the requester's definition with the findings
+   in its task text, not the original conversation, and a node replayed after a crash starts
+   its task again from the beginning, which is why only bindings declared idempotent are
+   replayed.
+9. **[inspected] Multi-store operations are not atomic.** A call that writes several
+   stores in turn (a node result into the run and then into project state, a cancel into
+   the run, then the controller, then the orchestration record) can fail between two
+   writes. Each store stays consistent and the cache is rolled back, but the stores then
+   disagree and retrying does not always heal it; `execute_graph` re-derives project state
+   from the run, which covers the common case. A journal or two-phase commit is a design
+   decision for the owner.

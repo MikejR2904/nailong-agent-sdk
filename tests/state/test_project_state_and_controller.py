@@ -167,7 +167,9 @@ def test_controller_state_machine_transitions_and_bounds():
         and machine.record.escalation_reason == "second"
     )
     machine.cancel("stop")
-    with pytest.raises(ValueError, match="cannot be cancelled again"):
+    with pytest.raises(
+        ValueError, match=r'Controller "controller-1" is already cancelled, a terminal phase'
+    ):
         machine.cancel("again")
     assert [e.sequence for e in machine.record.events] == list(
         range(1, len(machine.record.events) + 1)
@@ -691,6 +693,39 @@ def test_controller_failure_path_repairs_then_escalates(tmp_path):
     assert runtime.get_controller(cid).phase is ControllerPhase.ESCALATED
     with pytest.raises(ValueError, match="requires an executing controller"):
         arun(runtime.execute_graph(cid, {AGENT: failing}))
+
+
+def test_cancelling_a_completed_controller_is_refused_before_its_run_is_touched(tmp_path):
+    runtime, cid = executing_runtime(tmp_path)
+    arun(runtime.execute_graph(cid, {AGENT: run_ok}))
+    runtime.complete(cid)
+    run_id = runtime.get_controller(cid).run_id
+    before = HarnessCoordinator(tmp_path).get_run_state(run_id)
+    events_before = len(runtime.get_controller(cid).events)
+    with pytest.raises(
+        ValueError, match=rf'Controller "{cid}" is already completed, a terminal phase'
+    ):
+        runtime.cancel(cid, "too late")
+    after = HarnessCoordinator(tmp_path).get_run_state(run_id)
+    assert before.cancelled is False and after.cancelled is False
+    assert after.run_hash == before.run_hash and after.graph == before.graph
+    assert runtime.get_controller(cid).phase is ControllerPhase.COMPLETED
+    assert len(runtime.get_controller(cid).events) == events_before
+
+
+def test_cancelling_a_cancelled_controller_again_changes_nothing(tmp_path):
+    runtime, cid = executing_runtime(tmp_path)
+    runtime.cancel(cid, "first")
+    run_id = runtime.get_controller(cid).run_id
+    before = HarnessCoordinator(tmp_path).get_run_state(run_id)
+    events_before = len(runtime.get_controller(cid).events)
+    with pytest.raises(
+        ValueError, match=rf'Controller "{cid}" is already cancelled, a terminal phase'
+    ):
+        runtime.cancel(cid, "second")
+    after = HarnessCoordinator(tmp_path).get_run_state(run_id)
+    assert before.cancelled is True and after.run_hash == before.run_hash
+    assert len(runtime.get_controller(cid).events) == events_before
 
 
 def test_blocked_nodes_are_not_reported_as_a_completed_execution(tmp_path):

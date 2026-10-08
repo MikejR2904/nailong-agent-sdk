@@ -202,8 +202,10 @@ class AuditTranscriptStore:
         self._require_writable("render_markdown")
         boundary = self.snapshot_sequence(run_id)
         entries = self.list_entries(run_id, through_sequence=boundary)
-        entry_count = self.entry_count(run_id, through_sequence=boundary)
         failure = _entries_chain_break(self.iter_entries(run_id, through_sequence=boundary))
+        verified_count = _verified_entry_count(
+            self.iter_entries(run_id, through_sequence=boundary), failure
+        )
         integrity_valid = failure is None
         path = self._root / f"{file_safe_name(run_id)}.transcript.md"
         lines = [
@@ -211,8 +213,8 @@ class AuditTranscriptStore:
             "",
             f"Integrity chain valid: `{integrity_valid}`",
             *([] if failure is None else [f"First integrity failure: {failure.message}"]),
-            f"Verified transcript entries: `{entry_count}`",
-            f"Verified through sequence: `{boundary}`",
+            f"Verified transcript entries: `{verified_count}`",
+            f"Verified through sequence: `{boundary if failure is None else failure.sequence - 1}`",
             f"Rendered entries: `{len(entries)}`",
             "",
         ]
@@ -347,6 +349,18 @@ def _require_transcript_owner(entry: AuditLogEntry | None, run_id: str, label: s
             f'"{run_id}" cannot share it: the two ids map to the same file on this file system.',
             {"transcript": label, "stored_run_id": entry.run_id, "requested_run_id": run_id},
         )
+
+
+def _verified_entry_count(entries: Iterator[AuditLogEntry], failure: ChainBreak | None) -> int:
+    count = 0
+    try:
+        for entry in entries:
+            if failure is not None and entry.sequence >= failure.sequence:
+                break
+            count += 1
+    except ValueError:
+        pass
+    return count
 
 
 def _canonical_json(value: Any) -> str:

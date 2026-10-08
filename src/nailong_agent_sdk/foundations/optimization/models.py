@@ -14,6 +14,7 @@ from pydantic import Field, model_validator
 
 from ..contracts import StrictModel
 from ..dependency_graph import deterministic_cycles
+from ..identifiers import require_unique
 
 
 class PckpStatus(StrEnum):
@@ -35,10 +36,9 @@ class PckpItem(StrictModel):
 
     @model_validator(mode="after")
     def prerequisites_are_unique_and_external(self) -> PckpItem:
-        if len(self.prerequisites) != len(set(self.prerequisites)):
-            raise ValueError("PCKP prerequisites must be unique")
+        require_unique(self.prerequisites, f'PCKP item "{self.item_id}" prerequisites')
         if self.item_id in self.prerequisites:
-            raise ValueError("A PCKP item cannot require itself")
+            raise ValueError(f'PCKP item "{self.item_id}" cannot require itself')
         return self
 
 
@@ -51,8 +51,7 @@ class PckpProblem(StrictModel):
     @model_validator(mode="after")
     def validate_problem_graph(self) -> PckpProblem:
         item_ids = [item.item_id for item in self.items]
-        if len(item_ids) != len(set(item_ids)):
-            raise ValueError("PCKP item IDs must be unique")
+        require_unique(item_ids, "PCKP item IDs")
         known = set(item_ids)
         for item in self.items:
             unknown = set(item.prerequisites) - known

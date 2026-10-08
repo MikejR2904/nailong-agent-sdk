@@ -1,6 +1,7 @@
 import http.server
 import json
 import re
+import ssl
 import threading
 import time
 
@@ -14,6 +15,7 @@ from nailong_agent_sdk.agent.openai_compatible import (
     OpenAICompatibleEndpoint,
     OpenAICompatibleSemanticGapAnalyzer,
 )
+from nailong_agent_sdk.agent.openai_compatible import transport as transport_module
 from nailong_agent_sdk.agent.openai_compatible.transport import (
     HttpxJsonTransport,
     UrlLibJsonTransport,
@@ -563,6 +565,59 @@ def test_streaming_error_chunks_http_errors_and_truncation(server):
         "OPENAI_COMPATIBLE_RESPONSE_INVALID",
         "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
     }
+
+
+def test_a_streaming_redirect_is_refused_like_the_blocking_transports(server):
+    url, state = server
+    subject = OpenAICompatibleAgentModel(
+        endpoint(url),
+        provider="fake",
+        model="fake-1",
+        streaming_transport=HttpxStreamingJsonTransport(),
+    )
+
+    async def listener(event):
+        return None
+
+    for status in (301, 302, 307, 308):
+        state["script"] = [
+            {"status": status, "body": b"", "headers": {"Location": "http://elsewhere/"}}
+        ]
+        with pytest.raises(AgentSdkError) as redirected:
+            arun(subject.stream_turn(model_context(), listener))
+        assert redirected.value.code == "OPENAI_COMPATIBLE_HTTP_ERROR"
+        assert f"HTTP {status}" in str(redirected.value)
+        assert "redirects are refused" in str(redirected.value)
+        assert not isinstance(redirected.value, TransientProviderError)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [ssl.SSLError("EOF occurred in violation of protocol"), OSError(113, "No route to host")],
+)
+def test_os_level_failures_while_reading_the_reply_are_transient_for_urllib(
+    server, monkeypatch, failure
+):
+    class Opener:
+        def open(self, request, timeout=None):
+            raise failure
+
+    monkeypatch.setattr(transport_module, "build_opener", lambda *handlers: Opener())
+    with pytest.raises(TransientProviderError) as excinfo:
+        arun(model_for(server[0], UrlLibJsonTransport()).next_turn(model_context()))
+    assert excinfo.value.code == "OPENAI_COMPATIBLE_TRANSPORT_ERROR"
+    assert type(failure).__name__ in str(excinfo.value)
+
+
+@pytest.mark.parametrize("transport_name", ["urllib", "httpx"])
+def test_a_reply_that_is_not_valid_text_is_a_named_response_error(server, transport_name):
+    url, state = server
+    transport = UrlLibJsonTransport() if transport_name == "urllib" else HttpxJsonTransport()
+    state["script"] = [{"status": 200, "body": b"\xff\xfe\x00 not utf-8 json \xc3\x28"}]
+    with pytest.raises(AgentSdkError) as excinfo:
+        arun(model_for(url, transport).next_turn(model_context()))
+    assert excinfo.value.code == "OPENAI_COMPATIBLE_RESPONSE_INVALID"
+    assert not isinstance(excinfo.value, TransientProviderError)
 
 
 def test_embedding_provider_validation():

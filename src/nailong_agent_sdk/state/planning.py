@@ -19,7 +19,13 @@ from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
 from ..foundations.dependency_graph import deterministic_cycles
-from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
+from ..foundations.identifiers import require_unique
+from .elastic import (
+    DEFAULT_MAX_ELASTIC_DEPTH,
+    DEFAULT_MAX_ELASTIC_NODES,
+    MAX_ELASTIC_DEPTH_LIMIT,
+    MAX_ELASTIC_NODES_LIMIT,
+)
 from .shared_state import DiscoveryRoutingRefs
 
 
@@ -74,8 +80,7 @@ class PlanTask(StrictModel):
     @field_validator("dependencies")
     @classmethod
     def dependencies_are_unique(cls, value: list[str]) -> list[str]:
-        if len(value) != len(set(value)):
-            raise ValueError("dependencies must be unique")
+        require_unique(value, "dependencies")
         return value
 
     @model_validator(mode="after")
@@ -108,9 +113,10 @@ class DependencyProof(StrictModel):
     @model_validator(mode="after")
     def proof_has_distinct_endpoints(self) -> DependencyProof:
         if self.parent_task_id == self.child_task_id:
-            raise ValueError("dependency proof endpoints must be distinct")
-        if len(self.shared_signal_ids) != len(set(self.shared_signal_ids)):
-            raise ValueError("dependency proof signal IDs must be unique")
+            raise ValueError(
+                f'dependency proof endpoints must be distinct; both are "{self.parent_task_id}"'
+            )
+        require_unique(self.shared_signal_ids, "dependency proof signal IDs")
         return self
 
 
@@ -118,14 +124,17 @@ class Plan(StrictModel):
     plan_id: str = Field(min_length=1)
     tasks: list[PlanTask] = Field(min_length=1)
     dependency_proofs: list[DependencyProof] = Field(default_factory=list)
-    max_elastic_depth: int = Field(default=1, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT)
-    max_elastic_nodes: int = Field(default=2, ge=0, le=MAX_ELASTIC_NODES_LIMIT)
+    max_elastic_depth: int = Field(
+        default=DEFAULT_MAX_ELASTIC_DEPTH, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT
+    )
+    max_elastic_nodes: int = Field(
+        default=DEFAULT_MAX_ELASTIC_NODES, ge=0, le=MAX_ELASTIC_NODES_LIMIT
+    )
 
     @model_validator(mode="after")
     def task_ids_are_unique(self) -> Plan:
         ids = [task.task_id for task in self.tasks]
-        if len(ids) != len(set(ids)):
-            raise ValueError("plan task IDs must be unique")
+        require_unique(ids, "plan task IDs")
         return self
 
 

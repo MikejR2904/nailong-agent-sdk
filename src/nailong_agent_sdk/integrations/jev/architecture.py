@@ -10,12 +10,13 @@ from typing import Any, Literal
 from pydantic import Field, field_validator
 
 from ...foundations.contracts import StrictModel
-from ..contracts import ExternalDecisionProvider, InteropFailureMode, InteropOperationStatus
+from ..contracts import InteropFailureMode, InteropOperationStatus
 from .models import (
     _JEV_ANSWER_ADAPTER,
     JevAnswer,
     JevChoiceAnswer,
     JevChoiceQuestion,
+    JevDecisionProvider,
     JevDecisionRequest,
     JevDecisionResult,
     JevQuestionSpec,
@@ -69,7 +70,7 @@ class JevArchitectureRouter:
 
     def __init__(
         self,
-        evaluator: ExternalDecisionProvider,
+        evaluator: JevDecisionProvider,
         policy: JevArchitectureRoutingPolicy,
     ) -> None:
         self._evaluator = evaluator

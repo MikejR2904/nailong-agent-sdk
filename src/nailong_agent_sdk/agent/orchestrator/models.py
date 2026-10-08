@@ -15,8 +15,14 @@ from enum import StrEnum
 from pydantic import Field, model_validator
 
 from ...foundations.contracts import ModelBinding, SkillContext, StrictModel
+from ...foundations.identifiers import require_unique
 from ...integrations.jev.architecture import JevArchitectureAdvice
-from ...state.elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
+from ...state.elastic import (
+    DEFAULT_MAX_ELASTIC_DEPTH,
+    DEFAULT_MAX_ELASTIC_NODES,
+    MAX_ELASTIC_DEPTH_LIMIT,
+    MAX_ELASTIC_NODES_LIMIT,
+)
 from ...state.orchestration_models import ComplexityRoutingRules, GapMetadata, WorkflowArchitecture
 from ...state.planning import ModelTier, Plan
 from ...state.shared_state import SharedSubstrateSnapshot
@@ -70,16 +76,15 @@ class AgentExecutionProfile(StrictModel):
     def profile_authority_is_consistent(self) -> AgentExecutionProfile:
         if self.capability_grant.role != self.role:
             raise ValueError("Agent profile role must equal its capability grant role.")
-        if len(self.allowed_skill_ids) != len(set(self.allowed_skill_ids)):
-            raise ValueError("Agent profile allowed_skill_ids must be unique.")
-        if len(self.required_skill_ids) != len(set(self.required_skill_ids)):
-            raise ValueError("Agent profile required_skill_ids must be unique.")
-        if not set(self.required_skill_ids).issubset(self.allowed_skill_ids):
-            raise ValueError("Agent profile required skills must be permitted skills.")
-        if len(self.allowed_model_keys) != len(set(self.allowed_model_keys)):
-            raise ValueError("Agent profile allowed_model_keys must be unique.")
-        if len(self.allowed_tool_names) != len(set(self.allowed_tool_names)):
-            raise ValueError("Agent profile allowed_tool_names must be unique.")
+        require_unique(self.allowed_skill_ids, "Agent profile allowed_skill_ids")
+        require_unique(self.required_skill_ids, "Agent profile required_skill_ids")
+        unpermitted = sorted(set(self.required_skill_ids) - set(self.allowed_skill_ids))
+        if unpermitted:
+            raise ValueError(
+                f"Agent profile required skills {unpermitted} must be permitted skills."
+            )
+        require_unique(self.allowed_model_keys, "Agent profile allowed_model_keys")
+        require_unique(self.allowed_tool_names, "Agent profile allowed_tool_names")
         return self
 
 
@@ -95,20 +100,21 @@ class OrchestrationPolicy(StrictModel):
     max_parallel_agents: int = Field(default=4, ge=1)
     max_repair_attempts: int = Field(default=1, ge=0)
     multi_agent_enabled: bool = True
-    max_elastic_depth: int = Field(default=1, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT)
-    max_elastic_nodes: int = Field(default=2, ge=0, le=MAX_ELASTIC_NODES_LIMIT)
+    max_elastic_depth: int = Field(
+        default=DEFAULT_MAX_ELASTIC_DEPTH, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT
+    )
+    max_elastic_nodes: int = Field(
+        default=DEFAULT_MAX_ELASTIC_NODES, ge=0, le=MAX_ELASTIC_NODES_LIMIT
+    )
 
     @model_validator(mode="after")
     def configuration_ids_are_consistent(self) -> OrchestrationPolicy:
         skill_ids = [skill.id for skill in self.skills]
         model_ids = [model.model_key for model in self.models]
         profile_ids = [profile.profile_id for profile in self.profiles]
-        if len(skill_ids) != len(set(skill_ids)):
-            raise ValueError("Orchestration skill IDs must be unique.")
-        if len(model_ids) != len(set(model_ids)):
-            raise ValueError("Orchestration model keys must be unique.")
-        if len(profile_ids) != len(set(profile_ids)):
-            raise ValueError("Orchestration profile IDs must be unique.")
+        require_unique(skill_ids, "Orchestration skill IDs")
+        require_unique(model_ids, "Orchestration model keys")
+        require_unique(profile_ids, "Orchestration profile IDs")
         known_skills = set(skill_ids)
         known_models = set(model_ids)
         for profile in self.profiles:
@@ -134,8 +140,7 @@ class OrchestrationRequest(StrictModel):
 
     @model_validator(mode="after")
     def selected_skill_ids_are_unique(self) -> OrchestrationRequest:
-        if len(self.selected_skill_ids) != len(set(self.selected_skill_ids)):
-            raise ValueError("Selected skill IDs must be unique.")
+        require_unique(self.selected_skill_ids, "Selected skill IDs")
         task_ids = {task.task_id for task in self.plan.tasks}
         unknown_task_ids = set(self.profile_id_by_task_id) - task_ids
         if unknown_task_ids:

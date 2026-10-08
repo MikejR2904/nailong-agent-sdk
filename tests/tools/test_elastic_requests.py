@@ -116,12 +116,12 @@ def test_a_valid_request_is_queued_and_reports_what_remains():
         "status": "queued",
         "queued_requests": 1,
         "child_depth": 1,
-        "elastic_nodes_remaining_after_queue": 2,
+        "elastic_nodes_remaining_after_queue": 1,
         "capacity_decision_required": False,
         "runs": "after this task completes; a join node then resumes this task with the findings",
     }
     assert queue.requests == [req("a", dependencies=["pre"])]
-    assert queue.add(req("b"))["elastic_nodes_remaining_after_queue"] == 1
+    assert queue.add(req("b"))["elastic_nodes_remaining_after_queue"] == 0
     queue.requests.clear()
     assert len(queue.requests) == 2
 
@@ -148,12 +148,13 @@ def test_the_queue_checks_capacity_before_the_run_ends():
         shallow.add(req("a"))
     assert depth.value.code is ElasticRefusalCode.DEPTH_CAP_REACHED
     assert "max_elastic_depth 1" in str(depth.value)
-    tight = buffer(capacity=ElasticCapacity(node_depth=0, max_depth=1, nodes_used=2, max_nodes=3))
+    tight = buffer(capacity=ElasticCapacity(node_depth=0, max_depth=1, nodes_used=1, max_nodes=3))
     tight.add(req("a"))
     with pytest.raises(ElasticRequestRejected) as nodes:
         tight.add(req("b"))
     assert nodes.value.code is ElasticRefusalCode.NODE_CAP_REACHED
-    assert "2 requested" in str(nodes.value) and "2 already used" in str(nodes.value)
+    assert "2 requested plus the join node" in str(nodes.value)
+    assert "1 already used" in str(nodes.value)
     assert len(tight.requests) == 1
     unknown = buffer(capacity=None)
     for index in range(5):
@@ -163,7 +164,7 @@ def test_the_queue_checks_capacity_before_the_run_ends():
 
 def test_an_escalating_queue_accepts_overflow_and_says_a_decision_will_be_needed():
     tight = buffer(
-        capacity=ElasticCapacity(node_depth=0, max_depth=1, nodes_used=2, max_nodes=3),
+        capacity=ElasticCapacity(node_depth=0, max_depth=1, nodes_used=1, max_nodes=3),
         escalate_overflow=True,
     )
     first = tight.add(req("a"))

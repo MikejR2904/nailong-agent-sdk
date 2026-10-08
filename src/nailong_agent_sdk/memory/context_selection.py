@@ -105,25 +105,29 @@ class TaskAwareContextSelector:
         nodes: list[DocumentNode] = []
         document_ids: list[str] = []
         reasons: dict[str, list[str]] = {}
-        lowered_pointers = [pointer.lower() for pointer in scope_pointers]
+        lowered_pointers = [pointer.lower() for pointer in scope_pointers if pointer.strip()]
         for tree in trees:
             if tree.category not in categories:
                 continue
             matches = []
+            matched_pointer = False
+            matched_keyword = False
             for node in tree.nodes:
                 serialized = str(node.content).lower()
                 location = node.source.location.lower()
                 exact = any(
                     pointer in location or pointer in serialized for pointer in lowered_pointers
                 )
-                keyword_hits = sorted(keyword for keyword in keywords if keyword in serialized)
-                if exact or keyword_hits:
+                keyword_hit = any(keyword in serialized for keyword in keywords)
+                if exact or keyword_hit:
                     matches.append(node)
+                matched_pointer = matched_pointer or exact
+                matched_keyword = matched_keyword or keyword_hit
             if matches:
                 document_ids.append(tree.document_id)
                 nodes.extend(matches)
-                reasons[tree.document_id] = (["scope-pointer"] if any(scope_pointers) else []) + (
-                    ["keyword-match"] if keywords else []
+                reasons[tree.document_id] = (["scope-pointer"] if matched_pointer else []) + (
+                    ["keyword-match"] if matched_keyword else []
                 )
         return SelectedContext(
             stage=stage, selected_document_ids=document_ids, nodes=nodes, selection_reasons=reasons

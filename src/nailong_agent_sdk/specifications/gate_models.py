@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.identifiers import require_unique
 from .documents import DocumentTree, SourceRef, SpecificationCategory
 
 
@@ -52,8 +53,7 @@ class UnifiedSpecification(StrictModel):
     @model_validator(mode="after")
     def requirement_ids_are_unique(self) -> UnifiedSpecification:
         ids = [requirement.id for requirement in self.requirements]
-        if len(ids) != len(set(ids)):
-            raise ValueError("unified specification requirement IDs must be unique")
+        require_unique(ids, "unified specification requirement IDs")
         return self
 
 
@@ -109,8 +109,7 @@ class SemanticGapFinding(StrictModel):
         }
         if self.type not in semantic_types:
             raise ValueError("Semantic findings may use only semantic GapType values.")
-        if len(self.requirement_ids) != len(set(self.requirement_ids)):
-            raise ValueError("Semantic finding requirement_ids must be unique.")
+        require_unique(self.requirement_ids, "Semantic finding requirement_ids")
         if self.type is GapType.INCONSISTENCY and len(self.requirement_ids) < 2:
             raise ValueError("Inconsistency findings must cite at least two requirements.")
         if self.severity is GapSeverity.CRITICAL:

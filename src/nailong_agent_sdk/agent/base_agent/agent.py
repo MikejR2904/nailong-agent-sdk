@@ -101,6 +101,7 @@ from .types import (
 # AgentTurn is a fixed discriminated union, so one module-level adapter safely
 # reuses identical validation state for every untrusted model response.
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
+_STATE_SUMMARY_HEADROOM_CHARS = 512
 
 
 class BaseAgent:
@@ -2002,12 +2003,7 @@ class BaseAgent:
                 projected.handle,
                 output_summary_max_chars=action_output_summary_chars,
             ),
-            # apply()'s own summary wraps tool_transition's already-bounded
-            # output_summary plus a few short fields (tool_call_id, tool_name,
-            # status, error) - a second, independent hardcoded 2048 limit
-            # here re-truncated that inner value once it was raised past
-            # 2048, so this needs the same headroom, not just the inner call.
-            summary_max_chars=action_output_summary_chars + 512,
+            summary_max_chars=action_output_summary_chars + _STATE_SUMMARY_HEADROOM_CHARS,
         )
         self._active_project_state = state
         emit(

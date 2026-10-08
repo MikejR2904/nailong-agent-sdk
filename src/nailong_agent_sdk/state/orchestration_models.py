@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import Field
 
 from ..foundations.contracts import StrictModel
+from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .planning import Plan, PlanValidationReport
 from .shared_state import SharedSubstrateSnapshot
 
@@ -67,6 +68,12 @@ class ControllerRecord(StrictModel):
     snapshot: SharedSubstrateSnapshot
     repair_attempts: int = Field(default=0, ge=0)
     max_repair_attempts: int = Field(ge=0)
+    elastic_depth_ceiling: int = Field(
+        default=MAX_ELASTIC_DEPTH_LIMIT, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT
+    )
+    elastic_nodes_ceiling: int = Field(
+        default=MAX_ELASTIC_NODES_LIMIT, ge=0, le=MAX_ELASTIC_NODES_LIMIT
+    )
     plan: Plan | None = None
     plan_validation: PlanValidationReport | None = None
     plan_approved: bool | None = None

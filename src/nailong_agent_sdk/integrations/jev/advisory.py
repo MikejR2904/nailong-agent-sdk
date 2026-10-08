@@ -16,13 +16,15 @@ from ...agent.verification import (
     VerificationReturn,
 )
 from ...foundations.contracts import StrictModel
-from ..contracts import (
-    ExternalDecisionProvider,
-    ExternalDecisionResult,
-    InteropFailureMode,
-    InteropOperationStatus,
+from ..contracts import InteropFailureMode, InteropOperationStatus
+from .models import (
+    _JEV_ANSWER_ADAPTER,
+    JevAnswer,
+    JevDecisionProvider,
+    JevDecisionRequest,
+    JevDecisionResult,
+    JevNoulAnswer,
 )
-from .models import _JEV_ANSWER_ADAPTER, JevAnswer, JevDecisionRequest, JevNoulAnswer
 
 
 class JevAdvisoryPolicy(StrictModel):
@@ -48,7 +50,7 @@ class JevAdvisoryVerificationGate:
     def __init__(
         self,
         deterministic_gate: VerificationGate,
-        evaluator: ExternalDecisionProvider,
+        evaluator: JevDecisionProvider,
         request_factory: JevRequestFactory,
         policy: JevAdvisoryPolicy,
     ) -> None:
@@ -68,7 +70,7 @@ class JevAdvisoryVerificationGate:
         result = await self._evaluator.evaluate(request)
         return self._apply_policy(result)
 
-    def _apply_policy(self, result: ExternalDecisionResult) -> VerificationDecision:
+    def _apply_policy(self, result: JevDecisionResult) -> VerificationDecision:
         if result.status is not InteropOperationStatus.SUCCEEDED:
             return _unavailable_decision(self._policy.on_unavailable, result.unavailable_reason)
         answer = result.answers.get(self._policy.question_id)

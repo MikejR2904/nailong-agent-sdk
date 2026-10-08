@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -517,3 +518,31 @@ def test_docker_cancellation_leaks_the_container_process(tmp_path, fake_docker, 
     assert not still_running, (
         "docker run process kept running after the awaiting task was cancelled"
     )
+
+
+def test_an_invalid_variable_name_leaves_no_environment_file_behind(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    policy = EnvironmentPolicy(
+        literal_variables={"API_TOKEN": "super-secret-value", "BAD NAME": "x"}
+    )
+    sandbox = DockerSandbox(DockerSandboxOptions(image="img"))
+    tpl = CommandTemplate(name="t", command=["true"], timeout_seconds=5)
+    with pytest.raises(ValueError, match="'BAD NAME' cannot be passed to a container"):
+        run(sandbox.run(tpl, cwd=tmp_path, environment=policy))
+    with pytest.raises(ValueError, match="'BAD NAME' cannot be passed to a container"):
+        DockerSandbox._write_env_file(policy)
+    assert list(tmp_path.glob("nailong-sandbox-env-*")) == []
+
+
+def test_a_failed_env_file_write_removes_the_partial_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    policy = EnvironmentPolicy(literal_variables={"A": "1"})
+
+    def broken(descriptor, mode, **kwargs):
+        os.close(descriptor)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "fdopen", broken)
+    with pytest.raises(OSError, match="disk full"):
+        DockerSandbox._write_env_file(policy)
+    assert list(tmp_path.glob("nailong-sandbox-env-*")) == []

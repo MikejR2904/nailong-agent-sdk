@@ -19,6 +19,7 @@ from ..foundations.identifiers import (
     reserve_sequential_identifier,
     validate_identifier,
 )
+from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .orchestration_models import (
     ComplexityRouter,
     ComplexityRoutingRules,
@@ -46,6 +47,8 @@ class ControllerStateMachine:
         *,
         project_state_id: str,
         max_repair_attempts: int,
+        elastic_depth_ceiling: int = MAX_ELASTIC_DEPTH_LIMIT,
+        elastic_nodes_ceiling: int = MAX_ELASTIC_NODES_LIMIT,
     ) -> None:
         if profile.source_snapshot_id != snapshot.snapshot_id or not profile.source_read_only:
             raise ValueError("Controller profile must bind the immutable source snapshot.")
@@ -58,6 +61,8 @@ class ControllerStateMachine:
             profile=profile,
             snapshot=snapshot,
             max_repair_attempts=max_repair_attempts,
+            elastic_depth_ceiling=elastic_depth_ceiling,
+            elastic_nodes_ceiling=elastic_nodes_ceiling,
         )
         self._emit("controller-started", {"gap_metadata": gap_metadata.model_dump(mode="json")})
 
@@ -70,6 +75,16 @@ class ControllerStateMachine:
 
     def submit_plan(self, plan: Plan) -> ControllerRecord:
         self._require(ControllerPhase.PLANNING, ControllerPhase.REPAIR_REQUIRED)
+        for name, ceiling in (
+            ("max_elastic_depth", self.record.elastic_depth_ceiling),
+            ("max_elastic_nodes", self.record.elastic_nodes_ceiling),
+        ):
+            declared = getattr(plan, name)
+            if declared > ceiling:
+                raise ValueError(
+                    f'Plan "{plan.plan_id}" declares {name} {declared}, above the ceiling '
+                    f'{name} {ceiling} of controller "{self.record.controller_id}".'
+                )
         validation = self._validator.validate(plan)
         self.record = self.record.model_copy(
             update={
@@ -155,9 +170,15 @@ class ControllerStateMachine:
         self._emit("controller-completed", {})
         return self.record
 
-    def cancel(self, reason: str) -> ControllerRecord:
+    def require_cancellable(self) -> None:
         if self.record.phase in {ControllerPhase.COMPLETED, ControllerPhase.CANCELLED}:
-            raise ValueError("Terminal controller runs cannot be cancelled again.")
+            raise ValueError(
+                f'Controller "{self.record.controller_id}" is already {self.record.phase.value}, '
+                "a terminal phase, so it cannot be cancelled."
+            )
+
+    def cancel(self, reason: str) -> ControllerRecord:
+        self.require_cancellable()
         self.record = self.record.model_copy(update={"phase": ControllerPhase.CANCELLED})
         self._emit("controller-cancelled", {"reason": reason})
         return self.record

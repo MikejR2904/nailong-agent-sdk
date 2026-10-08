@@ -286,6 +286,8 @@ if TYPE_CHECKING:
     from .state.controller_runtime import ControllerRuntime
     from .state.coordination_records import RunRecord
     from .state.elastic import (
+        DEFAULT_MAX_ELASTIC_DEPTH,
+        DEFAULT_MAX_ELASTIC_NODES,
         ELASTIC_REQUEST_TOOL_NAME,
         MAX_ELASTIC_DEPTH_LIMIT,
         MAX_ELASTIC_NODES_LIMIT,
@@ -294,6 +296,7 @@ if TYPE_CHECKING:
         ElasticNodeRole,
         ElasticNodeSpec,
         ElasticRefusalCode,
+        ElasticReservation,
         ElasticSpawnRequest,
         GraphCapacityGrant,
         GraphSpawnRecord,
@@ -311,6 +314,7 @@ if TYPE_CHECKING:
         GraphSharedState,
         GraphStateConflict,
         GraphStateConflictKind,
+        ReplayPolicy,
     )
     from .state.harness_coordinator import HarnessCoordinator
     from .state.orchestration import ControllerStateMachine
@@ -499,6 +503,7 @@ _EXPORTS: dict[str, str] = {
     "GraphNodeKind": ".state.graph_models",
     "GraphNodeResult": ".state.graph_models",
     "GraphNodeStatus": ".state.graph_models",
+    "ReplayPolicy": ".state.graph_models",
     "GraphSharedState": ".state.graph_models",
     "GraphStateConflict": ".state.graph_models",
     "GraphStateConflictKind": ".state.graph_models",
@@ -771,12 +776,15 @@ _EXPORTS: dict[str, str] = {
     "build_langgraph_state_graph": ".integrations",
     "langgraph_interrupt_payload": ".integrations",
     "parse_structured_sdk_turn": ".integrations",
+    "DEFAULT_MAX_ELASTIC_DEPTH": ".state.elastic",
+    "DEFAULT_MAX_ELASTIC_NODES": ".state.elastic",
     "ELASTIC_REQUEST_TOOL_NAME": ".state.elastic",
     "ElasticBindingFactory": ".agent.graph_agent_executor",
     "ElasticCapacity": ".state.elastic",
     "ElasticNodeRole": ".state.elastic",
     "ElasticNodeSpec": ".state.elastic",
     "ElasticRefusalCode": ".state.elastic",
+    "ElasticReservation": ".state.elastic",
     "ElasticRequestBuffer": ".tools.elastic_requests",
     "ElasticRequestRejected": ".tools.elastic_requests",
     "ElasticRequestToolExecutor": ".tools.elastic_requests",

@@ -11,12 +11,13 @@ lateral-state persistence channel.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 from ..foundations.errors import AgentSdkError
 from ..tools.approvals import ApprovalRegistry, ApprovalRequest, ApprovalStatus
 from .coordination_records import RunRecord, _hash_run
+from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .graph import StateGraph, resolve_parallelism
 from .graph_models import (
     GraphNode,
@@ -25,6 +26,7 @@ from .graph_models import (
     GraphNodeStatus,
     GraphSharedState,
     NodeExecutor,
+    ReplayPolicy,
 )
 from .planning import Plan, PlanValidationReport, PlanValidator, render_plan_errors
 from .run_state_store import RunStateStore
@@ -57,7 +59,14 @@ class HarnessCoordinator:
         self._cancelled: set[str] = set()
         self._counter = 1
 
-    def start_run(self, plan: Plan, *, shared_state: GraphSharedState | None = None) -> RunRecord:
+    def start_run(
+        self,
+        plan: Plan,
+        *,
+        shared_state: GraphSharedState | None = None,
+        elastic_depth_ceiling: int = MAX_ELASTIC_DEPTH_LIMIT,
+        elastic_nodes_ceiling: int = MAX_ELASTIC_NODES_LIMIT,
+    ) -> RunRecord:
         validation = self._validator.validate(plan)
         if not validation.valid:
             raise ValueError(
@@ -79,6 +88,8 @@ class HarnessCoordinator:
             shared_state=shared_state,
             max_elastic_depth=plan.max_elastic_depth,
             max_elastic_nodes=plan.max_elastic_nodes,
+            elastic_depth_ceiling=elastic_depth_ceiling,
+            elastic_nodes_ceiling=elastic_nodes_ceiling,
         )
         self._graphs[run_id] = graph
         self._approval_registry(run_id)
@@ -215,27 +226,9 @@ class HarnessCoordinator:
                 run_id, record.plan_id, graph, record.plan_validation, record.cancelled
             )
             wave_state = graph.shared_state
-
-            async def execute_one(node: GraphNode) -> GraphNodeResult:
-                executor = executors.get(node.kind)
-                if executor is None:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'No executor is registered for node kind "{node.kind.value}".',
-                    )
-                try:
-                    return await executor(
-                        node,
-                        graph.execution_context(node.node_id, shared_state=wave_state),
-                    )
-                except Exception as error:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
-                        f"{type(error).__name__}: {error}",
-                    )
-
-            results = await asyncio.gather(*(execute_one(node) for node in wave))
+            results = await asyncio.gather(
+                *(graph.execute_node(node, executors, shared_state=wave_state) for node in wave)
+            )
             for node, result in zip(wave, results, strict=True):
                 graph.mark_terminal(node.node_id, result)
                 record = self._save(
@@ -245,13 +238,15 @@ class HarnessCoordinator:
     def recover_interrupted_run(
         self,
         run_id: str,
-        replayable_node_ids: set[str] = frozenset(),
+        replayable_node_ids: Collection[str] = frozenset(),
+        *,
+        is_replayable: ReplayPolicy | None = None,
     ) -> RunRecord:
         """Persist a conservative recovery of interrupted graph agent nodes."""
 
         record = self.get_run_state(run_id)
         graph = self._graphs[run_id]
-        graph.recover_interrupted(replayable_node_ids)
+        graph.recover_interrupted(replayable_node_ids, is_replayable=is_replayable)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
     def submit_approval(
@@ -342,6 +337,11 @@ class HarnessCoordinator:
             cancelled=cancelled,
             run_hash=_hash_run(run_id, plan_id, snapshot, validation, cancelled),
         )
-        self._store.save(record)
+        try:
+            self._store.save(record)
+        except BaseException:
+            self._graphs.pop(run_id, None)
+            self._fingerprints.pop(run_id, None)
+            raise
         self._fingerprints[run_id] = self._store.fingerprint(run_id)
         return record

@@ -5,18 +5,19 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 | File | Lines | Role |
 |---|---:|---|
 | [`foundations/__init__.py`](#foundations__init__py---package-marker-for-the-dependency-free-layer) | 4 | package marker for the dependency-free layer |
-| [`foundations/atomic_io.py`](#foundationsatomic_iopy---crash-safe-file-publication-exclusive-claims-and-cross-process-locks) | 114 | crash-safe file publication, exclusive claims and cross-process locks |
+| [`foundations/atomic_io.py`](#foundationsatomic_iopy---crash-safe-file-publication-exclusive-claims-and-cross-process-locks) | 138 | crash-safe file publication, exclusive claims and cross-process locks |
 | [`foundations/benchmarks.py`](#foundationsbenchmarkspy---reproducible-exact-vs-greedy-pckp-benchmark-harness) | 88 | reproducible exact-vs-greedy PCKP benchmark harness |
-| [`foundations/contracts.py`](#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 488 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
+| [`foundations/contracts.py`](#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 510 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
 | [`foundations/dependency_graph.py`](#foundationsdependency_graphpy---deterministic-cycle-and-blast-radius-traversal-over-dependent-prerequisite-edges) | 100 | deterministic cycle and blast-radius traversal over (dependent, prerequisite) edges |
-| [`foundations/errors.py`](#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 236 | typed SDK errors and secret/reasoning redaction for durable records |
-| [`foundations/identifiers.py`](#foundationsidentifierspy---identifier-validation-injective-file-names-and-collision-free-sequential-ids) | 60 | identifier validation, injective file names and collision-free sequential ids |
+| [`foundations/errors.py`](#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 286 | typed SDK errors and secret/reasoning redaction for durable records |
+| [`foundations/identifiers.py`](#foundationsidentifierspy---identifier-validation-injective-file-names-and-collision-free-sequential-ids) | 81 | identifier validation, injective file names and collision-free sequential ids |
 | [`foundations/json_limits.py`](#foundationsjson_limitspy---depth-bound-for-untrusted-json-like-payloads) | 25 | depth bound for untrusted JSON-like payloads |
 | [`foundations/logging.py`](#foundationsloggingpy---opt-in-stdlib-logging-namespace-for-the-few-paths-outside-structured-telemetry) | 25 | opt-in stdlib logging namespace for the few paths outside structured telemetry |
 | [`foundations/optimization/__init__.py`](#foundationsoptimization__init__py---re-exports-the-pckp-models-and-solvers) | 17 | re-exports the PCKP models and solvers |
-| [`foundations/optimization/models.py`](#foundationsoptimizationmodelspy---pckp-problem-item-and-solution-contracts) | 91 | PCKP problem, item and solution contracts |
+| [`foundations/optimization/models.py`](#foundationsoptimizationmodelspy---pckp-problem-item-and-solution-contracts) | 90 | PCKP problem, item and solution contracts |
 | [`foundations/optimization/solvers.py`](#foundationsoptimizationsolverspy---exact-tree-dp--branch-and-bound-and-greedy-pckp-solvers) | 490 | exact (tree DP / branch-and-bound) and greedy PCKP solvers |
 | [`foundations/text.py`](#foundationstextpy---newline-only-line-splitting-and-utf-8-well-formedness-for-durable-text) | 36 | newline-only line splitting and UTF-8 well-formedness for durable text |
+| [`foundations/version.py`](#foundationsversionpy---the-installed-package-name-and-version-and-the-identity-strings-derived-from-them) | 22 | the installed package name and version, and the identity strings derived from them |
 
 ---
 
@@ -30,7 +31,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 ### `foundations/atomic_io.py` - crash-safe file publication, exclusive claims and cross-process locks
 
-*114 lines · depends on: `foundations/errors.py` · used by: `agent/orchestrator/state_store.py`, `developer_tools/catalog.py`, `foundations/benchmarks.py`, `foundations/identifiers.py`, `memory/episode_store.py`, `observability/audit_log.py`, `observability/profiler.py`, `observability/telemetry_store.py` (+9 more) · not re-exported at the package root*
+*138 lines · depends on: `foundations/errors.py` · used by: `agent/orchestrator/state_store.py`, `developer_tools/catalog.py`, `foundations/benchmarks.py`, `foundations/identifiers.py`, `memory/episode_store.py`, `observability/audit_log.py`, `observability/profiler.py`, `observability/telemetry_store.py` (+9 more) · not re-exported at the package root*
 
 **Role in the workflow.** Every durable store in the SDK (project state, run records, telemetry reports, audit transcripts, tool-result journal, orchestration records, Gate 1 artifacts) writes a uniquely named temporary file (`unique_temporary_path`) first and then calls `replace_atomic`, so a reader never sees a half-written file and two writers never share a temporary name. `claim_exclusive` is the primitive behind collision-free id reservation, `exclusive_file_lock` serializes a critical section across processes, and `read_text_retrying` reads through the brief sharing violations a Windows reader sees while a writer replaces the file.
 
@@ -40,8 +41,11 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 - `read_text_retrying(path: Path, *, attempts: int=10) -> str` - Reads a UTF-8 text file, retrying only `PermissionError` (up to `attempts` times, sleeping 5 ms x attempt number) because on Windows a reader can be refused while a writer is replacing the file; the last attempt's error propagates. Rejects `attempts < 1`.
 - `unique_temporary_path(target: Path) -> Path` - Returns a hidden sibling of the target named `.<name>.<pid>.<12 hex>.tmp`, so concurrent writers in one or many processes never collide on a temporary file.
 - `claim_exclusive(path: Path) -> bool` - Creates the file with `O_CREAT | O_EXCL` (making its parent directory first) and returns True, or False if it already exists: an atomic claim that two racing callers can never both win.
-- `exclusive_file_lock(path: Path, *, timeout_seconds: float=30.0, timeout_code: str='FILE_LOCK_TIMEOUT') -> Iterator[None]` *(contextmanager)* - Context manager that holds an operating-system lock on a dedicated lock file: `flock` on POSIX, byte-range locking on Windows (polled every 5 ms, raising `AgentSdkError` with the caller's `timeout_code` after `timeout_seconds`, default 30 s, with the likely causes).
-- `_acquire_windows_lock(descriptor: int, path: Path, timeout_seconds: float, timeout_code: str) -> None` - Polls a non-blocking lock on byte 0 until `timeout_seconds` elapse, then raises `AgentSdkError(timeout_code)` naming the lock file and the likely causes (a writer hung mid-operation or software scanning the file).
+- `exclusive_file_lock(path: Path, *, timeout_seconds: float=30.0, timeout_code: str='FILE_LOCK_TIMEOUT') -> Iterator[None]` *(contextmanager)* - Context manager that holds an operating-system lock on a dedicated lock file (`flock` on POSIX, byte-range locking on Windows). Both platforms poll a non-blocking attempt every 5 ms and raise `AgentSdkError` with the caller's `timeout_code` after `timeout_seconds` (default 30 s), naming the lock file and the likely causes.
+- `_lock_timeout(path: Path, timeout_seconds: float, timeout_code: str) -> AgentSdkError` - The `AgentSdkError(timeout_code)` both platforms raise when a lock stays held: it names the lock file and the wait, lists the likely causes (a writer hung mid-operation or software scanning the file) and carries the lock path and timeout in its details. · *Called by:* `foundations/atomic_io.py::_acquire_posix_lock`, `foundations/atomic_io.py::_acquire_windows_lock`
+- `_acquire_posix_lock(descriptor: int, path: Path, timeout_seconds: float, timeout_code: str) -> None` - Polls a non-blocking `flock` on the descriptor until `timeout_seconds` elapse, then raises the `_lock_timeout` error; a writer that hangs while holding the lock no longer blocks every other process for ever. · *Called by:* `foundations/atomic_io.py::exclusive_file_lock`
+- `_release_posix_lock(descriptor: int) -> None` - Unlocks the descriptor locked by `_acquire_posix_lock`. · *Called by:* `foundations/atomic_io.py::exclusive_file_lock`
+- `_acquire_windows_lock(descriptor: int, path: Path, timeout_seconds: float, timeout_code: str) -> None` - Polls a non-blocking lock on byte 0 until `timeout_seconds` elapse, then raises the `_lock_timeout` error.
 - `_release_windows_lock(descriptor: int) -> None` - Unlocks the byte locked by `_acquire_windows_lock`.
 
 **Algorithms & invariants.** Atomic replace gives all-or-nothing *visibility* of the new content; it does not fsync the temp file or the directory, so it is not a power-loss durability guarantee.
@@ -70,7 +74,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 ### `foundations/contracts.py` - the serializable BaseAgent contract: definitions, tasks, turns, results, context types
 
-*488 lines · depends on: `foundations/dependency_graph.py`, `foundations/errors.py`, `foundations/json_limits.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/model.py`, `agent/openai_compatible/chat.py`, `agent/openai_compatible/semantic_gap.py`, `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py` (+55 more) · re-exported at the package root: 17 name(s)*
+*510 lines · depends on: `foundations/dependency_graph.py`, `foundations/errors.py`, `foundations/identifiers.py`, `foundations/json_limits.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/model.py`, `agent/openai_compatible/chat.py`, `agent/openai_compatible/semantic_gap.py`, `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py` (+55 more) · re-exported at the package root: 17 name(s)*
 
 **Role in the workflow.** The shared vocabulary of the whole SDK. A host builds an `AgentDefinition` (data only) and a `ScopedAgentTask`; `BaseAgent` validates them, asks the model for `AgentTurn`s (tool call, tool batch, final, blocked), executes tools producing `ToolExecutionResult`s, records `ModelObservation`s/`EpisodeSummary`s, and returns an `AgentResult` carrying lifecycle events and projection metadata. Every model adapter, store, MCP tool and integration exchanges these types, which is why it is the most depended-on module.
 
@@ -163,13 +167,15 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 - `validate_candidate_output(definition: AgentDefinition, output: Any) -> None` - Validates a proposed final output against the definition's output schema; the failure message names the failing JSON path and is fed back to the model. · *Called by:* `base_agent/agent.py::BaseAgent._accept_final_turn`
 - `_validate_json_schema(schema: dict[str, Any], label: str) -> None` - Checks that a schema is valid Draft 2020-12 (cached when JSON round-trippable), converting `SchemaError` into a `ValueError` with the label. · *Called by:* `foundations/contracts.py::AgentDefinition.validate_contract_schema`, `foundations/contracts.py::ToolDefinition.validate_input_schema`
 - `_check_schema_cached(canonical_schema: str) -> None` - LRU-cached (512) `check_schema` keyed by the canonical JSON text of the schema. · *Called by:* `foundations/contracts.py::_validate_json_schema`
-- `_validator_for(canonical_schema: str) -> Draft202012Validator` - LRU-cached (512) `Draft202012Validator` keyed by canonical schema text, avoiding rebuilding validators on every turn. · *Called by:* `foundations/contracts.py::_validate_instance`
-- `_validate_instance(schema: dict[str, Any], instance: Any, label: str) -> None` - Runs the validator and converts the first jsonschema error into an `AgentSdkError` whose message includes the JSON path and reason, with `json_path`, `schema_rule`, sanitized `failed_value` and the full error text in `details`. · *Called by:* `foundations/contracts.py::validate_candidate_output`, `foundations/contracts.py::validate_task_input`, `foundations/contracts.py::validate_tool_arguments`
+- `_refuse_retrieval(uri: str) -> Never` - Retriever of the schema registry: raises `NoSuchResource` for every URI, so no document is ever fetched from a URL or a file. · *Called by:* `foundations/contracts.py::<module>`
+- `_new_validator(schema: dict[str, Any]) -> Draft202012Validator` - Builds a Draft 2020-12 validator over a registry that knows only the JSON Schema metaschemas and the schema itself. · *Called by:* `foundations/contracts.py::_validate_instance`, `foundations/contracts.py::_validator_for`
+- `_validator_for(canonical_schema: str) -> Draft202012Validator` - LRU-cached (512) validator keyed by canonical schema text, avoiding rebuilding validators on every turn; built through `_new_validator`, so it can only resolve references inside the schema. · *Called by:* `foundations/contracts.py::_validate_instance`
+- `_validate_instance(schema: dict[str, Any], instance: Any, label: str) -> None` - Runs the validator and converts the first jsonschema error into an `AgentSdkError` whose message includes the JSON path and reason, with `json_path`, `schema_rule`, sanitized `failed_value` and the full error text in `details`; a `$ref` that points outside the schema raises `SCHEMA_REFERENCE_UNRESOLVABLE` naming the reference. · *Called by:* `foundations/contracts.py::validate_candidate_output`, `foundations/contracts.py::validate_task_input`, `foundations/contracts.py::validate_tool_arguments`
 - `_canonical_json_schema(schema: dict[str, Any]) -> str | None` - Returns a cache key (sorted-key compact JSON) only when the schema survives JSON round-tripping; otherwise None so non-JSON schemas (for example Decimal constants) bypass the cache. · *Called by:* `foundations/contracts.py::_validate_instance`, `foundations/contracts.py::_validate_json_schema`
 
-**Algorithms & invariants.** `AgentTurn` is a pydantic discriminated union on `type`, so a malformed turn fails with the offending variant and field path. Schema validation errors are deliberately field-specific because they are replayed to the model as correction hints. Tool-call arguments, tool-result outputs and final outputs are bounded to 64 nesting levels at validation time (`foundations/json_limits.py`).
+**Algorithms & invariants.** `AgentTurn` is a pydantic discriminated union on `type`, so a malformed turn fails with the offending variant and field path. Schema validation errors are deliberately field-specific because they are replayed to the model as correction hints. Tool-call arguments, tool-result outputs and final outputs are bounded to 64 nesting levels at validation time (`foundations/json_limits.py`). A schema's `$ref` resolves only inside the schema (a `#/$defs/...` pointer or its own `$id`) or to a JSON Schema metaschema; any other reference, a URL or a file, is refused with `SCHEMA_REFERENCE_UNRESOLVABLE` and nothing is fetched or read.
 
-*Module-level names:* `AgentTurn`
+*Module-level names:* `AgentTurn`, `_LOCAL_REFERENCES_ONLY`
 
 ---
 
@@ -191,36 +197,36 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 ### `foundations/errors.py` - typed SDK errors and secret/reasoning redaction for durable records
 
-*236 lines · depends on: `foundations/text.py` · used by: `agent/base_agent/agent.py`, `agent/model.py`, `agent/openai_compatible/chat.py`, `agent/openai_compatible/embeddings.py`, `agent/openai_compatible/semantic_gap.py`, `agent/openai_compatible/transport.py`, `agent/openai_compatible/vision.py`, `agent/verification.py` (+12 more) · not re-exported at the package root*
+*286 lines · depends on: `foundations/text.py` · used by: `agent/base_agent/agent.py`, `agent/model.py`, `agent/openai_compatible/chat.py`, `agent/openai_compatible/embeddings.py`, `agent/openai_compatible/semantic_gap.py`, `agent/openai_compatible/transport.py`, `agent/openai_compatible/vision.py`, `agent/verification.py` (+12 more) · not re-exported at the package root*
 
 **Role in the workflow.** `AgentSdkError` (code, message, details) is the one structured exception the runtime converts into `AgentFailure`s; `TransientProviderError` marks retryable provider failures so `BaseAgent` and `FailoverAgentModel` retry instead of failing. The redaction functions run at every durable boundary (failure details, audit log, telemetry) so credentials and hidden model reasoning never reach disk.
 
 **Contents**
 
-- **class `AgentSdkError`** *(dataclass, exception; bases: Exception)* - Dataclass exception with a stable `code`, a human `message` (also its `str`) and optional `details`. · *Instantiated by:* `base_agent/agent.py::BaseAgent.__init__`, `base_agent/agent.py::BaseAgent._normalize_model_response`, `agent/model.py::FailoverAgentModel._call_with_failover`, `agent/model.py::ScriptedModel.next_turn` (+25 more)
+- **class `AgentSdkError`** *(dataclass, exception; bases: Exception)* - Dataclass exception with a stable `code`, a human `message` (also its `str`) and optional `details`. · *Instantiated by:* `base_agent/agent.py::BaseAgent.__init__`, `base_agent/agent.py::BaseAgent._normalize_model_response`, `agent/model.py::FailoverAgentModel._call_with_failover`, `agent/model.py::ScriptedModel.next_turn` (+30 more)
   - fields: `code`, `message`, `details`
   - `AgentSdkError.__str__() -> str` - Returns the message so logs and tracebacks show the human text.
 - **class `TransientProviderError`** *(dataclass, exception; bases: AgentSdkError)* - An `AgentSdkError` for failures likely to succeed on retry (429, 5xx, connection drop), carrying an optional server `retry_after_seconds`. · *Instantiated by:* `openai_compatible/transport.py::HttpxJsonTransport.post_json`, `openai_compatible/transport.py::HttpxStreamingJsonTransport.stream_json`, `openai_compatible/transport.py::UrlLibJsonTransport.post_json`, `openai_compatible/transport.py::_http_status_error`
   - fields: `retry_after_seconds`
-- `sanitize_failure_details(details: dict[str, Any] | None) -> dict[str, Any]` - Redacts and bounds a details dict: secrets and hidden-reasoning keys are masked, and if the JSON exceeds 2,048 chars it is replaced by a truncation record with a content hash and preview. · *Called by:* `foundations/contracts.py::AgentFailure.details_are_safe`, `foundations/contracts.py::_validate_instance`
-- `_redact_failure_value(value: Any) -> Any` - Recursive helper: masks dict values under secret or reasoning keys, scans strings for credential patterns, and recurses into lists. · *Called by:* `foundations/errors.py::sanitize_failure_details`
-- `redact_secrets(value: Any) -> Any` - Shared redactor for audit log and telemetry: masks values under credential-shaped keys and credential-shaped spans inside strings, leaving surrounding text intact, and replaces lone surrogates so the result is always valid UTF-8. · *Called by:* `observability/audit_log.py::_bound_and_redact`, `observability/telemetry_store.py::TelemetryStore.append`
+- `sanitize_failure_details(details: dict[str, Any] | None) -> dict[str, Any]` - Redacts and bounds a details dict: secrets and hidden-reasoning keys are masked (inside lists, tuples, sets and bytes too), and if the JSON exceeds 2,048 chars it is replaced by a truncation record with a content hash and preview. · *Called by:* `foundations/contracts.py::AgentFailure.details_are_safe`, `foundations/contracts.py::_validate_instance`
+- `redact_secrets(value: Any) -> Any` - Shared redactor for audit log and telemetry: masks values under credential-shaped keys and credential-shaped spans inside strings, leaving surrounding text intact, walks lists, tuples, sets and bytes, and replaces lone surrogates so the result is always valid UTF-8. · *Called by:* `observability/audit_log.py::_bound_and_redact`, `observability/telemetry_store.py::TelemetryStore.append`
+- `_redact_value(value: Any, *, hide_reasoning_keys: bool) -> Any` - Recursive helper behind `redact_secrets` and `sanitize_failure_details`: masks dict values under secret keys (and, with `hide_reasoning_keys`, reasoning keys), recurses into lists, tuples, sets and frozensets keeping their type, decodes bytes (invalid sequences replaced) and scans strings for credential patterns. · *Called by:* `foundations/errors.py::redact_secrets`, `foundations/errors.py::sanitize_failure_details`
 - `contains_secret_text(text: str) -> bool` - True when the free-text redactor would change the string (a credential-shaped span or `NAME=value` assignment), after scrubbing lone surrogates; used to refuse such text instead of masking it.
-- `_redact_content(text: str) -> str` - Free-text pass: scrubs lone surrogates, skips the work entirely unless a cheap substring hint is present, then masks PEM private-key blocks, applies the credential regexes and the assignment scanner. · *Called by:* `foundations/errors.py::_redact_failure_value`, `foundations/errors.py::redact_secrets`
+- `_redact_content(text: str) -> str` - Free-text pass: scrubs lone surrogates, skips the work entirely unless a cheap substring hint is present, then masks PEM private-key blocks, applies the credential regexes, masks the password of a `scheme://user:password@host` URL and runs the assignment scanner. · *Called by:* `foundations/errors.py::_redact_value`, `foundations/errors.py::contains_secret_text`
 - `_redact_pem_blocks(text: str) -> str` - Linear scan that replaces each `-----BEGIN ... PRIVATE KEY-----` to `-----END ... PRIVATE KEY-----` block (found with a binary search over the end markers) with `[REDACTED]`; an unterminated block is left alone.
-- `_redact_assignments(text: str) -> str` - Linear-time detector for `NAME_SECRET=value` or `"api_key": "value"` shapes: finds a keyword, widens to the whole identifier, and masks it plus the assignment tail. · *Called by:* `foundations/errors.py::_redact_content`
-- `redact_hidden_reasoning(value: Any) -> Any` - Returns a copy of a payload in which every reserved reasoning key (`chain_of_thought`, `hidden_reasoning`, `reasoning_trace`, `scratchpad`) is renamed `<key>_redacted` with the value `[REDACTED]`, recursing through dicts, lists and tuples; used where a payload must be stored rather than rejected.
-- `assert_no_hidden_reasoning(value: Any, path: str='$') -> None` - Raises `ValueError` naming the key and its JSON path (`$.a[0].b`) if any dict key is reserved for private model reasoning; durable telemetry and audit records refuse such payloads outright. · *Called by:* `observability/audit_log.py::AuditLogEntry.safe_payload`, `observability/telemetry_models.py::TelemetryEvent.reject_hidden_reasoning`
+- `_redact_assignments(text: str) -> str` - Linear-time detector for `NAME_SECRET=value`, `"api_key": "value"` and quoted values that contain spaces: finds a keyword, widens to the whole identifier, and masks it plus the assignment tail; for an `Authorization` header whose value starts with a scheme word the credential after the scheme is masked too. · *Called by:* `foundations/errors.py::_redact_content`
+- `redact_hidden_reasoning(value: Any) -> Any` - Returns a copy of a payload in which every reserved reasoning key (`chain_of_thought`, `hidden_reasoning`, `reasoning_trace`, `scratchpad`) is renamed `<key>_redacted` with the value `[REDACTED]`, recursing through dicts, lists, tuples and sets (a set becomes a list ordered by `repr`); used where a payload must be stored rather than rejected.
+- `assert_no_hidden_reasoning(value: Any, path: str='$') -> None` - Raises `ValueError` naming the key and its JSON path (`$.a[0].b`) if any dict key is reserved for private model reasoning, looking inside lists, tuples and sets; durable telemetry and audit records refuse such payloads outright. · *Called by:* `observability/audit_log.py::AuditLogEntry.safe_payload`, `observability/telemetry_models.py::TelemetryEvent.reject_hidden_reasoning`
 
-**Algorithms & invariants.** Detection is best-effort: key-name regex (authorization, api key, password, secret, token excluding budget/cost/plural counters, cookie, credential, private key) plus patterns for PEM private keys, `sk-` keys, AWS `AKIA` ids, GitHub tokens, Slack tokens and Bearer tokens. Patterns are anchored on literal prefixes so none can backtrack super-linearly.
+**Algorithms & invariants.** Detection is best-effort: a key-name regex (authorization, api key, password, passwd, passphrase, secret, access and signing keys, token excluding budget/cost/plural counters, cookie, credential, private key) plus patterns for PEM private keys, `sk-` and `sk_live_`/`sk_test_` keys, AWS `AKIA`/`ASIA` ids, GitHub (`gh*_`, `github_pat_`), GitLab (`glpat-`), Hugging Face (`hf_`), Google (`AIza`), npm, Fireworks (`fw_`) and Slack tokens, JSON web tokens, the password of a `scheme://user:password@host` URL and Bearer tokens. An `Authorization` value that begins with a scheme word (`Basic`, `Digest`, `Token`, ...) is masked through its credential. Token patterns start only at a run boundary and use possessive quantifiers, and every pattern is anchored on a literal prefix, so none can backtrack super-linearly.
 
-*Module-level names:* `_SECRET_KEY`, `_HIDDEN_REASONING_KEYS`, `_MAX_FAILURE_DETAIL_CHARS`, `_SECRET_CONTENT_PATTERNS`, `_ASSIGNMENT_TAIL`, `_IDENTIFIER_CHAR`, `_CONTENT_HINT_SUBSTRINGS`
+*Module-level names:* `_SECRET_KEY`, `_HIDDEN_REASONING_KEYS`, `_MAX_FAILURE_DETAIL_CHARS`, `_SECRET_CONTENT_PATTERNS`, `_ASSIGNMENT_TAIL`, `_IDENTIFIER_RUN`, `_CONTENT_HINT_SUBSTRINGS`, `_RUN_START`, `_URL_CREDENTIAL`, `_AUTHORIZATION_SCHEMES`, `_AUTHORIZATION_CREDENTIAL`
 
 ---
 
 ### `foundations/identifiers.py` - identifier validation, injective file names and collision-free sequential ids
 
-*60 lines · depends on: `foundations/atomic_io.py` · used by: `agent/orchestrator/state_store.py`, `observability/audit_log.py`, `observability/telemetry_store.py`, `specifications/preprocessing.py`, `state/elastic.py`, `state/orchestration.py`, `state/run_state_store.py`, `state/shared_state.py` · not re-exported at the package root*
+*81 lines · depends on: `foundations/atomic_io.py` · used by: `agent/openai_compatible/semantic_gap.py`, `agent/orchestrator/models.py`, `agent/orchestrator/state_store.py`, `foundations/contracts.py`, `foundations/optimization/models.py`, `integrations/jev/exploration.py`, `mcp/client.py`, `memory/episode_store.py` (+16 more) · not re-exported at the package root*
 
 **Role in the workflow.** Every store that turns a caller-supplied id into a path validates it with `validate_identifier` or maps it with `file_safe_name`, so `../../x` can never leave the run root; the stores that number their own ids (`run-1`, `controller-2`, `orchestration-3`) reserve them through `reserve_sequential_identifier`.
 
@@ -228,6 +234,8 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 - `is_valid_identifier(value: object) -> bool` - True for a string of 1 to 128 characters of letters, digits, `.`, `_` and `-` that starts with a letter or digit and does not end with a dot. · *No in-package callers (public API, entry point, or protocol hook).*
 - `validate_identifier(value: object, kind: str) -> str` - Returns the value or raises `ValueError` naming the kind, the offending value and the allowed shape; non-strings are rejected the same way. · *No in-package callers (public API, entry point, or protocol hook).*
+- `repeated_values(values: Iterable[Hashable]) -> list[Hashable]` - The values that occur more than once, each listed once in the order it first repeats. · *Called by:* `foundations/identifiers.py::require_unique`
+- `require_unique(values: Iterable[Hashable], label: str) -> None` - Raises `ValueError` `<label> must be unique; repeated: "a", "b".` naming up to ten repeats (then `and N more`); the one place every plan, graph, tool, policy and specification validator reports a repeated id. · *Called by:* `openai_compatible/semantic_gap.py::UntrustedSemanticGapFinding.has_bounded_semantic_shape`, `orchestrator/models.py::AgentExecutionProfile.profile_authority_is_consistent`, `orchestrator/models.py::OrchestrationPolicy.configuration_ids_are_consistent`, `orchestrator/models.py::OrchestrationRequest.selected_skill_ids_are_unique` (+27 more)
 - `file_safe_name(value: str) -> str` - Returns the value unchanged when it is already a safe file name (at most 128 characters of letters, digits, `.`, `_`, `-`; not `.`, `..` or ending with a dot); otherwise a readable sanitized stem (at most 80 characters) plus `~` and the first 12 hex characters of the SHA-256 of the original, so two different inputs never share a file. · *No in-package callers (public API, entry point, or protocol hook).*
 - `reserve_sequential_identifier(claims: Path, prefix: str, is_taken: Callable[[str], bool], *, start: int=1) -> tuple[str, int]` - Walks `<prefix>-<n>` from `start`, skips ids that `is_taken` reports, and returns the first one whose claim file under `claims` it creates exclusively (`claim_exclusive`) together with the next number to try; two processes can never receive the same id. · *No in-package callers (public API, entry point, or protocol hook).*
 
@@ -273,7 +281,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 ### `foundations/optimization/models.py` - PCKP problem, item and solution contracts
 
-*91 lines · depends on: `foundations/contracts.py`, `foundations/dependency_graph.py` · used by: `foundations/optimization/__init__.py`, `foundations/optimization/solvers.py` · re-exported at the package root: 4 name(s)*
+*90 lines · depends on: `foundations/contracts.py`, `foundations/dependency_graph.py`, `foundations/identifiers.py` · used by: `foundations/optimization/__init__.py`, `foundations/optimization/solvers.py` · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** The compactor and the evidence packer translate their domain (episodes, source spans) into a `PckpProblem`, call a solver, and read back a `PckpSolution` certificate that is recorded in the decision dossier.
 
@@ -310,9 +318,9 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 - `tie_key(selected: Iterable[str]) -> tuple[tuple[int, str], ...]` - Total order for equal-utility, equal-cost selections: the sorted ids, each tagged 0, plus an end sentinel tagged 1, so the selection that includes the earliest differing id wins. Common items cancel, so the order is the same when applied to whole selections or to the parts a dynamic program merges.
 - **class `_Selection`** *(class)* - Persistent rope of item ids: leaves hold ids and joins are O(1), so merging two partial selections never copies them; `ids` flattens iteratively and `key` caches `tie_key`.
   - `_Selection.__init__(ids: tuple[str, ...]=(), left: _Selection | None=None, right: _Selection | None=None) -> None` - Stores the leaf ids and optional left and right children.
-  - `_Selection.join(left: _Selection, right: _Selection) -> _Selection` *(classmethod)* - Joins two ropes, returning the other one unchanged when either is empty.
+  - `_Selection.join(left: _Selection, right: _Selection) -> _Selection` *(classmethod)* - Joins two ropes, returning the other one unchanged when either is empty. · *Called by:* `base_agent/agent.py::BaseAgent._execute_tool_call`, `base_agent/agent.py::BaseAgent._normalize_model_response`, `base_agent/agent.py::BaseAgent._pask_relevance_query`, `agent/elastic_context.py::_child_entry` (+44 more)
   - `_Selection.ids() -> tuple[str, ...]` *(property)* - Flattens the rope to a tuple with an explicit stack (no recursion limit).
-  - `_Selection.key() -> tuple[tuple[int, str], ...]` *(property)* - Cached `tie_key` of the flattened ids.
+  - `_Selection.key() -> tuple[tuple[int, str], ...]` *(property)* - Cached `tie_key` of the flattened ids. · *Called by:* `openai_compatible/chat.py::_safe_parameters`, `developer_tools/inspect.py::verify_project_evidence`, `foundations/contracts.py::ModelBinding.fallback_bindings_are_distinct`, `foundations/errors.py::_redact_value` (+35 more)
 - `_solve_rooted_forest(problem: PckpProblem, mandatory: set[str], problem_hash: str) -> PckpSolution` - Exact Pareto-frontier DP for a forest where each item has at most one prerequisite: each subtree keeps only the states no cheaper state matches in utility (so the table is bounded by the number of distinct utilities, not by the budget), child tables merge into their parent and root tables merge into the answer. Ties go to the lower cost, then `tie_key`. Always OPTIMAL. · *Called by:* `optimization/solvers.py::ExactPckpSolver.solve`
   - `_solve_rooted_forest.subtree_states(root_id: str) -> _States` - Builds the state table of one tree bottom-up over its preorder (no recursion), merging each child's table into its parent's; a mandatory child can never be left out.
 - `_offer(states: _States, cost: int, utility: int, selection: _Selection) -> None` - Records a (cost, utility, selection) candidate if its cost slot is empty or it has higher utility or, at equal utility, a smaller `tie_key`.
@@ -342,5 +350,22 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 **Contents**
 
 - `split_lines(text: str, *, keepends: bool=False) -> list[str]` - Splits on `\r\n`, `\r` or `\n` only (unlike `str.splitlines`), dropping the empty final element a trailing newline would produce; `keepends=True` keeps the terminators. · *No in-package callers (public API, entry point, or protocol hook).*
-- `scrub_surrogates(text: str) -> str` - Replaces every unpaired surrogate code point with U+FFFD; ASCII text is returned untouched. · *No in-package callers (public API, entry point, or protocol hook).*
+- `scrub_surrogates(text: str) -> str` - Replaces every unpaired surrogate code point with U+FFFD; ASCII text is returned untouched. · *Called by:* `foundations/errors.py::_redact_content`, `foundations/errors.py::_redact_value`, `foundations/errors.py::contains_secret_text`
 - `assert_well_formed_text(value: str, field: str) -> str` - Returns the string or raises `ValueError` naming the field, the surrogate code point (`U+D800`) and its index. · *No in-package callers (public API, entry point, or protocol hook).*
+---
+
+### `foundations/version.py` - the installed package name and version, and the identity strings derived from them
+
+*22 lines · depends on: nothing in the package · used by: `mcp/server.py`, `tools/core/helpers.py`, `tools/core/services.py` · not re-exported at the package root*
+
+**Role in the workflow.** What the package calls itself, in one place: the MCP server reports `PACKAGE_NAME` and `package_version()`, and the web tools identify themselves with `http_user_agent`. The version is read from the installed distribution's metadata, so `pyproject.toml` is the only place it is written.
+
+**Contents**
+
+- `package_version() -> str` - The installed distribution's version, read once and cached; `0+unknown` when the distribution is not installed (a source tree that was never `pip install`ed). · *Called by:* `foundations/version.py::http_user_agent`, `mcp/server.py::<module>`
+- `http_user_agent(role: str) -> str` - `nailong-agent-sdk/<version> <role>`, the User-Agent of the web fetch and web search clients. · *Called by:* `core/helpers.py::_http_get_public`, `core/services.py::DuckDuckGoHtmlClient._search`
+
+**Algorithms & invariants.** `PACKAGE_NAME` is the distribution name `nailong-agent-sdk`; the import name is `nailong_agent_sdk`.
+
+*Module-level names:* `PACKAGE_NAME`
+

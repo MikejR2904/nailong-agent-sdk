@@ -1,113 +1,27 @@
 import pytest
 
-from nailong_agent_sdk.agent.graph_agent_executor import GraphAgentBinding
-from nailong_agent_sdk.agent.model import ScriptedModel
 from nailong_agent_sdk.agent.orchestrator import OrchestrationStatus, Orchestrator
-from nailong_agent_sdk.foundations.contracts import (
-    AgentDefinition,
-    EscalationTarget,
-    MemoryScope,
-    ScopedAgentTask,
-    TaskScope,
-    TerminationPolicy,
-    VersionedInstructions,
-)
 from nailong_agent_sdk.state.elastic import (
     ELASTIC_REQUEST_TOOL_NAME,
     MAX_ELASTIC_DEPTH_LIMIT,
     MAX_ELASTIC_NODES_LIMIT,
 )
 from nailong_agent_sdk.state.orchestration_models import ControllerPhase
-from nailong_agent_sdk.tools.core.definitions import core_tool_definitions
-from tests.support.agents import COMPLETE_SCHEMA, arun, final, tool_call
+from tests.support.agents import arun, final, tool_call
+from tests.support.elastic_orchestration import (
+    REQUEST,
+    TOOLS,
+    elastic_factory,
+    elastic_policy,
+    graph_of,
+)
 from tests.support.orchestration import close_all, make_policy, make_request, pipeline, plan_of
-
-TOOLS = ("brief", ELASTIC_REQUEST_TOOL_NAME)
-CAPABILITIES = ("utility.brief", "graph.elastic.request")
-CORE = {item.name: item for item in core_tool_definitions()}
-REQUEST = {
-    "request_id": "probe",
-    "scope": "clock tree",
-    "instructions": "Trace the clock tree and list every divider.",
-    "reason": "The section is ambiguous.",
-}
-
-
-def elastic_policy(**overrides):
-    values = {"tools": TOOLS, "capabilities": CAPABILITIES}
-    values.update(overrides)
-    return make_policy(**values)
-
-
-def elastic_factory(
-    seen,
-    prompts,
-    *,
-    root_turns,
-    child_turns=None,
-    join_turns=None,
-    elastic_tools=("brief",),
-    escalate=False,
-):
-    def factory(context):
-        seen.append(context)
-        role = "root" if context.elastic is None else context.elastic.role.value
-        node_id = context.assignment.node_id
-        if role == "root":
-            turns = root_turns.get(node_id, [final()])
-            names = TOOLS
-        elif role == "child":
-            turns = child_turns or [final({"status": "complete", "finding": "none"})]
-            names = elastic_tools
-        else:
-            turns = join_turns or [final()]
-            names = elastic_tools
-        definition = AgentDefinition(
-            identity=context.assignment.agent_identity,
-            instructions=VersionedInstructions(version="v1", text="work"),
-            input_schema={"type": "object"},
-            tools=[CORE[name] for name in names],
-            model_binding=context.model.binding,
-            output_schema=COMPLETE_SCHEMA,
-            memory_scope=MemoryScope.TASK_SCOPED,
-            termination_policy=TerminationPolicy(
-                max_iterations=4, status_field="status", escalation=EscalationTarget.NONE
-            ),
-        )
-
-        def task_adapter(node, node_context):
-            return ScopedAgentTask(
-                id=f"task-{node.node_id}",
-                input={},
-                scope=TaskScope(label=node.node_id),
-                locked_interface={},
-                instructions=context.execution_task.instructions,
-                acceptance_criteria=["done"],
-            )
-
-        class Recording(ScriptedModel):
-            async def next_turn(self, model_context):
-                prompts.setdefault(node_id, []).append(model_context.prompt.model_dump_json())
-                return await super().next_turn(model_context)
-
-        return GraphAgentBinding(
-            node_id=node_id,
-            definition=definition,
-            task_adapter=task_adapter,
-            model_factory=lambda node, node_context: Recording(turns),
-            escalate_elastic_overflow=escalate,
-        )
-
-    return factory
-
-
-def graph_of(orchestrator, executed):
-    return orchestrator.controller_runtime()._harness.get_run_state(executed.graph_run_id).graph
 
 
 def test_the_policy_carries_elastic_ceilings_with_hard_limits():
     policy = make_policy()
-    assert (policy.max_elastic_depth, policy.max_elastic_nodes) == (1, 2)
+    assert (policy.max_elastic_depth, policy.max_elastic_nodes) == (1, 3)
+    assert (plan_of().max_elastic_depth, plan_of().max_elastic_nodes) == (1, 3)
     with pytest.raises(ValueError, match="max_elastic_depth"):
         make_policy(max_elastic_depth=MAX_ELASTIC_DEPTH_LIMIT + 1)
     with pytest.raises(ValueError, match="max_elastic_nodes"):
@@ -117,11 +31,11 @@ def test_the_policy_carries_elastic_ceilings_with_hard_limits():
 def test_the_plans_elastic_caps_may_not_exceed_the_policy_ceilings(tmp_path):
     orchestrator = Orchestrator(tmp_path, make_policy())
     try:
-        too_many = make_request(plan=plan_of().model_copy(update={"max_elastic_nodes": 3}))
+        too_many = make_request(plan=plan_of().model_copy(update={"max_elastic_nodes": 4}))
         with pytest.raises(
             ValueError,
-            match='Plan "plan" declares max_elastic_nodes 3, above the policy ceiling '
-            "max_elastic_nodes 2",
+            match='Plan "plan" declares max_elastic_nodes 4, above the policy ceiling '
+            "max_elastic_nodes 3",
         ):
             arun(orchestrator.prepare(too_many))
         too_deep = make_request(plan=plan_of().model_copy(update={"max_elastic_depth": 2}))

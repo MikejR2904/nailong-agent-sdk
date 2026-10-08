@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, TypeAdapter, field_validator
 
@@ -149,6 +149,12 @@ class JevDecisionResult(StrictModel):
             duration_ms=duration_ms,
             unavailable_reason=reason,
         )
+
+
+class JevDecisionProvider(Protocol):
+    """Read-only Jev evaluator protocol; implementations cannot receive authority objects."""
+
+    async def evaluate(self, request: JevDecisionRequest) -> JevDecisionResult: ...
 
 
 class JevDecisionReceipt(InteropReceipt):

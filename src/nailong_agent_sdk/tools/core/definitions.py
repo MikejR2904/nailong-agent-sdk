@@ -156,7 +156,9 @@ def core_tool_definitions() -> list[ToolDefinition]:
             "and images_found (any images on those pages, each with an "
             "image_ref). If next_page is set, call again with page=next_page "
             "to continue - do not assume one call covers an entire multi-page "
-            "PDF.",
+            "PDF. If text_truncated is true, the first page alone held more "
+            "text than max_chars: omitted_chars were cut, and only a larger "
+            "max_chars returns them.",
             {
                 "type": "object",
                 "properties": {
@@ -290,9 +292,11 @@ def core_tool_definitions() -> list[ToolDefinition]:
             ELASTIC_REQUEST_TOOL_NAME,
             "Queue one extra exploration node for the controller. It runs after this task "
             "finishes, inherits this task's authority and cannot see more than this task can; "
-            "a join node then resumes this task with every exploration result. A request that "
-            "exceeds the plan's elastic capacity is refused here or held for a controller "
-            "decision when this task ends.",
+            "a join node then resumes this task with every exploration result. The join node "
+            "and the requests of tasks running at the same time count against the plan's "
+            "elastic capacity. A request that exceeds that capacity is refused here, or held for "
+            "a controller decision when this task ends if the binding allows it and a grant "
+            "could still fit it.",
             {
                 "type": "object",
                 "properties": {

@@ -24,6 +24,7 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.types import CONNECTION_CLOSED, METHOD_NOT_FOUND, CallToolResult, ReadResourceResult
 
 from ..foundations.errors import redact_secrets
+from ..foundations.identifiers import require_unique
 from ..foundations.logging import get_logger
 from .client_types import (
     McpConnectionState,
@@ -68,8 +69,7 @@ class McpClientManager:
 
     def __init__(self, server_configs: list[McpServerConfig]) -> None:
         names = [config.name for config in server_configs]
-        if len(names) != len(set(names)):
-            raise ValueError("MCP server names must be unique.")
+        require_unique(names, "MCP server names")
         self._configs = {config.name: config for config in server_configs}
         self._statuses: dict[str, McpConnectionStatus] = {
             config.name: McpConnectionStatus(

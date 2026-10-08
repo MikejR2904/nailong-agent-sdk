@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Hashable, Iterable
 from pathlib import Path
 
 from .atomic_io import claim_exclusive
@@ -16,6 +16,7 @@ _SAFE_FILE_NAME = re.compile(r"[A-Za-z0-9._-]+")
 _UNSAFE_CHARACTERS = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_READABLE_CHARS = 80
 _MAX_IDENTIFIER_CHARS = 128
+_MAX_REPORTED_REPEATS = 10
 
 
 def is_valid_identifier(value: object) -> bool:
@@ -34,6 +35,26 @@ def validate_identifier(value: object, kind: str) -> str:
             'with ".".'
         )
     return value
+
+
+def repeated_values(values: Iterable[Hashable]) -> list[Hashable]:
+    seen: set[Hashable] = set()
+    repeated: dict[Hashable, None] = {}
+    for value in values:
+        if value in seen:
+            repeated[value] = None
+        seen.add(value)
+    return list(repeated)
+
+
+def require_unique(values: Iterable[Hashable], label: str) -> None:
+    repeated = repeated_values(values)
+    if not repeated:
+        return
+    shown = ", ".join(f'"{value}"' for value in repeated[:_MAX_REPORTED_REPEATS])
+    hidden = len(repeated) - _MAX_REPORTED_REPEATS
+    more = f" and {hidden} more" if hidden > 0 else ""
+    raise ValueError(f"{label} must be unique; repeated: {shown}{more}.")
 
 
 def file_safe_name(value: str) -> str:

@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from nailong_agent_sdk.observability import telemetry_store
 from nailong_agent_sdk.observability.audit_log import AuditTranscriptStore
 from nailong_agent_sdk.observability.metric_definitions import STANDARD_METRIC_DEFINITIONS
 from nailong_agent_sdk.observability.metrics import (
@@ -114,6 +115,96 @@ def test_telemetry_multiprocess_concurrency_keeps_chain_valid(tmp_path):
     assert [e.sequence for e in events] == list(range(1, 161))
     assert store.verify_run_chain("shared")
     store.close()
+
+
+class LockedWhileSwitchingMode:
+    def __init__(self, connection, failures, message="database is locked"):
+        self.connection = connection
+        self.failures = failures
+        self.message = message
+        self.attempts = 0
+
+    def execute(self, sql, *args):
+        if sql.startswith("PRAGMA journal_mode"):
+            self.attempts += 1
+            if self.failures > 0:
+                self.failures -= 1
+                raise sqlite3.OperationalError(self.message)
+        return self.connection.execute(sql, *args)
+
+    def __enter__(self):
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, *exception):
+        return self.connection.__exit__(*exception)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+
+def test_a_database_locked_by_another_process_is_retried_while_the_store_opens(
+    tmp_path, monkeypatch
+):
+    real_connect = sqlite3.connect
+    wrapped = []
+
+    def connect(*args, **kwargs):
+        wrapped.append(LockedWhileSwitchingMode(real_connect(*args, **kwargs), failures=3))
+        return wrapped[-1]
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    store = TelemetryStore(tmp_path)
+    try:
+        assert wrapped[0].attempts == 4
+        assert emit(store).sequence == 1
+    finally:
+        store.close()
+
+
+def test_a_database_that_stays_locked_fails_with_the_sqlite_message(tmp_path, monkeypatch):
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(telemetry_store, "_LOCK_RETRY_SECONDS", 0.1)
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *a, **k: LockedWhileSwitchingMode(real_connect(*a, **k), failures=10**9),
+    )
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        TelemetryStore(tmp_path)
+
+
+def test_an_error_that_is_not_a_lock_is_not_retried(tmp_path, monkeypatch):
+    real_connect = sqlite3.connect
+    wrapped = []
+
+    def connect(*args, **kwargs):
+        wrapped.append(
+            LockedWhileSwitchingMode(real_connect(*args, **kwargs), 5, "unable to open database")
+        )
+        return wrapped[-1]
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    with pytest.raises(sqlite3.OperationalError, match="unable to open database"):
+        TelemetryStore(tmp_path)
+    assert wrapped[0].attempts == 1
+
+
+def test_stores_opened_by_many_processes_at_once_on_a_new_root_all_start(tmp_path):
+    script = """
+    import sys
+    import time
+    from pathlib import Path
+    from nailong_agent_sdk.observability.telemetry_store import TelemetryStore
+    while time.time() < float(sys.argv[3]):
+        time.sleep(0.001)
+    store = TelemetryStore(Path(sys.argv[2]))
+    store.close()
+    """
+    outputs = run_workers(script, 8, str(tmp_path), str(time.time() + 3))
+    assert all(code == 0 for code, _, _ in outputs), outputs
+    reopened = TelemetryStore(tmp_path)
+    reopened.close()
 
 
 def test_telemetry_redacts_secrets_at_the_persistence_boundary(tmp_path):
@@ -231,6 +322,52 @@ def test_telemetry_tamper_detection_variants(tmp_path):
     failure = store.chain_break("run-1")
     assert failure is not None and failure.sequence == 3 and failure.kind == "content-hash-mismatch"
     store.close()
+
+
+def test_the_run_report_counts_only_the_events_before_a_chain_break_as_verified(tmp_path):
+    store = TelemetryStore(tmp_path)
+    for i in range(6):
+        emit(store, payload={"i": i})
+    intact = store.create_run_report("run-1")
+    assert (intact["event_count"], intact["verified_event_count"]) == (6, 6)
+    assert intact["integrity_chain_valid"] is True
+    store.close()
+    connection = sqlite3.connect(tmp_path / ".agent-telemetry" / "telemetry.sqlite3")
+    row = connection.execute("SELECT event_json FROM events WHERE sequence = 4").fetchone()[0]
+    changed = json.loads(row)
+    changed["status"] = "tampered"
+    connection.execute(
+        "UPDATE events SET event_json = ? WHERE sequence = 4", (json.dumps(changed),)
+    )
+    connection.commit()
+    connection.close()
+    reopened = TelemetryStore(tmp_path)
+    broken = reopened.create_run_report("run-1")
+    assert broken["integrity_chain_valid"] is False
+    assert broken["integrity_failure"]["sequence"] == 4
+    assert (broken["event_count"], broken["verified_event_count"]) == (6, 3)
+    assert (intact["verified_through_sequence"], broken["verified_through_sequence"]) == (6, 3)
+    reopened.close()
+
+
+def test_the_rendered_transcript_counts_only_entries_before_a_break_as_verified(tmp_path):
+    store = AuditTranscriptStore(tmp_path)
+    for i in range(6):
+        store.append("run-b", "evt", {"i": i})
+    store.close()
+    path = tmp_path / ".agent-audit-logs" / "run-b.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    entry = json.loads(lines[3])
+    entry["payload"] = {"i": "tampered"}
+    lines[3] = json.dumps(entry)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reopened = AuditTranscriptStore(tmp_path)
+    text = reopened.render_markdown("run-b").read_text(encoding="utf-8")
+    assert "Integrity chain valid: `False`" in text
+    assert "Verified transcript entries: `3`" in text
+    assert "Verified through sequence: `3`" in text
+    assert "Rendered entries: `6`" in text
+    reopened.close()
 
 
 def test_audit_chain_paging_render_and_verify(tmp_path):

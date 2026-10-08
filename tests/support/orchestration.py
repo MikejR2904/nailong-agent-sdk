@@ -21,6 +21,7 @@ from nailong_agent_sdk.foundations.contracts import (
     TerminationPolicy,
     VersionedInstructions,
 )
+from nailong_agent_sdk.state.elastic import DEFAULT_MAX_ELASTIC_DEPTH, DEFAULT_MAX_ELASTIC_NODES
 from nailong_agent_sdk.state.orchestration_models import ComplexityRoutingRules, GapMetadata
 from nailong_agent_sdk.state.planning import ModelTier, Plan
 from nailong_agent_sdk.state.shared_state import SharedSubstrateSnapshot
@@ -43,8 +44,8 @@ def make_policy(
     tools=("brief",),
     capabilities=("utility.brief",),
     policy_id="pol",
-    max_elastic_depth=1,
-    max_elastic_nodes=2,
+    max_elastic_depth=DEFAULT_MAX_ELASTIC_DEPTH,
+    max_elastic_nodes=DEFAULT_MAX_ELASTIC_NODES,
 ):
     return OrchestrationPolicy(
         policy_id=policy_id,

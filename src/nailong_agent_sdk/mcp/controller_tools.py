@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from ..state.elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from ..state.graph_models import GraphNodeResult
 from ..state.orchestration_models import ComplexityRoutingRules, GapMetadata, SkillToolProfile
 from ..state.planning import Plan
@@ -31,6 +32,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         routing_rules: dict[str, Any],
         gap_metadata: dict[str, Any],
         max_repair_attempts: int = 1,
+        elastic_depth_ceiling: int = MAX_ELASTIC_DEPTH_LIMIT,
+        elastic_nodes_ceiling: int = MAX_ELASTIC_NODES_LIMIT,
     ) -> dict[str, Any]:
         """Create a deterministic vertical controller bound to a read-only source snapshot."""
 
@@ -41,6 +44,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
                 ComplexityRoutingRules.model_validate(routing_rules),
                 GapMetadata.model_validate(gap_metadata),
                 max_repair_attempts=max_repair_attempts,
+                elastic_depth_ceiling=elastic_depth_ceiling,
+                elastic_nodes_ceiling=elastic_nodes_ceiling,
             )
             return {"ok": True, "controller": record.model_dump(mode="json")}
         except ValidationError as error:

@@ -1,6 +1,6 @@
 # `mcp/` - the MCP server that exposes the SDK to a host, and the client that consumes external MCP tools
 
-Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create_mcp_server` builds one `McpContext` of durable stores and registers 50 tools that let a TypeScript or other host drive the Python runtime: validate and run scripted agent tasks, manage project state, validate plans and start graph runs, drive the controller lifecycle, run the specification pipeline and Gate 1, inspect telemetry and audit logs, and create Git version locks. Every tool returns `{ok: true, ...}` or `{ok: false, errors: [...]}` (pydantic field errors as `{location, message, type}`, other failures as `{message, type}` naming the exception class); none of them calls a real model. Tool bodies run on worker threads, so one slow tool cannot stall other clients; tools that share the coordinator, controller and orchestration stores also hold one lock and never interleave. The HTTP service (`main`) refuses to start without `AGENT_RUNTIME_AUTH_TOKEN` (at least 32 characters) and answers every request that lacks `Authorization: Bearer <token>` with HTTP 401 before any tool runs; it checks the Host and Origin headers for every loopback bind and requires an explicit `AGENT_RUNTIME_ALLOWED_HOSTS` list for any other bind address. The authority a caller claims (for example `human`) is still the authenticated host's responsibility: a holder of the token can approve. **Client** (`client.py`, `client_types.py`, `client_bridge.py`): `McpClientManager` connects this SDK to external MCP servers (each connection lives in its own task, with a connect timeout, and a cancelled or failed connect never leaves a child process or a cancel scope behind) and `mcp_tools_as_extensions` opts chosen external tools into the governed tool registry under capability and approval control, marking their output as untrusted.
+Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create_mcp_server` builds one `McpContext` of durable stores and registers 52 tools that let a TypeScript or other host drive the Python runtime: validate and run scripted agent tasks, manage project state, validate plans and start graph runs, drive the controller lifecycle, run the specification pipeline and Gate 1, inspect telemetry and audit logs, and create Git version locks. Every tool returns `{ok: true, ...}` or `{ok: false, errors: [...]}` (pydantic field errors as `{location, message, type}`, other failures as `{message, type}` naming the exception class); none of them calls a real model. Tool bodies run on worker threads, so one slow tool cannot stall other clients; tools that share the coordinator, controller and orchestration stores also hold one lock and never interleave. The HTTP service (`main`) refuses to start without `AGENT_RUNTIME_AUTH_TOKEN` (at least 32 characters) and answers every request that lacks `Authorization: Bearer <token>` with HTTP 401 before any tool runs; it checks the Host and Origin headers for every loopback bind and requires an explicit `AGENT_RUNTIME_ALLOWED_HOSTS` list for any other bind address. The authority a caller claims (for example `human`) is still the authenticated host's responsibility: a holder of the token can approve. **Client** (`client.py`, `client_types.py`, `client_bridge.py`): `McpClientManager` connects this SDK to external MCP servers (each connection lives in its own task, with a connect timeout, and a cancelled or failed connect never leaves a child process or a cancel scope behind) and `mcp_tools_as_extensions` opts chosen external tools into the governed tool registry under capability and approval control, marking their output as untrusted.
 
 | File | Lines | Role |
 |---|---:|---|
@@ -10,13 +10,13 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 | [`mcp/client.py`](#mcpclientpy---outbound-mcp-client-lifecycle) | 401 | outbound MCP client lifecycle |
 | [`mcp/client_bridge.py`](#mcpclient_bridgepy---opt-in-bridge-from-external-mcp-tools-to-governed-harness-tools) | 92 | opt-in bridge from external MCP tools to governed harness tools |
 | [`mcp/client_types.py`](#mcpclient_typespy---typed-configuration-and-status-for-the-outbound-mcp-client) | 79 | typed configuration and status for the outbound MCP client |
-| [`mcp/controller_tools.py`](#mcpcontroller_toolspy---mcp-tools-for-the-deterministic-controller) | 253 | MCP tools for the deterministic controller |
+| [`mcp/controller_tools.py`](#mcpcontroller_toolspy---mcp-tools-for-the-deterministic-controller) | 258 | MCP tools for the deterministic controller |
 | [`mcp/git_tools.py`](#mcpgit_toolspy---mcp-tools-for-local-git-inspection-and-specification-version-locks) | 109 | MCP tools for local Git inspection and specification version locks |
 | [`mcp/orchestration_tools.py`](#mcporchestration_toolspy---mcp-tools-for-plan-validation-graph-runs-and-orchestration-compilation) | 115 | MCP tools for plan validation, graph runs and orchestration compilation |
-| [`mcp/project_state_tools.py`](#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 126 | MCP tools for project working memory |
+| [`mcp/project_state_tools.py`](#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 192 | MCP tools for project working memory |
 | [`mcp/run_tools.py`](#mcprun_toolspy---mcp-tools-for-graph-run-state-cancellation-approvals-and-resumption) | 59 | MCP tools for graph run state, cancellation, approvals and resumption |
-| [`mcp/security.py`](#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 131 | bearer-token authentication and host checks for the HTTP service |
-| [`mcp/server.py`](#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 143 | MCP server factory and loopback entry point |
+| [`mcp/security.py`](#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 135 | bearer-token authentication and host checks for the HTTP service |
+| [`mcp/server.py`](#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 144 | MCP server factory and loopback entry point |
 | [`mcp/specification_tools.py`](#mcpspecification_toolspy---mcp-tools-for-the-specification-pipeline-and-gate-1) | 132 | MCP tools for the specification pipeline and Gate 1 |
 | [`mcp/telemetry_tools.py`](#mcptelemetry_toolspy---mcp-tools-for-telemetry-audit-logs-and-metrics) | 145 | MCP tools for telemetry, audit logs and metrics |
 
@@ -38,7 +38,7 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 
 **Contents**
 
-- `_validation_errors(error: ValidationError) -> list[dict[str, Any]]` - Converts a pydantic `ValidationError` into `{location, message, type}` entries naming each failing field path. · *Called by:* `mcp/agent_tools.py::register_agent_tools.assemble_initial_context_tool`, `mcp/agent_tools.py::register_agent_tools.run_agent_task`, `mcp/agent_tools.py::register_agent_tools.validate_agent_definition`, `mcp/controller_tools.py::register_controller_tools.create_controller` (+19 more)
+- `_validation_errors(error: ValidationError) -> list[dict[str, Any]]` - Converts a pydantic `ValidationError` into `{location, message, type}` entries naming each failing field path. · *Called by:* `mcp/_shared.py::McpContext._offloaded.run`, `mcp/agent_tools.py::register_agent_tools.assemble_initial_context_tool`, `mcp/agent_tools.py::register_agent_tools.run_agent_task`, `mcp/agent_tools.py::register_agent_tools.validate_agent_definition` (+22 more)
 - **class `McpContext`** *(dataclass)* - Dataclass of the shared services: run root, harness coordinator, telemetry, audit logs, project-state store, controller runtime, specification services, plan validator, version service, a cache of orchestrators and the `state_lock` that serializes stateful tools. · *Instantiated by:* `mcp/server.py::create_mcp_server`
   - fields: `run_root`, `coordinator`, `telemetry`, `audit_logs`, `project_states`, `controller_runtime`, `specification_root`, `preprocessor`, `specification_gate`, `gate_store`, `plan_validator`, `versioning`, `orchestrators`, `state_lock`
   - `McpContext.tool(server: MCPServer, name: str, *, exclusive: bool=True) -> Callable[[Callable[..., Any]], Callable[..., Any]]` - Returns a decorator that registers a function as an MCP tool named `name` (structured output) after wrapping it with `_offloaded`; `exclusive=False` is for tools that only touch thread-safe or local state. · *Called by:* `mcp/agent_tools.py::register_agent_tools`, `mcp/controller_tools.py::register_controller_tools`, `mcp/git_tools.py::register_git_tools`, `mcp/orchestration_tools.py::register_orchestration_tools` (+4 more)
@@ -69,7 +69,7 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 
 ### `mcp/client.py` - outbound MCP client lifecycle
 
-*401 lines · depends on: `foundations/errors.py`, `foundations/logging.py`, `mcp/client_types.py` · used by: `mcp/client_bridge.py` · re-exported at the package root: 2 name(s)*
+*401 lines · depends on: `foundations/errors.py`, `foundations/identifiers.py`, `foundations/logging.py`, `mcp/client_types.py` · used by: `mcp/client_bridge.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** A host builds a manager from explicit configs, connects, lists tools and calls them (usually through `mcp_tools_as_extensions`). Nothing discovers or dials a server by itself. Each connection is owned by one dedicated task that opens the transport and session, performs the handshake under the config's `connect_timeout_seconds` and then waits to be told to stop; every cleanup happens in that same task, so a timeout, a failure or a cancellation of the caller closes the child process or HTTP client and leaves no cancel scope attached to the caller.
 
@@ -157,21 +157,21 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 
 ### `mcp/controller_tools.py` - MCP tools for the deterministic controller
 
-*253 lines · depends on: `mcp/_shared.py`, `state/graph_models.py`, `state/orchestration_models.py`, `state/planning.py`, `state/shared_state.py` · used by: `mcp/server.py` · not re-exported at the package root*
+*258 lines · depends on: `mcp/_shared.py`, `state/elastic.py`, `state/graph_models.py`, `state/orchestration_models.py`, `state/planning.py`, `state/shared_state.py` · used by: `mcp/server.py` · not re-exported at the package root*
 
 **Role in the workflow.** One-to-one wrappers over `ControllerRuntime`, in lifecycle order: create, submit plan, approve, dispatch, record node results, publish discoveries, check provenance, repair or complete, cancel.
 
 **Contents**
 
 - `register_controller_tools(server: MCPServer, ctx: McpContext) -> None` - Registers fifteen tools. · *Called by:* `mcp/server.py::create_mcp_server`
-  - `register_controller_tools.create_controller(snapshot: dict[str, Any], profile: dict[str, Any], routing_rules: dict[str, Any], gap_metadata: dict[str, Any], max_repair_attempts: int=1) -> dic...` *(mcp-tool)* - MCP tool: creates a controller bound to a read-only snapshot, profile, routing rules and gap metadata.
+  - `register_controller_tools.create_controller(snapshot: dict[str, Any], profile: dict[str, Any], routing_rules: dict[str, Any], gap_metadata: dict[str, Any], max_repair_attempts: int=1, elasti...` *(mcp-tool)* - MCP tool: creates a controller bound to a read-only snapshot, profile, routing rules and gap metadata; the optional `elastic_depth_ceiling` and `elastic_nodes_ceiling` (default: the hard limits 8 and 256) bound the plans it accepts and the capacity grants it can make.
   - `register_controller_tools.submit_controller_plan(controller_id: str, plan: dict[str, Any]) -> dict[str, Any]` *(mcp-tool)* - MCP tool: presents a validated plan for approval.
   - `register_controller_tools.approve_controller_plan(controller_id: str, approved: bool, reason: str | None=None) -> dict[str, Any]` *(mcp-tool)* - MCP tool: records the designer's decision.
   - `register_controller_tools.dispatch_controller(controller_id: str) -> dict[str, Any]` *(mcp-tool)* - MCP tool: starts the graph run with the lateral substrate.
   - `register_controller_tools.record_controller_node_result(controller_id: str, node_id: str, result: dict[str, Any]) -> dict[str, Any]` *(mcp-tool)* - MCP tool: commits a typed node result into graph state and project state.
   - `register_controller_tools.publish_exploratory_discovery(controller_id: str, discovery: dict[str, Any]) -> dict[str, Any]` *(mcp-tool)* - MCP tool: publishes a closed discovery (the response key is named `controller` but holds the run record).
   - `register_controller_tools.request_lateral_dependency(controller_id: str, request: dict[str, Any]) -> dict[str, Any]` *(mcp-tool)* - MCP tool: attaches a consumer to a discovery.
-  - `register_controller_tools.grant_elastic_capacity(controller_id: str, reason: str, max_elastic_depth: int | None=None, max_elastic_nodes: int | None=None) -> dict[str, Any]` *(mcp-tool)* - MCP tool: raises a run's elastic caps by a recorded decision and runs the deferred requests that fit.
+  - `register_controller_tools.grant_elastic_capacity(controller_id: str, reason: str, max_elastic_depth: int | None=None, max_elastic_nodes: int | None=None) -> dict[str, Any]` *(mcp-tool)* - MCP tool: raises a run's elastic caps by a recorded decision, up to the controller's ceilings, and runs the deferred requests that fit.
   - `register_controller_tools.decline_elastic_requests(controller_id: str, parent_node_id: str, reason: str) -> dict[str, Any]` *(mcp-tool)* - MCP tool: discards one node's deferred elastic requests and releases the dependents they held.
   - `register_controller_tools.get_controller_state(controller_id: str) -> dict[str, Any]` *(mcp-tool)* - MCP tool: returns the controller record and events.
   - `register_controller_tools.get_shared_state(controller_id: str) -> dict[str, Any]` *(mcp-tool)* - MCP tool: returns the graph's typed lateral state.
@@ -219,17 +219,19 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 
 ### `mcp/project_state_tools.py` - MCP tools for project working memory
 
-*126 lines · depends on: `mcp/_shared.py`, `state/project_state_models.py` · used by: `mcp/server.py` · not re-exported at the package root*
+*192 lines · depends on: `mcp/_shared.py`, `state/project_state_models.py` · used by: `mcp/server.py` · not re-exported at the package root*
 
-**Role in the workflow.** Initialise a project's state, read it, and record human decisions and open questions as authority-checked transitions.
+**Role in the workflow.** Initialise a project's state, read it, and record human decisions, open questions and their closure as authority-checked transitions.
 
 **Contents**
 
-- `register_project_state_tools(server: MCPServer, ctx: McpContext) -> None` - Registers four tools. · *Called by:* `mcp/server.py::create_mcp_server`
+- `register_project_state_tools(server: MCPServer, ctx: McpContext) -> None` - Registers six tools. · *Called by:* `mcp/server.py::create_mcp_server`
   - `register_project_state_tools.initialize_project_state(project_id: str, stage_schema: dict[str, Any]) -> dict[str, Any]` *(mcp-tool)* - MCP tool: creates or loads a project state for a stage schema.
   - `register_project_state_tools.get_project_state(project_id: str) -> dict[str, Any]` *(mcp-tool)* - MCP tool: returns the current state (history stays audit evidence).
   - `register_project_state_tools.record_human_project_decision(project_id: str, decision_id: str, content: str, status: str, evidence_id: str, source_spans: list[str] | None=None) -> dict[str, Any]` *(mcp-tool)* - MCP tool: applies a `HUMAN_DECISION` transition with evidence; the server cannot verify the caller is human.
-  - `register_project_state_tools.open_project_question(project_id: str, question_id: str, content: str, owner: str, evidence_id: str, source_spans: list[str] | None=None) -> dict[str, Any]` *(mcp-tool)* - MCP tool: applies a `QUESTION_OPENED` transition; nothing can later close a question.
+  - `register_project_state_tools.resolve_project_question(project_id: str, question_id: str, resolution: str, evidence_id: str, source_spans: list[str] | None=None) -> dict[str, Any]` *(mcp-tool)* - MCP tool: applies a `QUESTION_RESOLVED` transition under human authority with the recorded answer and its source evidence; fails naming the question when it is not open.
+  - `register_project_state_tools.clear_project_blocker(project_id: str, blocker_id: str, reason: str, evidence_id: str, source_spans: list[str] | None=None) -> dict[str, Any]` *(mcp-tool)* - MCP tool: applies a `BLOCKER_CLEARED` transition under human authority with the reason and its source evidence; fails naming the blocker when it does not exist.
+  - `register_project_state_tools.open_project_question(project_id: str, question_id: str, content: str, owner: str, evidence_id: str, source_spans: list[str] | None=None) -> dict[str, Any]` *(mcp-tool)* - MCP tool: applies a `QUESTION_OPENED` transition; `resolve_project_question` closes it.
 
 ---
 
@@ -251,7 +253,7 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 
 ### `mcp/security.py` - bearer-token authentication and host checks for the HTTP service
 
-*131 lines · depends on: nothing in the package · used by: `mcp/server.py` · not re-exported at the package root*
+*135 lines · depends on: nothing in the package · used by: `mcp/server.py` · not re-exported at the package root*
 
 **Role in the workflow.** `main` in `server.py` reads its settings with `load_http_service_settings`, builds the MCP app with `HttpServiceSettings.transport_security()` (Host and Origin allow-lists, DNS-rebinding protection on) and wraps it in `BearerTokenMiddleware`, so every HTTP request must carry the shared secret before any tool is reached.
 
@@ -265,9 +267,9 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 - `load_http_service_settings(environ: Mapping[str, str]) -> HttpServiceSettings` - Reads `AGENT_RUNTIME_HOST` (default `127.0.0.1`), `AGENT_RUNTIME_PORT` (default 8001, 1 to 65535), `AGENT_RUNTIME_AUTH_TOKEN` (required, at least 32 characters, no whitespace) and, for a non-loopback host, `AGENT_RUNTIME_ALLOWED_HOSTS`; a loopback bind allows `127.0.0.1:*`, `localhost:*`, `[::1]:*` and its own address. Every failure raises `ServerConfigurationError` naming the variable (never the token). · *Called by:* `mcp/server.py::main`
 - `_parse_port(raw: str) -> int` - Integer 1 to 65535 or `AGENT_RUNTIME_PORT must be an integer from 1 to 65535, got "<value>"`. · *Called by:* `mcp/security.py::load_http_service_settings`
 - `_parse_allowed_hosts(host: str, raw: str) -> tuple[str, ...]` - Splits the comma list; an empty list for a non-loopback bind, or an entry with a scheme, path or whitespace, raises with the expected form. · *Called by:* `mcp/security.py::load_http_service_settings`
-- **class `BearerTokenMiddleware`** *(class)* - ASGI middleware: HTTP requests pass only with `Authorization: Bearer <token>` (scheme case-insensitive, constant-time comparison); others get a JSON 401 `{ok: false, errors: [{message, type: "Unauthorized"}]}` with `WWW-Authenticate: Bearer`, and nothing reaches the app. Non-HTTP scopes (lifespan) pass through. · *Instantiated by:* `mcp/server.py::main`
+- **class `BearerTokenMiddleware`** *(class)* - ASGI middleware: HTTP requests pass only with `Authorization: Bearer <token>` (scheme case-insensitive, constant-time comparison); others get a JSON 401 `{ok: false, errors: [{message, type: "Unauthorized"}]}` with `WWW-Authenticate: Bearer`, and nothing reaches the app. A websocket scope is held to the same token (an unauthorized one is closed with code 1008); the lifespan scope passes through. · *Instantiated by:* `mcp/server.py::main`
   - `BearerTokenMiddleware.__init__(app: ASGIApp, token: str) -> None` - Stores the wrapped app and the token bytes.
-  - `BearerTokenMiddleware.__call__(scope: Scope, receive: Receive, send: Send) -> None` *(async)* - Rejects an unauthorized HTTP request with the 401 response, else calls the app.
+  - `BearerTokenMiddleware.__call__(scope: Scope, receive: Receive, send: Send) -> None` *(async)* - Rejects an unauthorized HTTP request with the 401 response and closes an unauthorized websocket with code 1008; anything else (the lifespan scope) goes to the app.
   - `BearerTokenMiddleware._authorized(scope: Scope) -> bool` - Splits the `Authorization` header into scheme and value and compares the value with the token using `hmac.compare_digest`. · *Called within this file by:* `mcp/security.py::BearerTokenMiddleware.__call__`
 
 **Algorithms & invariants.** The token authenticates the caller, not an approver: a holder can use every tool, including those that record human decisions and approvals, so the token belongs to the trusted host and must not be handed to an agent. The service speaks plain HTTP; a non-loopback deployment needs TLS terminated in front of it.
@@ -276,7 +278,7 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 
 ### `mcp/server.py` - MCP server factory and loopback entry point
 
-*143 lines · depends on: `mcp/_shared.py`, `mcp/agent_tools.py`, `mcp/controller_tools.py`, `mcp/git_tools.py`, `mcp/orchestration_tools.py`, `mcp/project_state_tools.py`, `mcp/run_tools.py`, `mcp/security.py`, `mcp/specification_tools.py`, `mcp/telemetry_tools.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/telemetry_store.py`, `specifications/gate.py`, `specifications/git_versioning.py`, `specifications/preprocessing.py`, `state/controller_runtime.py`, `state/harness_coordinator.py`, `state/planning.py`, `state/project_state_store.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 1 name(s)*
+*144 lines · depends on: `foundations/version.py`, `mcp/_shared.py`, `mcp/agent_tools.py`, `mcp/controller_tools.py`, `mcp/git_tools.py`, `mcp/orchestration_tools.py`, `mcp/project_state_tools.py`, `mcp/run_tools.py`, `mcp/security.py`, `mcp/specification_tools.py`, `mcp/telemetry_tools.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/telemetry_store.py`, `specifications/gate.py`, `specifications/git_versioning.py`, `specifications/preprocessing.py`, `state/controller_runtime.py`, `state/harness_coordinator.py`, `state/planning.py`, `state/project_state_store.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** `create_mcp_server` wires the stores and tool groups (no network listener, no authentication: the embedding host or the stdio parent is the authority). `main` serves it over streamable HTTP (path `/mcp`, JSON responses, stateless) after validating the environment: `AGENT_RUNTIME_HOST` (default `127.0.0.1`), `AGENT_RUNTIME_PORT` (default `8001`), `AGENT_RUNTIME_AUTH_TOKEN` (required) and `AGENT_RUNTIME_ALLOWED_HOSTS` (required for a non-loopback host).
 
@@ -287,7 +289,7 @@ Two directions. **Server** (`server.py` plus eight `*_tools.py` groups): `create
 - `__dir__() -> list[str]` - Advertises the lazy `mcp` attribute without constructing stores.
 - `main() -> None` - Loads and validates the HTTP settings; a configuration error prints `nailong-agent-sdk MCP server cannot start: <reason>` to stderr and exits with status 2. Otherwise builds the server's streamable-HTTP app with explicit Host/Origin protection, wraps it in `BearerTokenMiddleware` and serves it with uvicorn. · *Called within this file by:* `mcp/server.py::<module>`
 
-**Algorithms & invariants.** The controller runtime receives the same coordinator and project-state store as the tool groups; before this was fixed the server held two of each over one run root, and a `get_run_state` poll could revert a run the controller had advanced. `SERVER_NAME` and `SERVER_VERSION` repeat the old name and the version in `pyproject.toml`.
+**Algorithms & invariants.** The controller runtime receives the same coordinator and project-state store as the tool groups; before this was fixed the server held two of each over one run root, and a `get_run_state` poll could revert a run the controller had advanced. `SERVER_NAME` and `SERVER_VERSION` come from `foundations/version.py`, so the server reports the name and version of the installed distribution.
 
 *Module-level names:* `SERVER_NAME`, `SERVER_VERSION`, `_default_server`
 

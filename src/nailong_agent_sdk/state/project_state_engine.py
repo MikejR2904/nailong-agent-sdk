@@ -249,6 +249,50 @@ class ProjectStateReducer:
                 ),
             )
 
+        elif transition.kind is StateTransitionKind.QUESTION_RESOLVED:
+            question_id = str(required("question_id"))
+            question = next((item for item in questions if item.question_id == question_id), None)
+            if question is None:
+                raise ValueError(
+                    f'Open question "{question_id}" does not exist in project state '
+                    f'"{current.project_id}" (action "{transition.action_id}"); it may already '
+                    "be resolved."
+                )
+            allowed = (
+                {StateAuthority.HUMAN}
+                if question.owner is QuestionOwner.HUMAN
+                else {StateAuthority.CONTROLLER, StateAuthority.HUMAN}
+            )
+            if transition.actor not in allowed:
+                raise ValueError(
+                    f'Question "{question_id}" is owned by the {question.owner.value}; only '
+                    f"{' or '.join(sorted(item.value for item in allowed))} authority may "
+                    f'resolve it, not {transition.actor.value} (action "{transition.action_id}").'
+                )
+            if not str(required("resolution")).strip():
+                raise ValueError(
+                    f'Question "{question_id}" resolution must not be blank '
+                    f'(action "{transition.action_id}").'
+                )
+            questions = [item for item in questions if item.question_id != question_id]
+
+        elif transition.kind is StateTransitionKind.BLOCKER_CLEARED:
+            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
+                raise ValueError("Only controller or human authority may clear a blocker.")
+            blocker_id = str(required("blocker_id"))
+            if not any(item.blocker_id == blocker_id for item in blocked):
+                raise ValueError(
+                    f'Blocker "{blocker_id}" does not exist in project state '
+                    f'"{current.project_id}" (action "{transition.action_id}"); it may already '
+                    "be cleared."
+                )
+            if not str(required("reason")).strip():
+                raise ValueError(
+                    f'Blocker "{blocker_id}" reason must not be blank '
+                    f'(action "{transition.action_id}").'
+                )
+            blocked = [item for item in blocked if item.blocker_id != blocker_id]
+
         elif transition.kind is StateTransitionKind.WORK_ITEM_UPDATED:
             if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HARNESS}:
                 raise ValueError("Only controller or harness authority may update a work item.")

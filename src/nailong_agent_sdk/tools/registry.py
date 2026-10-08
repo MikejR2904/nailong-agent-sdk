@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..foundations.contracts import AgentFailure, ToolDefinition, ToolExecutionResult
+from ..foundations.identifiers import require_unique
 from ..foundations.text import split_lines
 from ..memory.context_projection import ToolResultJournal
 from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
@@ -65,9 +66,8 @@ class HarnessToolRegistry:
         custom_handlers: dict[str, HarnessToolHandler] | None = None,
     ) -> None:
         values = list(tools) if tools is not None else self.default_tools()
+        require_unique([tool.name for tool in values], "Harness tool names")
         self._tools = {tool.name: tool for tool in values}
-        if len(self._tools) != len(values):
-            raise ValueError("Harness tool names must be unique.")
         self._custom_handlers = dict(custom_handlers or {})
         unknown = set(self._custom_handlers) - set(self._tools)
         if unknown:

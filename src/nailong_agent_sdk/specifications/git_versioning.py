@@ -269,7 +269,15 @@ class SpecificationVersionService:
                 "Git version locks require an accepted Gate 1 soft-lock metadata record."
             )
         if metadata.version != specification.version:
-            raise ValueError("Version metadata must match the unified specification version.")
+            raise ValueError(
+                f'Version metadata version "{metadata.version}" must match the unified '
+                f'specification version "{specification.version}".'
+            )
+        if gap_report.document_version != specification.version:
+            raise ValueError(
+                f'Gap report document_version "{gap_report.document_version}" must match the '
+                f'unified specification version "{specification.version}".'
+            )
         requested = _parse_semver(metadata.version)
         state = repository.state()
         if not state.clean:

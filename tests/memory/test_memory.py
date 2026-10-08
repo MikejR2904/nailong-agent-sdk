@@ -465,3 +465,30 @@ def test_selector_scope_pointers_are_case_insensitive_against_content():
     assert [n.node_id for n in chosen.nodes] == ["n1"], (
         "an upper-case requirement id used as a scope pointer did not match its node"
     )
+
+
+def test_selector_ignores_blank_scope_pointers():
+    trees = [
+        _tree(
+            nodes=[
+                _node("n1", "The adder shall add two values"),
+                _node("n2", "Unrelated clock text"),
+            ]
+        )
+    ]
+    chosen = TaskAwareContextSelector().select(
+        trees, DesignStage.RTL_DEVELOPMENT, "zzz", ["", "   "]
+    )
+    assert chosen.nodes == []
+    assert chosen.selected_document_ids == []
+
+
+def test_selection_reasons_name_what_matched_each_document():
+    selector = TaskAwareContextSelector()
+    trees = [_tree(nodes=[_node("n1", "REQ-7 The adder shall add", location="line:3")])]
+    by_pointer = selector.select(trees, DesignStage.RTL_DEVELOPMENT, "qqq", ["REQ-7"])
+    by_keyword = selector.select(trees, DesignStage.RTL_DEVELOPMENT, "adder", ["nothing-like-this"])
+    by_both = selector.select(trees, DesignStage.RTL_DEVELOPMENT, "adder", ["REQ-7"])
+    assert by_pointer.selection_reasons == {"d1": ["scope-pointer"]}
+    assert by_keyword.selection_reasons == {"d1": ["keyword-match"]}
+    assert by_both.selection_reasons == {"d1": ["scope-pointer", "keyword-match"]}

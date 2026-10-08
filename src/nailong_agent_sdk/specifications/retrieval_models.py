@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.identifiers import require_unique
 from .documents import DocumentNode, SourceRef, SpecificationCategory
 
 
@@ -89,8 +90,7 @@ class RetrievalQuery(StrictModel):
 
     @model_validator(mode="after")
     def allowed_categories_are_unique(self) -> RetrievalQuery:
-        if len(self.allowed_categories) != len(set(self.allowed_categories)):
-            raise ValueError("retrieval allowed_categories must be unique")
+        require_unique(self.allowed_categories, "retrieval allowed_categories")
         return self
 
     @property

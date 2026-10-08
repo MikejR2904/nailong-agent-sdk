@@ -20,6 +20,7 @@ from nailong_agent_sdk.state.elastic import (
     check_spawn_request,
     elastic_child_id,
     elastic_join_id,
+    validate_elastic_caps,
 )
 from nailong_agent_sdk.state.graph_models import GraphNodeResult, GraphNodeStatus
 from nailong_agent_sdk.state.shared_state import DiscoveryRoutingRefs
@@ -157,6 +158,17 @@ def test_spawn_records_must_state_the_fields_their_status_requires():
             code=ElasticRefusalCode.NODE_CAP_REACHED,
             reason="cap",
         )
+    with pytest.raises(ValueError, match="deferred spawn record requires a code and a reason"):
+        GraphSpawnRecord(**base, status=GraphSpawnStatus.DEFERRED, join_node_id="j")
+    with pytest.raises(ValueError, match="discarded spawn record cannot name a child node"):
+        GraphSpawnRecord(
+            **base,
+            status=GraphSpawnStatus.DISCARDED,
+            code=ElasticRefusalCode.BATCH_DECLINED,
+            reason="declined",
+            join_node_id="j",
+            child_node_id="c",
+        )
 
 
 def test_capacity_grants_record_what_changed_and_why():
@@ -277,10 +289,16 @@ def test_capacity_problems_name_the_cap_the_numbers_and_the_node():
     )
     assert nodes.code is ElasticRefusalCode.NODE_CAP_REACHED
     assert "max_elastic_nodes 2" in nodes.message and "1 already used" in nodes.message
-    assert "2 requested" in nodes.message
+    assert "2 requested plus the join node" in nodes.message
     assert (
         capacity_problem(
-            node_id="root", node_depth=0, max_depth=1, nodes_used=1, max_nodes=3, requested=2
+            node_id="root", node_depth=0, max_depth=1, nodes_used=1, max_nodes=4, requested=2
+        )
+        is None
+    )
+    assert (
+        capacity_problem(
+            node_id="root", node_depth=0, max_depth=1, nodes_used=1, max_nodes=3, requested=1
         )
         is None
     )
@@ -293,6 +311,9 @@ def test_capacity_problems_name_the_cap_the_numbers_and_the_node():
 def test_capacity_exposes_what_a_node_may_still_request():
     capacity = ElasticCapacity(node_depth=1, max_depth=2, nodes_used=3, max_nodes=4)
     assert capacity.remaining_nodes == 1 and capacity.depth_available is True
+    assert capacity.remaining_requests == 0
+    roomy = ElasticCapacity(node_depth=0, max_depth=1, nodes_used=1, max_nodes=6)
+    assert (roomy.remaining_nodes, roomy.remaining_requests) == (5, 4)
     exhausted = ElasticCapacity(node_depth=0, max_depth=1, nodes_used=5, max_nodes=4)
     assert exhausted.remaining_nodes == 0
     with pytest.raises(ValueError, match="node_depth"):
@@ -313,3 +334,82 @@ def test_a_result_holds_at_most_the_documented_number_of_requests():
         GraphNodeResult(
             status=GraphNodeStatus.COMPLETED, spawn_requests=[*requests, req("one-too-many")]
         )
+
+
+def test_a_ceiling_problem_is_not_grantable_and_a_cap_problem_is():
+    cap = capacity_problem(
+        node_id="root", node_depth=0, max_depth=1, nodes_used=0, max_nodes=2, requested=2
+    )
+    assert cap.code is ElasticRefusalCode.NODE_CAP_REACHED and cap.grantable is True
+    ceiling = capacity_problem(
+        node_id="root",
+        node_depth=0,
+        max_depth=1,
+        nodes_used=0,
+        max_nodes=2,
+        requested=2,
+        ceiling_nodes=2,
+    )
+    assert ceiling.code is ElasticRefusalCode.NODE_CEILING_REACHED and ceiling.grantable is False
+    assert (
+        "ceiling max_elastic_nodes 2" in ceiling.message and "no capacity grant" in ceiling.message
+    )
+    deep = capacity_problem(
+        node_id="root",
+        node_depth=0,
+        max_depth=1,
+        nodes_used=0,
+        max_nodes=2,
+        requested=1,
+        ceiling_depth=0,
+    )
+    assert deep.code is ElasticRefusalCode.DEPTH_CEILING_REACHED and deep.grantable is False
+    assert "ceiling max_elastic_depth 0" in deep.message
+
+
+def test_reserved_capacity_counts_against_the_cap_but_not_the_ceiling():
+    held = capacity_problem(
+        node_id="p2",
+        node_depth=0,
+        max_depth=1,
+        nodes_used=1,
+        max_nodes=4,
+        requested=1,
+        reserved=2,
+    )
+    assert held.code is ElasticRefusalCode.NODE_CAP_REACHED and held.grantable is True
+    assert "3 already used, 2 of them held by tasks running at the same time" in held.message
+    unreserved = capacity_problem(
+        node_id="p2",
+        node_depth=0,
+        max_depth=1,
+        nodes_used=1,
+        max_nodes=4,
+        requested=1,
+        ceiling_nodes=4,
+    )
+    assert unreserved is None
+    still_inside = capacity_problem(
+        node_id="p2",
+        node_depth=0,
+        max_depth=1,
+        nodes_used=1,
+        max_nodes=4,
+        requested=1,
+        reserved=2,
+        ceiling_nodes=4,
+    )
+    assert still_inside.code is ElasticRefusalCode.NODE_CAP_REACHED
+
+
+def test_validated_caps_must_sit_inside_the_ceilings_and_the_hard_limits():
+    validate_elastic_caps(1, 3, 2, 5)
+    validate_elastic_caps(0, 0, 0, 0)
+    with pytest.raises(ValueError, match="max_elastic_depth 3 is above the ceiling 2 of this run"):
+        validate_elastic_caps(3, 3, 2, 5)
+    with pytest.raises(ValueError, match="max_elastic_nodes 6 is above the ceiling 5 of this run"):
+        validate_elastic_caps(1, 6, 2, 5)
+    with pytest.raises(ValueError, match="elastic_depth_ceiling must be between 0 and"):
+        validate_elastic_caps(1, 3, MAX_ELASTIC_DEPTH_LIMIT + 1, 5)
+    with pytest.raises(ValueError, match="elastic_nodes_ceiling must be between 0 and"):
+        validate_elastic_caps(1, 3, 2, -1)

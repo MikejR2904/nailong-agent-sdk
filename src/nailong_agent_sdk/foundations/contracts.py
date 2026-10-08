@@ -13,15 +13,19 @@ from __future__ import annotations
 import functools
 import json
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Never
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
+from jsonschema_specifications import REGISTRY as _SCHEMA_SPECIFICATIONS
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from referencing import Registry
+from referencing.exceptions import NoSuchResource, Unresolvable
 
 from .dependency_graph import deterministic_cycles
 from .errors import AgentSdkError, sanitize_failure_details
+from .identifiers import require_unique
 from .json_limits import assert_json_depth
 
 
@@ -83,7 +87,8 @@ class ModelBinding(FallbackModelBinding):
             key = (fallback.provider, fallback.model)
             if key in seen:
                 raise ValueError(
-                    "model fallback bindings must be distinct and exclude the primary model"
+                    f'model fallback binding "{fallback.provider}/{fallback.model}" '
+                    "must be distinct from the primary model and from every other fallback"
                 )
             seen.add(key)
         return self
@@ -140,8 +145,7 @@ class AgentDefinition(StrictModel):
     @model_validator(mode="after")
     def validate_definition_invariants(self) -> AgentDefinition:
         tool_names = [tool.name for tool in self.tools]
-        if len(tool_names) != len(set(tool_names)):
-            raise ValueError("tool names must be unique")
+        require_unique(tool_names, "tool names")
         if self.memory_scope is MemoryScope.CROSS_SESSION and not self.memory_rationale:
             raise ValueError("cross-session memory requires memory_rationale")
         return self
@@ -191,10 +195,9 @@ class ToolCall(StrictModel):
 
     @model_validator(mode="after")
     def dependencies_are_unique_and_external(self) -> ToolCall:
-        if len(self.depends_on_call_ids) != len(set(self.depends_on_call_ids)):
-            raise ValueError("tool-call dependencies must be unique")
+        require_unique(self.depends_on_call_ids, "tool-call dependencies")
         if self.id in self.depends_on_call_ids:
-            raise ValueError("tool call cannot depend on itself")
+            raise ValueError(f'tool call "{self.id}" cannot depend on itself')
         return self
 
 
@@ -251,8 +254,7 @@ class ToolBatchTurn(StrictModel):
     @model_validator(mode="after")
     def batch_dependencies_are_declared_and_acyclic(self) -> ToolBatchTurn:
         call_ids = [call.id for call in self.calls]
-        if len(call_ids) != len(set(call_ids)):
-            raise ValueError("tool batch call IDs must be unique")
+        require_unique(call_ids, "tool batch call IDs")
         known = set(call_ids)
         for call in self.calls:
             unknown = set(call.depends_on_call_ids) - known
@@ -450,16 +452,36 @@ def _check_schema_cached(canonical_schema: str) -> None:
     Draft202012Validator.check_schema(json.loads(canonical_schema))
 
 
+def _refuse_retrieval(uri: str) -> Never:
+    raise NoSuchResource(ref=uri)
+
+
+_LOCAL_REFERENCES_ONLY = _SCHEMA_SPECIFICATIONS.combine(Registry(retrieve=_refuse_retrieval))
+
+
+def _new_validator(schema: dict[str, Any]) -> Draft202012Validator:
+    return Draft202012Validator(schema, registry=_LOCAL_REFERENCES_ONLY)
+
+
 @functools.lru_cache(maxsize=512)
 def _validator_for(canonical_schema: str) -> Draft202012Validator:
-    return Draft202012Validator(json.loads(canonical_schema))
+    return _new_validator(json.loads(canonical_schema))
 
 
 def _validate_instance(schema: dict[str, Any], instance: Any, label: str) -> None:
     canonical = _canonical_json_schema(schema)
-    validator = Draft202012Validator(schema) if canonical is None else _validator_for(canonical)
+    validator = _new_validator(schema) if canonical is None else _validator_for(canonical)
     try:
         validator.validate(instance)
+    except Unresolvable as error:
+        raise AgentSdkError(
+            "SCHEMA_REFERENCE_UNRESOLVABLE",
+            f'{label} could not be checked: its schema references "{error.ref}", which is not '
+            "inside the schema itself. Only references inside the schema itself (for example "
+            '"#/$defs/name" or its own $id) and the JSON Schema metaschemas are supported, and '
+            "no document is ever fetched from a URL or file.",
+            {"reference": error.ref},
+        ) from error
     except JsonSchemaValidationError as error:
         location = error.json_path if error.path else f"{error.json_path} (root)"
         raise AgentSdkError(

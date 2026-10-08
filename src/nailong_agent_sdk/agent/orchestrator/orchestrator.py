@@ -223,6 +223,8 @@ class Orchestrator:
                 self._policy.routing_rules,
                 record.request.gap_metadata,
                 max_repair_attempts=self._policy.max_repair_attempts,
+                elastic_depth_ceiling=self._policy.max_elastic_depth,
+                elastic_nodes_ceiling=self._policy.max_elastic_nodes,
             )
             controller_id = controller.controller_id
             if controller.architecture is not record.architecture:
@@ -331,13 +333,46 @@ class Orchestrator:
                 "Only a blocked orchestration can resume execution; "
                 f'"{orchestration_id}" is {record.status.value}.'
             )
+        controller_id, executor = self._executor_for(
+            record, services, binding_factory, "Resuming execution"
+        )
+        return await self._execute_dispatched(record, controller_id, executor)
+
+    async def recover_execution(
+        self,
+        orchestration_id: str,
+        services: AgentRuntimeServices,
+        binding_factory: GraphAgentBindingFactory,
+    ) -> OrchestrationRecord:
+        record = self.get(orchestration_id)
+        if record.status is not OrchestrationStatus.DISPATCHED:
+            raise ValueError(
+                "Only a dispatched orchestration can recover execution; "
+                f'"{orchestration_id}" is {record.status.value}.'
+            )
+        controller_id, executor = self._executor_for(
+            record, services, binding_factory, "Recovering execution"
+        )
+        self._controller_runtime.recover_interrupted_graph(
+            controller_id, executor.idempotent_node_ids(), is_replayable=executor.is_replayable
+        )
+        return await self._execute_dispatched(record, controller_id, executor)
+
+    def _executor_for(
+        self,
+        record: OrchestrationRecord,
+        services: AgentRuntimeServices,
+        binding_factory: GraphAgentBindingFactory,
+        action: str,
+    ) -> tuple[str, GraphAgentExecutor]:
         if record.controller_id is None:
-            raise ValueError("Resuming execution requires a bound controller.")
+            raise ValueError(f"{action} requires a bound controller.")
         if services.run_root.resolve() != self._run_root:
             raise ValueError("AgentRuntimeServices must use the orchestrator run_root.")
         bindings = self._build_bindings(record, binding_factory)
-        executor = self._graph_executor(record, services, bindings, binding_factory)
-        return await self._execute_dispatched(record, record.controller_id, executor)
+        return record.controller_id, self._graph_executor(
+            record, services, bindings, binding_factory
+        )
 
     async def _execute_dispatched(
         self,

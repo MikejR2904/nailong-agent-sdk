@@ -8,19 +8,19 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 178 | typed approval gates for state-changing actions |
 | [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution) | 264 | content-addressed artifact store with immutable write attribution |
 | [`tools/core/__init__.py`](#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
-| [`tools/core/definitions.py`](#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 336 | typed declarations of the governed core tool set |
-| [`tools/core/helpers.py`](#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 570 | private validation, HTTP and isolated-regex helpers behind the core tools |
+| [`tools/core/definitions.py`](#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 340 | typed declarations of the governed core tool set |
+| [`tools/core/helpers.py`](#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 578 | private validation, HTTP and isolated-regex helpers behind the core tools |
 | [`tools/core/regex_worker.py`](#toolscoreregex_workerpy---standalone-regex-worker-run-in-an-isolated-interpreter) | 38 | standalone regex worker run in an isolated interpreter |
-| [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 489 | portable governed tools: dispatcher, services and web search |
+| [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 490 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
-| [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 145 | agent-side queue and tool executor for elastic spawn requests |
+| [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 159 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 170 | deny-by-default capability policy |
 | [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 348 | capability-bound harness tool registry and its BaseAgent executor |
-| [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 316 | pluggable execution backends for registered command templates |
+| [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 487 | registered-command execution with timeout, bounded output and process-tree kill |
 | [`tools/task_models.py`](#toolstask_modelspy---records-for-background-tasks) | 43 | records for background tasks |
-| [`tools/tasks.py`](#toolstaskspy---background-task-lifecycle-start-poll-stop) | 254 | background task lifecycle: start, poll, stop |
+| [`tools/tasks.py`](#toolstaskspy---background-task-lifecycle-start-poll-stop) | 258 | background task lifecycle: start, poll, stop |
 | [`tools/tools.py`](#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 72 | the ToolExecutor protocol and two deterministic test executors |
 | [`tools/worktree_models.py`](#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 25 | record for an agent's git worktree |
 | [`tools/worktrees.py`](#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 181 | git worktree isolation for concurrent agents |
@@ -57,7 +57,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `ApprovalRegistry.find(run_id: str, node_id: str, capability: str) -> ApprovalRequest | None` - The latest request for a run, node and capability (whatever its status), or None. · *Called by:* `tools/registry.py::HarnessToolExecutor._approval_for`
   - `ApprovalRegistry.list(run_id: str | None=None) -> list[ApprovalRequest]` - All requests (optionally for one run) sorted by numeric approval id.
   - `ApprovalRegistry._matching(run_id: str, node_id: str, capability: str) -> list[ApprovalRequest]` - Requests for a run, node and capability in id order.
-  - `ApprovalRegistry._transaction() -> Iterator[None]` *(contextmanager)* - Context manager for one mutation: holds the thread lock, and for a persisted registry also the file lock, reloads the file, runs the body and saves only if something changed.
+  - `ApprovalRegistry._transaction() -> Iterator[None]` *(contextmanager)* - Context manager for one mutation: holds the thread lock, and for a persisted registry also the file lock, reloads the file, runs the body and saves only if something changed. · *Called within this file by:* `tools/approvals.py::ApprovalRegistry.request`, `tools/approvals.py::ApprovalRegistry.submit`
   - `ApprovalRegistry._refresh() -> None` - Reloads the file when its modification time or size differs from the last read.
   - `ApprovalRegistry._load(path: Path) -> None` - Reads and validates the persisted file (retrying transient sharing violations) and replaces the in-memory requests and counter.
   - `ApprovalRegistry._save(path: Path) -> None` - Writes the persisted form through a unique temporary file and `replace_atomic`, then records the new fingerprint.
@@ -110,7 +110,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/core/definitions.py` - typed declarations of the governed core tool set
 
-*336 lines · depends on: `foundations/contracts.py`, `state/elastic.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 1 name(s)*
+*340 lines · depends on: `foundations/contracts.py`, `state/elastic.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** A host opts into the core tools by copying these `ToolDefinition`s into `AgentDefinition.tools`; the model sees their names, descriptions and schemas.
 
@@ -123,7 +123,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/core/helpers.py` - private validation, HTTP and isolated-regex helpers behind the core tools
 
-*570 lines · depends on: `foundations/text.py` · used by: `tools/core/services.py` · not re-exported at the package root*
+*578 lines · depends on: `foundations/text.py`, `foundations/version.py` · used by: `tools/core/services.py` · not re-exported at the package root*
 
 **Role in the workflow.** Called only by `CoreToolDispatcher` (mostly through `asyncio.to_thread`) to implement grep, web_fetch, render_pdf_page and argument validation. Regex work runs in the standalone `regex_worker.py` script in a separate interpreter, and every fetch connects only to addresses it has validated as public.
 
@@ -147,7 +147,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - `_fetch_pdf_bytes_with_redirects(url: str, deadline_seconds: float=_DEFAULT_FETCH_DEADLINE_SECONDS) -> bytes` - Downloads a PDF (max 20 MB, <= 4 redirects, SSRF-checked, within the total deadline) for page rendering; a non-PDF content type, an oversize file or a missed deadline raises. · *Called by:* `core/helpers.py::_render_pdf_page`
   - `_fetch_pdf_bytes_with_redirects.byte_limit_for(content_type: str) -> int` - The PDF byte limit, or an error naming a non-PDF content type.
 - `_render_pdf_page(url: str, page: int, scale: float, pdf_bytes_cache: dict[str, bytes] | None, image_cache: dict[str, tuple[str, bytes]] | None) -> dict[str, Any]` - Renders one PDF page with pypdfium2 at a scale of 1 to 4, stores the PNG in the image cache under a `pdf:<urlhash>:p<N>:page` ref and returns the ref and page count.
-- `_parse_pdf_page(raw: bytes, url: str, page: int, max_chars: int, image_cache: dict[str, tuple[str, bytes]] | None) -> dict[str, Any]` - Extracts text with pypdf from the requested page onward until the character budget is hit, lists each page's embedded images (refs cached as PNG) and reports `pages_included`, `next_page` and truncation. · *Called by:* `core/helpers.py::_fetch_public_text`
+- `_parse_pdf_page(raw: bytes, url: str, page: int, max_chars: int, image_cache: dict[str, tuple[str, bytes]] | None) -> dict[str, Any]` - Extracts text with pypdf from the requested page onward until the character budget is hit, lists each page's embedded images (refs cached as PNG) and reports `pages_included`, `next_page` and truncation. Pages after the first are included only when they fit whole; when the first page alone holds more than `max_chars`, the text is cut and the result says so (`truncated`, `text_truncated`, `omitted_chars`) instead of looking complete. · *Called by:* `core/helpers.py::_fetch_public_text`
 - `_is_non_public_address(address: str) -> bool` - True for any address that is not globally routable (private, loopback, link-local, reserved, shared) or multicast, also when the address embeds such an IPv4 address (IPv4-mapped, 6to4 or NAT64 forms). · *Called by:* `tools/core/helpers.py::_assert_public_http_url`
 - `_assert_public_http_url(url: str, tool_name: str='web_fetch') -> list[str]` - SSRF guard: requires an absolute http(s) URL, rejects localhost names, resolves the host and rejects every non-public address; returns the validated addresses so the caller can pin the connection to them. · *Called by:* `core/helpers.py::_fetch_pdf_bytes_with_redirects`, `core/helpers.py::_fetch_public_text`
 - `_read_lines(path: Path, offset: int, limit: int, max_bytes: int) -> dict[str, Any]` - Reads a regular UTF-8 file under a byte limit and returns a window of numbered lines (split on newline only) plus a truncation flag. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
@@ -182,7 +182,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/core/services.py` - portable governed tools: dispatcher, services and web search
 
-*489 lines · depends on: `foundations/contracts.py`, `foundations/text.py`, `memory/context_projection.py`, `tools/artifacts.py`, `tools/core/helpers.py`, `tools/policy.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 4 name(s)*
+*490 lines · depends on: `foundations/contracts.py`, `foundations/text.py`, `foundations/version.py`, `memory/context_projection.py`, `tools/artifacts.py`, `tools/core/helpers.py`, `tools/policy.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** `CoreToolDispatcher.execute(name, arguments)` is the implementation behind the core tool names. `HarnessToolExecutor` calls it after policy checks; hosts that skip the governed harness (such as the job-agent app) call it directly. Heavy work (grep scanning, web fetch, PDF render, search) runs in worker threads; small file operations run inline.
 
@@ -254,7 +254,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/elastic_requests.py` - agent-side queue and tool executor for elastic spawn requests
 
-*145 lines · depends on: `foundations/contracts.py`, `state/elastic.py`, `state/graph_models.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py` · re-exported at the package root: 3 name(s)*
+*159 lines · depends on: `foundations/contracts.py`, `state/elastic.py`, `state/graph_models.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** How an agent asks for exploration. The `request_elastic_node` tool (declared in `core_tool_definitions`, granted to a profile through the `graph.elastic.request` capability) never touches the graph: it queues a typed request that `GraphAgentExecutor` attaches to the node's result when the run completes, so the controller, not the agent, decides what runs.
 
@@ -262,10 +262,12 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 - **class `ElasticRequestRejected`** *(exception; bases: Exception)* - Raised by the queue with the refusal code and the message naming the numbers. · *Instantiated by:* `tools/elastic_requests.py::ElasticRequestBuffer.add`
   - `ElasticRequestRejected.__init__(problem: ElasticProblem) -> None` - Keeps the code and uses the problem's message.
-- **class `ElasticRequestBuffer`** *(class)* - One node run's queue of elastic requests. `add` applies the same admission rules as the scheduler (duplicate id, visible dependencies, narrowing routing references, a per-task limit of 32) and checks the capacity the node was handed, refusing overflow unless the binding escalates it. The scheduler stays the authority: a sibling in the same wave can still use the last slot. · *Instantiated by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
-  - `ElasticRequestBuffer.__init__(node: GraphNode, capacity: ElasticCapacity | None, visible_dependencies: Collection[str], *, limit: int=MAX_ELASTIC_REQUESTS_PER_RESULT, escalate_...` - Takes the node, the capacity from its execution context (None skips the capacity check), the dependencies it can see, the per-task limit and the escalate-overflow flag.
+- **class `ElasticRequestBuffer`** *(class)* - One node run's queue of elastic requests. `add` applies the same admission rules as the scheduler (duplicate id, visible dependencies, narrowing routing references, a per-task limit of 32) and checks the capacity the node was handed, counting the join each batch adds. With a reservation from the scheduler the check also counts what tasks running at the same time have queued, first come, first served. It refuses overflow unless the binding escalates it, and always refuses a request that no capacity grant could admit (a ceiling). The scheduler stays the authority at commit. · *Instantiated by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
+  - `ElasticRequestBuffer.__init__(node: GraphNode, capacity: ElasticCapacity | None, visible_dependencies: Collection[str], *, limit: int=MAX_ELASTIC_REQUESTS_PER_RESULT, escalate_...` - Takes the node, the capacity from its execution context (None skips the capacity check), the dependencies it can see, the per-task limit, the escalate-overflow flag and the optional reservation handle.
   - `ElasticRequestBuffer.requests() -> list[ElasticSpawnRequest]` *(property)* - Property: a copy of the queued requests, in the order they were made. · *Called by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
-  - `ElasticRequestBuffer.add(request: ElasticSpawnRequest) -> dict[str, Any]` - Queues one request and returns the receipt (request id, queued count, child depth, nodes remaining, whether a capacity decision will be needed and when it will run), or raises `ElasticRequestRejected` naming the code and numbers. · *Called by:* `tools/elastic_requests.py::ElasticRequestToolExecutor.execute`
+  - `ElasticRequestBuffer.add(request: ElasticSpawnRequest) -> dict[str, Any]` - Queues one request and returns the receipt (request id, queued count, child depth, nodes remaining after the queue, whether a capacity decision will be needed and when it will run), or raises `ElasticRequestRejected` naming the code and numbers. With a reservation the whole queue is reserved first; an escalated overflow gives the hold back, because that batch waits for a controller decision. · *Called by:* `developer_tools/inspect.py::verify_project_evidence`, `foundations/contracts.py::ModelBinding.fallback_bindings_are_distinct`, `foundations/dependency_graph.py::deterministic_cycles`, `foundations/dependency_graph.py::reverse_reachable_nodes` (+21 more)
+  - `ElasticRequestBuffer._remaining_after_queue() -> int | None` - Elastic nodes still free after this queue: the reservation's unreserved count, else the capacity's remaining nodes less the queued requests and the join; None without either. · *Called by:* `tools/elastic_requests.py::ElasticRequestBuffer.add`
+  - `ElasticRequestBuffer._overflow(requested: int) -> ElasticProblem | None` - The problem with queueing `requested` requests, or None: asked of the reservation when there is one (which holds the capacity on success), otherwise checked against the capacity the node was handed. · *Called by:* `tools/elastic_requests.py::ElasticRequestBuffer.add`
 - **class `ElasticRequestToolExecutor`** *(class)* - Tool executor that serves `request_elastic_node` from the queue and passes every other tool to the wrapped executor (or fails naming the tool when there is none). · *Instantiated by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
   - `ElasticRequestToolExecutor.__init__(inner: ToolExecutor | None, buffer: ElasticRequestBuffer) -> None` - Stores the wrapped executor and the queue.
   - `ElasticRequestToolExecutor.execute(tool: ToolDefinition, context: ToolInvocationContext) -> ToolExecutionResult` *(async)* - For `request_elastic_node`: validates the arguments into an `ElasticSpawnRequest` (failure `ELASTIC_REQUEST_INVALID` naming each field) and queues it (failure with the refusal code); success returns the receipt.
@@ -301,7 +303,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/registry.py` - capability-bound harness tool registry and its BaseAgent executor
 
-*348 lines · depends on: `foundations/contracts.py`, `foundations/text.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
+*348 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `foundations/text.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** The governed `ToolExecutor`: `BaseAgent` hands it every tool call; it applies policy and approvals, then runs a host handler, a core tool, a registered process command or a built-in spec/artifact reader. The registry is closed: no generic shell and no dynamically named tool.
 
@@ -335,7 +337,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/sandbox.py` - pluggable execution backends for registered command templates
 
-*316 lines · depends on: `tools/sandbox_models.py`, `tools/supervisor.py` · used by: `tools/tasks.py` · re-exported at the package root: 4 name(s)*
+*322 lines · depends on: `tools/sandbox_models.py`, `tools/supervisor.py` · used by: `tools/tasks.py` · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** Selected by the host and used by `BackgroundTaskManager.start_command_task`: the native backend runs the template in a throwaway scratch directory with a scrubbed environment; the Docker backend runs it in an ephemeral network-isolated container.
 
@@ -352,7 +354,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `DockerSandbox.run(template: CommandTemplate, *, cwd: Path, environment: EnvironmentPolicy | None=None) -> ProcessExecutionRecord` *(async)* - Validates the cwd, writes an env file if an environment policy is given (values that cannot be written to one travel as inherited `-e NAME` variables), runs the container and always deletes the env file.
   - `DockerSandbox._run_with_env_file(template: CommandTemplate, cwd: Path, container_name: str, env_file: Path | None, inherited: dict[str, str]) -> ProcessExecutionRecord` *(async)* - Launches the docker CLI, captures bounded output, enforces the template timeout (stopping the container), stops the container and abandons the output reader on cancellation, classifies the exit (137 means resource limit) and builds the `ProcessExecutionRecord`. · *Called by:* `tools/sandbox.py::DockerSandbox.run`
   - `DockerSandbox._build_argv(template: CommandTemplate, cwd: Path, env_file: Path | None, container_name: str, inherited_names: Sequence[str]=()) -> list[str]` - Builds the docker command: network none, read-only root with tmpfs, memory/cpu limits, mounts, env file, `-e NAME` for inherited variables, image and the template command. · *Called by:* `tools/sandbox.py::DockerSandbox._run_with_env_file`
-  - `DockerSandbox._write_env_file(environment: EnvironmentPolicy) -> Path` *(staticmethod)* - Writes the scrubbed environment to a private temp `--env-file` so values never appear on a process command line; a value containing a newline, carriage return or NUL is left out (it is passed as an inherited variable instead). · *Called by:* `tools/sandbox.py::DockerSandbox.run`
+  - `DockerSandbox._write_env_file(environment: EnvironmentPolicy) -> Path` *(staticmethod)* - Writes the scrubbed environment to a private temp `--env-file` so values never appear on a process command line; a value containing a newline, carriage return or NUL is left out (it is passed as an inherited variable instead). Every name is checked before the file is created, and the file is removed if writing fails. · *Called by:* `tools/sandbox.py::DockerSandbox.run`
   - `DockerSandbox._fits_env_file(name: str, value: str) -> bool` *(staticmethod)* - Validates the variable name and returns whether the value can be written as one env-file line.
   - `DockerSandbox._check_variable_name(name: str) -> None` *(staticmethod)* - Raises naming the variable when its name is empty or contains whitespace, a control character or `=`.
   - `DockerSandbox._inherited_variables(environment: EnvironmentPolicy) -> dict[str, str]` *(staticmethod)* - The resolved environment entries that do not fit an env file, to be passed through the docker CLI's own environment.
@@ -448,7 +450,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/tasks.py` - background task lifecycle: start, poll, stop
 
-*254 lines · depends on: `foundations/logging.py`, `tools/sandbox.py`, `tools/sandbox_models.py`, `tools/supervisor.py`, `tools/task_models.py` · used by: `tools/delegation.py` · re-exported at the package root: 1 name(s)*
+*258 lines · depends on: `foundations/logging.py`, `tools/sandbox.py`, `tools/sandbox_models.py`, `tools/supervisor.py`, `tools/task_models.py` · used by: `tools/delegation.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Runs a registered command through a sandbox backend, or tracks any host coroutine (usually `BaseAgent.run`), reporting every status change to an optional listener (so tasks can feed telemetry).
 
@@ -460,7 +462,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `BackgroundTaskManager.start_agent_task(description: str, run: Awaitable[Any], *, summarize: Any=None) -> TaskRecord` - Registers an agent-run task and starts the supplied awaitable; the result is stored via `summarize` or when it is already a dict. Outside an event loop it closes the coroutine and raises `RuntimeError`. · *Called by:* `tools/delegation.py::SubagentCoordinator.delegate`
   - `BackgroundTaskManager.get_task(task_id: str) -> TaskRecord | None` - The record for an id, or None. · *Called by:* `tools/delegation.py::SubagentCoordinator.get_delegation`, `tools/delegation.py::SubagentCoordinator.list_delegations`
   - `BackgroundTaskManager.list_tasks(*, status: TaskStatus | None=None) -> list[TaskRecord]` - Records (optionally by status) in creation order. · *No in-package callers (public API, entry point, or protocol hook).*
-  - `BackgroundTaskManager.stop_task(task_id: str) -> TaskRecord` *(async)* - Cancels a running task and marks it killed; a finished task is returned unchanged. · *Called by:* `tools/delegation.py::SubagentCoordinator.cancel_delegation`
+  - `BackgroundTaskManager.stop_task(task_id: str) -> TaskRecord` *(async)* - Cancels a running task and marks it killed; a finished task is returned unchanged. If the caller is itself cancelled while waiting, the task is still marked killed and the caller's cancellation propagates. · *Called by:* `tools/delegation.py::SubagentCoordinator.cancel_delegation`
   - `BackgroundTaskManager.wait_for(task_id: str, *, timeout: float | None=None) -> TaskRecord` *(async)* - Waits, without cancelling the task, until it ends or the timeout elapses (raising `TimeoutError` naming the task) and returns its record. · *Called by:* `base_agent/agent.py::BaseAgent._await_with_watchdog`, `jev/decision.py::TypeSafeJevDecisionEvaluator._evaluate_with_bounded_attempts`, `tools/delegation.py::SubagentCoordinator.await_delegation`, `tools/sandbox.py::DockerSandbox._kill_container` (+4 more)
   - `BackgroundTaskManager._run_command(task_id: str, run: Awaitable[Any]) -> None` *(async)* - Awaits a command coroutine and records completed/failed from the process record or the exception (`Type: message`). · *Called by:* `tools/tasks.py::BackgroundTaskManager.start_command_task`
   - `BackgroundTaskManager._run_agent(task_id: str, run: Awaitable[Any], summarize: Any) -> None` *(async)* - Awaits an agent coroutine and records completed (with the summary) or failed (`Type: message`); a `summarize` that raises fails the task with `summarize raised ...`. · *Called by:* `tools/tasks.py::BackgroundTaskManager.start_agent_task`

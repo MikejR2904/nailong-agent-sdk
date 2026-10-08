@@ -103,7 +103,7 @@ def test_a_completed_result_with_requests_creates_children_and_one_join():
 
 
 def test_children_run_in_the_next_wave_and_the_join_resumes_with_their_results():
-    graph = StateGraph([n("root"), n("after", ["root"])], max_elastic_depth=1, max_elastic_nodes=2)
+    graph = StateGraph([n("root"), n("after", ["root"])], max_elastic_depth=1, max_elastic_nodes=3)
 
     def plan(node, context):
         if node.node_id == "root":
@@ -134,7 +134,7 @@ def test_children_run_in_the_next_wave_and_the_join_resumes_with_their_results()
 
 
 def test_a_failed_child_still_lets_the_join_run_with_the_typed_failure():
-    graph = StateGraph([n("root"), n("after", ["root"])], max_elastic_depth=1, max_elastic_nodes=2)
+    graph = StateGraph([n("root"), n("after", ["root"])], max_elastic_depth=1, max_elastic_nodes=3)
 
     def plan(node, context):
         if node.node_id == "root":
@@ -156,7 +156,7 @@ def test_a_failed_child_still_lets_the_join_run_with_the_typed_failure():
 
 
 def test_a_cancelled_child_blocks_the_join_and_its_dependents_for_good():
-    graph = StateGraph([n("root"), n("after", ["root"])], max_elastic_depth=1, max_elastic_nodes=2)
+    graph = StateGraph([n("root"), n("after", ["root"])], max_elastic_depth=1, max_elastic_nodes=3)
     complete_with(graph, "root", done_with(req("a"), req("b")))
     complete_with(graph, "elastic:root:a", GraphNodeResult(status=GraphNodeStatus.CANCELLED))
     assert graph.status("join:root") is BLOCKED and graph.status("after") is BLOCKED
@@ -244,10 +244,13 @@ def test_the_node_cap_defers_the_whole_batch_and_never_a_part_of_it():
 
 
 def test_a_batch_that_fits_the_cap_exactly_is_accepted():
-    graph = StateGraph([n("root")], max_elastic_depth=1, max_elastic_nodes=2)
+    graph = StateGraph([n("root")], max_elastic_depth=1, max_elastic_nodes=3)
     complete_with(graph, "root", done_with(req("a"), req("b")))
     assert [r.status for r in graph.spawn_records] == [GraphSpawnStatus.ACCEPTED] * 2
     assert graph.status("join:root") is PENDING
+    single = StateGraph([n("root")], max_elastic_depth=1, max_elastic_nodes=2)
+    complete_with(single, "root", done_with(req("a")))
+    assert [r.status for r in single.spawn_records] == [GraphSpawnStatus.ACCEPTED]
 
 
 def test_a_grant_applies_the_deferred_batch_and_reopens_the_join_and_dependents():
@@ -289,9 +292,11 @@ def test_a_grant_that_is_still_too_small_leaves_the_batch_deferred():
     assert [r.status for r in graph.spawn_records] == [GraphSpawnStatus.DEFERRED] * 2
     assert graph.spawn_records[0].code is ElasticRefusalCode.NODE_CAP_REACHED
     assert graph.status("join:root") is BLOCKED
-    graph.grant_elastic_capacity(max_elastic_nodes=2, reason="room for both")
+    graph.grant_elastic_capacity(max_elastic_nodes=2, reason="one short of the join")
+    assert [r.status for r in graph.spawn_records] == [GraphSpawnStatus.DEFERRED] * 2
+    graph.grant_elastic_capacity(max_elastic_nodes=3, reason="room for both and the join")
     assert [r.status for r in graph.spawn_records] == [GraphSpawnStatus.ACCEPTED] * 2
-    assert [g.sequence for g in graph.capacity_grants] == [1, 2]
+    assert [g.sequence for g in graph.capacity_grants] == [1, 2, 3]
 
 
 def test_a_grant_can_only_raise_the_caps_and_stays_inside_the_hard_limits():
@@ -501,7 +506,7 @@ def test_children_can_request_grandchildren_until_the_depth_cap_and_chain_the_jo
 
 
 def test_a_blocked_join_still_waits_for_the_continuation_of_a_sibling_that_explored_later():
-    graph = StateGraph([n("root")], max_elastic_depth=2, max_elastic_nodes=4)
+    graph = StateGraph([n("root")], max_elastic_depth=2, max_elastic_nodes=5)
     attempts = {"a": 0}
 
     def plan(node, context):
@@ -616,8 +621,8 @@ def test_the_execution_context_reports_the_remaining_elastic_capacity():
     graph.mark_terminal("root", done_with(req("a")))
     graph.mark_started("elastic:root:a")
     inner = graph.execution_context("elastic:root:a").elastic_capacity
-    assert inner == ElasticCapacity(node_depth=1, max_depth=2, nodes_used=1, max_nodes=3)
-    assert inner.remaining_nodes == 2 and inner.depth_available is True
+    assert inner == ElasticCapacity(node_depth=1, max_depth=2, nodes_used=2, max_nodes=3)
+    assert inner.remaining_nodes == 1 and inner.depth_available is True
     leaf = ElasticCapacity(node_depth=2, max_depth=2, nodes_used=1, max_nodes=3)
     assert leaf.depth_available is False
 
@@ -633,7 +638,9 @@ def test_elastic_node_invariants_hold_at_construction_and_on_restore():
 
     over_cap = json.loads(json.dumps(snapshot))
     over_cap["max_elastic_nodes"] = 0
-    with pytest.raises(ValueError, match="1 elastic child nodes exceed max_elastic_nodes 0"):
+    with pytest.raises(
+        ValueError, match=r"2 elastic nodes \(1 child and 1 join\) exceed max_elastic_nodes 0"
+    ):
         StateGraph.from_snapshot(over_cap)
 
     over_depth = json.loads(json.dumps(snapshot))
@@ -680,7 +687,7 @@ def test_caps_are_validated_by_the_graph_and_the_plan():
 
 
 def test_the_snapshot_round_trips_nodes_records_grants_and_remaining_capacity():
-    graph = StateGraph([n("root"), n("after", ["root"])], max_elastic_depth=1, max_elastic_nodes=2)
+    graph = StateGraph([n("root"), n("after", ["root"])], max_elastic_depth=1, max_elastic_nodes=3)
     complete_with(graph, "root", done_with(req("a"), req("b")))
     payload = json.loads(json.dumps(graph.snapshot()))
     restored = StateGraph.from_snapshot(payload)

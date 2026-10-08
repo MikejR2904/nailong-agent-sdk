@@ -543,7 +543,7 @@ def test_exploration_advisor_bounds_and_selection():
     )
     assert arun(full.prioritize("r", many[:255], instructions="i")).selected_candidate_id == "c2"
     twin = [*candidates[:3], candidates[0]]
-    with pytest.raises(ValueError, match=r"candidate ids must be unique; repeated: \['c0'\]"):
+    with pytest.raises(ValueError, match=r'candidate ids must be unique; repeated: "c0"\.'):
         arun(advisor.prioritize("r", twin, instructions="i"))
 
 
@@ -642,6 +642,15 @@ def test_langchain_runnable_and_tool_facade_with_real_langchain():
     )
     projected = arun(runnable.ainvoke(task()))
     assert projected["status"] == "completed" and projected["iterations"] == 2
+    assert set(projected) == {
+        "status",
+        "task_id",
+        "iterations",
+        "output",
+        "reason",
+        "failure",
+        "escalation",
+    }
     via_mapping = arun(runnable.ainvoke(task("t2").model_dump(mode="json")))
     assert via_mapping["task_id"] == "t2"
     real = runnable.as_runnable()
@@ -896,3 +905,25 @@ def test_claim_7_langgraph_sdk_node_with_message_and_token_output_keys_is_not_re
         )
     finally:
         services.telemetry.close()
+
+
+def test_the_langchain_runnable_keeps_the_prompt_and_trace_out_unless_asked():
+    def build(include_trace):
+        return LangChainSdkRunnable(
+            lambda t: agent([final({"status": "complete", "answer": "x"})])[0],
+            include_trace=include_trace,
+        )
+
+    outcome = arun(build(False).ainvoke(task("t-outcome")))
+    assert outcome["output"] == {"status": "complete", "answer": "x"}
+    for private in (
+        "context",
+        "project_state",
+        "episodes",
+        "projection_history",
+        "events",
+        "profile",
+    ):
+        assert private not in outcome
+    traced = arun(build(True).ainvoke(task("t-trace")))
+    assert traced["events"] and traced["context"] is not None and "profile" in traced

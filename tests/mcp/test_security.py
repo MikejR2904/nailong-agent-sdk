@@ -136,6 +136,28 @@ def test_the_middleware_leaves_non_http_scopes_alone():
     assert seen == ["lifespan"]
 
 
+def test_the_middleware_closes_an_unauthenticated_websocket_without_reaching_the_app():
+    reached = []
+    sent = []
+
+    async def socket_app(scope, receive, send):
+        reached.append(scope["type"])
+
+    async def send(message):
+        sent.append(message)
+
+    app = BearerTokenMiddleware(socket_app, token=TOKEN)
+    anonymous = {"type": "websocket", "path": "/mcp", "headers": []}
+    asyncio.run(app(anonymous, None, send))
+    assert reached == [] and sent == [{"type": "websocket.close", "code": 1008}]
+    wrong = {"type": "websocket", "headers": [(b"authorization", b"Bearer " + b"x" * 32)]}
+    asyncio.run(app(wrong, None, send))
+    assert reached == [] and len(sent) == 2
+    right = {"type": "websocket", "headers": [(b"authorization", f"Bearer {TOKEN}".encode())]}
+    asyncio.run(app(right, None, send))
+    assert reached == ["websocket"] and len(sent) == 2
+
+
 @pytest.mark.parametrize(
     ("environment", "expected"),
     [

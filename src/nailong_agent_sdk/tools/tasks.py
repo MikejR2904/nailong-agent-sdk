@@ -118,8 +118,12 @@ class BackgroundTaskManager:
         try:
             await running
         except asyncio.CancelledError:
-            pass
-        return self._transition(task_id, TaskStatus.KILLED)
+            self._transition(task_id, TaskStatus.KILLED)
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            return self._require(task_id)
+        return self._require(task_id)
 
     async def wait_for(self, task_id: str, *, timeout: float | None = None) -> TaskRecord:
         """Block until one task reaches a terminal status, or ``timeout`` elapses."""

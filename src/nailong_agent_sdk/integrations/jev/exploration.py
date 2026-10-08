@@ -9,13 +9,15 @@ from collections.abc import Mapping, Sequence
 from pydantic import Field
 
 from ...foundations.contracts import StrictModel
-from ..contracts import ExternalDecisionProvider, InteropFailureMode, InteropOperationStatus
+from ...foundations.identifiers import require_unique
+from ..contracts import InteropFailureMode, InteropOperationStatus
 from .models import (
     _JEV_ANSWER_ADAPTER,
     MAX_CHOICE_CRITERIA,
     JevAnswer,
     JevChoiceAnswer,
     JevChoiceQuestion,
+    JevDecisionProvider,
     JevDecisionRequest,
     JevDecisionResult,
     JevQuestionSpec,
@@ -44,7 +46,7 @@ class JevExplorationAdvisor:
 
     def __init__(
         self,
-        evaluator: ExternalDecisionProvider,
+        evaluator: JevDecisionProvider,
         *,
         model: str,
         max_candidates: int = 64,
@@ -80,9 +82,7 @@ class JevExplorationAdvisor:
                 f"of {self._max_candidates}."
             )
         identifiers = [candidate.candidate_id for candidate in candidates]
-        duplicated = sorted({item for item in identifiers if identifiers.count(item) > 1})
-        if duplicated:
-            raise ValueError(f"Exploration candidate ids must be unique; repeated: {duplicated}.")
+        require_unique(identifiers, "Exploration candidate ids")
         ordered = sorted(
             candidates,
             key=lambda candidate: (candidate.deterministic_rank, candidate.candidate_id),

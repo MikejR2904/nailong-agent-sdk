@@ -8,11 +8,13 @@ from nailong_agent_sdk.state.shared_state import SharedSubstrateSnapshot
 from tests.support.plans import simple_plan
 
 
-def new_controller(runtime):
+def new_controller(runtime, **options):
     snapshot = SharedSubstrateSnapshot(snapshot_id="snap", version="1", content_hash="h")
     profile = SkillToolProfile(stage="design", source_snapshot_id="snap")
     rules = ComplexityRoutingRules(multi_agent_min_categories=3, multi_agent_min_blast_radius=5)
-    return runtime.create_controller(snapshot, profile, rules, GapMetadata(), max_repair_attempts=1)
+    return runtime.create_controller(
+        snapshot, profile, rules, GapMetadata(), max_repair_attempts=1, **options
+    )
 
 
 def executing_runtime(tmp_path, telemetry=None):

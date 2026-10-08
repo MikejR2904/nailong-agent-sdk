@@ -6,12 +6,12 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 |---|---:|---|
 | [`specifications/__init__.py`](#specifications__init__py---package-marker-for-the-specification-pipeline) | 3 | package marker for the specification pipeline |
 | [`specifications/documents.py`](#specificationsdocumentspy---manifest-document-node-and-source-locator-contracts) | 136 | manifest, document, node and source-locator contracts |
-| [`specifications/evidence_graph.py`](#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 361 | source-preserving evidence graph with required closure and bounded packing |
-| [`specifications/gate.py`](#specificationsgatepy---gate-1-deterministic-checks-soft-lock-decision-and-artifact-persistence) | 413 | Gate 1 deterministic checks, soft-lock decision and artifact persistence |
-| [`specifications/gate_models.py`](#specificationsgate_modelspy---gate-1-requirement-gap-and-version-metadata-contracts) | 167 | Gate 1 requirement, gap and version-metadata contracts |
+| [`specifications/evidence_graph.py`](#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 363 | source-preserving evidence graph with required closure and bounded packing |
+| [`specifications/gate.py`](#specificationsgatepy---gate-1-deterministic-checks-soft-lock-decision-and-artifact-persistence) | 426 | Gate 1 deterministic checks, soft-lock decision and artifact persistence |
+| [`specifications/gate_models.py`](#specificationsgate_modelspy---gate-1-requirement-gap-and-version-metadata-contracts) | 166 | Gate 1 requirement, gap and version-metadata contracts |
 | [`specifications/git_models.py`](#specificationsgit_modelspy---git-backed-version-and-variant-worktree-contracts) | 120 | Git-backed version and variant-worktree contracts |
-| [`specifications/git_versioning.py`](#specificationsgit_versioningpy---local-only-git-adapter-and-the-specification-version-lock-service) | 504 | local-only Git adapter and the specification version-lock service |
-| [`specifications/preprocessing.py`](#specificationspreprocessingpy---manifest-driven-source-preserving-specification-parsing) | 420 | manifest-driven, source-preserving specification parsing |
+| [`specifications/git_versioning.py`](#specificationsgit_versioningpy---local-only-git-adapter-and-the-specification-version-lock-service) | 512 | local-only Git adapter and the specification version-lock service |
+| [`specifications/preprocessing.py`](#specificationspreprocessingpy---manifest-driven-source-preserving-specification-parsing) | 417 | manifest-driven, source-preserving specification parsing |
 | [`specifications/retrieval.py`](#specificationsretrievalpy---provenance-grounded-candidate-retrieval-with-caches-and-optional-vector-backends) | 548 | provenance-grounded candidate retrieval with caches and optional vector backends |
 | [`specifications/retrieval_models.py`](#specificationsretrieval_modelspy---retrieval-document-query-candidate-and-result-contracts) | 131 | retrieval document, query, candidate and result contracts |
 | [`specifications/vision.py`](#specificationsvisionpy---vision-extraction-adapter-protocol-and-trivial-adapters) | 43 | vision-extraction adapter protocol and trivial adapters |
@@ -28,7 +28,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/documents.py` - manifest, document, node and source-locator contracts
 
-*136 lines · depends on: `foundations/contracts.py` · used by: `agent/openai_compatible/semantic_gap.py`, `agent/openai_compatible/vision.py`, `developer_tools/validate.py`, `mcp/specification_tools.py`, `memory/context_selection.py`, `specifications/evidence_graph.py`, `specifications/gate.py`, `specifications/gate_models.py` (+4 more) · re-exported at the package root: 8 name(s)*
+*136 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py` · used by: `agent/openai_compatible/semantic_gap.py`, `agent/openai_compatible/vision.py`, `developer_tools/validate.py`, `mcp/specification_tools.py`, `memory/context_selection.py`, `specifications/evidence_graph.py`, `specifications/gate.py`, `specifications/gate_models.py` (+4 more) · re-exported at the package root: 8 name(s)*
 
 **Role in the workflow.** Shared vocabulary of the pipeline: every parsed node carries a `SourceRef` (document, path, file hash, format, location) so any later claim can be traced to exact source bytes.
 
@@ -59,7 +59,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/evidence_graph.py` - source-preserving evidence graph with required closure and bounded packing
 
-*361 lines · depends on: `foundations/contracts.py`, `foundations/optimization/__init__.py`, `specifications/documents.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 12 name(s)*
+*363 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `foundations/optimization/__init__.py`, `specifications/documents.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 12 name(s)*
 
 **Role in the workflow.** Given a frozen typed graph, a set of target nodes and a token budget, the selector first keeps everything reachable through mandatory relation kinds, and only then spends the remaining budget on optional evidence chosen by the exact PCKP solver. It never creates relations from model output or semantic similarity.
 
@@ -105,7 +105,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/gate.py` - Gate 1 deterministic checks, soft-lock decision and artifact persistence
 
-*413 lines · depends on: `foundations/atomic_io.py`, `foundations/dependency_graph.py`, `specifications/documents.py`, `specifications/gate_models.py` · used by: `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 2 name(s)*
+*426 lines · depends on: `foundations/atomic_io.py`, `foundations/dependency_graph.py`, `specifications/documents.py`, `specifications/gate_models.py` · used by: `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** After a host assembles a `UnifiedSpecification`, `validate` produces the dependency graph and a gap report; admitted semantic findings are merged in; the designer then soft-locks via `soft_lock`; `Gate1ArtifactStore` writes the YAML artifacts; `git_versioning.py` can turn the soft-lock into a Git version lock. Exposed through the MCP `validate_gate_one` and `soft_lock_specification` tools.
 
@@ -114,7 +114,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 - **class `SpecificationGate`** *(class)* - Performs only deterministic Gate 1 checks and keeps explicit flags for anything that needs a model. · *Instantiated by:* `mcp/server.py::create_mcp_server`
   - `SpecificationGate.validate(specification: UnifiedSpecification, *, required_categories: set[SpecificationCategory], semantic_findings: Sequence[SemanticGapFinding]=()) -> tu...` - Reports missing required categories (CRITICAL), empty requirement text (CRITICAL), requirements without acceptance checks (IMPORTANT), image nodes still pending or awaiting review (IMPORTANT, `vision-resolution-presence`), dependencies on missing requirements (CRITICAL, with blast radius from reverse reachability) and dependency cycles (IMPORTANT); then admits semantic findings and returns the graph and `GapReport`.
   - `SpecificationGate.admit_semantic_findings(specification: UnifiedSpecification, graph: DependencyGraph, findings: Sequence[SemanticGapFinding]) -> tuple[list[Gap], list[SemanticGapAdmission]]` - Mechanically accepts a host-proposed semantic finding only if its id is unique, every cited requirement exists, and every cited source reference is bound to those requirements; accepted ones become gaps (marked model-analysis-required) with a blast radius, rejected ones record the reason. · *Called by:* `specifications/gate.py::SpecificationGate.validate`
-  - `SpecificationGate.soft_lock(specification: UnifiedSpecification, report: GapReport, metadata: VersionMetadata, *, user_approved: bool, proceed_with_gaps: bool=False) -> SoftL...` - Requires designer approval; if gaps remain it also requires `proceed_with_gaps`; on success returns metadata marked soft-locked (and override-with-gaps when applicable). · *Called by:* `mcp/specification_tools.py::register_specification_tools.soft_lock_specification`
+  - `SpecificationGate.soft_lock(specification: UnifiedSpecification, report: GapReport, metadata: VersionMetadata, *, user_approved: bool, proceed_with_gaps: bool=False) -> SoftL...` - Raises, naming both versions, when the gap report's `document_version` or the metadata's `version` differs from the specification's (even before approval is considered); then requires designer approval; if gaps remain it also requires `proceed_with_gaps`; on success returns metadata marked soft-locked (and override-with-gaps when applicable). It does not check `unified_specification_hash`; the Git lock does. · *Called by:* `mcp/specification_tools.py::register_specification_tools.soft_lock_specification`
 - `_source_ref_key(source: SourceRef) -> tuple[str, str, str, str, str]` - The full immutable identity tuple of a source reference. · *Called by:* `specifications/gate.py::SpecificationGate.admit_semantic_findings`
 - `classify_version_change(previous: UnifiedSpecification | None, current: UnifiedSpecification) -> tuple[VersionChangeKind, list[str]]` - Requirement-level preview of the bump: initial baseline is major, removed or changed (text, category, fields) requirements are major, added ones minor, otherwise patch. The graph-aware version is in `git_versioning.py`. · *No in-package callers (public API, entry point, or protocol hook).*
 - **class `Gate1ArtifactStore`** *(class)* - Writes Gate 1 outputs under the approved specification root. · *Instantiated by:* `mcp/server.py::create_mcp_server`
@@ -129,7 +129,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/gate_models.py` - Gate 1 requirement, gap and version-metadata contracts
 
-*167 lines · depends on: `foundations/contracts.py`, `specifications/documents.py` · used by: `agent/openai_compatible/semantic_gap.py`, `mcp/git_tools.py`, `mcp/specification_tools.py`, `specifications/gate.py`, `specifications/git_models.py`, `specifications/git_versioning.py` · re-exported at the package root: 9 name(s)*
+*166 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `specifications/documents.py` · used by: `agent/openai_compatible/semantic_gap.py`, `mcp/git_tools.py`, `mcp/specification_tools.py`, `specifications/gate.py`, `specifications/git_models.py`, `specifications/git_versioning.py` · re-exported at the package root: 9 name(s)*
 
 **Role in the workflow.** The typed data that flows through `gate.py`, the Git lock service and the MCP specification tools.
 
@@ -200,7 +200,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/git_versioning.py` - local-only Git adapter and the specification version-lock service
 
-*504 lines · depends on: `foundations/atomic_io.py`, `specifications/gate_models.py`, `specifications/git_models.py` · used by: `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 2 name(s)*
+*512 lines · depends on: `foundations/atomic_io.py`, `specifications/gate_models.py`, `specifications/git_models.py` · used by: `mcp/_shared.py`, `mcp/server.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** Turns an approved Gate 1 soft-lock into a Git annotated tag plus a structured snapshot, and later classifies the next candidate version by comparing it with the previous snapshot. Exposed through the MCP git tools.
 
@@ -209,7 +209,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 - **class `GitRepositoryAdapter`** *(class)* - Repository-scoped git commands only; no generic shell, remotes or destructive operations. · *Instantiated by:* `mcp/_shared.py::McpContext.repository_for`, `specifications/git_versioning.py::SpecificationVersionService.create_variant_worktree`
   - `GitRepositoryAdapter.__init__(repository_root: Path) -> None` - Resolves the repository root.
   - `GitRepositoryAdapter.root() -> Path` *(property)* - Property: the resolved root.
-  - `GitRepositoryAdapter.state() -> GitRepositoryState` - Verifies the configured root is the true top level, then returns HEAD, tree, branch, cleanliness (the `.agent-*` runtime directories are excluded from the status check) and the `vMAJOR.MINOR.PATCH` tags in version order; other `v*` tags are ignored. · *Called by:* `base_agent/agent.py::BaseAgent._apply_tool_outcome_to_project_state`, `openai_compatible/chat.py::OpenAICompatibleAgentModel._continuation_messages`, `openai_compatible/chat.py::OpenAICompatibleAgentModel.accept_tool_results`, `optimization/solvers.py::_prune_dominated` (+37 more)
+  - `GitRepositoryAdapter.state() -> GitRepositoryState` - Verifies the configured root is the true top level, then returns HEAD, tree, branch, cleanliness (the `.agent-*` runtime directories are excluded from the status check) and the `vMAJOR.MINOR.PATCH` tags in version order; other `v*` tags are ignored. · *Called by:* `base_agent/agent.py::BaseAgent._apply_tool_outcome_to_project_state`, `base_agent/agent.py::BaseAgent._unavailable_consumed_episodes`, `openai_compatible/chat.py::OpenAICompatibleAgentModel._continuation_messages`, `openai_compatible/chat.py::OpenAICompatibleAgentModel.accept_tool_results` (+43 more)
   - `GitRepositoryAdapter.diff_names(base_ref: str | None=None) -> list[str]` - `git diff --name-status` (optionally from a base ref to HEAD). · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.classify`
   - `GitRepositoryAdapter.tag_exists(tag_name: str) -> bool` - Exact lookup with `rev-parse --verify --quiet refs/tags/<name>`, so glob characters in a tag name never match other tags. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.create_lock`, `specifications/git_versioning.py::SpecificationVersionService.create_variant_worktree`
   - `GitRepositoryAdapter.tag_message(tag_name: str) -> str` - The annotated tag's message body (`%(contents)`), stripped. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.create_lock`
@@ -229,7 +229,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
   - `SpecificationVersionService._snapshot_path(tag_name: str) -> Path` - Snapshot file path for a `vMAJOR.MINOR.PATCH` tag; any other name raises, quoting it. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService._load_snapshot`, `specifications/git_versioning.py::SpecificationVersionService._persist_snapshot`, `specifications/git_versioning.py::SpecificationVersionService.create_lock`
   - `SpecificationVersionService._load_snapshot(tag_name: str) -> SpecificationSnapshotRecord` - Loads a persisted snapshot and re-verifies the specification and graph digests. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.classify`
   - `SpecificationVersionService._persist_snapshot(*, tag_name: str, version: str, specification: UnifiedSpecification, dependency_graph: DependencyGraph, specification_digest: str, dependency_grap...` - Writes a snapshot record atomically. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.create_lock`
-  - `SpecificationVersionService.create_lock(repository: GitRepositoryAdapter, specification: UnifiedSpecification, dependency_graph: DependencyGraph, gap_report: GapReport, metadata: Version...` - After checking approval, soft-lock metadata, a clean repo, a free tag, matching change kind, a valid bump and the specification hash, creates the annotated tag, persists the snapshot and lock record, and deletes the tag and files again if anything fails. A tag left by an interrupted earlier attempt (same message and commit, no lock record) is removed and the lock proceeds; any other existing tag raises. · *Called by:* `mcp/git_tools.py::register_git_tools.create_specification_git_lock`
+  - `SpecificationVersionService.create_lock(repository: GitRepositoryAdapter, specification: UnifiedSpecification, dependency_graph: DependencyGraph, gap_report: GapReport, metadata: Version...` - After checking approval, soft-lock metadata, that the metadata version and the gap report's `document_version` equal the specification's (each error names both), a clean repo, a free tag, matching change kind, a valid bump and the specification hash, creates the annotated tag, persists the snapshot and lock record, and deletes the tag and files again if anything fails. A tag left by an interrupted earlier attempt (same message and commit, no lock record) is removed and the lock proceeds; any other existing tag raises. · *Called by:* `mcp/git_tools.py::register_git_tools.create_specification_git_lock`
   - `SpecificationVersionService.create_variant_worktree(repository: GitRepositoryAdapter, *, name: str, branch: str, base_ref: str, specification_tag: str, purpose: str, approval: GitApproval) -> Varian...` - With an approved decision, validates names, requires `base_ref` to resolve to the same commit as an existing specification tag, creates a worktree and writes its record; if recording fails the worktree is removed and the branch deleted before the error propagates.
 - `structural_specification_diff(previous: UnifiedSpecification, previous_graph: DependencyGraph, current: UnifiedSpecification, current_graph: DependencyGraph) -> StructuralSpeci...` - Exact comparison of requirement ids, requirement text/category/fields, and dependency edges (source locators and acceptance checks are outside the breaking surface). · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.classify`
 - `_major_rationale(diff: StructuralSpecificationDiff) -> list[str]` - Human-readable reasons for a MAJOR classification. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.classify`
@@ -244,7 +244,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/preprocessing.py` - manifest-driven, source-preserving specification parsing
 
-*420 lines · depends on: `foundations/atomic_io.py`, `foundations/identifiers.py`, `foundations/json_limits.py`, `foundations/text.py`, `specifications/documents.py`, `specifications/vision.py` · used by: `mcp/_shared.py`, `mcp/server.py`, `memory/context_selection.py`, `specifications/retrieval.py` · re-exported at the package root: 1 name(s)*
+*417 lines · depends on: `foundations/atomic_io.py`, `foundations/identifiers.py`, `foundations/json_limits.py`, `foundations/text.py`, `specifications/documents.py`, `specifications/vision.py` · used by: `mcp/_shared.py`, `mcp/server.py`, `memory/context_selection.py`, `specifications/retrieval.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** First stage of the pipeline: reads the manifest, parses each document into an ordered `DocumentTree`, optionally resolves images through a vision adapter, and can persist the processed trees. Exposed through the MCP specification tools.
 
@@ -290,7 +290,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
   - `InMemoryRetrievalCache.get(key: str) -> RetrievalResult | None` - Returns the stored result or None.
   - `InMemoryRetrievalCache.set(key: str, result: RetrievalResult, ttl_seconds: int) -> None` - Stores a result; rejects a non-positive TTL.
 - **class `RedisRetrievalCache`** *(class)* - Optional Redis cache storing only references and scores, never source text.
-  - `RedisRetrievalCache.__init__(redis_url: str, *, namespace: str='agent-sdk:retrieval:') -> None` - Validates the URL and namespace, imports `redis` (the install hint it prints still names the old package `agent-design-agent-sdk[redis-cache]`) and opens a client.
+  - `RedisRetrievalCache.__init__(redis_url: str, *, namespace: str='agent-sdk:retrieval:') -> None` - Validates the URL and namespace, imports `redis` (a missing package raises naming `nailong-agent-sdk[redis-cache]`) and opens a client.
   - `RedisRetrievalCache.get(key: str) -> RetrievalResult | None` - Reads and validates a cached result.
   - `RedisRetrievalCache.set(key: str, result: RetrievalResult, ttl_seconds: int) -> None` - Stores the result JSON with an expiry.
 - **class `DeterministicLexicalRetrievalIndex`** *(class)* - Offline fallback: ranks by the count of shared keywords.
@@ -327,7 +327,7 @@ The deterministic specification pipeline of the EDA framework. `preprocessing.py
 
 ### `specifications/retrieval_models.py` - retrieval document, query, candidate and result contracts
 
-*131 lines · depends on: `foundations/contracts.py`, `specifications/documents.py` · used by: `specifications/retrieval.py` · re-exported at the package root: 7 name(s)*
+*131 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `specifications/documents.py` · used by: `specifications/retrieval.py` · re-exported at the package root: 7 name(s)*
 
 **Role in the workflow.** The typed boundary between the untrusted ranking backend and the local, verified source trees.
 

@@ -45,7 +45,7 @@ def lock(service, repo, version, requirements, kind, **overrides):
         repo,
         overrides.pop("specification", specification),
         graph,
-        report,
+        overrides.pop("report", report),
         metadata,
         overrides.pop("approval", approval()),
     )

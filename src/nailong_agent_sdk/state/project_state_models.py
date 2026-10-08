@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.identifiers import require_unique
 from ..foundations.json_limits import assert_json_depth
 
 MAX_STAGE_FIELDS = 128
@@ -80,8 +81,7 @@ class StageStateSchema(StrictModel):
     @field_validator("required_field_ids")
     @classmethod
     def field_ids_are_unique(cls, values: list[str]) -> list[str]:
-        if len(values) != len(set(values)):
-            raise ValueError("required stage field IDs must be unique")
+        require_unique(values, "required stage field IDs")
         return values
 
 
@@ -227,6 +227,8 @@ class StateTransitionKind(StrEnum):
     AGENT_RESULT = "agent-result"
     HUMAN_DECISION = "human-decision"
     QUESTION_OPENED = "question-opened"
+    QUESTION_RESOLVED = "question-resolved"
+    BLOCKER_CLEARED = "blocker-cleared"
     WORK_ITEM_UPDATED = "work-item-updated"
     STAGE_CHANGED = "stage-changed"
     ARTIFACT_STATUS_UPDATED = "artifact-status-updated"
@@ -281,7 +283,13 @@ class ProjectStateRepository(Protocol):
 
     def load(self, project_id: str) -> ProjectState: ...
 
-    def apply(self, project_id: str, transition: StateTransition) -> ProjectState: ...
+    def apply(
+        self,
+        project_id: str,
+        transition: StateTransition,
+        *,
+        summary_max_chars: int = 2_048,
+    ) -> ProjectState: ...
 
 
 def make_project_state(
@@ -353,9 +361,7 @@ def _event_hash(
 
 
 def _ensure_unique[T](items: list[T], key: str, label: str) -> None:
-    values = [getattr(item, key) for item in items]
-    if len(values) != len(set(values)):
-        raise ValueError(f"{label} must be unique")
+    require_unique([getattr(item, key) for item in items], label)
 
 
 def _canonical_json(value: Any) -> str:

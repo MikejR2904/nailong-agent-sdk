@@ -22,7 +22,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
-from ..foundations.identifiers import validate_identifier
+from ..foundations.identifiers import require_unique, validate_identifier
 from ..foundations.json_limits import assert_json_depth
 
 
@@ -52,8 +52,7 @@ class DiscoveryRoutingRefs(StrictModel):
             values = getattr(self, field_name)
             if any(not value.strip() for value in values):
                 raise ValueError(f"{field_name} entries must be non-empty")
-            if len(values) != len(set(values)):
-                raise ValueError(f"{field_name} entries must be unique")
+            require_unique(values, f"{field_name} entries")
         return self
 
     def any_identifiers(self) -> set[str]:

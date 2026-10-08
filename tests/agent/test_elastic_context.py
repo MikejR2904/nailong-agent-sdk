@@ -10,7 +10,7 @@ from tests.support.plans import n, ok
 
 
 def finished_exploration(child_results, *, requests=None):
-    graph = StateGraph([n("root")], max_elastic_depth=1, max_elastic_nodes=8)
+    graph = StateGraph([n("root")], max_elastic_depth=1, max_elastic_nodes=16)
     graph.mark_started("root")
     requests = requests or [req(child_id) for child_id in child_results]
     graph.mark_terminal("root", done_with(*requests, output={"summary": "needs probing"}))

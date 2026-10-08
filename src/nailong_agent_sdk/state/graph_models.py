@@ -14,14 +14,16 @@ from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.identifiers import require_unique
 from ..foundations.json_limits import assert_json_depth
 from .elastic import (
     MAX_ELASTIC_REQUESTS_PER_RESULT,
     ElasticCapacity,
     ElasticNodeSpec,
+    ElasticReservation,
     ElasticSpawnRequest,
 )
 from .shared_state import (
@@ -100,10 +102,9 @@ class GraphNode(StrictModel):
 
     @model_validator(mode="after")
     def node_is_well_formed(self) -> GraphNode:
-        if len(self.dependencies) != len(set(self.dependencies)):
-            raise ValueError("node dependencies must be unique")
+        require_unique(self.dependencies, f'node "{self.node_id}" dependencies')
         if self.node_id in self.dependencies:
-            raise ValueError("node cannot depend on itself")
+            raise ValueError(f'node "{self.node_id}" cannot depend on itself')
         if self.kind is GraphNodeKind.ELASTIC:
             if self.elastic is None:
                 raise ValueError('an elastic-node kind node requires its "elastic" spec')
@@ -134,7 +135,9 @@ class GraphEdge(StrictModel):
     @model_validator(mode="after")
     def edge_has_distinct_endpoints(self) -> GraphEdge:
         if self.parent_node_id == self.child_node_id:
-            raise ValueError("graph edge endpoints must be distinct")
+            raise ValueError(
+                f'graph edge endpoints must be distinct; both are "{self.parent_node_id}"'
+            )
         return self
 
 
@@ -211,10 +214,14 @@ class GraphNodeExecutionContext(StrictModel):
     to the graph. This prevents unplanned reads of sibling result payloads.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     dependencies: dict[str, GraphNodeResult] = Field(default_factory=dict)
     shared_state: GraphSharedState
     elastic_capacity: ElasticCapacity | None = None
     elastic_requests: dict[str, ElasticSpawnRequest] = Field(default_factory=dict)
+    elastic_reservation: ElasticReservation | None = Field(default=None, exclude=True, repr=False)
 
 
 NodeExecutor = Callable[[GraphNode, GraphNodeExecutionContext], Awaitable[GraphNodeResult]]
+ReplayPolicy = Callable[[GraphNode, GraphNodeExecutionContext], bool]

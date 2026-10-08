@@ -559,6 +559,11 @@ def test_semantic_finding_admission_rules_and_model_validation():
         True,
         False,
     ]
+    repeated = [a for a in report.semantic_admissions if a.finding_id == "D-dup"][1]
+    assert repeated.reason == (
+        'Semantic finding ID "D-dup" repeats an earlier finding; '
+        "finding IDs must be unique per Gate 1 evaluation."
+    )
     accepted_gap = next(g for g in report.gaps if g.source.startswith("semantic-analysis:prov"))
     assert accepted_gap.model_analysis_required is True and accepted_gap.blast_radius >= 1
     with pytest.raises(ValueError, match="CRITICAL"):
@@ -597,6 +602,31 @@ def test_soft_lock_decisions():
     _, clean_report = gate.validate(clean_spec, required_categories=set())
     clean = gate.soft_lock(clean_spec, clean_report, metadata, user_approved=True)
     assert clean.accepted and not clean.metadata.user_override_with_gaps
+
+
+def test_soft_lock_refuses_a_report_or_metadata_written_for_another_version():
+    specification = spec(version="2.0.0", reqs=[req("R1")], trees=[tree()])
+    gate = SpecificationGate()
+    _, report = gate.validate(specification, required_categories=set())
+    metadata = VersionMetadata(
+        version="2.0.0", change_kind=VersionChangeKind.MAJOR, unified_specification_hash="h"
+    )
+    stale_report = report.model_copy(update={"document_version": "1.9.0"})
+    for approved in (True, False):
+        with pytest.raises(
+            ValueError,
+            match=r'Gap report document_version "1.9.0" does not match the specification '
+            r'version "2.0.0"',
+        ):
+            gate.soft_lock(specification, stale_report, metadata, user_approved=approved)
+    other = metadata.model_copy(update={"version": "2.0.1"})
+    with pytest.raises(
+        ValueError,
+        match=r'Version metadata version "2.0.1" does not match the specification '
+        r'version "2.0.0"',
+    ):
+        gate.soft_lock(specification, report, other, user_approved=True)
+    assert gate.soft_lock(specification, report, metadata, user_approved=True).accepted
 
 
 def test_classify_version_change_matrix():

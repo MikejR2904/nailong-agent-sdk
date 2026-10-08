@@ -7,7 +7,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 | [`memory/__init__.py`](#memory__init__py---package-marker-for-episode-memory-and-context-assembly) | 3 | package marker for episode memory and context assembly |
 | [`memory/context.py`](#memorycontextpy---builds-the-fixed-initial-prompt-for-a-run) | 51 | builds the fixed initial prompt for a run |
 | [`memory/context_projection.py`](#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 357 | per-turn bounded context projection and the tool-result journal |
-| [`memory/context_selection.py`](#memorycontext_selectionpy---pre-run-specification-selection-by-design-stage-eda) | 171 | pre-run specification selection by design stage (EDA) |
+| [`memory/context_selection.py`](#memorycontext_selectionpy---pre-run-specification-selection-by-design-stage-eda) | 175 | pre-run specification selection by design stage (EDA) |
 | [`memory/episode_models.py`](#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 176 | episode records, compaction policy and the retention contracts |
 | [`memory/episode_scoring.py`](#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 54 | deterministic lexical relevance and cost helpers for retention |
 | [`memory/episode_store.py`](#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 857 | episode lifecycle and the three deterministic compaction strategies |
@@ -79,7 +79,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/context_selection.py` - pre-run specification selection by design stage (EDA)
 
-*171 lines · depends on: `foundations/contracts.py`, `specifications/documents.py`, `specifications/preprocessing.py` · used by: `mcp/specification_tools.py` · re-exported at the package root: 3 name(s)*
+*175 lines · depends on: `foundations/contracts.py`, `specifications/documents.py`, `specifications/preprocessing.py` · used by: `mcp/specification_tools.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** Not part of the per-turn loop. The MCP `select_task_context` tool uses it to pick which specification nodes a task is scoped to: first prune document categories by `DesignStage`, then match scope pointers and task keywords inside the surviving documents.
 
@@ -90,7 +90,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 - **class `SelectedContext`** *(pydantic model; bases: StrictModel)* - Selection result: stage, chosen document ids, chosen nodes and the reasons per document. · *Instantiated by:* `memory/context_selection.py::TaskAwareContextSelector.select`, `memory/context_selection.py::TaskAwareContextSelector.select_verified_retrieval_nodes`
   - fields: `stage`, `selected_document_ids`, `nodes`, `selection_reasons`
 - **class `TaskAwareContextSelector`** *(class)* - Stage-first selector that never loads all specifications. · *Instantiated by:* `mcp/specification_tools.py::register_specification_tools.select_task_context`
-  - `TaskAwareContextSelector.select(trees: list[DocumentTree], stage: DesignStage, task_text: str, scope_pointers: list[str]=()) -> SelectedContext` - Keeps only trees whose category is allowed for the stage, then keeps nodes matching a scope pointer (case-insensitively, in location or content) or a task keyword; records the reasons per document.
+  - `TaskAwareContextSelector.select(trees: list[DocumentTree], stage: DesignStage, task_text: str, scope_pointers: list[str]=()) -> SelectedContext` - Keeps only trees whose category is allowed for the stage, then keeps nodes matching a scope pointer (case-insensitively, in location or content; a blank pointer is ignored) or a task keyword; records per document whether a pointer, a keyword or both matched.
   - `TaskAwareContextSelector.select_verified_retrieval_nodes(trees: list[DocumentTree], stage: DesignStage, verified_nodes: list[DocumentNode]) -> SelectedContext` - Admits retrieval results only when their (document id, node id, source hash, location) exactly matches a frozen local tree node in an allowed category, so backend text is never trusted. · *No in-package callers (public API, entry point, or protocol hook).*
 
 **Algorithms & invariants.** `STAGE_CATEGORIES` is the stage-to-allowed-specification-category matrix.
@@ -155,7 +155,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/episode_store.py` - episode lifecycle and the three deterministic compaction strategies
 
-*857 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/optimization/__init__.py`, `memory/episode_models.py`, `memory/episode_scoring.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `memory/context_projection.py` · re-exported at the package root: 2 name(s)*
+*857 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/identifiers.py`, `foundations/optimization/__init__.py`, `memory/episode_models.py`, `memory/episode_scoring.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `memory/context_projection.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` opens one episode per tool call (exploratory read or action), closes it, and the projector calls `compact` every turn with the episode token budget and the latest tool batch protected. Compacted episodes are replaced by structural tombstones; their raw evidence stays in the tool-result journal.
 

@@ -86,6 +86,72 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
+    @ctx.tool(server, "resolve_project_question", exclusive=False)
+    def resolve_project_question(
+        project_id: str,
+        question_id: str,
+        resolution: str,
+        evidence_id: str,
+        source_spans: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Close an open question with the human's recorded answer and its source evidence."""
+
+        try:
+            state = ctx.project_states.apply(
+                project_id,
+                StateTransition(
+                    kind=StateTransitionKind.QUESTION_RESOLVED,
+                    actor=StateAuthority.HUMAN,
+                    action_id=f"question-resolved:{question_id}",
+                    payload={"question_id": question_id, "resolution": resolution},
+                    evidence=[
+                        StateEvidence(
+                            evidence_id=evidence_id,
+                            kind="human-question-resolution-source",
+                            source_spans=source_spans or [],
+                        )
+                    ],
+                ),
+            )
+            return {"ok": True, "state": state.model_dump(mode="json")}
+        except ValidationError as error:
+            return {"ok": False, "errors": _validation_errors(error)}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
+    @ctx.tool(server, "clear_project_blocker", exclusive=False)
+    def clear_project_blocker(
+        project_id: str,
+        blocker_id: str,
+        reason: str,
+        evidence_id: str,
+        source_spans: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Clear a recorded blocker once its blocking requirement has been resolved."""
+
+        try:
+            state = ctx.project_states.apply(
+                project_id,
+                StateTransition(
+                    kind=StateTransitionKind.BLOCKER_CLEARED,
+                    actor=StateAuthority.HUMAN,
+                    action_id=f"blocker-cleared:{blocker_id}",
+                    payload={"blocker_id": blocker_id, "reason": reason},
+                    evidence=[
+                        StateEvidence(
+                            evidence_id=evidence_id,
+                            kind="human-blocker-clearance-source",
+                            source_spans=source_spans or [],
+                        )
+                    ],
+                ),
+            )
+            return {"ok": True, "state": state.model_dump(mode="json")}
+        except ValidationError as error:
+            return {"ok": False, "errors": _validation_errors(error)}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
     @ctx.tool(server, "open_project_question", exclusive=False)
     def open_project_question(
         project_id: str,

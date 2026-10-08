@@ -11,11 +11,13 @@ from pydantic import ValidationError
 
 from ..foundations.contracts import AgentFailure, ToolDefinition, ToolExecutionResult
 from ..state.elastic import (
+    ELASTIC_JOIN_COST,
     ELASTIC_REQUEST_TOOL_NAME,
     MAX_ELASTIC_REQUESTS_PER_RESULT,
     ElasticCapacity,
     ElasticProblem,
     ElasticRefusalCode,
+    ElasticReservation,
     ElasticSpawnRequest,
     capacity_problem,
     check_spawn_request,
@@ -39,12 +41,14 @@ class ElasticRequestBuffer:
         *,
         limit: int = MAX_ELASTIC_REQUESTS_PER_RESULT,
         escalate_overflow: bool = False,
+        reservation: ElasticReservation | None = None,
     ) -> None:
         self._node = node
         self._capacity = capacity
         self._visible = frozenset(visible_dependencies)
         self._limit = limit
         self._escalate_overflow = escalate_overflow
+        self._reservation = reservation
         self._requests: list[ElasticSpawnRequest] = []
 
     @property
@@ -70,32 +74,19 @@ class ElasticRequestBuffer:
         )
         if problem is not None:
             raise ElasticRequestRejected(problem)
-        overflow = (
-            None
-            if self._capacity is None
-            else capacity_problem(
-                node_id=node_id,
-                node_depth=self._capacity.node_depth,
-                max_depth=self._capacity.max_depth,
-                nodes_used=self._capacity.nodes_used,
-                max_nodes=self._capacity.max_nodes,
-                requested=len(self._requests) + 1,
-            )
-        )
-        if overflow is not None and not self._escalate_overflow:
-            raise ElasticRequestRejected(overflow)
+        overflow = self._overflow(len(self._requests) + 1)
+        if overflow is not None:
+            if not overflow.grantable or not self._escalate_overflow:
+                raise ElasticRequestRejected(overflow)
+            if self._reservation is not None:
+                self._reservation.release()
         self._requests.append(request)
-        remaining = (
-            None
-            if self._capacity is None
-            else max(0, self._capacity.remaining_nodes - len(self._requests))
-        )
         return {
             "request_id": request.request_id,
             "status": "queued",
             "queued_requests": len(self._requests),
             "child_depth": self._node.elastic_depth + 1,
-            "elastic_nodes_remaining_after_queue": remaining,
+            "elastic_nodes_remaining_after_queue": self._remaining_after_queue(),
             "capacity_decision_required": overflow is not None,
             "runs": "after this task completes; a join node then resumes this task with the "
             "findings"
@@ -103,6 +94,29 @@ class ElasticRequestBuffer:
             else "only after the controller grants more elastic capacity or declines; every "
             "request this task queued and this task's dependents wait for that decision",
         }
+
+    def _remaining_after_queue(self) -> int | None:
+        if self._reservation is not None:
+            return self._reservation.remaining()
+        if self._capacity is None:
+            return None
+        return max(0, self._capacity.remaining_nodes - len(self._requests) - ELASTIC_JOIN_COST)
+
+    def _overflow(self, requested: int) -> ElasticProblem | None:
+        if self._reservation is not None:
+            return self._reservation.reserve(requested)
+        if self._capacity is None:
+            return None
+        return capacity_problem(
+            node_id=self._node.node_id,
+            node_depth=self._capacity.node_depth,
+            max_depth=self._capacity.max_depth,
+            nodes_used=self._capacity.nodes_used,
+            max_nodes=self._capacity.max_nodes,
+            requested=requested,
+            ceiling_depth=self._capacity.ceiling_depth,
+            ceiling_nodes=self._capacity.ceiling_nodes,
+        )
 
 
 class ElasticRequestToolExecutor:

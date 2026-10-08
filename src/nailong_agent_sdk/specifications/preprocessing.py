@@ -209,10 +209,7 @@ class SpecificationPreprocessor:
                             content=paragraph.text,
                         )
                     )
-                drawing_count = sum(
-                    child.tag.endswith("}drawing")
-                    for child in paragraph._p.iter()  # noqa: SLF001
-                )
+                drawing_count = sum(child.tag.endswith("}drawing") for child in paragraph._p.iter())
                 for _ in range(drawing_count):
                     image_index += 1
                     nodes.append(

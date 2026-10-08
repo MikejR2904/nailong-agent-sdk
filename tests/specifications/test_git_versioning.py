@@ -18,7 +18,7 @@ from nailong_agent_sdk.specifications.git_versioning import (
     SpecificationVersionService,
     structural_specification_diff,
 )
-from tests.support.git_versions import M, N, P, approval, lock, sh
+from tests.support.git_versions import M, N, P, approval, inputs, lock, sh
 from tests.support.processes import child_environment
 from tests.support.specs import req, spec, tree
 
@@ -125,8 +125,26 @@ def test_lock_lifecycle_and_rejections(repo_path, tmp_path):
         lock(service, repo, "1.1.0", more, N, metadata_update={"unified_specification_hash": "bad"})
     with pytest.raises(ValueError, match="soft-lock metadata"):
         lock(service, repo, "1.1.0", more, N, metadata_update={"soft_locked": False})
-    with pytest.raises(ValueError, match="must match the unified specification version"):
+    with pytest.raises(
+        ValueError,
+        match=r'Version metadata version "1.1.1" must match the unified specification '
+        r'version "1.1.0"',
+    ):
         lock(service, repo, "1.1.0", more, N, metadata_update={"version": "1.1.1"})
+    _, _, report, _ = inputs("1.1.0", more, N)
+    with pytest.raises(
+        ValueError,
+        match=r'Gap report document_version "0.9.0" must match the unified specification '
+        r'version "1.1.0"',
+    ):
+        lock(
+            service,
+            repo,
+            "1.1.0",
+            more,
+            N,
+            report=report.model_copy(update={"document_version": "0.9.0"}),
+        )
     with pytest.raises(ValueError, match="create-specification-lock"):
         lock(service, repo, "1.1.0", more, N, approval=approval(approved=False))
     with pytest.raises(ValueError, match="create-specification-lock"):

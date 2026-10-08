@@ -20,6 +20,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.identifiers import require_unique
 from ..foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem, PckpStatus
 from .documents import SourceRef
 
@@ -59,8 +60,7 @@ class EvidenceNode(StrictModel):
 
     @model_validator(mode="after")
     def aliases_are_unique(self) -> EvidenceNode:
-        if len(self.aliases) != len(set(self.aliases)):
-            raise ValueError("Evidence node aliases must be unique")
+        require_unique(self.aliases, f'Evidence node "{self.node_id}" aliases')
         return self
 
 
@@ -75,7 +75,9 @@ class EvidenceRelation(StrictModel):
     @model_validator(mode="after")
     def endpoints_are_distinct(self) -> EvidenceRelation:
         if self.from_node_id == self.to_node_id:
-            raise ValueError("Evidence relation endpoints must be distinct")
+            raise ValueError(
+                f'Evidence relation endpoints must be distinct; both are "{self.from_node_id}"'
+            )
         return self
 
 
@@ -89,12 +91,14 @@ class EvidenceGraph(StrictModel):
     @model_validator(mode="after")
     def graph_is_well_formed(self) -> EvidenceGraph:
         node_ids = [node.node_id for node in self.nodes]
-        if len(node_ids) != len(set(node_ids)):
-            raise ValueError("Evidence node IDs must be unique")
+        require_unique(node_ids, "Evidence node IDs")
         known = set(node_ids)
         for relation in self.relations:
-            if relation.from_node_id not in known or relation.to_node_id not in known:
-                raise ValueError("Evidence relations must reference known nodes")
+            unknown = sorted({relation.from_node_id, relation.to_node_id} - known)
+            if unknown:
+                raise ValueError(
+                    f"Evidence relations must reference known nodes; unknown: {unknown}"
+                )
         return self
 
     @property
@@ -138,8 +142,7 @@ class EvidenceSelectionPolicy(StrictModel):
 
     @model_validator(mode="after")
     def relation_kinds_are_unique(self) -> EvidenceSelectionPolicy:
-        if len(self.mandatory_relation_kinds) != len(set(self.mandatory_relation_kinds)):
-            raise ValueError("Mandatory relation kinds must be unique")
+        require_unique(self.mandatory_relation_kinds, "Mandatory relation kinds")
         return self
 
     @property
@@ -158,8 +161,7 @@ class EvidenceSelectionRequest(StrictModel):
 
     @model_validator(mode="after")
     def target_ids_are_unique(self) -> EvidenceSelectionRequest:
-        if len(self.target_ids) != len(set(self.target_ids)):
-            raise ValueError("Evidence selection target IDs must be unique")
+        require_unique(self.target_ids, "Evidence selection target IDs")
         return self
 
 

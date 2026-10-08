@@ -1,4 +1,5 @@
 import asyncio
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -17,6 +18,7 @@ EXPECTED_TOOLS = {
     "cancel_controller",
     "cancel_orchestration",
     "cancel_run",
+    "clear_project_blocker",
     "classify_specification_version",
     "complete_controller",
     "create_controller",
@@ -49,6 +51,7 @@ EXPECTED_TOOLS = {
     "register_metric_definition",
     "render_audit_transcript",
     "request_lateral_dependency",
+    "resolve_project_question",
     "resume_run",
     "run_agent_task",
     "select_task_context",
@@ -78,7 +81,7 @@ def test_server_exposes_exactly_the_documented_tools(server):
 
     tools = asyncio.run(listing())
     names = {t.name for t in tools}
-    assert names == EXPECTED_TOOLS and len(tools) == 50
+    assert names == EXPECTED_TOOLS and len(tools) == 52
     assert all(t.description and t.input_schema for t in tools)
 
 
@@ -232,6 +235,69 @@ def test_project_state_tools(server):
         )["ok"]
         is False
     )
+
+
+def test_questions_and_blockers_are_closed_over_the_wire(server):
+    schema = {"schema_id": "s-v1", "stage": "design"}
+    assert server.call(
+        "initialize_project_state", {"project_id": "proj-close", "stage_schema": schema}
+    )["ok"]
+    question = server.call(
+        "open_project_question",
+        {
+            "project_id": "proj-close",
+            "question_id": "q1",
+            "content": "why?",
+            "owner": "human",
+            "evidence_id": "ev-2",
+        },
+    )
+    assert question["ok"] and question["state"]["revision"] == 1
+    wrong_owner = server.call(
+        "resolve_project_question",
+        {
+            "project_id": "proj-close",
+            "question_id": "nope",
+            "resolution": "r",
+            "evidence_id": "ev-x",
+        },
+    )
+    assert wrong_owner["ok"] is False
+    assert 'Open question "nope" does not exist' in wrong_owner["errors"][0]["message"]
+    resolved = server.call(
+        "resolve_project_question",
+        {
+            "project_id": "proj-close",
+            "question_id": "q1",
+            "resolution": "because the designer said so",
+            "evidence_id": "ev-3",
+            "source_spans": ["chat:42"],
+        },
+    )
+    assert resolved["ok"] and resolved["state"]["open_questions"] == []
+    assert resolved["state"]["revision"] == 2
+    unknown_blocker = server.call(
+        "clear_project_blocker",
+        {"project_id": "proj-close", "blocker_id": "tool:c9", "reason": "r", "evidence_id": "ev-4"},
+    )
+    assert unknown_blocker["ok"] is False
+    assert 'Blocker "tool:c9" does not exist' in unknown_blocker["errors"][0]["message"]
+    blank = server.call(
+        "clear_project_blocker",
+        {"project_id": "proj-close", "blocker_id": "tool:c9", "reason": " ", "evidence_id": "ev-4"},
+    )
+    assert blank["ok"] is False
+    reopened = server.call(
+        "open_project_question",
+        {
+            "project_id": "proj-close",
+            "question_id": "q1",
+            "content": "why again?",
+            "owner": "human",
+            "evidence_id": "ev-5",
+        },
+    )
+    assert reopened["ok"] and reopened["state"]["revision"] == 3
 
 
 def _plan_payload():
@@ -412,6 +478,53 @@ def test_a_deferred_elastic_batch_is_resolved_by_declining_it_over_the_wire(serv
     assert unknown["ok"] is False
 
 
+def test_controller_ceilings_bound_the_plan_and_every_grant_over_the_wire(server):
+    snapshot_id = "snap-elastic-ceiling"
+    created = server.call(
+        "create_controller",
+        {
+            "snapshot": {"snapshot_id": snapshot_id, "version": "1", "content_hash": "h"},
+            "profile": {"stage": "design", "source_snapshot_id": snapshot_id},
+            "routing_rules": {"multi_agent_min_categories": 3, "multi_agent_min_blast_radius": 5},
+            "gap_metadata": {},
+            "max_repair_attempts": 1,
+            "elastic_depth_ceiling": 1,
+            "elastic_nodes_ceiling": 3,
+        },
+    )
+    assert created["ok"] and created["controller"]["elastic_nodes_ceiling"] == 3
+    cid = created["controller"]["controller_id"]
+    too_big = {**_plan_payload(), "max_elastic_depth": 0, "max_elastic_nodes": 4}
+    refused = server.call("submit_controller_plan", {"controller_id": cid, "plan": too_big})
+    assert refused["ok"] is False
+    assert "above the ceiling max_elastic_nodes 3" in refused["errors"][0]["message"]
+    plan = {**_plan_payload(), "max_elastic_depth": 0, "max_elastic_nodes": 2}
+    assert server.call("submit_controller_plan", {"controller_id": cid, "plan": plan})["ok"]
+    server.call("approve_controller_plan", {"controller_id": cid, "approved": True})
+    assert server.call("dispatch_controller", {"controller_id": cid})["ok"]
+    server.call(
+        "record_controller_node_result",
+        {"controller_id": cid, "node_id": "node:T1", "result": ELASTIC_RESULT},
+    )
+    deeper = server.call(
+        "grant_elastic_capacity",
+        {"controller_id": cid, "max_elastic_depth": 2, "reason": "beyond the policy"},
+    )
+    assert deeper["ok"] is False
+    assert "max_elastic_depth 2: it is above the ceiling 1" in deeper["errors"][0]["message"]
+    wider = server.call(
+        "grant_elastic_capacity",
+        {"controller_id": cid, "max_elastic_nodes": 4, "reason": "beyond the policy"},
+    )
+    assert wider["ok"] is False
+    assert "max_elastic_nodes 4: it is above the ceiling 3" in wider["errors"][0]["message"]
+    granted = server.call(
+        "grant_elastic_capacity",
+        {"controller_id": cid, "max_elastic_depth": 1, "reason": "inside the policy"},
+    )
+    assert granted["ok"] and granted["run"]["graph"]["elastic_depth_ceiling"] == 1
+
+
 def test_an_invalid_spawn_request_is_rejected_with_the_field_that_is_wrong(server):
     cid = _dispatched_controller(server, "snap-elastic-invalid", depth=1)
     bad = {**ELASTIC_RESULT, "spawn_requests": [{"request_id": "has space", "scope": "s"}]}
@@ -464,6 +577,22 @@ def test_specification_and_gate_tools(server):
         },
     )
     assert refused["decision"]["accepted"] is False
+    mismatched = server.call(
+        "soft_lock_specification",
+        {
+            "specification": specification,
+            "dependency_graph": gate["dependency_graph"],
+            "gap_report": gate["gap_report"],
+            "metadata": {**metadata, "version": "9.9.9"},
+            "user_approved": True,
+            "proceed_with_gaps": True,
+        },
+    )
+    assert mismatched["ok"] is False
+    assert mismatched["errors"][0]["message"] == (
+        'Version metadata version "9.9.9" does not match the specification version "1.0.0".'
+    )
+    assert not (server.spec_root / "unified-specification.yaml").exists()
     accepted = server.call(
         "soft_lock_specification",
         {
@@ -748,6 +877,33 @@ def test_dns_rebinding_and_cross_origin_requests_are_refused(server):
     )
     assert foreign_origin[0] in {400, 403}, (
         f"Origin: https://attacker.example.com was served with HTTP {foreign_origin[0]}"
+    )
+
+
+def test_the_running_server_announces_the_package_name_and_version(server):
+    init = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "t", "version": "1"},
+            },
+        }
+    ).encode()
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "Host": f"127.0.0.1:{server.port}",
+    }
+    status, raw = raw_post(server, init, headers, limit=100_000)
+    assert status == 200
+    info = json.loads(raw)["result"]["serverInfo"]
+    assert (info["name"], info["version"]) == (
+        "nailong-agent-sdk",
+        importlib.metadata.version("nailong-agent-sdk"),
     )
 
 

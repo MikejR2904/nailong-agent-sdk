@@ -21,6 +21,7 @@ from typing import Any
 
 from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import EpisodeKind
+from ..foundations.identifiers import require_unique
 from ..foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem, PckpStatus
 from .episode_models import (
     CompactionResult,
@@ -92,8 +93,7 @@ class InMemoryEpisodeStore:
         requires_manifest: bool = False,
         eda_manifest: dict[str, Any] | None = None,
     ) -> EpisodeRecord:
-        if len(dependencies) != len(set(dependencies)):
-            raise ValueError("action episode dependencies must be unique")
+        require_unique(dependencies, "action episode dependencies")
         for dependency_id in dependencies:
             dependency = self._records.get(dependency_id)
             if dependency is None:

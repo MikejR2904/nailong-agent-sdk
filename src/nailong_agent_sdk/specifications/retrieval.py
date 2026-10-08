@@ -267,7 +267,7 @@ class QdrantRetrievalIndex:
             headers={"Content-Type": "application/json"} if body is not None else {},
         )
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with urlopen(request, timeout=self._timeout_seconds) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as error:
             detail = _qdrant_error_detail(_read_error_body(error))

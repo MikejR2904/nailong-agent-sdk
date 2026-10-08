@@ -41,7 +41,7 @@ def test_the_lazy_export_table_matches_the_static_import_block_and_all():
     static = type_checking_names()
     assert package._EXPORTS == static
     assert package.__all__ == list(package._EXPORTS)
-    assert len(package.__all__) == len(set(package.__all__)) == 369
+    assert len(package.__all__) == len(set(package.__all__)) == 373
 
 
 def test_every_export_resolves_to_the_object_its_module_defines():

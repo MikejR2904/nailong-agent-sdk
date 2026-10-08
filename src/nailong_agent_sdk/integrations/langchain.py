@@ -34,6 +34,9 @@ from ._utils import _MAX_INTEROP_STRING_CHARS, require_optional_module
 from .contracts import assert_sanitized_interop_value
 
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
+_RESULT_OUTCOME_FIELDS = frozenset(
+    {"status", "task_id", "iterations", "output", "reason", "failure", "escalation"}
+)
 
 
 class AsyncLangChainRunnable(Protocol):
@@ -89,8 +92,11 @@ class LangChainAgentModelAdapter:
 class LangChainSdkRunnable:
     """Expose a host-constructed SDK run as a LangChain-compatible async Runnable."""
 
-    def __init__(self, agent_factory: LangChainAgentFactory) -> None:
+    def __init__(
+        self, agent_factory: LangChainAgentFactory, *, include_trace: bool = False
+    ) -> None:
         self._agent_factory = agent_factory
+        self._include_trace = include_trace
 
     async def ainvoke(
         self,
@@ -102,7 +108,7 @@ class LangChainSdkRunnable:
             input if isinstance(input, ScopedAgentTask) else ScopedAgentTask.model_validate(input)
         )
         result = await self._agent_factory(task).run(task)
-        return _agent_result_projection(result)
+        return _agent_result_projection(result, include_trace=self._include_trace)
 
     def as_runnable(self) -> Any:
         """Return a real optional ``RunnableLambda`` without making it a base dependency."""
@@ -244,10 +250,12 @@ def _assert_safe_langchain_prompt(prompt: Any) -> None:
         seen_roles.add(role)
 
 
-def _agent_result_projection(result: AgentResult) -> dict[str, Any]:
-    """Return the SDK result contract; callers choose their own redacted tracing export."""
+def _agent_result_projection(result: AgentResult, *, include_trace: bool = False) -> dict[str, Any]:
+    """Return the run outcome; the prompt, episodes, events and profile need an explicit opt-in."""
 
-    return result.model_dump(mode="json")
+    if include_trace:
+        return result.model_dump(mode="json")
+    return result.model_dump(mode="json", include=_RESULT_OUTCOME_FIELDS)
 
 
 def _result_mapping(result: Any) -> dict[str, Any]:

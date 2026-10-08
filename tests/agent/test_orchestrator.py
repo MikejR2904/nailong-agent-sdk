@@ -277,3 +277,27 @@ def test_cancel_paths(tmp_path):
         assert controller.phase is ControllerPhase.CANCELLED
     finally:
         orchestrator._telemetry.close()
+
+
+def test_an_orchestration_whose_controller_completed_cannot_be_cancelled(tmp_path):
+    orchestrator, record, executed, services = pipeline(
+        tmp_path, make_policy(), make_request(blast=5), make_factory()
+    )
+    try:
+        runtime = orchestrator.controller_runtime()
+        runtime.complete(executed.controller_id)
+        before = runtime._harness.get_run_state(executed.graph_run_id)
+        with pytest.raises(
+            ValueError,
+            match=rf'Controller "{executed.controller_id}" is already completed, a terminal phase',
+        ):
+            orchestrator.cancel(record.orchestration_id, "too late")
+        assert orchestrator.get(record.orchestration_id).status is OrchestrationStatus.EXECUTED
+        after = runtime._harness.get_run_state(executed.graph_run_id)
+        assert after.cancelled is False and after.run_hash == before.run_hash
+        events = [
+            e.event_type for e in services.telemetry.list_events(record.orchestration_id, limit=100)
+        ]
+        assert "orchestration.cancelled" not in events
+    finally:
+        close_all(orchestrator, services)

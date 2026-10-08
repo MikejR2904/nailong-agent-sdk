@@ -9,10 +9,21 @@ import pytest
 
 import nailong_agent_sdk.state.run_state_store as rss
 from nailong_agent_sdk.foundations.errors import AgentSdkError
-from nailong_agent_sdk.state.graph_models import GraphNodeResult, GraphNodeStatus
+from nailong_agent_sdk.state.graph_models import (
+    GraphNodeResult,
+    GraphNodeStatus,
+    GraphSharedState,
+)
 from nailong_agent_sdk.state.harness_coordinator import HarnessCoordinator
 from nailong_agent_sdk.state.planning import Plan
 from nailong_agent_sdk.state.run_state_store import RunStateStore
+from nailong_agent_sdk.state.shared_state import (
+    DiscoveryRoutingRefs,
+    ExploratoryDiscovery,
+    LateralDependencyRequest,
+    SharedStateWrite,
+    SharedSubstrateSnapshot,
+)
 from nailong_agent_sdk.tools.approvals import ApprovalRegistry, ApprovalStatus
 from tests.support.payloads import nested
 from tests.support.plans import AGENT, arun, chain_plan, ok, run_ok, simple_plan, task
@@ -92,6 +103,51 @@ def test_crash_before_snapshot_publish_recovers_previous_generation(tmp_path, mo
     assert after.graph["statuses"]["node:T1"] == "completed"
     again = HarnessCoordinator(tmp_path).get_run_state(record.run_id)
     assert again.run_hash == after.run_hash
+
+
+def test_discoveries_values_and_lateral_requests_survive_restarts_and_later_saves(tmp_path):
+    snapshot = SharedSubstrateSnapshot(snapshot_id="s", version="1", content_hash="h")
+    coordinator = HarnessCoordinator(tmp_path)
+    plan = Plan(plan_id="p", tasks=[task("A"), task("B"), task("C")])
+    run_id = coordinator.start_run(plan, shared_state=GraphSharedState(substrate=snapshot)).run_id
+    coordinator.record_node_result(run_id, "node:A", ok("a done"))
+    coordinator.publish_discovery(
+        run_id,
+        ExploratoryDiscovery(
+            episode_id="e1",
+            producer_node_id="node:A",
+            owner_id="o",
+            snapshot_id="s",
+            snapshot_version="1",
+            source_spans=["x"],
+            description="finding",
+            payload={"k": "v"},
+            provenance_hash="p",
+            affected_refs=DiscoveryRoutingRefs(task_ids=["B"]),
+        ),
+    )
+    coordinator.write_shared_value(
+        run_id,
+        SharedStateWrite(producer_node_id="node:A", key="k", value={"a": 1}, provenance_hash="h"),
+    )
+    saved = coordinator.request_lateral_dependency(
+        run_id,
+        LateralDependencyRequest(
+            consumer_node_id="node:C",
+            consumer_action_id="act",
+            discovery_episode_id="e1",
+            reason="needs the finding",
+        ),
+    )
+    loaded = HarnessCoordinator(tmp_path).get_run_state(run_id)
+    assert loaded.graph == saved.graph and loaded.run_hash == saved.run_hash
+    shared = loaded.graph["shared_state"]
+    assert sorted(shared["discoveries"]) == ["e1"] and sorted(shared["values"]) == ["k"]
+    assert {key: len(items) for key, items in shared["lateral_dependencies"].items()} == {"e1": 1}
+    HarnessCoordinator(tmp_path).record_node_result(run_id, "node:B", ok("b done"))
+    later = HarnessCoordinator(tmp_path).get_run_state(run_id)
+    assert later.graph["statuses"]["node:B"] == "completed"
+    assert later.graph["shared_state"] == shared
 
 
 def test_a_second_coordinator_reloads_and_merges_instead_of_overwriting(tmp_path):

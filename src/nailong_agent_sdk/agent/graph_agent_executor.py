@@ -121,6 +121,24 @@ class GraphAgentExecutor:
 
         return {node_id for node_id, binding in self._bindings.items() if binding.idempotent}
 
+    def is_replayable(self, node: GraphNode, context: GraphNodeExecutionContext) -> bool:
+        """Return whether an interrupted node's binding is declared replay-safe.
+
+        An elastic node has no binding until it first runs, so its binding is built
+        from the factory exactly as execution would build it.
+        """
+
+        binding = self._bindings.get(node.node_id)
+        if binding is None and node.kind is GraphNodeKind.ELASTIC:
+            if self._elastic_binding_factory is None:
+                return False
+            binding = self._elastic_binding_factory(node, context)
+            mismatch = _binding_mismatch(binding, node)
+            if mismatch is not None:
+                raise ValueError(mismatch)
+            self._bindings[node.node_id] = binding
+        return binding is not None and binding.idempotent
+
     async def execute(
         self,
         node: GraphNode,
@@ -152,6 +170,7 @@ class GraphAgentExecutor:
                     context.elastic_capacity,
                     set(context.dependencies),
                     escalate_overflow=binding.escalate_elastic_overflow,
+                    reservation=context.elastic_reservation,
                 )
                 tool_executor = ElasticRequestToolExecutor(tool_executor, buffer)
             projection_policy = (
@@ -233,14 +252,20 @@ class GraphAgentExecutor:
                 f'"{node.node_id}": {error}',
                 diagnostics=[f"error-type:{type(error).__name__}"],
             )
-        if binding.node_id != node.node_id:
-            return GraphNodeResult(
-                status=GraphNodeStatus.FAILED,
-                reason="The elastic binding factory returned a binding for node "
-                f'"{binding.node_id}" instead of "{node.node_id}".',
-            )
+        mismatch = _binding_mismatch(binding, node)
+        if mismatch is not None:
+            return GraphNodeResult(status=GraphNodeStatus.FAILED, reason=mismatch)
         self._bindings[node.node_id] = binding
         return binding
+
+
+def _binding_mismatch(binding: GraphAgentBinding, node: GraphNode) -> str | None:
+    if binding.node_id == node.node_id:
+        return None
+    return (
+        "The elastic binding factory returned a binding for node "
+        f'"{binding.node_id}" instead of "{node.node_id}".'
+    )
 
 
 def _graph_status(status: AgentRunStatus) -> GraphNodeStatus:

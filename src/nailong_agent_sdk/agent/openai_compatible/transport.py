@@ -129,22 +129,22 @@ class UrlLibJsonTransport:
                 body=_read_error_body(error),
                 secrets=secrets,
             ) from error
+        except TimeoutError as error:
+            raise TransientProviderError(
+                "OPENAI_COMPATIBLE_TRANSPORT_TIMEOUT",
+                _timeout_message(url, timeout_seconds),
+            ) from error
         except URLError as error:
             raise TransientProviderError(
                 "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
                 f"OpenAI-compatible provider could not be reached at "
                 f"{_transport_failure_detail(url, error)}.",
             ) from error
-        except (http.client.HTTPException, ConnectionError) as error:
+        except (http.client.HTTPException, OSError) as error:
             raise TransientProviderError(
                 "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
                 f"OpenAI-compatible provider connection failed mid-request at "
                 f"{_transport_failure_detail(url, error)}.",
-            ) from error
-        except TimeoutError as error:
-            raise TransientProviderError(
-                "OPENAI_COMPATIBLE_TRANSPORT_TIMEOUT",
-                _timeout_message(url, timeout_seconds),
             ) from error
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise AgentSdkError(
@@ -212,7 +212,7 @@ class HttpxJsonTransport:
                 f"OpenAI-compatible provider could not be reached at "
                 f"{_transport_failure_detail(url, error)}.",
             ) from error
-        except json.JSONDecodeError as error:
+        except (UnicodeDecodeError, json.JSONDecodeError, httpx.DecodingError) as error:
             raise AgentSdkError(
                 "OPENAI_COMPATIBLE_RESPONSE_INVALID",
                 "OpenAI-compatible provider returned malformed JSON.",
@@ -251,7 +251,7 @@ class HttpxStreamingJsonTransport:
                 httpx.AsyncClient(timeout=timeout_seconds) as client,
                 client.stream("POST", url, headers=dict(headers), content=body) as response,
             ):
-                if response.status_code >= 400:
+                if not 200 <= response.status_code < 300:
                     await response.aread()
                     raise _http_status_error(
                         response.status_code,
@@ -281,6 +281,11 @@ class HttpxStreamingJsonTransport:
                 "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
                 f"OpenAI-compatible provider could not be reached at "
                 f"{_transport_failure_detail(url, error)}.",
+            ) from error
+        except httpx.DecodingError as error:
+            raise AgentSdkError(
+                "OPENAI_COMPATIBLE_RESPONSE_INVALID",
+                "OpenAI-compatible provider returned a stream that could not be decoded.",
             ) from error
 
 

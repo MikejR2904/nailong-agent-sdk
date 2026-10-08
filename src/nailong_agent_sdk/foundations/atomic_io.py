@@ -75,13 +75,43 @@ def exclusive_file_lock(
             finally:
                 _release_windows_lock(descriptor)
         else:
-            import fcntl
-
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _acquire_posix_lock(descriptor, path, timeout_seconds, timeout_code)
             try:
                 yield
             finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                _release_posix_lock(descriptor)
+
+
+def _lock_timeout(path: Path, timeout_seconds: float, timeout_code: str) -> AgentSdkError:
+    return AgentSdkError(
+        timeout_code,
+        f'Could not acquire the lock "{path.name}" within {timeout_seconds:g}s: '
+        "another process is holding it, most likely a writer that hung mid-operation "
+        "or software scanning the lock file.",
+        {"lock_path": str(path), "timeout_seconds": timeout_seconds},
+    )
+
+
+def _acquire_posix_lock(
+    descriptor: int, path: Path, timeout_seconds: float, timeout_code: str
+) -> None:
+    import fcntl
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError as error:
+            if time.monotonic() >= deadline:
+                raise _lock_timeout(path, timeout_seconds, timeout_code) from error
+            time.sleep(_LOCK_POLL_SECONDS)
+
+
+def _release_posix_lock(descriptor: int) -> None:
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 def _acquire_windows_lock(
@@ -97,13 +127,7 @@ def _acquire_windows_lock(
             return
         except PermissionError as error:
             if time.monotonic() >= deadline:
-                raise AgentSdkError(
-                    timeout_code,
-                    f'Could not acquire the lock "{path.name}" within {timeout_seconds:g}s: '
-                    "another process is holding it, most likely a writer that hung mid-operation "
-                    "or software scanning the lock file.",
-                    {"lock_path": str(path), "timeout_seconds": timeout_seconds},
-                ) from error
+                raise _lock_timeout(path, timeout_seconds, timeout_code) from error
             time.sleep(_LOCK_POLL_SECONDS)
 
 

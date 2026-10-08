@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 from ...foundations.contracts import AgentFailure, ToolExecutionResult
 from ...foundations.text import split_lines
+from ...foundations.version import http_user_agent
 from ...memory.context_projection import ToolResultJournal
 from ..artifacts import ArtifactStore
 from ..policy import SENSITIVE_PATH_PATTERNS
@@ -75,11 +76,11 @@ class DuckDuckGoHtmlClient:
         request = urllib.request.Request(
             "https://html.duckduckgo.com/html/",
             data=data,
-            headers={"User-Agent": "agent-design-sdk/0.8 research client"},
+            headers={"User-Agent": http_user_agent("research client")},
             method="POST",
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(request, timeout=15) as response:  # noqa: S310 -- URL is fixed.
+        with opener.open(request, timeout=15) as response:
             status = response.status
             body = response.read(512_000).decode("utf-8", errors="replace")
         if status != 200 or "duckduckgo.com/anomaly.js" in body or "cc=botnet" in body:

@@ -8,7 +8,8 @@ import hashlib
 import json
 import sqlite3
 import threading
-from collections.abc import Iterable, Iterator
+import time
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic_ns
@@ -34,6 +35,7 @@ from .telemetry_models import (
 _EVENT_TIME = "json_extract(event_json, '$.occurred_at_utc')"
 _EVENT_STATUS = "json_extract(event_json, '$.status')"
 _EVENT_TYPE = "json_extract(event_json, '$.event_type')"
+_LOCK_RETRY_SECONDS = 10.0
 
 
 class TelemetryStore:
@@ -62,9 +64,9 @@ class TelemetryStore:
         self._connection = sqlite3.connect(
             self._database_path, timeout=10, isolation_level=None, check_same_thread=False
         )
-        self._connection.execute("PRAGMA journal_mode=WAL")
+        _retry_when_locked(lambda: self._connection.execute("PRAGMA journal_mode=WAL"))
         self._connection.execute("PRAGMA foreign_keys=ON")
-        self._initialize()
+        _retry_when_locked(self._initialize)
 
     def close(self) -> None:
         """Close the persistent connection; repeated calls are safe.
@@ -336,8 +338,10 @@ class TelemetryStore:
             "schema_version": "run-report-v1",
             "run_id": run_id,
             "event_count": len(events),
-            "verified_event_count": len(events),
-            "verified_through_sequence": boundary,
+            "verified_event_count": sum(
+                failure is None or event.sequence < failure.sequence for event in events
+            ),
+            "verified_through_sequence": boundary if failure is None else failure.sequence - 1,
             "integrity_chain_valid": failure is None,
             "integrity_failure": failure.model_dump(mode="json") if failure else None,
             "statuses": _count(event.status for event in events),
@@ -399,6 +403,19 @@ class TelemetryStore:
                 );
                 """
             )
+
+
+def _retry_when_locked[T](operation: Callable[[], T]) -> T:
+    deadline = time.monotonic() + _LOCK_RETRY_SECONDS
+    delay = 0.005
+    while True:
+        try:
+            return operation()
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error) or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
 
 
 def _canonical_json(value: Any) -> str:

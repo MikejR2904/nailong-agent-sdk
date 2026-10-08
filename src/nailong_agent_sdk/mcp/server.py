@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from mcp.server import MCPServer
 
+from ..foundations.version import PACKAGE_NAME, package_version
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.metrics import register_standard_metric_definitions
 from ..observability.telemetry_store import TelemetryStore
@@ -37,8 +38,8 @@ from .security import (
 from .specification_tools import register_specification_tools
 from .telemetry_tools import register_telemetry_tools
 
-SERVER_NAME = "agent-design-python-runtime"
-SERVER_VERSION = "0.17.0"
+SERVER_NAME = PACKAGE_NAME
+SERVER_VERSION = package_version()
 
 
 def create_mcp_server(run_root: Path | None = None) -> MCPServer:

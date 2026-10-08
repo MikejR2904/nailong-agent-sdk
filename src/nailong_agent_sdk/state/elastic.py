@@ -4,21 +4,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
-from ..foundations.identifiers import validate_identifier
+from ..foundations.identifiers import require_unique, validate_identifier
 from .shared_state import DiscoveryRoutingRefs
 
 ELASTIC_REQUEST_TOOL_NAME = "request_elastic_node"
 MAX_ELASTIC_DEPTH_LIMIT = 8
 MAX_ELASTIC_NODES_LIMIT = 256
+DEFAULT_MAX_ELASTIC_DEPTH = 1
+DEFAULT_MAX_ELASTIC_NODES = 3
 MAX_ELASTIC_REQUESTS_PER_RESULT = 32
 MAX_ELASTIC_DEPENDENCIES = 64
+ELASTIC_JOIN_COST = 1
 
 
 class ElasticRefusalCode(StrEnum):
@@ -28,6 +31,8 @@ class ElasticRefusalCode(StrEnum):
     NODE_ID_EXISTS = "ELASTIC_NODE_ID_EXISTS"
     NODE_CAP_REACHED = "ELASTIC_NODE_CAP_REACHED"
     DEPTH_CAP_REACHED = "ELASTIC_DEPTH_CAP_REACHED"
+    NODE_CEILING_REACHED = "ELASTIC_NODE_CEILING_REACHED"
+    DEPTH_CEILING_REACHED = "ELASTIC_DEPTH_CEILING_REACHED"
     BATCH_DECLINED = "ELASTIC_BATCH_DECLINED"
     REQUEST_LIMIT_REACHED = "ELASTIC_REQUEST_LIMIT_REACHED"
 
@@ -57,8 +62,7 @@ class ElasticSpawnRequest(StrictModel):
     def dependencies_are_unique_and_named(cls, value: list[str]) -> list[str]:
         if any(not item.strip() for item in value):
             raise ValueError("dependencies entries must be non-empty")
-        if len(value) != len(set(value)):
-            raise ValueError("dependencies must be unique")
+        require_unique(value, "dependencies")
         return value
 
 
@@ -76,8 +80,7 @@ class ElasticNodeSpec(StrictModel):
 
     @model_validator(mode="after")
     def spec_matches_role(self) -> ElasticNodeSpec:
-        if len(self.joins) != len(set(self.joins)):
-            raise ValueError("joins must be unique")
+        require_unique(self.joins, "joins")
         if self.role is ElasticNodeRole.CHILD:
             if self.request is None:
                 raise ValueError("a child node spec requires the request that created it")
@@ -163,10 +166,16 @@ class ElasticCapacity(StrictModel):
     max_depth: int = Field(ge=0)
     nodes_used: int = Field(ge=0)
     max_nodes: int = Field(ge=0)
+    ceiling_depth: int = Field(default=MAX_ELASTIC_DEPTH_LIMIT, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT)
+    ceiling_nodes: int = Field(default=MAX_ELASTIC_NODES_LIMIT, ge=0, le=MAX_ELASTIC_NODES_LIMIT)
 
     @property
     def remaining_nodes(self) -> int:
         return max(0, self.max_nodes - self.nodes_used)
+
+    @property
+    def remaining_requests(self) -> int:
+        return max(0, self.remaining_nodes - ELASTIC_JOIN_COST)
 
     @property
     def depth_available(self) -> bool:
@@ -177,6 +186,14 @@ class ElasticCapacity(StrictModel):
 class ElasticProblem:
     code: ElasticRefusalCode
     message: str
+    grantable: bool = True
+
+
+@dataclass(frozen=True)
+class ElasticReservation:
+    reserve: Callable[[int], ElasticProblem | None]
+    release: Callable[[], None]
+    remaining: Callable[[], int]
 
 
 def elastic_child_id(parent_node_id: str, request_id: str) -> str:
@@ -187,7 +204,22 @@ def elastic_join_id(parent_node_id: str) -> str:
     return f"join:{parent_node_id}"
 
 
-def validate_elastic_caps(max_depth: int, max_nodes: int) -> None:
+def validate_elastic_caps(
+    max_depth: int,
+    max_nodes: int,
+    ceiling_depth: int = MAX_ELASTIC_DEPTH_LIMIT,
+    ceiling_nodes: int = MAX_ELASTIC_NODES_LIMIT,
+) -> None:
+    if not 0 <= ceiling_depth <= MAX_ELASTIC_DEPTH_LIMIT:
+        raise ValueError(
+            f"elastic_depth_ceiling must be between 0 and {MAX_ELASTIC_DEPTH_LIMIT}, "
+            f"got {ceiling_depth}."
+        )
+    if not 0 <= ceiling_nodes <= MAX_ELASTIC_NODES_LIMIT:
+        raise ValueError(
+            f"elastic_nodes_ceiling must be between 0 and {MAX_ELASTIC_NODES_LIMIT}, "
+            f"got {ceiling_nodes}."
+        )
     if not 0 <= max_depth <= MAX_ELASTIC_DEPTH_LIMIT:
         raise ValueError(
             f"max_elastic_depth must be between 0 and {MAX_ELASTIC_DEPTH_LIMIT}, got {max_depth}."
@@ -195,6 +227,14 @@ def validate_elastic_caps(max_depth: int, max_nodes: int) -> None:
     if not 0 <= max_nodes <= MAX_ELASTIC_NODES_LIMIT:
         raise ValueError(
             f"max_elastic_nodes must be between 0 and {MAX_ELASTIC_NODES_LIMIT}, got {max_nodes}."
+        )
+    if max_depth > ceiling_depth:
+        raise ValueError(
+            f"max_elastic_depth {max_depth} is above the ceiling {ceiling_depth} of this run."
+        )
+    if max_nodes > ceiling_nodes:
+        raise ValueError(
+            f"max_elastic_nodes {max_nodes} is above the ceiling {ceiling_nodes} of this run."
         )
 
 
@@ -258,18 +298,40 @@ def capacity_problem(
     nodes_used: int,
     max_nodes: int,
     requested: int,
+    reserved: int = 0,
+    ceiling_depth: int = MAX_ELASTIC_DEPTH_LIMIT,
+    ceiling_nodes: int = MAX_ELASTIC_NODES_LIMIT,
 ) -> ElasticProblem | None:
     child_depth = node_depth + 1
+    if child_depth > ceiling_depth:
+        return ElasticProblem(
+            ElasticRefusalCode.DEPTH_CEILING_REACHED,
+            f'Node "{node_id}" is at elastic depth {node_depth}, so its children would be at '
+            f"depth {child_depth}, above the ceiling max_elastic_depth {ceiling_depth}, which "
+            "no capacity grant can raise.",
+            grantable=False,
+        )
     if child_depth > max_depth:
         return ElasticProblem(
             ElasticRefusalCode.DEPTH_CAP_REACHED,
             f'Node "{node_id}" is at elastic depth {node_depth} and the plan allows '
             f"max_elastic_depth {max_depth}, so its children would be at depth {child_depth}.",
         )
-    if nodes_used + requested > max_nodes:
+    needed = requested + ELASTIC_JOIN_COST
+    if nodes_used + needed > ceiling_nodes:
+        return ElasticProblem(
+            ElasticRefusalCode.NODE_CEILING_REACHED,
+            f'Elastic node capacity for node "{node_id}" would exceed the ceiling '
+            f"max_elastic_nodes {ceiling_nodes}, which no capacity grant can raise: {requested} "
+            f"requested plus the join node, {nodes_used} already used.",
+            grantable=False,
+        )
+    if nodes_used + reserved + needed > max_nodes:
+        held = f", {reserved} of them held by tasks running at the same time" if reserved else ""
         return ElasticProblem(
             ElasticRefusalCode.NODE_CAP_REACHED,
-            f'Elastic node capacity is exhausted for node "{node_id}": {requested} requested, '
-            f"{nodes_used} already used, max_elastic_nodes {max_nodes}.",
+            f'Elastic node capacity is exhausted for node "{node_id}": {requested} requested '
+            f"plus the join node, {nodes_used + reserved} already used{held}, "
+            f"max_elastic_nodes {max_nodes}.",
         )
     return None

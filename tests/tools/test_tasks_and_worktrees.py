@@ -113,6 +113,56 @@ def test_stop_running_command_task_reports_a_single_terminal_state(tmp_path):
     assert seen == ["running", "killed"], seen
 
 
+def test_stopping_a_task_does_not_swallow_the_cancellation_of_its_caller():
+    manager = BackgroundTaskManager()
+    outcome = {}
+
+    async def scenario():
+        async def slow():
+            try:
+                await asyncio.sleep(30)
+            finally:
+                await asyncio.sleep(0.2)
+
+        record = manager.start_agent_task("slow", slow())
+
+        async def stopper():
+            await manager.stop_task(record.task_id)
+            outcome["returned"] = True
+
+        caller = asyncio.create_task(stopper())
+        await asyncio.sleep(0.05)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert caller.cancelled()
+        return record
+
+    record = run(scenario())
+    assert "returned" not in outcome
+    assert manager.get_task(record.task_id).status is TaskStatus.KILLED
+
+
+def test_stopping_a_task_that_finished_first_keeps_its_own_outcome():
+    manager = BackgroundTaskManager()
+
+    async def scenario():
+        async def shielded():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                return {"finished": "despite the cancel"}
+
+        record = manager.start_agent_task("shielded", shielded())
+        await asyncio.sleep(0.05)
+        stopped = await manager.stop_task(record.task_id)
+        return record, stopped
+
+    record, stopped = run(scenario())
+    assert stopped.status is TaskStatus.COMPLETED
+    assert stopped.result == {"finished": "despite the cancel"}
+
+
 def test_wait_for_on_a_stopped_agent_task_returns_the_killed_record():
     manager = BackgroundTaskManager()
 

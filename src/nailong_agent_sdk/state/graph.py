@@ -12,11 +12,16 @@ participates in execution.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from functools import partial
 from typing import Any
 
 from ..foundations.dependency_graph import deterministic_cycles
+from ..foundations.identifiers import require_unique
 from .elastic import (
+    DEFAULT_MAX_ELASTIC_DEPTH,
+    DEFAULT_MAX_ELASTIC_NODES,
+    ELASTIC_JOIN_COST,
     MAX_ELASTIC_DEPTH_LIMIT,
     MAX_ELASTIC_NODES_LIMIT,
     ElasticCapacity,
@@ -24,6 +29,7 @@ from .elastic import (
     ElasticNodeSpec,
     ElasticProblem,
     ElasticRefusalCode,
+    ElasticReservation,
     ElasticSpawnRequest,
     GraphCapacityGrant,
     GraphSpawnRecord,
@@ -48,6 +54,7 @@ from .graph_models import (
     GraphStateConflict,
     GraphStateConflictKind,
     NodeExecutor,
+    ReplayPolicy,
 )
 from .shared_state import (
     DiscoveryRouteDecision,
@@ -67,6 +74,10 @@ _SOFT_BLOCKING_STATUSES = frozenset({GraphNodeStatus.BLOCKED, GraphNodeStatus.CA
 _HARD_BLOCKING_STATUSES = frozenset(
     {GraphNodeStatus.FAILED, GraphNodeStatus.BLOCKED, GraphNodeStatus.CANCELLED}
 )
+
+
+def _limit_label(ceiling: int, hard_limit: int) -> str:
+    return "hard limit" if ceiling == hard_limit else "ceiling"
 
 
 def resolve_parallelism(max_parallelism: int | None) -> int:
@@ -92,20 +103,26 @@ class StateGraph:
         edges: list[GraphEdge] | None = None,
         *,
         shared_state: GraphSharedState | None = None,
-        max_elastic_depth: int = 1,
-        max_elastic_nodes: int = 2,
+        max_elastic_depth: int = DEFAULT_MAX_ELASTIC_DEPTH,
+        max_elastic_nodes: int = DEFAULT_MAX_ELASTIC_NODES,
+        elastic_depth_ceiling: int = MAX_ELASTIC_DEPTH_LIMIT,
+        elastic_nodes_ceiling: int = MAX_ELASTIC_NODES_LIMIT,
         spawn_records: Iterable[GraphSpawnRecord] | None = None,
         capacity_grants: Iterable[GraphCapacityGrant] | None = None,
     ) -> None:
-        validate_elastic_caps(max_elastic_depth, max_elastic_nodes)
+        validate_elastic_caps(
+            max_elastic_depth, max_elastic_nodes, elastic_depth_ceiling, elastic_nodes_ceiling
+        )
+        require_unique([node.node_id for node in nodes], "graph node IDs")
         self._nodes = {node.node_id: node for node in nodes}
-        if len(self._nodes) != len(nodes):
-            raise ValueError("graph node IDs must be unique")
         self._edges = list(edges or [])
         self._shared_state = shared_state or GraphSharedState.unbound()
         self._max_elastic_depth = max_elastic_depth
         self._max_elastic_nodes = max_elastic_nodes
+        self._elastic_depth_ceiling = elastic_depth_ceiling
+        self._elastic_nodes_ceiling = elastic_nodes_ceiling
         self._elastic_nodes = 0
+        self._reservations: dict[str, int] = {}
         self._spawn_records = list(spawn_records or [])
         self._capacity_grants = list(capacity_grants or [])
         self._status = {node_id: GraphNodeStatus.PENDING for node_id in self._nodes}
@@ -159,6 +176,8 @@ class StateGraph:
             "events": [event.model_dump(mode="json") for event in self._events],
             "max_elastic_depth": self._max_elastic_depth,
             "max_elastic_nodes": self._max_elastic_nodes,
+            "elastic_depth_ceiling": self._elastic_depth_ceiling,
+            "elastic_nodes_ceiling": self._elastic_nodes_ceiling,
             "spawn_records": [record.model_dump(mode="json") for record in self._spawn_records],
             "capacity_grants": [grant.model_dump(mode="json") for grant in self._capacity_grants],
         }
@@ -178,8 +197,14 @@ class StateGraph:
                 if shared_state_payload is not None
                 else GraphSharedState.unbound()
             ),
-            max_elastic_depth=int(payload.get("max_elastic_depth", 1)),
-            max_elastic_nodes=int(payload.get("max_elastic_nodes", 2)),
+            max_elastic_depth=int(payload.get("max_elastic_depth", DEFAULT_MAX_ELASTIC_DEPTH)),
+            max_elastic_nodes=int(payload.get("max_elastic_nodes", DEFAULT_MAX_ELASTIC_NODES)),
+            elastic_depth_ceiling=int(
+                payload.get("elastic_depth_ceiling", MAX_ELASTIC_DEPTH_LIMIT)
+            ),
+            elastic_nodes_ceiling=int(
+                payload.get("elastic_nodes_ceiling", MAX_ELASTIC_NODES_LIMIT)
+            ),
             spawn_records=[
                 GraphSpawnRecord.model_validate(item) for item in payload.get("spawn_records", [])
             ],
@@ -227,6 +252,7 @@ class StateGraph:
         canonical prefix is started; remaining runnable nodes form later waves.
         """
 
+        self._reservations.clear()
         wave = self.runnable()
         if max_parallelism is not None:
             wave = wave[: resolve_parallelism(max_parallelism)]
@@ -309,38 +335,73 @@ class StateGraph:
                 max_depth=self._max_elastic_depth,
                 nodes_used=self._elastic_nodes,
                 max_nodes=self._max_elastic_nodes,
+                ceiling_depth=self._elastic_depth_ceiling,
+                ceiling_nodes=self._elastic_nodes_ceiling,
             ),
             elastic_requests=joined_requests,
+            elastic_reservation=ElasticReservation(
+                reserve=partial(self._reserve_elastic, node_id),
+                release=partial(self._release_elastic, node_id),
+                remaining=self._unreserved_elastic_nodes,
+            ),
         )
 
-    def recover_interrupted(self, replayable_node_ids: set[str] = frozenset()) -> list[str]:
+    def recover_interrupted(
+        self,
+        replayable_node_ids: Collection[str] = frozenset(),
+        *,
+        is_replayable: ReplayPolicy | None = None,
+    ) -> list[str]:
         """Resolve persisted ``RUNNING`` nodes after host recovery.
 
-        Only caller-declared idempotent nodes return to ``PENDING``. All other
-        interrupted calls become typed failures, preventing silent replay of a
-        state-changing action.
+        A node returns to ``PENDING`` only when the caller named it in
+        ``replayable_node_ids`` or ``is_replayable`` accepts it. Every other
+        interrupted call becomes a typed failure, preventing silent replay of a
+        state-changing action. Every decision is made before any node changes.
         """
 
-        recovered: list[str] = []
-        for node_id in sorted(self._nodes):
-            if self._status[node_id] is not GraphNodeStatus.RUNNING:
-                continue
+        self._reservations.clear()
+        running = [
+            node_id
+            for node_id in sorted(self._nodes)
+            if self._status[node_id] is GraphNodeStatus.RUNNING
+        ]
+        decisions: dict[str, tuple[bool, str | None]] = {}
+        for node_id in running:
             if node_id in replayable_node_ids:
+                decisions[node_id] = (True, None)
+            elif is_replayable is None:
+                decisions[node_id] = (False, None)
+            else:
+                try:
+                    replay = is_replayable(self._nodes[node_id], self.execution_context(node_id))
+                except Exception as error:
+                    decisions[node_id] = (
+                        False,
+                        f'Node "{node_id}" was interrupted and its replay check raised '
+                        f"{type(error).__name__}: {error}",
+                    )
+                else:
+                    decisions[node_id] = (bool(replay), None)
+        for node_id in running:
+            replay, failure = decisions[node_id]
+            if replay:
                 self._set_status(
                     node_id, GraphNodeStatus.PENDING, "Recovered for idempotent replay."
                 )
-            else:
-                reason = "Node was interrupted and is not declared idempotent."
-                self._results[node_id] = GraphNodeResult(
-                    status=GraphNodeStatus.FAILED,
-                    reason=reason,
-                    diagnostics=["interrupted-non-idempotent"],
-                )
-                self._set_status(node_id, GraphNodeStatus.FAILED, reason)
-            recovered.append(node_id)
+                continue
+            reason = failure or "Node was interrupted and is not declared idempotent."
+            self._results[node_id] = GraphNodeResult(
+                status=GraphNodeStatus.FAILED,
+                reason=reason,
+                diagnostics=[
+                    "interrupted-replay-check-failed" if failure else "interrupted-non-idempotent"
+                ],
+            )
+            self._set_status(node_id, GraphNodeStatus.FAILED, reason)
         self._block_unreachable_nodes()
         self._refresh_runnable()
-        return recovered
+        return running
 
     def mark_started(self, node_id: str) -> None:
         if self._status[node_id] is not GraphNodeStatus.RUNNABLE:
@@ -350,6 +411,7 @@ class StateGraph:
     def mark_terminal(self, node_id: str, result: GraphNodeResult) -> None:
         if self._status[node_id] is not GraphNodeStatus.RUNNING:
             raise ValueError(f'Node "{node_id}" is not running.')
+        self._reservations.pop(node_id, None)
         self._results[node_id] = result
         self._set_status(node_id, result.status, result.reason)
         if result.spawn_requests:
@@ -368,31 +430,43 @@ class StateGraph:
         limit = resolve_parallelism(max_parallelism)
         while wave := self.start_runnable_wave(max_parallelism=limit):
             wave_state = self.shared_state
-
-            async def execute_one(node: GraphNode) -> GraphNodeResult:
-                executor = executors.get(node.kind)
-                if executor is None:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'No executor is registered for node kind "{node.kind.value}".',
-                    )
-                try:
-                    return await executor(
-                        node,
-                        self.execution_context(node.node_id, shared_state=wave_state),
-                    )
-                except Exception as error:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
-                        f"{type(error).__name__}: {error}",
-                    )
-
-            wave_results = await asyncio.gather(*(execute_one(node) for node in wave))
+            wave_results = await asyncio.gather(
+                *(self.execute_node(node, executors, shared_state=wave_state) for node in wave)
+            )
             for node, result in zip(wave, wave_results, strict=True):
                 self.mark_terminal(node.node_id, result)
 
         return dict(self._results)
+
+    async def execute_node(
+        self,
+        node: GraphNode,
+        executors: Mapping[GraphNodeKind, NodeExecutor],
+        *,
+        shared_state: GraphSharedState | None = None,
+    ) -> GraphNodeResult:
+        """Run one started node and turn executor failures into typed results."""
+
+        executor = executors.get(node.kind)
+        if executor is None:
+            result = GraphNodeResult(
+                status=GraphNodeStatus.FAILED,
+                reason=f'No executor is registered for node kind "{node.kind.value}".',
+            )
+        else:
+            try:
+                result = await executor(
+                    node, self.execution_context(node.node_id, shared_state=shared_state)
+                )
+            except Exception as error:
+                result = GraphNodeResult(
+                    status=GraphNodeStatus.FAILED,
+                    reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
+                    f"{type(error).__name__}: {error}",
+                )
+        if result.status is not GraphNodeStatus.COMPLETED or not result.spawn_requests:
+            self._release_elastic(node.node_id)
+        return result
 
     def publish_discovery(self, discovery: ExploratoryDiscovery) -> None:
         """Publish one closed source-backed discovery into graph-owned state."""
@@ -519,15 +593,17 @@ class StateGraph:
                 "A capacity grant cannot lower max_elastic_nodes from "
                 f"{self._max_elastic_nodes} to {nodes}."
             )
-        if depth > MAX_ELASTIC_DEPTH_LIMIT:
+        if depth > self._elastic_depth_ceiling:
             raise ValueError(
-                f"A capacity grant cannot set max_elastic_depth {depth}: it is above the hard "
-                f"limit {MAX_ELASTIC_DEPTH_LIMIT}."
+                f"A capacity grant cannot set max_elastic_depth {depth}: it is above the "
+                f"{_limit_label(self._elastic_depth_ceiling, MAX_ELASTIC_DEPTH_LIMIT)} "
+                f"{self._elastic_depth_ceiling}."
             )
-        if nodes > MAX_ELASTIC_NODES_LIMIT:
+        if nodes > self._elastic_nodes_ceiling:
             raise ValueError(
-                f"A capacity grant cannot set max_elastic_nodes {nodes}: it is above the hard "
-                f"limit {MAX_ELASTIC_NODES_LIMIT}."
+                f"A capacity grant cannot set max_elastic_nodes {nodes}: it is above the "
+                f"{_limit_label(self._elastic_nodes_ceiling, MAX_ELASTIC_NODES_LIMIT)} "
+                f"{self._elastic_nodes_ceiling}."
             )
         grant = GraphCapacityGrant(
             sequence=len(self._capacity_grants) + 1,
@@ -632,18 +708,7 @@ class StateGraph:
         valid = [
             request for request, problem in zip(requests, problems, strict=True) if not problem
         ]
-        batch_problem = (
-            capacity_problem(
-                node_id=parent_id,
-                node_depth=parent.elastic_depth,
-                max_depth=self._max_elastic_depth,
-                nodes_used=self._elastic_nodes,
-                max_nodes=self._max_elastic_nodes,
-                requested=len(valid),
-            )
-            if valid
-            else None
-        )
+        batch_problem = self._capacity_problem(parent_id, len(valid)) if valid else None
         depth = parent.elastic_depth + 1
         event_sequence = len(self._events)
         diagnostics: list[str] = []
@@ -662,6 +727,15 @@ class StateGraph:
                     status=GraphSpawnStatus.REFUSED, code=problem.code, reason=problem.message
                 )
                 diagnostics.append(f"elastic-refused:{problem.code.value}:{request.request_id}")
+            elif batch_problem is not None and not batch_problem.grantable:
+                fields.update(
+                    status=GraphSpawnStatus.REFUSED,
+                    code=batch_problem.code,
+                    reason=batch_problem.message,
+                )
+                diagnostics.append(
+                    f"elastic-refused:{batch_problem.code.value}:{request.request_id}"
+                )
             elif batch_problem is not None:
                 fields.update(
                     status=GraphSpawnStatus.DEFERRED,
@@ -684,7 +758,7 @@ class StateGraph:
             child_ids = self._add_children(parent, accepted)
             self._add_join(parent, join_id, child_ids)
             self._catch_up_discoveries(set(child_ids))
-        elif batch_problem is not None:
+        elif batch_problem is not None and batch_problem.grantable:
             self._hold_join(parent, join_id, batch_problem)
         if diagnostics:
             self._results[parent_id] = result.model_copy(
@@ -732,6 +806,43 @@ class StateGraph:
         self._rebuild_routing_index()
         return child_ids
 
+    def _capacity_problem(
+        self, parent_id: str, requested: int, *, reserved: int = 0
+    ) -> ElasticProblem | None:
+        return capacity_problem(
+            node_id=parent_id,
+            node_depth=self._nodes[parent_id].elastic_depth,
+            max_depth=self._max_elastic_depth,
+            nodes_used=self._elastic_nodes,
+            max_nodes=self._max_elastic_nodes,
+            requested=requested,
+            reserved=reserved,
+            ceiling_depth=self._elastic_depth_ceiling,
+            ceiling_nodes=self._elastic_nodes_ceiling,
+        )
+
+    def _reserve_elastic(self, node_id: str, requested: int) -> ElasticProblem | None:
+        if self._status[node_id] is not GraphNodeStatus.RUNNING:
+            raise ValueError(
+                f'Node "{node_id}" is not running, so it cannot reserve elastic capacity.'
+            )
+        if requested < 1:
+            raise ValueError(
+                f'Node "{node_id}" must reserve at least one elastic request, got {requested}.'
+            )
+        others = sum(cost for holder, cost in self._reservations.items() if holder != node_id)
+        problem = self._capacity_problem(node_id, requested, reserved=others)
+        if problem is None:
+            self._reservations[node_id] = requested + ELASTIC_JOIN_COST
+        return problem
+
+    def _release_elastic(self, node_id: str) -> None:
+        self._reservations.pop(node_id, None)
+
+    def _unreserved_elastic_nodes(self) -> int:
+        held = sum(self._reservations.values())
+        return max(0, self._max_elastic_nodes - self._elastic_nodes - held)
+
     def _add_join(self, parent: GraphNode, join_id: str, child_ids: Sequence[str]) -> None:
         self._nodes[join_id] = GraphNode(
             node_id=join_id,
@@ -747,6 +858,7 @@ class StateGraph:
             ),
         )
         self._status[join_id] = GraphNodeStatus.PENDING
+        self._elastic_nodes += ELASTIC_JOIN_COST
         self._attach_children_to_join(join_id, parent.node_id, child_ids)
         self._hold_dependents_behind(parent.node_id, join_id)
 
@@ -779,8 +891,9 @@ class StateGraph:
         self._status[join_id] = GraphNodeStatus.PENDING
         reason = (
             f'Elastic requests of node "{parent.node_id}" are on hold: {problem.message} '
-            "Decide with grant_elastic_capacity to run them or decline_elastic_requests to drop "
-            "them."
+            "Decide with grant_elastic_capacity to run them (a grant can raise max_elastic_depth "
+            f"up to {self._elastic_depth_ceiling} and max_elastic_nodes up to "
+            f"{self._elastic_nodes_ceiling}) or decline_elastic_requests to drop them."
         )
         self._results[join_id] = GraphNodeResult(
             status=GraphNodeStatus.BLOCKED, reason=reason, diagnostics=[HELD_JOIN_DIAGNOSTIC]
@@ -827,14 +940,7 @@ class StateGraph:
                 if record.parent_node_id == parent_id and record.status is GraphSpawnStatus.DEFERRED
             ]
             parent = self._nodes[parent_id]
-            problem = capacity_problem(
-                node_id=parent_id,
-                node_depth=parent.elastic_depth,
-                max_depth=self._max_elastic_depth,
-                nodes_used=self._elastic_nodes,
-                max_nodes=self._max_elastic_nodes,
-                requested=len(indexes),
-            )
+            problem = self._capacity_problem(parent_id, len(indexes))
             if problem is not None:
                 for index in indexes:
                     self._spawn_records[index] = self._spawn_records[index].model_copy(
@@ -853,6 +959,7 @@ class StateGraph:
             self._nodes[join_id] = held.model_copy(
                 update={"elastic": held.elastic.model_copy(update={"joins": child_ids})}
             )
+            self._elastic_nodes += ELASTIC_JOIN_COST
             self._attach_children_to_join(join_id, parent_id, child_ids)
             for index, child_id in zip(indexes, child_ids, strict=True):
                 self._spawn_records[index] = self._spawn_records[index].model_copy(
@@ -1136,6 +1243,7 @@ class StateGraph:
 
     def _validate_elastic(self) -> None:
         children = 0
+        joins = 0
         for node_id in sorted(self._nodes):
             node = self._nodes[node_id]
             spec = node.elastic
@@ -1160,6 +1268,8 @@ class StateGraph:
             if spec.role is ElasticNodeRole.CHILD:
                 children += 1
                 continue
+            if spec.joins:
+                joins += 1
             for joined in spec.joins:
                 target = self._nodes.get(joined)
                 if target is None:
@@ -1210,12 +1320,14 @@ class StateGraph:
                     f'Node "{node_id}": elastic depth {node.elastic_depth} exceeds '
                     f"max_elastic_depth {self._max_elastic_depth}."
                 )
-        if children > self._max_elastic_nodes:
+        if children + joins > self._max_elastic_nodes:
             raise ValueError(
-                f"{children} elastic child nodes exceed max_elastic_nodes "
+                f"{children + joins} elastic nodes ({children} "
+                f"{'child' if children == 1 else 'children'} and {joins} "
+                f"{'join' if joins == 1 else 'joins'}) exceed max_elastic_nodes "
                 f"{self._max_elastic_nodes}."
             )
-        self._elastic_nodes = children
+        self._elastic_nodes = children + joins
 
     def _is_dependency_blocked(self, node_id: str) -> bool:
         result = self._results.get(node_id)

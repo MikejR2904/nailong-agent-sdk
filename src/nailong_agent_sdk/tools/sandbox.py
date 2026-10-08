@@ -232,13 +232,19 @@ class DockerSandbox:
         process list; an env file avoids that exposure.
         """
 
-        scrubbed = environment.resolve()
+        lines = [
+            f"{name}={value}\n"
+            for name, value in environment.resolve().items()
+            if DockerSandbox._fits_env_file(name, value)
+        ]
         descriptor, raw_path = tempfile.mkstemp(prefix="nailong-sandbox-env-", suffix=".env")
         path = Path(raw_path)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            for name, value in scrubbed.items():
-                if DockerSandbox._fits_env_file(name, value):
-                    handle.write(f"{name}={value}\n")
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.writelines(lines)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
         return path
 
     @staticmethod

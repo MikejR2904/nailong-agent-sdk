@@ -200,7 +200,10 @@ class SpecificationGate:
                     SemanticGapAdmission(
                         finding_id=finding.finding_id,
                         accepted=False,
-                        reason="Semantic finding IDs must be unique per Gate 1 evaluation.",
+                        reason=(
+                            f'Semantic finding ID "{finding.finding_id}" repeats an earlier '
+                            "finding; finding IDs must be unique per Gate 1 evaluation."
+                        ),
                     )
                 )
                 continue
@@ -287,6 +290,16 @@ class SpecificationGate:
         user_approved: bool,
         proceed_with_gaps: bool = False,
     ) -> SoftLockDecision:
+        if report.document_version != specification.version:
+            raise ValueError(
+                f'Gap report document_version "{report.document_version}" does not match '
+                f'the specification version "{specification.version}".'
+            )
+        if metadata.version != specification.version:
+            raise ValueError(
+                f'Version metadata version "{metadata.version}" does not match '
+                f'the specification version "{specification.version}".'
+            )
         if not user_approved:
             return SoftLockDecision(
                 accepted=False, warnings=["Designer approval is required to soft-lock."]

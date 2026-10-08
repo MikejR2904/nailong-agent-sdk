@@ -1,11 +1,6 @@
-import json
-
 import pytest
 
-from nailong_agent_sdk.agent.graph_agent_executor import GraphAgentBinding, GraphAgentExecutor
-from nailong_agent_sdk.agent.model import ScriptedModel
-from nailong_agent_sdk.agent.runtime import AgentRuntimeServices
-from nailong_agent_sdk.foundations.contracts import ScopedAgentTask, TaskScope
+from nailong_agent_sdk.agent.graph_agent_executor import GraphAgentExecutor
 from nailong_agent_sdk.state.elastic import (
     ELASTIC_REQUEST_TOOL_NAME,
     ElasticSpawnRequest,
@@ -13,78 +8,20 @@ from nailong_agent_sdk.state.elastic import (
 )
 from nailong_agent_sdk.state.graph import StateGraph
 from nailong_agent_sdk.state.graph_models import GraphNodeKind, GraphNodeStatus
-from nailong_agent_sdk.tools.core.definitions import core_tool_definitions
-from tests.support.agents import DynamicModel, arun, definition, final, tool_call
+from tests.support.agents import DynamicModel, arun, final, tool_call
 from tests.support.elastic import done_with, req, statuses
+from tests.support.elastic_agents import (
+    binding,
+    close,
+    observed,
+    request_arguments,
+    services_for,
+)
 from tests.support.plans import AGENT, n
 
 ELASTIC = GraphNodeKind.ELASTIC
 COMPLETED = GraphNodeStatus.COMPLETED
 FAILED = GraphNodeStatus.FAILED
-
-
-def request_arguments(request_id="probe", **overrides):
-    values = {
-        "request_id": request_id,
-        "scope": "clock tree",
-        "instructions": "Trace the clock tree and list every divider.",
-        "reason": "The section is ambiguous.",
-    }
-    values.update(overrides)
-    return values
-
-
-def elastic_tool():
-    return next(item for item in core_tool_definitions() if item.name == ELASTIC_REQUEST_TOOL_NAME)
-
-
-def binding(
-    node_id, turns=None, *, tool=True, prompts=None, model=None, idempotent=False, escalate=False
-):
-    class Recording(ScriptedModel):
-        async def next_turn(self, model_context):
-            if prompts is not None:
-                prompts.append(model_context.prompt.model_dump_json())
-            return await super().next_turn(model_context)
-
-    def task_adapter(node, context):
-        return ScopedAgentTask(
-            id=f"task-{node.node_id}",
-            input={},
-            scope=TaskScope(label=node.node_id),
-            locked_interface={},
-            instructions="original instructions",
-            acceptance_criteria=["done"],
-        )
-
-    return GraphAgentBinding(
-        node_id=node_id,
-        definition=definition(tools=[elastic_tool()] if tool else []),
-        task_adapter=task_adapter,
-        model_factory=lambda node, context: model or Recording(turns or [final()]),
-        idempotent=idempotent,
-        escalate_elastic_overflow=escalate,
-    )
-
-
-def observed(context):
-    parts = []
-    for observation in context.observations:
-        if observation.kind != "tool-result":
-            continue
-        parts.append(observation.message)
-        if observation.result is not None:
-            parts.append(json.dumps(observation.result.preview, sort_keys=True, default=str))
-            parts.append(observation.result.error or "")
-    return " ".join(parts)
-
-
-def services_for(tmp_path):
-    return AgentRuntimeServices.open(tmp_path)
-
-
-def close(services):
-    services.telemetry.close()
 
 
 def test_an_agent_requests_exploration_and_resumes_with_the_findings(tmp_path):
@@ -371,7 +308,7 @@ def test_an_exploration_node_can_request_further_exploration_until_the_depth_cap
             },
             elastic_binding_factory=factory,
         )
-        graph = StateGraph([n("root")], max_elastic_depth=2, max_elastic_nodes=3)
+        graph = StateGraph([n("root")], max_elastic_depth=2, max_elastic_nodes=4)
         arun(graph.execute(executor.executors()))
         assert statuses(graph) == {node_id: "completed" for node_id in graph.nodes}
         assert "elastic:elastic:root:a:deeper" in graph.nodes

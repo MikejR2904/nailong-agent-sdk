@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.identifiers import require_unique
 
 
 class SpecificationCategory(StrEnum):
@@ -131,6 +132,5 @@ class SpecificationManifest(StrictModel):
     @model_validator(mode="after")
     def document_ids_are_unique(self) -> SpecificationManifest:
         values = [document.id for document in self.documents]
-        if len(values) != len(set(values)):
-            raise ValueError("specification document IDs must be unique")
+        require_unique(values, "specification document IDs")
         return self

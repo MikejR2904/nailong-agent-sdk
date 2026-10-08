@@ -18,6 +18,7 @@ from pydantic import Field, ValidationError, model_validator
 
 from ...foundations.contracts import StrictModel
 from ...foundations.errors import AgentSdkError
+from ...foundations.identifiers import require_unique
 from ...specifications.documents import SourceRef
 from ...specifications.gate_models import (
     GapSeverity,
@@ -44,8 +45,9 @@ class UntrustedSemanticGapFinding(StrictModel):
     def has_bounded_semantic_shape(self) -> UntrustedSemanticGapFinding:
         if self.type not in _semantic_gap_types():
             raise ValueError("Semantic analysis may return only semantic gap types.")
-        if not self.requirement_ids or len(self.requirement_ids) != len(set(self.requirement_ids)):
-            raise ValueError("Semantic analysis requirement IDs must be non-empty and unique.")
+        if not self.requirement_ids:
+            raise ValueError("Semantic analysis requirement IDs must be non-empty.")
+        require_unique(self.requirement_ids, "Semantic analysis requirement IDs")
         if not self.source_refs:
             raise ValueError("Semantic analysis findings must cite source references.")
         if self.type is GapType.INCONSISTENCY and len(self.requirement_ids) < 2:
