@@ -1,9 +1,15 @@
 # Copyright (c) 2026 David Michael Indraputra
 
 """Telemetry event, context, actor, and metric contracts.
-
-These records deliberately capture only structured outcomes, timings, authority,
-evidence links, and hashes; hidden model reasoning is rejected at validation time.
+Defines structured records for:
+- Events: who acted, what happened, when, and with what authority.
+- Context: run IDs, task IDs, trace IDs, environment.
+- Actors: kind (category of source), identifier, role (function).
+- Metrics: definitions and observations.
+- Run summaries and footprints: aggregate counts, statuses, hashes.
+- Chain breaks: integrity errors in event sequences.
+All records are strictly validated: hidden model reasoning is rejected,
+identifiers must be well-formed, and integrity hashes track event chains.
 """
 
 from __future__ import annotations
@@ -12,10 +18,12 @@ import uuid
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import assert_no_hidden_reasoning
+from ..foundations.text import assert_well_formed_text
+from .trace_context import require_span_id, require_trace_id
 
 
 class TelemetryAuthority(StrEnum):
@@ -36,6 +44,13 @@ class TelemetrySeverity(StrEnum):
 class MetricAvailability(StrEnum):
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
+
+
+_STORED_RECORD = "stored_record"
+
+
+def _is_stored_record(info: ValidationInfo) -> bool:
+    return isinstance(info.context, dict) and info.context.get(_STORED_RECORD) is True
 
 
 class TelemetryActor(StrictModel):
@@ -60,6 +75,39 @@ class TelemetryContext(StrictModel):
     stage: str | None = None
     environment_id: str | None = None
 
+    @field_validator(
+        "project_id",
+        "experiment_id",
+        "cohort_id",
+        "attempt_id",
+        "controller_id",
+        "node_id",
+        "task_id",
+        "agent_id",
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+        "stage",
+        "environment_id",
+    )
+    @classmethod
+    def identifiers_are_well_formed(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return None if value is None else assert_well_formed_text(value, info.field_name)
+
+    @field_validator("trace_id")
+    @classmethod
+    def trace_id_is_a_w3c_trace_id(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None or _is_stored_record(info):
+            return value
+        return require_trace_id(value, info.field_name)
+
+    @field_validator("span_id", "parent_span_id")
+    @classmethod
+    def span_ids_are_w3c_span_ids(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None or _is_stored_record(info):
+            return value
+        return require_span_id(value, info.field_name)
+
 
 class TelemetryEvent(StrictModel):
     schema_version: str = "telemetry-event-v1"
@@ -71,7 +119,7 @@ class TelemetryEvent(StrictModel):
     context: TelemetryContext
     actor: TelemetryActor
     authority: TelemetryAuthority
-    status: str = Field(min_length=1)
+    status: str = Field(min_length=1)  #  Lifecycle status of the event
     severity: TelemetrySeverity = TelemetrySeverity.INFO
     links: dict[str, Any] = Field(default_factory=dict)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -83,6 +131,10 @@ class TelemetryEvent(StrictModel):
     def reject_hidden_reasoning(cls, value: dict[str, Any]) -> dict[str, Any]:
         assert_no_hidden_reasoning(value)
         return value
+
+    @classmethod
+    def parse_stored(cls, row: str) -> TelemetryEvent:
+        return cls.model_validate_json(row, context={_STORED_RECORD: True})
 
 
 class MetricDefinition(StrictModel):
@@ -96,6 +148,7 @@ class MetricDefinition(StrictModel):
     aggregation: str = Field(min_length=1)
     missing_data_rule: str = Field(min_length=1)
     source_description: str = Field(min_length=1)
+    instrument: Literal["counter", "up_down_counter", "histogram", "gauge"] | None = None
     schema_version: str = "metric-definition-v1"
 
 
@@ -121,6 +174,25 @@ class TelemetryRunSummary(StrictModel):
     last_event_at: str | None = None
     statuses: dict[str, int] = Field(default_factory=dict)
     event_types: dict[str, int] = Field(default_factory=dict)
+
+
+class TelemetryRunActivity(StrictModel):
+    run_id: str
+    event_count: int = Field(ge=0)
+    first_event_at: str
+    last_event_at: str
+    last_sequence: int = Field(ge=1)
+    terminal: bool = False
+
+
+class TelemetryFootprint(StrictModel):
+    run_id: str
+    event_count: int = Field(ge=0)
+    metric_count: int = Field(ge=0)
+    bytes: int = Field(ge=0)
+    first_sequence: int = Field(ge=0)
+    last_sequence: int = Field(ge=0)
+    head_hash: str | None = None
 
 
 class ChainBreak(StrictModel):

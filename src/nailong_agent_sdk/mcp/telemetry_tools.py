@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from ..agent.retention import RetentionPolicy
 from ..observability.telemetry_models import MetricDefinition, MetricObservation
 from ._shared import McpContext, _validation_errors
 
@@ -135,11 +136,41 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
+    @ctx.tool(server, "prune_runs", exclusive=False)
+    def prune_runs(
+        older_than_seconds: float,
+        dry_run: bool = True,
+        keep_most_recent: int = 0,
+        max_runs: int | None = None,
+        include_unfinished: bool = False,
+        export_reports: bool = False,
+    ) -> dict[str, Any]:
+        """Delete whole finished runs idle for older_than_seconds; defaults to a dry run.
+
+        Each pruned run's telemetry events and metrics, audit transcript and tool-result files
+        are removed after a hash-chained tombstone records their final chain heads and every
+        tool-result hash. Runs with a broken chain, no `agent.terminated` event (unless
+        `include_unfinished`) or recent activity are kept.
+        """
+
+        policy = RetentionPolicy(
+            older_than_seconds=older_than_seconds,
+            keep_most_recent=keep_most_recent,
+            max_runs=max_runs,
+            include_unfinished=include_unfinished,
+            export_reports=export_reports,
+        )
+        report = ctx.retention.prune(policy, dry_run=dry_run)
+        return {"ok": True, "report": report.model_dump(mode="json")}
+
     @ctx.tool(server, "create_telemetry_report", exclusive=False)
-    def create_telemetry_report(run_id: str) -> dict[str, Any]:
+    def create_telemetry_report(run_id: str, include_event_hashes: bool = False) -> dict[str, Any]:
         """Create a reproducible trace and metric-completeness report from observed facts."""
 
         try:
-            return {"ok": True, "report": ctx.telemetry.create_run_report(run_id)}
+            report = ctx.telemetry.create_run_report(
+                run_id, include_event_hashes=include_event_hashes
+            )
+            return {"ok": True, "report": report}
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}

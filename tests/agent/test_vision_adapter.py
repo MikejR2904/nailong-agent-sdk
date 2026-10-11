@@ -17,6 +17,7 @@ from nailong_agent_sdk.specifications.documents import (
     DocumentNodeKind,
     SourceRef,
 )
+from tests.support.extended_paths import resolve_files_in_extended_spelling, windows_only
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"pixels" * 20
 
@@ -88,6 +89,16 @@ def test_the_loader_refuses_nodes_it_cannot_authenticate(tmp_path, node, message
     (tmp_path / "figure.png").write_bytes(PNG)
     with pytest.raises(ValueError, match=message):
         SourceVerifiedImageLoader(str(tmp_path))(node)
+
+
+@windows_only
+def test_the_loader_reads_a_source_that_resolves_in_the_extended_spelling(tmp_path, monkeypatch):
+    (tmp_path / "figure.png").write_bytes(PNG)
+    loader = SourceVerifiedImageLoader(str(tmp_path))
+    resolve_files_in_extended_spelling(monkeypatch)
+    assert loader(image_node()) == PNG
+    with pytest.raises(ValueError, match="escapes the specification root"):
+        loader(image_node(path="../outside.png"))
 
 
 def test_the_loader_enforces_its_size_limit_and_validates_its_configuration(tmp_path):

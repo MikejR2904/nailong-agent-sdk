@@ -2,27 +2,22 @@
 
 """Typed lateral-state payloads and provenance gates.
 
-`StateGraph` owns the authoritative run-scoped substrate as
-``GraphSharedState``. This module retains serializable payload types and the
-legacy standalone container only for compatibility with pre-0.10 consumers.
-Workers never exchange conversation; a consuming action may reference only a
-closed exploratory discovery published to graph state (systems-design
-framework, updated PDF, pp. 60 and 63).
+`StateGraph` owns the authoritative run-scoped substrate as ``GraphSharedState``; this
+module holds the serializable payload types it stores. Workers never exchange
+conversation; a consuming action may reference only a closed exploratory discovery
+published to graph state (systems-design framework, updated PDF, pp. 60 and 63).
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 from enum import StrEnum
-from pathlib import Path
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
-from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
-from ..foundations.identifiers import require_unique, validate_identifier
+from ..foundations.hashing import canonical_hash
+from ..foundations.identifiers import require_unique
 from ..foundations.json_limits import assert_json_depth
 
 
@@ -186,99 +181,6 @@ class ProvenanceContractGate:
         return ProvenanceGateDecision(accepted=not reasons, reasons=reasons)
 
 
-class RunSharedState:
-    """Legacy standalone substrate; new runtimes must use ``GraphSharedState``.
-
-    Retained for source compatibility only. It is no longer created by
-    ``ControllerRuntime`` or persisted by ``HarnessCoordinator``.
-    """
-
-    def __init__(self, snapshot: SharedSubstrateSnapshot) -> None:
-        self.snapshot = snapshot
-        self._discoveries: dict[str, ExploratoryDiscovery] = {}
-        self._writes: dict[str, SharedStateWrite] = {}
-        self._consumers: dict[str, list[LateralDependencyRequest]] = {}
-
-    def publish_discovery(self, discovery: ExploratoryDiscovery) -> None:
-        if discovery.snapshot_id != self.snapshot.snapshot_id:
-            raise ValueError("Discovery references an unexpected shared substrate snapshot.")
-        if discovery.snapshot_version != self.snapshot.version:
-            raise ValueError("Discovery references an unexpected shared substrate version.")
-        if not discovery.closed:
-            raise ValueError("Only closed exploratory discoveries may enter shared state.")
-        if discovery.episode_id in self._discoveries:
-            raise ValueError(f'Discovery episode "{discovery.episode_id}" already exists.')
-        self._discoveries[discovery.episode_id] = discovery
-
-    def request_lateral_dependency(self, request: LateralDependencyRequest) -> ExploratoryDiscovery:
-        discovery = self._discoveries.get(request.discovery_episode_id)
-        if discovery is None:
-            raise ValueError("Lateral dependency must cite a published exploratory discovery.")
-        if discovery.producer_node_id == request.consumer_node_id:
-            raise ValueError("Lateral dependency must cross distinct graph nodes.")
-        self._consumers.setdefault(discovery.episode_id, []).append(request)
-        return discovery
-
-    def write(self, state_write: SharedStateWrite) -> None:
-        if state_write.key in self._writes:
-            raise ValueError(f'Shared-state key "{state_write.key}" is immutable once written.')
-        self._writes[state_write.key] = state_write
-
-    def get_discovery(self, episode_id: str) -> ExploratoryDiscovery | None:
-        return self._discoveries.get(episode_id)
-
-    def snapshot_state(self) -> dict[str, Any]:
-        return {
-            "substrate": self.snapshot.model_dump(mode="json"),
-            "discoveries": [
-                self._discoveries[key].model_dump(mode="json") for key in sorted(self._discoveries)
-            ],
-            "writes": [self._writes[key].model_dump(mode="json") for key in sorted(self._writes)],
-            "lateral_dependencies": {
-                key: [item.model_dump(mode="json") for item in self._consumers[key]]
-                for key in sorted(self._consumers)
-            },
-        }
-
-    @classmethod
-    def from_snapshot(cls, payload: dict[str, Any]) -> RunSharedState:
-        state = cls(SharedSubstrateSnapshot.model_validate(payload["substrate"]))
-        for discovery in payload.get("discoveries", []):
-            state.publish_discovery(ExploratoryDiscovery.model_validate(discovery))
-        for state_write in payload.get("writes", []):
-            state.write(SharedStateWrite.model_validate(state_write))
-        for requests in payload.get("lateral_dependencies", {}).values():
-            for request in requests:
-                state.request_lateral_dependency(LateralDependencyRequest.model_validate(request))
-        return state
-
-
-class SharedStateStore:
-    """Legacy persistence adapter; graph snapshots now carry the substrate."""
-
-    def __init__(self, root: Path) -> None:
-        self._root = root.resolve() / ".agent-shared-state"
-        self._root.mkdir(parents=True, exist_ok=True)
-
-    def save(self, run_id: str, state: RunSharedState) -> None:
-        target = self._root / f"{validate_identifier(run_id, 'Run id')}.json"
-        temporary = unique_temporary_path(target)
-        temporary.write_text(
-            json.dumps(state.snapshot_state(), sort_keys=True, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        replace_atomic(temporary, target)
-
-    def load(self, run_id: str) -> RunSharedState:
-        target = self._root / f"{validate_identifier(run_id, 'Run id')}.json"
-        if not target.is_file():
-            raise ValueError(f'Shared state for run "{run_id}" is unknown.')
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError(f'Shared state for run "{run_id}" is malformed.')
-        return RunSharedState.from_snapshot(payload)
-
-
 def make_provenance_record(
     *,
     node_id: str,
@@ -312,12 +214,6 @@ def make_provenance_record(
         result_hash=result_hash,
         hash=digest,
     )
-
-
-def canonical_hash(value: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
 
 
 def provenance_hash(

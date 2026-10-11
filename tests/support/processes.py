@@ -28,6 +28,27 @@ def run_python(code, *, timeout=120, env_extra=None):
     )
 
 
+RENDEZVOUS = """
+import time as _time
+from pathlib import Path as _Path
+
+
+def rendezvous(directory, worker, peers, timeout=120.0):
+    directory = _Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"ready-{worker}").write_text("ready", "utf-8")
+    deadline = _time.monotonic() + timeout
+    while len(list(directory.glob("ready-*"))) < peers:
+        if _time.monotonic() > deadline:
+            raise TimeoutError(f"worker {worker} waited {timeout:g}s for {peers} peers")
+        _time.sleep(0.005)
+"""
+
+
+def meeting(directory, peers):
+    return [str(directory / "ready"), str(peers)]
+
+
 def run_workers(script, count, *args, timeout=240):
     processes = [
         subprocess.Popen(

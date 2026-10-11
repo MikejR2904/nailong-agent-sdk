@@ -6,19 +6,24 @@ from __future__ import annotations
 
 import hashlib
 import os
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
 from ..foundations.atomic_io import (
+    Fingerprint,
+    file_fingerprint,
     read_text_retrying,
     replace_atomic,
     unique_temporary_path,
 )
+from ..foundations.errors import AgentSdkError
 from ..foundations.identifiers import (
     is_valid_identifier,
     reserve_sequential_identifier,
     validate_identifier,
 )
+from ..foundations.record_locks import RecordLocks
 from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .orchestration_models import (
     ComplexityRouter,
@@ -219,12 +224,43 @@ class ControllerStateStore:
         self._root = root.resolve() / ".agent-controllers"
         self._root.mkdir(parents=True, exist_ok=True)
         self._claims = self._root / ".claims"
+        self._locks = RecordLocks(self._root / ".locks", timeout_code="CONTROLLER_LOCK_TIMEOUT")
+        self._seen: dict[str, Fingerprint] = {}
         self._persisted_event_counts: dict[str, int] = {}
 
     def reserve_controller_id(self, *, start: int = 1) -> tuple[str, int]:
         return reserve_sequential_identifier(self._claims, "controller", self.exists, start=start)
 
+    def locked(self, controller_id: str) -> AbstractContextManager[None]:
+        return self._locks.hold(validate_identifier(controller_id, "Controller id"))
+
     def save(self, record: ControllerRecord) -> None:
+        with self.locked(record.controller_id):
+            self._require_unchanged(record.controller_id)
+            self._save_locked(record)
+            fingerprint = self.fingerprint(record.controller_id)
+            if fingerprint is not None:
+                self._seen[record.controller_id] = fingerprint
+
+    def changed_since_read(self, controller_id: str) -> bool:
+        return self._seen.get(controller_id) != self.fingerprint(controller_id)
+
+    def fingerprint(self, controller_id: str) -> Fingerprint | None:
+        return file_fingerprint(self._record_path(controller_id))
+
+    def _require_unchanged(self, controller_id: str) -> None:
+        seen = self._seen.get(controller_id)
+        if seen is None or self.fingerprint(controller_id) == seen:
+            return
+        raise AgentSdkError(
+            "CONTROLLER_STATE_CONFLICT",
+            f'Controller "{controller_id}" was changed on disk by another writer after this '
+            "store last read or wrote it, so saving now would overwrite that change. Reload "
+            "the controller with ControllerRuntime.get_controller before changing it.",
+            {"controller_id": controller_id},
+        )
+
+    def _save_locked(self, record: ControllerRecord) -> None:
         persisted = self._persisted_event_counts.get(record.controller_id)
         if persisted is None:
             persisted = self._committed_event_count(record.controller_id)
@@ -257,9 +293,11 @@ class ControllerStateStore:
 
     def load(self, controller_id: str) -> ControllerRecord:
         target = self._record_path(controller_id)
-        if not target.is_file():
+        fingerprint = file_fingerprint(target)
+        if fingerprint is None:
             raise ValueError(f'Controller "{controller_id}" is unknown.')
         snapshot = ControllerRecord.model_validate_json(read_text_retrying(target))
+        self._seen[controller_id] = fingerprint
         if snapshot.events_integrity_hash is None:
             self._persisted_event_counts[controller_id] = 0
             return snapshot

@@ -1,16 +1,24 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Stable error categories and safe failure-detail handling for the Python runtime."""
+"""Stable error categories and safe failure-detail handling for the Python runtime.
+Categories reported:
+- AgentSdkError: a contract or runtime failure that can be returned as typed agent state.
+- TransientProviderError: a provider failure that is likely to succeed on retry (429, 5xx, or a
+  connection drop).
+
+Failure details are sanitized to redact secrets, bound to a max length, and remove private
+reasoning before durable result exposure. The redaction patterns are best-effort and may not
+catch all secrets, but they cover common credential shapes and key names.
+"""
 
 from __future__ import annotations
 
 import bisect
-import hashlib
-import json
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from .hashing import canonical_json, sha256_hex
 from .text import scrub_surrogates
 
 _SECRET_KEY = re.compile(
@@ -21,16 +29,10 @@ _SECRET_KEY = re.compile(
 _HIDDEN_REASONING_KEYS = {"chain_of_thought", "hidden_reasoning", "reasoning_trace", "scratchpad"}
 _MAX_FAILURE_DETAIL_CHARS = 2_048
 
-# Free-text patterns for the credentials a key-name check cannot see — e.g. a
-# subprocess that prints its own environment, or an error message that quotes
-# a connection string. This is a best-effort net for well-known credential
-# shapes, not a general secret scanner: it will not catch a bespoke or
-# high-entropy token that matches none of these shapes. Each pattern is
-# anchored on a distinctive literal prefix before a bounded/simple quantified
-# class, so none of them can backtrack more than linearly — the
-# ``KEYWORD=value`` case that needs an unanchored identifier boundary is
-# handled separately by ``_redact_assignments`` instead of a regex here; see
-# that function's docstring for why.
+# Patterns to catch secrets in free text (like environment dumps or error messages).
+# Covers common shapes (API keys, tokens, PEM blocks, etc.) but not every possible secret.
+# Each regex is anchored to a clear prefix and kept simple to avoid slow backtracking.
+# ``KEYWORD=value`` cases are handled separately in ``_redact_assignments``.
 _PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 _RUN_START = r"(?<![A-Za-z0-9_-])"
@@ -131,28 +133,24 @@ def sanitize_failure_details(details: dict[str, Any] | None) -> dict[str, Any]:
     """Redact, bound, and remove private reasoning before durable result exposure."""
 
     redacted = _redact_value(details or {}, hide_reasoning_keys=True)
-    encoded = json.dumps(redacted, sort_keys=True, separators=(",", ":"), default=str)
+    encoded = canonical_json(redacted)
     if len(encoded) <= _MAX_FAILURE_DETAIL_CHARS:
         return redacted if isinstance(redacted, dict) else {"value": redacted}
     return {
         "truncated": True,
-        "content_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "content_hash": sha256_hex(encoded),
         "original_chars": len(encoded),
         "preview": encoded[:_MAX_FAILURE_DETAIL_CHARS],
     }
 
 
 def redact_secrets(value: Any) -> Any:
-    """Recursively redact credential-shaped dict keys and free-text content.
-
-    Shared by every durable record (audit log, telemetry) so a fix to a
-    detection pattern — e.g. excluding ``token_budget``/``input_tokens`` from
-    the ``token`` match — applies everywhere at once instead of drifting
-    across independent copies. A dict key match redacts the whole value; a
-    plain string is scanned for the free-text patterns in
-    ``_SECRET_CONTENT_PATTERNS`` and only the matched span is masked, so
-    surrounding context (e.g. captured tool output) survives. Lists, tuples,
-    sets and bytes are walked too.
+    """Recursively mask secrets in dicts, strings, and collections.
+    - Dict keys that look like credentials are replaced with "[REDACTED]".
+    - Strings are scanned for known secret patterns;
+      only the matched span is masked so surrounding text remains.
+    - Lists, tuples, sets, and bytes are walked and redacted element by element.
+    Used across audit logs and telemetry so secret detection stays consistent everywhere.
     """
 
     return _redact_value(value, hide_reasoning_keys=False)

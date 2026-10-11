@@ -1,6 +1,16 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Small, dependency-free primitives for atomic local file replacement and locking."""
+"""Atomic file operations and cross-platform locks.
+This module provides small, dependency-free helpers for safe local file handling:
+- `file_fingerprint`: detect if a file has changed (inode, mtime, size).
+- `replace_atomic`: atomically swap a prepared temp file into place, retrying on transient errors.
+- `read_text_retrying`: read a UTF-8 file with retries if another process briefly blocks access.
+- `unique_temporary_path`: generate a collision-free temp filename next to a target.
+- `claim_exclusive`: create a file only if it doesn't already exist (used to claim resources).
+- `exclusive_file_lock`: context manager for advisory file locks, with POSIX and Windows support.
+These primitives are used to ensure durability and prevent corruption when multiple
+processes or threads interact with the same files.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +24,16 @@ from pathlib import Path
 from .errors import AgentSdkError
 
 _LOCK_POLL_SECONDS = 0.005
+
+Fingerprint = tuple[int, int, int]
+
+
+def file_fingerprint(path: Path) -> Fingerprint | None:
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    return status.st_ino, status.st_mtime_ns, status.st_size
 
 
 def replace_atomic(temporary: Path, target: Path, *, attempts: int = 5) -> None:
@@ -74,7 +94,7 @@ def exclusive_file_lock(
                 yield
             finally:
                 _release_windows_lock(descriptor)
-        else:
+        else:  # posix/linux/macOS
             _acquire_posix_lock(descriptor, path, timeout_seconds, timeout_code)
             try:
                 yield

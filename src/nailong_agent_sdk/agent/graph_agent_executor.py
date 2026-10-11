@@ -10,13 +10,11 @@ another worker's context.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
 
 from ..foundations.contracts import AgentDefinition, AgentRunStatus, ScopedAgentTask
+from ..foundations.hashing import canonical_hash, sha256_hex, strict_canonical_json
 from ..memory.context_projection import ContextProjectionPolicy
 from ..memory.episode_store import InMemoryEpisodeStore
 from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
@@ -81,9 +79,7 @@ class GraphAgentBinding:
             "binding_version": self.binding_version,
             "idempotent": self.idempotent,
         }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        return sha256_hex(strict_canonical_json(payload))
 
 
 ElasticBindingFactory = Callable[[GraphNode, GraphNodeExecutionContext], GraphAgentBinding]
@@ -210,7 +206,7 @@ class GraphAgentExecutor:
             "escalation": result.escalation.model_dump(mode="json")
             if result.escalation is not None
             else None,
-            "project_state_hash": _hash_payload(result.project_state),
+            "project_state_hash": canonical_hash(result.project_state),
         }
         diagnostics = [
             f"agent-status:{result.status.value}",
@@ -227,7 +223,7 @@ class GraphAgentExecutor:
             output=result.output,
             reason=result.reason,
             diagnostics=diagnostics,
-            provenance_hash=_hash_payload(payload),
+            provenance_hash=canonical_hash(payload),
             spawn_requests=spawn_requests,
         )
 
@@ -275,9 +271,3 @@ def _graph_status(status: AgentRunStatus) -> GraphNodeStatus:
         AgentRunStatus.FAILED: GraphNodeStatus.FAILED,
         AgentRunStatus.CANCELLED: GraphNodeStatus.CANCELLED,
     }[status]
-
-
-def _hash_payload(payload: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()

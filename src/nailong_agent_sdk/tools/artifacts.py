@@ -16,6 +16,7 @@ from pydantic import Field
 
 from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
+from ..foundations.paths import relative_to_base
 from ..foundations.text import split_lines
 
 _ARTIFACT_ID = re.compile(r"sha256:[0-9a-f]{64}")
@@ -239,7 +240,7 @@ class ArtifactStore:
             raise ValueError("Artifact paths must be non-empty and relative to the run root.")
         target = (self._root / candidate).resolve()
         try:
-            target.relative_to(self._root)
+            relative_to_base(target, self._root)
         except ValueError as error:
             raise ValueError("Artifact path escapes the configured run root.") from error
         return target

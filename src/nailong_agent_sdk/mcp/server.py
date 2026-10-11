@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from mcp.server import MCPServer
 
+from ..agent.retention import RunRetention
+from ..agent.runtime import AgentRuntimeServices
+from ..agent.task_runner import AgentTaskRunner
 from ..foundations.version import PACKAGE_NAME, package_version
+from ..memory.context_projection import FileToolResultJournal
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.metrics import register_standard_metric_definitions
 from ..observability.telemetry_store import TelemetryStore
-from ..specifications.gate import Gate1ArtifactStore, SpecificationGate
-from ..specifications.git_versioning import SpecificationVersionService
 from ..specifications.preprocessing import SpecificationPreprocessor
 from ..state.controller_runtime import ControllerRuntime
 from ..state.harness_coordinator import HarnessCoordinator
@@ -26,7 +28,6 @@ from ..state.project_state_store import FileProjectStateStore
 from ._shared import McpContext
 from .agent_tools import register_agent_tools
 from .controller_tools import register_controller_tools
-from .git_tools import register_git_tools
 from .orchestration_tools import register_orchestration_tools
 from .project_state_tools import register_project_state_tools
 from .run_tools import register_run_tools
@@ -40,9 +41,12 @@ from .telemetry_tools import register_telemetry_tools
 
 SERVER_NAME = PACKAGE_NAME
 SERVER_VERSION = package_version()
+PROCESS_OPTIONS_ENVIRONMENT_VARIABLE = "AGENT_RUNTIME_ALLOW_PROCESS_OPTIONS"
 
 
-def create_mcp_server(run_root: Path | None = None) -> MCPServer:
+def create_mcp_server(
+    run_root: Path | None = None, *, audit_max_open_handles: int | None = None
+) -> MCPServer:
     """Build the BaseAgent and typed harness MCP surface without a network listener."""
 
     # Defer MCP initialization so ordinary SDK imports do not create runtime
@@ -63,19 +67,41 @@ def create_mcp_server(run_root: Path | None = None) -> MCPServer:
     specification_root = Path(
         os.environ.get("AGENT_SPECIFICATION_ROOT", str(resolved_run_root / "specifications"))
     )
+    audit_logs = AuditTranscriptStore(
+        resolved_run_root,
+        **({} if audit_max_open_handles is None else {"max_open_handles": audit_max_open_handles}),
+    )
+    result_journal = FileToolResultJournal(resolved_run_root)
+    task_runner = AgentTaskRunner(
+        AgentRuntimeServices(
+            run_root=resolved_run_root.resolve(),
+            result_journal=result_journal,
+            project_state_store=project_states,
+            telemetry=telemetry,
+            audit_logs=audit_logs,
+        ),
+        allow_process_options=os.environ.get(PROCESS_OPTIONS_ENVIRONMENT_VARIABLE) == "1",
+        process_options_hint=(
+            f"Start the service with {PROCESS_OPTIONS_ENVIRONMENT_VARIABLE}=1 to allow it."
+        ),
+    )
     ctx = McpContext(
         run_root=resolved_run_root,
         coordinator=coordinator,
         telemetry=telemetry,
-        audit_logs=AuditTranscriptStore(resolved_run_root),
+        audit_logs=audit_logs,
         project_states=project_states,
         controller_runtime=controller_runtime,
         specification_root=specification_root,
         preprocessor=SpecificationPreprocessor(specification_root),
-        specification_gate=SpecificationGate(),
-        gate_store=Gate1ArtifactStore(specification_root),
         plan_validator=PlanValidator(),
-        versioning=SpecificationVersionService(resolved_run_root),
+        task_runner=task_runner,
+        retention=RunRetention(
+            resolved_run_root,
+            telemetry=telemetry,
+            audit_logs=audit_logs,
+            result_journal=result_journal,
+        ),
     )
 
     server = MCPServer(
@@ -94,7 +120,6 @@ def create_mcp_server(run_root: Path | None = None) -> MCPServer:
     register_controller_tools(server, ctx)
     register_specification_tools(server, ctx)
     register_telemetry_tools(server, ctx)
-    register_git_tools(server, ctx)
 
     return server
 
@@ -129,7 +154,9 @@ def main() -> None:
         raise SystemExit(2) from error
     import uvicorn
 
-    app = create_mcp_server().streamable_http_app(
+    app = create_mcp_server(
+        audit_max_open_handles=settings.audit_max_open_handles
+    ).streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,
         stateless_http=True,
@@ -137,7 +164,13 @@ def main() -> None:
         host=settings.host,
     )
     app.add_middleware(BearerTokenMiddleware, token=settings.token)
-    uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")
+    uvicorn.run(
+        app,
+        host=settings.host,
+        port=settings.port,
+        log_level="info",
+        **settings.ssl_options(),
+    )
 
 
 if __name__ == "__main__":

@@ -10,7 +10,6 @@ not create relationships from model output or semantic similarity.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import defaultdict, deque
@@ -20,6 +19,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.hashing import sha256_hex, strict_canonical_json
 from ..foundations.identifiers import require_unique
 from ..foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem, PckpStatus
 from .documents import SourceRef
@@ -103,10 +103,7 @@ class EvidenceGraph(StrictModel):
 
     @property
     def content_hash(self) -> str:
-        payload = self.model_dump(mode="json")
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        return sha256_hex(strict_canonical_json(self.model_dump(mode="json")))
 
 
 class EvidenceSelectionPolicy(StrictModel):
@@ -147,9 +144,7 @@ class EvidenceSelectionPolicy(StrictModel):
 
     @property
     def policy_hash(self) -> str:
-        return hashlib.sha256(
-            self.model_dump_json(by_alias=False, exclude_none=False).encode("utf-8")
-        ).hexdigest()
+        return sha256_hex(self.model_dump_json(by_alias=False, exclude_none=False))
 
 
 class EvidenceSelectionRequest(StrictModel):

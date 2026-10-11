@@ -5,6 +5,7 @@ from nailong_agent_sdk.foundations.contracts import (
     VersionedInstructions,
 )
 from nailong_agent_sdk.memory.context_projection import ContextProjectionPolicy
+from nailong_agent_sdk.memory.episode_store import InMemoryEpisodeStore
 from nailong_agent_sdk.state.project_state_models import (
     ProjectStateProjectionPolicy,
     StageStateSchema,
@@ -74,17 +75,23 @@ def test_a_project_state_larger_than_its_budget_blocks_until_its_questions_are_c
     assert len(resumed_model.calls) == 1
 
 
-def test_unmanifested_action_episodes_over_the_episode_budget_end_in_a_context_deadlock():
-    unmanifested = tool("eda", kind=EpisodeKind.ACTION, requires_manifest=True)
+class NeverClosingStore(InMemoryEpisodeStore):
+    def close(self, episode_id, *, description=None):
+        return self._require(episode_id)
+
+
+def test_episodes_left_open_over_the_episode_budget_end_in_a_context_deadlock():
+    unclosed = tool("probe", kind=EpisodeKind.ACTION)
     executor = FnExecutor(
         lambda tool_definition, context: ToolExecutionResult(
             status="succeeded", output={"blob": "payload " * 800}
         )
     )
     subject, model = agent(
-        [tool_call("c1", "eda"), final({"status": "wrong"}), final()],
+        [tool_call("c1", "probe"), final({"status": "wrong"}), final()],
         executor=executor,
-        definition_=definition(tools=[unmanifested], max_iterations=6),
+        definition_=definition(tools=[unclosed], max_iterations=6),
+        episode_store_factory=NeverClosingStore,
         context_projection_policy=ContextProjectionPolicy(
             context_token_budget=4000, episode_token_budget=256
         ),

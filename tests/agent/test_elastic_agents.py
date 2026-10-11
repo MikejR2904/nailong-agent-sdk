@@ -338,3 +338,70 @@ def test_the_request_tool_is_only_wired_when_the_definition_declares_it(tmp_path
         assert bool(results["root"].spawn_requests) is with_tool
     finally:
         close(services)
+
+
+def test_the_handoff_the_requester_wrote_reaches_its_continuation_but_not_the_child(tmp_path):
+    services = services_for(tmp_path)
+    prompts = {}
+    note = "Dividers A and B are verified; only the reset tree is left."
+    try:
+
+        def factory(node, context):
+            return binding(
+                node.node_id,
+                [final({"status": "complete"})],
+                tool=False,
+                prompts=prompts.setdefault(node.node_id, []),
+            )
+
+        executor = GraphAgentExecutor(
+            services,
+            {
+                "root": binding(
+                    "root",
+                    [
+                        tool_call("r1", ELASTIC_REQUEST_TOOL_NAME, request_arguments(handoff=note)),
+                        final({"status": "complete", "summary": "queued a probe"}),
+                    ],
+                )
+            },
+            elastic_binding_factory=factory,
+        )
+        graph = StateGraph([n("root")], max_elastic_depth=1, max_elastic_nodes=2)
+        arun(graph.execute(executor.executors()))
+        assert statuses(graph) == {node_id: "completed" for node_id in graph.nodes}
+        join_prompt = " ".join(prompts["join:root"])
+        child_prompt = " ".join(prompts["elastic:root:probe"])
+        assert note in join_prompt and note not in child_prompt
+        assert graph.spawn_records[0].request.handoff == note
+    finally:
+        close(services)
+
+
+def test_the_agent_is_told_when_its_handoff_notes_pass_the_total(tmp_path):
+    services = services_for(tmp_path)
+    try:
+        seen = []
+
+        def script(context):
+            seen.append(observed(context))
+            step = len(seen)
+            if step <= 3:
+                return tool_call(
+                    f"r{step}",
+                    ELASTIC_REQUEST_TOOL_NAME,
+                    request_arguments(f"probe{step}", handoff="h" * (4_000 if step < 3 else 5)),
+                )
+            return final()
+
+        executor = GraphAgentExecutor(
+            services, {"root": binding("root", model=DynamicModel(script))}
+        )
+        graph = StateGraph([n("root")], max_elastic_depth=1, max_elastic_nodes=8)
+        arun(graph.execute(executor.executors()))
+        assert "queued" in seen[1] and "queued" in seen[2]
+        assert "ELASTIC_HANDOFF_LIMIT_REACHED" in seen[3] or "8000" in seen[3]
+        queued = [record.request.request_id for record in graph.spawn_records]
+        assert queued == ["probe1", "probe2"]
+    finally:
+        close(services)

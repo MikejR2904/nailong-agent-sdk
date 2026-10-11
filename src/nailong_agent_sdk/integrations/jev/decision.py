@@ -16,7 +16,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .._utils import OptionalDependencyError, content_digest, require_optional_module
+from ...foundations.hashing import canonical_hash
+from .._utils import OptionalDependencyError, require_optional_module
 from ..contracts import InteropOperationStatus
 from .models import (
     _JEV_ANSWER_ADAPTER,
@@ -195,7 +196,7 @@ def _normalize_jev_response(
         answers=answers,
         state_digest=request.state_digest,
         question_spec_digest=request.question_spec.digest,
-        response_digest=content_digest(
+        response_digest=canonical_hash(
             {
                 "model": payload.get("model"),
                 "answers": canonical_answers,

@@ -9,7 +9,6 @@ framework's typed episode/compaction boundary rather than replaying a raw transc
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Sequence
@@ -19,6 +18,7 @@ from typing import Any, Protocol
 
 from pydantic import Field
 
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import (
     AgentPrompt,
     CompactedEpisodeStub,
@@ -31,10 +31,26 @@ from ..foundations.contracts import (
     ToolExecutionResult,
     ToolResultHandle,
 )
+from ..foundations.hashing import canonical_hash, canonical_json, estimate_tokens, sha256_hex
+from ..foundations.identifiers import file_safe_name
 from .episode_models import CompactionResult, CompactionStatus
 from .episode_store import InMemoryEpisodeStore
 
 _HANDLE_ID = re.compile(r"result-[0-9]{1,12}")
+_RUN_INDEX_DIRECTORY = ".runs"
+_HIGH_WATER_FILE = ".high-water"
+
+
+class JournalHandleFootprint(StrictModel):
+    handle_id: str
+    content_hash: str
+    byte_count: int = Field(ge=0)
+
+
+class JournalFootprint(StrictModel):
+    run_id: str
+    handles: list[JournalHandleFootprint] = Field(default_factory=list)
+    bytes: int = Field(default=0, ge=0)
 
 
 class ContextProjectionPolicy(StrictModel):
@@ -60,6 +76,11 @@ class ToolResultJournal(Protocol):
     def read(self, handle_id: str) -> dict[str, Any]: ...
 
 
+def journal_for_run(journal: ToolResultJournal, run_id: str) -> ToolResultJournal:
+    scoped = getattr(journal, "for_run", None)
+    return scoped(run_id) if callable(scoped) else journal
+
+
 class InMemoryToolResultJournal:
     """In-process journal for a bounded task invocation and deterministic tests."""
 
@@ -76,11 +97,14 @@ class InMemoryToolResultJournal:
             raise ValueError(f'Unknown tool result handle "{handle_id}".')
         return self._records[handle_id]
 
+    def for_run(self, run_id: str) -> ToolResultJournal:
+        return self
+
     def _store(self, payload: dict[str, Any]) -> ToolResultHandle:
-        encoded = _canonical_json(payload).encode("utf-8")
+        encoded = canonical_json(payload).encode("utf-8")
         handle = ToolResultHandle(
             handle_id=f"result-{self._next_id}",
-            content_hash=hashlib.sha256(encoded).hexdigest(),
+            content_hash=sha256_hex(encoded),
             byte_count=len(encoded),
             truncated=False,
         )
@@ -96,15 +120,25 @@ class FileToolResultJournal(InMemoryToolResultJournal):
     returning only opaque metadata to the model-facing projection.
     """
 
-    def __init__(self, run_root: Path) -> None:
+    def __init__(self, run_root: Path, *, read_only: bool = False) -> None:
         super().__init__()
         self._root = run_root.resolve() / ".agent-tool-results"
-        self._root.mkdir(parents=True, exist_ok=True)
+        self._read_only = read_only
+        if not read_only:
+            self._root.mkdir(parents=True, exist_ok=True)
         self._next_id = _next_handle_number(self._root)
 
+    def _require_writable(self, operation: str) -> None:
+        if self._read_only:
+            raise RuntimeError(
+                f'Tool result journal at "{self._root}" was opened read-only; '
+                f'"{operation}" is not available.'
+            )
+
     def record(self, call: ToolCall, result: ToolExecutionResult) -> ToolResultHandle:
+        self._require_writable("record")
         payload = {"call": call.model_dump(mode="json"), "result": result.model_dump(mode="json")}
-        encoded = _canonical_json(payload)
+        encoded = canonical_json(payload)
         while True:
             handle_id = f"result-{self._next_id}"
             self._next_id += 1
@@ -118,10 +152,69 @@ class FileToolResultJournal(InMemoryToolResultJournal):
         self._records[handle_id] = payload
         return ToolResultHandle(
             handle_id=handle_id,
-            content_hash=hashlib.sha256(raw).hexdigest(),
+            content_hash=sha256_hex(raw),
             byte_count=len(raw),
             truncated=False,
         )
+
+    def for_run(self, run_id: str) -> ToolResultJournal:
+        return _RunScopedJournal(self, run_id)
+
+    def handles_of(self, run_id: str) -> list[str]:
+        index = self._index_path(run_id)
+        if not index.is_file():
+            return []
+        listed = dict.fromkeys(
+            line.strip() for line in index.read_text(encoding="utf-8").splitlines() if line.strip()
+        )
+        return list(listed)
+
+    def footprint(self, run_id: str) -> JournalFootprint:
+        handles: list[JournalHandleFootprint] = []
+        for handle_id in self.handles_of(run_id):
+            target = self._root / f"{handle_id}.json"
+            if target.is_file():
+                handles.append(
+                    JournalHandleFootprint(
+                        handle_id=handle_id,
+                        content_hash=journal_content_hash(self._root, handle_id),
+                        byte_count=target.stat().st_size,
+                    )
+                )
+        return JournalFootprint(
+            run_id=run_id, handles=handles, bytes=sum(item.byte_count for item in handles)
+        )
+
+    def prune_run(self, run_id: str, *, dry_run: bool = False) -> JournalFootprint:
+        if not dry_run:
+            self._require_writable("prune_run")
+        footprint = self.footprint(run_id)
+        if dry_run:
+            return footprint
+        numbers = [int(item.handle_id.removeprefix("result-")) for item in footprint.handles]
+        if numbers:
+            self._raise_high_water(max(numbers))
+        for item in footprint.handles:
+            (self._root / f"{item.handle_id}.json").unlink(missing_ok=True)
+        self._index_path(run_id).unlink(missing_ok=True)
+        return footprint
+
+    def _index_handle(self, run_id: str, handle_id: str) -> None:
+        index = self._index_path(run_id)
+        index.parent.mkdir(parents=True, exist_ok=True)
+        with index.open("a", encoding="utf-8") as stream:
+            stream.write(f"{handle_id}\n")
+
+    def _index_path(self, run_id: str) -> Path:
+        return self._root / _RUN_INDEX_DIRECTORY / f"{file_safe_name(run_id)}.handles"
+
+    def _raise_high_water(self, number: int) -> None:
+        if number <= _read_high_water(self._root):
+            return
+        target = self._root / _HIGH_WATER_FILE
+        temporary = unique_temporary_path(target)
+        temporary.write_text(str(number), encoding="utf-8")
+        replace_atomic(temporary, target)
 
     def read(self, handle_id: str) -> dict[str, Any]:
         if handle_id in self._records:
@@ -188,7 +281,7 @@ class ContextProjector:
                 observations=(),
                 episodes=(),
                 metadata=ContextProjectionMetadata(
-                    estimated_tokens=_estimate_tokens(prompt),
+                    estimated_tokens=estimate_tokens(prompt),
                     context_token_budget=self._policy.context_token_budget,
                     episode_token_budget=self._policy.episode_token_budget,
                     compacted_episode_ids=compaction.compacted_episode_ids,
@@ -211,7 +304,7 @@ class ContextProjector:
                 and record.state.value != "compacted"
             )
         ]
-        base_tokens = _estimate_tokens(prompt) + _estimate_tokens(retained_episodes)
+        base_tokens = estimate_tokens(prompt) + estimate_tokens(retained_episodes)
         stubs, omitted_stubs, stub_tokens = _compacted_stubs(
             [
                 summary
@@ -230,7 +323,7 @@ class ContextProjector:
         selected: list[ModelObservation] = []
         omitted = len(observations) - len(eligible_observations)
         for observation in reversed(eligible_observations):
-            candidate_tokens = _estimate_tokens(observation)
+            candidate_tokens = estimate_tokens(observation)
             if base_tokens + candidate_tokens > self._policy.context_token_budget:
                 omitted += 1
                 continue
@@ -294,7 +387,7 @@ def _compacted_stubs(
             iteration=observation.iteration if observation is not None else None,
             handle_id=projected.handle.handle_id if projected is not None else None,
         )
-        cost = _estimate_tokens(stub.model_dump(mode="json"))
+        cost = estimate_tokens(stub.model_dump(mode="json"))
         if used + cost > token_allowance:
             omitted += 1
             continue
@@ -307,7 +400,7 @@ def _compacted_stubs(
 def _bounded_preview(value: Any, max_chars: int) -> tuple[Any | None, bool]:
     if value is None:
         return None, False
-    encoded = _canonical_json(value)
+    encoded = canonical_json(value)
     if len(encoded) <= max_chars:
         return value, False
     return {
@@ -321,14 +414,6 @@ def _truncate_text(value: str | None, max_chars: int) -> str | None:
     if value is None or len(value) <= max_chars:
         return value
     return f"{value[:max_chars]}… [truncated]"
-
-
-def _estimate_tokens(value: Any) -> int:
-    return max(1, len(_canonical_json(value)) // 4)
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def journal_content_hash(journal_root: Path, handle_id: str) -> str:
@@ -345,13 +430,35 @@ def journal_content_hash(journal_root: Path, handle_id: str) -> str:
         raise ValueError(
             f'Tool result handle "{handle_id}" is corrupt: {type(error).__name__}: {error}'
         ) from error
-    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+    return canonical_hash(payload)
 
 
 def _next_handle_number(root: Path) -> int:
-    highest = 0
+    highest = _read_high_water(root)
     for path in root.glob("result-*.json"):
         suffix = path.stem.removeprefix("result-")
         if suffix.isdigit():
             highest = max(highest, int(suffix))
     return highest + 1
+
+
+def _read_high_water(root: Path) -> int:
+    target = root / _HIGH_WATER_FILE
+    if not target.is_file():
+        return 0
+    text = target.read_text(encoding="utf-8").strip()
+    return int(text) if text.isdigit() else 0
+
+
+class _RunScopedJournal:
+    def __init__(self, journal: FileToolResultJournal, run_id: str) -> None:
+        self._journal = journal
+        self._run_id = run_id
+
+    def record(self, call: ToolCall, result: ToolExecutionResult) -> ToolResultHandle:
+        handle = self._journal.record(call, result)
+        self._journal._index_handle(self._run_id, handle.handle_id)
+        return handle
+
+    def read(self, handle_id: str) -> dict[str, Any]:
+        return self._journal.read(handle_id)

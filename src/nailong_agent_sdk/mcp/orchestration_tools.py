@@ -104,6 +104,17 @@ def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
+    @ctx.tool(server, "reconcile_orchestration")
+    def reconcile_orchestration(orchestration_id: str) -> dict[str, Any]:
+        """Bring an orchestration, its controller, graph run and project state back into
+        agreement after an operation that failed between two of their writes."""
+
+        try:
+            report = ctx.orchestration_for(orchestration_id).reconcile(orchestration_id)
+            return {"ok": True, "report": report.model_dump(mode="json")}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
     @ctx.tool(server, "cancel_orchestration")
     def cancel_orchestration(orchestration_id: str, reason: str) -> dict[str, Any]:
         """Cancel a submitted orchestration and its bound controller/graph when present."""

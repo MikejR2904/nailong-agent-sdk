@@ -206,7 +206,7 @@ class QdrantRetrievalIndex:
                         {"key": "snapshot_id", "match": {"value": query.snapshot_id}},
                         {
                             "key": "category",
-                            "match": {"any": [item.value for item in query.allowed_categories]},
+                            "match": {"any": list(query.allowed_categories)},
                         },
                     ]
                 },
@@ -434,7 +434,7 @@ class GroundedRetrievalService:
             if node is None or node.source != candidate.source:
                 rejected.append(candidate.backend_id)
                 continue
-            if categories.get(candidate.document_id) is not candidate.category:
+            if categories.get(candidate.document_id) != candidate.category:
                 rejected.append(candidate.backend_id)
                 continue
             nodes.append(node)
@@ -521,7 +521,7 @@ def _qdrant_error_detail(body: str) -> str:
 def _document_payload(document: RetrievalDocument) -> dict[str, Any]:
     return {
         "snapshot_id": document.snapshot_id,
-        "category": document.category.value,
+        "category": document.category,
         "document_id": document.document_id,
         "node_id": document.node_id,
         "source": document.source.model_dump(mode="json"),

@@ -7,9 +7,6 @@ optional adapters load their dependencies lazily when a host explicitly uses the
 """
 
 from .contracts import (
-    ExternalDecisionProvider,
-    ExternalDecisionRequest,
-    ExternalDecisionResult,
     InteropFailureMode,
     InteropOperationStatus,
     InteropReceipt,
@@ -66,9 +63,6 @@ from .receipts import (
 
 __all__ = [
     "ExplorationCandidate",
-    "ExternalDecisionProvider",
-    "ExternalDecisionRequest",
-    "ExternalDecisionResult",
     "InMemoryJevReceiptStore",
     "InMemoryInteropReceiptStore",
     "InteropFailureMode",

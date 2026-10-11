@@ -20,39 +20,10 @@ from nailong_agent_sdk.mcp.client_types import (
 )
 from nailong_agent_sdk.tools.registry import HarnessToolRegistry
 from tests.support.mcp_server import Server
+from tests.support.mcp_stdio import STDIO_SERVER
 from tests.support.processes import kill_process_tree, process_alive
 from tests.support.tools import build
 from tests.support.tools import call as call_tool
-
-STDIO_SERVER = textwrap.dedent(
-    """
-    import asyncio, os, sys, time
-    from pathlib import Path
-    from mcp.server import MCPServer
-
-    server = MCPServer(name="demo")
-
-    @server.tool(name="echo")
-    async def echo(text: str) -> str:
-        return f"echo:{text}"
-
-    @server.tool(name="explode")
-    async def explode() -> str:
-        raise RuntimeError("tool exploded on purpose")
-
-    @server.tool(name="sleepy")
-    async def sleepy(seconds: float) -> str:
-        await asyncio.sleep(seconds)
-        return "done"
-
-    @server.tool(name="die")
-    async def die() -> str:
-        os._exit(3)
-
-    if __name__ == "__main__":
-        server.run(transport="stdio")
-    """
-)
 
 HANGING_SERVER = textwrap.dedent(
     """
@@ -97,7 +68,7 @@ def test_http_connection_to_the_sdk_server_works_with_the_installed_mcp(tmp_path
 
         statuses, reply = arun(scenario())
         sdk = statuses["sdk"]
-        assert sdk.state is McpConnectionState.CONNECTED and len(sdk.tools) == 52, sdk.detail
+        assert sdk.state is McpConnectionState.CONNECTED and len(sdk.tools) == 53, sdk.detail
         assert sdk.auth_configured is True and '"ok"' in reply
         anonymous = statuses["anonymous"]
         assert anonymous.state is McpConnectionState.FAILED and anonymous.auth_configured is False

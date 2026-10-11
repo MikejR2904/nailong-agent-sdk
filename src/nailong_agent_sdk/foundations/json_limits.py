@@ -1,6 +1,9 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Bounds on untrusted JSON-like payloads that must stay serializable by pydantic."""
+"""Bounds on untrusted JSON-like payloads that must stay serializable by pydantic.
+The limit by pydantic is 200 levels deep, but 64 is kept for a defensive bound reason.
+Real-world payloads rarely exceed a few dozen levels; 64 is safe yet practical.
+"""
 
 from __future__ import annotations
 

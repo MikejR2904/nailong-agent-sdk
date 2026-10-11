@@ -12,20 +12,26 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..foundations.atomic_io import (
+    Fingerprint,
+    file_fingerprint,
     read_text_retrying,
     replace_atomic,
     unique_temporary_path,
 )
+from ..foundations.errors import AgentSdkError
+from ..foundations.hashing import strict_canonical_json
 from ..foundations.identifiers import (
     is_valid_identifier,
     reserve_sequential_identifier,
     validate_identifier,
 )
+from ..foundations.record_locks import RecordLocks
 from .coordination_records import RunRecord, _hash_run
 
 
@@ -47,6 +53,8 @@ class RunStateStore:
         self._root = root.resolve() / ".agent-runs"
         self._root.mkdir(parents=True, exist_ok=True)
         self._claims = self._root / ".claims"
+        self._locks = RecordLocks(self._root / ".locks", timeout_code="RUN_LOCK_TIMEOUT")
+        self._seen: dict[str, Fingerprint] = {}
         # Process-local cursors for the snapshot-bound history prefix. They are
         # rebuilt from the verified durable boundary after a restart.
         self._persisted: dict[str, _PersistedHistoryCounts] = {}
@@ -54,7 +62,18 @@ class RunStateStore:
     def reserve_run_id(self, *, start: int = 1) -> tuple[str, int]:
         return reserve_sequential_identifier(self._claims, "run", self.exists, start=start)
 
+    def locked(self, run_id: str) -> AbstractContextManager[None]:
+        return self._locks.hold(validate_identifier(run_id, "Run id"))
+
     def save(self, record: RunRecord) -> None:
+        with self.locked(record.run_id):
+            self._require_unchanged(record.run_id)
+            self._save_locked(record)
+            fingerprint = self.fingerprint(record.run_id)
+            if fingerprint is not None:
+                self._seen[record.run_id] = fingerprint
+
+    def _save_locked(self, record: RunRecord) -> None:
         counts = self._counts_for(record.run_id)
         history_path = self._history_path(record.run_id)
         self._discard_uncommitted_history(record.run_id, history_path, counts)
@@ -81,9 +100,11 @@ class RunStateStore:
 
     def load(self, run_id: str) -> RunRecord:
         target = self._record_path(run_id)
-        if not target.is_file():
+        fingerprint = file_fingerprint(target)
+        if fingerprint is None:
             raise ValueError(f'Run "{run_id}" is unknown.')
         snapshot = RunRecord.model_validate_json(read_text_retrying(target))
+        self._seen[run_id] = fingerprint
         if snapshot.history_integrity_hash is None:
             # Legacy full snapshots retain their embedded history until a later
             # successful split-format save publishes a bound sidecar prefix.
@@ -107,12 +128,8 @@ class RunStateStore:
     def exists(self, run_id: str) -> bool:
         return is_valid_identifier(run_id) and self._record_path(run_id).is_file()
 
-    def fingerprint(self, run_id: str) -> tuple[int, int, int] | None:
-        try:
-            status = self._record_path(run_id).stat()
-        except FileNotFoundError:
-            return None
-        return status.st_ino, status.st_mtime_ns, status.st_size
+    def fingerprint(self, run_id: str) -> Fingerprint | None:
+        return file_fingerprint(self._record_path(run_id))
 
     def approvals_path(self, run_id: str) -> Path:
         return self._root / f"{validate_identifier(run_id, 'Run id')}.approvals.json"
@@ -122,6 +139,19 @@ class RunStateStore:
 
     def _history_path(self, run_id: str) -> Path:
         return self._root / f"{validate_identifier(run_id, 'Run id')}.history.jsonl"
+
+    def _require_unchanged(self, run_id: str) -> None:
+        seen = self._seen.get(run_id)
+        if seen is None or self.fingerprint(run_id) == seen:
+            return
+        raise AgentSdkError(
+            "RUN_STATE_CONFLICT",
+            f'Run "{run_id}" was changed on disk by another writer after this coordinator '
+            "last read or wrote it, so saving now would overwrite that change. Use one "
+            "HarnessCoordinator per run root (share it with ControllerRuntime) or call "
+            "get_run_state to reload the run before changing it.",
+            {"run_id": run_id},
+        )
 
     def _counts_for(self, run_id: str) -> _PersistedHistoryCounts:
         cached = self._persisted.get(run_id)
@@ -328,7 +358,7 @@ def _replay_history(
 
 
 def _encode_entry(entry: dict[str, Any]) -> bytes:
-    return json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    return strict_canonical_json(entry).encode("utf-8") + b"\n"
 
 
 def _append_history(

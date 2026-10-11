@@ -10,7 +10,8 @@ from typing import Annotated, Any, Literal, Protocol
 from pydantic import Field, TypeAdapter, field_validator
 
 from ...foundations.contracts import StrictModel
-from .._utils import canonical_digest, checked_interop_value, content_digest
+from ...foundations.hashing import canonical_hash
+from .._utils import canonical_digest, checked_interop_value
 from ..contracts import InteropOperationStatus, InteropReceipt
 
 MAX_CHOICE_CRITERIA = 255
@@ -65,7 +66,7 @@ class JevQuestionSpec(StrictModel):
 
     @property
     def digest(self) -> str:
-        return content_digest(self.model_dump(mode="json"))
+        return canonical_hash(self.model_dump(mode="json"))
 
 
 class JevDecisionRequest(StrictModel):

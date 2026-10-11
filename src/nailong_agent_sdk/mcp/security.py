@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import ipaddress
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.datastructures import Headers
@@ -17,7 +20,10 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8001
 MIN_TOKEN_LENGTH = 32
+MAX_DISCARDED_BODY_BYTES = 65_536
+DISCARD_BODY_SECONDS = 1.0
 LOOPBACK_HOST_PATTERNS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+AUDIT_MAX_OPEN_HANDLES_VARIABLE = "AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES"
 
 
 class ServerConfigurationError(ValueError):
@@ -30,9 +36,26 @@ class HttpServiceSettings:
     port: int
     token: str = field(repr=False)
     allowed_hosts: tuple[str, ...]
+    tls_certfile: str | None = None
+    tls_keyfile: str | None = None
+    tls_key_password: str | None = field(default=None, repr=False)
+    audit_max_open_handles: int | None = None
+
+    @property
+    def scheme(self) -> str:
+        return "https" if self.tls_certfile is not None else "http"
+
+    def ssl_options(self) -> dict[str, str | None]:
+        if self.tls_certfile is None:
+            return {}
+        return {
+            "ssl_certfile": self.tls_certfile,
+            "ssl_keyfile": self.tls_keyfile,
+            "ssl_keyfile_password": self.tls_key_password,
+        }
 
     def transport_security(self) -> TransportSecuritySettings:
-        origins = [f"http://{pattern}" for pattern in self.allowed_hosts]
+        origins = [f"{self.scheme}://{pattern}" for pattern in self.allowed_hosts]
         return TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=list(self.allowed_hosts),
@@ -67,7 +90,86 @@ def load_http_service_settings(environ: Mapping[str, str]) -> HttpServiceSetting
         allowed = tuple(dict.fromkeys((*LOOPBACK_HOST_PATTERNS, f"{bracketed}:*")))
     else:
         allowed = _parse_allowed_hosts(host, environ.get("AGENT_RUNTIME_ALLOWED_HOSTS", ""))
-    return HttpServiceSettings(host=host, port=port, token=token, allowed_hosts=allowed)
+    certificate, key, password = _parse_tls(environ)
+    if (
+        certificate is None
+        and not is_loopback_host(host)
+        and environ.get("AGENT_RUNTIME_ALLOW_PLAIN_HTTP") != "1"
+    ):
+        raise ServerConfigurationError(
+            f'AGENT_RUNTIME_HOST "{host}" is not a loopback address and no TLS certificate is '
+            "configured, so the bearer token and every approval decision would cross the "
+            "network in clear text; set AGENT_RUNTIME_TLS_CERTFILE and "
+            "AGENT_RUNTIME_TLS_KEYFILE, or set AGENT_RUNTIME_ALLOW_PLAIN_HTTP=1 if a proxy that "
+            "terminates TLS in front of this service carries the traffic."
+        )
+    return HttpServiceSettings(
+        host=host,
+        port=port,
+        token=token,
+        allowed_hosts=allowed,
+        tls_certfile=certificate,
+        tls_keyfile=key,
+        tls_key_password=password,
+        audit_max_open_handles=_parse_audit_max_open_handles(environ),
+    )
+
+
+def _parse_audit_max_open_handles(environ: Mapping[str, str]) -> int | None:
+    raw = environ.get(AUDIT_MAX_OPEN_HANDLES_VARIABLE, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ServerConfigurationError(
+            f'{AUDIT_MAX_OPEN_HANDLES_VARIABLE} must be a whole number of at least 1, got "{raw}".'
+        )
+    return value
+
+
+def _parse_tls(environ: Mapping[str, str]) -> tuple[str | None, str | None, str | None]:
+    certificate = environ.get("AGENT_RUNTIME_TLS_CERTFILE", "").strip()
+    key = environ.get("AGENT_RUNTIME_TLS_KEYFILE", "").strip()
+    password = environ.get("AGENT_RUNTIME_TLS_KEY_PASSWORD") or None
+    if not certificate and not key:
+        return None, None, None
+    if not certificate or not key:
+        present = "AGENT_RUNTIME_TLS_CERTFILE" if certificate else "AGENT_RUNTIME_TLS_KEYFILE"
+        raise ServerConfigurationError(
+            "AGENT_RUNTIME_TLS_CERTFILE and AGENT_RUNTIME_TLS_KEYFILE must be set together; "
+            f"only {present} is set."
+        )
+    for variable, path in (
+        ("AGENT_RUNTIME_TLS_CERTFILE", certificate),
+        ("AGENT_RUNTIME_TLS_KEYFILE", key),
+    ):
+        if not Path(path).is_file():
+            raise ServerConfigurationError(f'{variable} "{path}" is not a file.')
+    try:
+        ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(
+            certificate, key, password if password is not None else (lambda: b"")
+        )
+    except (ssl.SSLError, OSError, ValueError) as error:
+        hint = (
+            " If the key is encrypted, set AGENT_RUNTIME_TLS_KEY_PASSWORD to its password."
+            if "password" in str(error).lower() or password is not None or _is_encrypted(key)
+            else ""
+        )
+        raise ServerConfigurationError(
+            f'The TLS certificate "{certificate}" and key "{key}" cannot be loaded '
+            f"({type(error).__name__}: {error}).{hint}"
+        ) from error
+    return certificate, key, password
+
+
+def _is_encrypted(key_file: str) -> bool:
+    try:
+        return b"ENCRYPTED" in Path(key_file).read_bytes()[:200]
+    except OSError:
+        return False
 
 
 def _parse_port(raw: str) -> int:
@@ -110,6 +212,7 @@ class BearerTokenMiddleware:
             await send({"type": "websocket.close", "code": 1008})
             return
         if kind == "http" and not self._authorized(scope):
+            await _discard_request_body(receive)
             response = JSONResponse(
                 {
                     "ok": False,
@@ -133,3 +236,18 @@ class BearerTokenMiddleware:
         if scheme.lower() != "bearer":
             return False
         return hmac.compare_digest(presented.strip().encode("utf-8"), self._token)
+
+
+async def _discard_request_body(receive: Receive) -> None:
+    remaining = MAX_DISCARDED_BODY_BYTES
+    try:
+        async with asyncio.timeout(DISCARD_BODY_SECONDS):
+            while remaining > 0:
+                message = await receive()
+                if message["type"] != "http.request":
+                    return
+                remaining -= len(message.get("body", b""))
+                if not message.get("more_body", False):
+                    return
+    except TimeoutError:
+        return

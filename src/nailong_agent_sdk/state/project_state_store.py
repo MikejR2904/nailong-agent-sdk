@@ -4,17 +4,21 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from ..foundations.atomic_io import (
+    Fingerprint,
+    file_fingerprint,
     read_text_retrying,
     replace_atomic,
     unique_temporary_path,
 )
+from ..foundations.hashing import model_canonical_json, sha256_hex
+from ..foundations.record_locks import RecordLocks
 from .project_state_engine import ProjectStateReducer
 from .project_state_models import (
     ProjectState,
@@ -33,6 +37,11 @@ class InMemoryProjectStateStore:
         self._states: dict[str, ProjectState] = {}
         self._events: dict[str, list[ProjectStateEvent]] = {}
         self._lock = threading.RLock()
+
+    @contextmanager
+    def locked(self, project_id: str) -> Iterator[None]:
+        with self._lock:
+            yield
 
     def ensure(self, project_id: str, stage_schema: StageStateSchema) -> ProjectState:
         with self._lock:
@@ -84,22 +93,31 @@ class FileProjectStateStore(InMemoryProjectStateStore):
         self._read_only = read_only
         if not read_only:
             self._root.mkdir(parents=True, exist_ok=True)
-        self._fingerprints: dict[str, tuple[int, int, int] | None] = {}
+        self._locks = RecordLocks(self._root / ".locks", timeout_code="PROJECT_STATE_LOCK_TIMEOUT")
+        self._fingerprints: dict[str, Fingerprint | None] = {}
+
+    @contextmanager
+    def locked(self, project_id: str) -> Iterator[None]:
+        self._require_writable("locked")
+        with self._lock, self._locks.hold(project_id):
+            yield
 
     def ensure(self, project_id: str, stage_schema: StageStateSchema) -> ProjectState:
-        with self._lock:
-            target = self._state_path(project_id)
+        target = self._state_path(project_id)
+        if target.is_file():
+            return self.load(project_id)
+        self._require_writable("ensure")
+        with self.locked(project_id):
             if target.is_file():
                 return self.load(project_id)
-            self._require_writable("ensure")
             state = super().ensure(project_id, stage_schema)
             self._write_json(target, state.model_dump(mode="json"))
-            self._fingerprints[project_id] = self._fingerprint(project_id)
+            self._fingerprints[project_id] = file_fingerprint(target)
             return state
 
     def load(self, project_id: str) -> ProjectState:
         with self._lock:
-            fingerprint = self._fingerprint(project_id)
+            fingerprint = file_fingerprint(self._state_path(project_id))
             if project_id in self._states and self._fingerprints.get(project_id) == fingerprint:
                 return super().load(project_id)
             target = self._state_path(project_id)
@@ -121,8 +139,9 @@ class FileProjectStateStore(InMemoryProjectStateStore):
         *,
         summary_max_chars: int = 2_048,
     ) -> ProjectState:
-        with self._lock:
-            self._require_writable("apply")
+        self._require_writable("apply")
+        self.load(project_id)
+        with self.locked(project_id):
             current = self.load(project_id)
             next_state = ProjectStateReducer.apply(
                 current, transition, summary_max_chars=summary_max_chars
@@ -134,7 +153,7 @@ class FileProjectStateStore(InMemoryProjectStateStore):
             self._write_json(self._state_path(project_id), next_state.model_dump(mode="json"))
             self._states[project_id] = next_state
             self._events[project_id].append(event)
-            self._fingerprints[project_id] = self._fingerprint(project_id)
+            self._fingerprints[project_id] = file_fingerprint(self._state_path(project_id))
             return next_state
 
     def _require_writable(self, operation: str) -> None:
@@ -143,13 +162,6 @@ class FileProjectStateStore(InMemoryProjectStateStore):
                 f'Project state store at "{self._root}" was opened read-only; "{operation}" '
                 "is not available."
             )
-
-    def _fingerprint(self, project_id: str) -> tuple[int, int, int] | None:
-        try:
-            status = self._state_path(project_id).stat()
-        except FileNotFoundError:
-            return None
-        return status.st_ino, status.st_mtime_ns, status.st_size
 
     def _state_path(self, project_id: str) -> Path:
         return self._root / f"{_safe_id(project_id)}.json"
@@ -205,7 +217,7 @@ class FileProjectStateStore(InMemoryProjectStateStore):
     @staticmethod
     def _write_json(path: Path, value: dict[str, Any]) -> None:
         temporary = unique_temporary_path(path)
-        temporary.write_text(_canonical_json(value), encoding="utf-8")
+        temporary.write_text(model_canonical_json(value), encoding="utf-8")
         replace_atomic(temporary, path)
 
 
@@ -237,13 +249,4 @@ def _make_event(
 
 
 def _safe_id(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _canonical_json(value: Any) -> str:
-    def default(item: Any) -> Any:
-        if hasattr(item, "model_dump"):
-            return item.model_dump(mode="json")
-        return str(item)
-
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=default)
+    return sha256_hex(value)

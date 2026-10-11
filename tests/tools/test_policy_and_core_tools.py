@@ -13,6 +13,7 @@ from nailong_agent_sdk.tools.core.services import CoreToolDispatcher, CoreToolSe
 from nailong_agent_sdk.tools.policy import CapabilityGrant, CapabilityPolicy, SideEffectClass
 from nailong_agent_sdk.tools.registry import HarnessToolRegistry, RegisteredTool
 from nailong_agent_sdk.tools.supervisor import CommandTemplate
+from tests.support.extended_paths import resolve_files_in_extended_spelling, windows_only
 from tests.support.processes import child_environment
 from tests.support.tools import (
     build,
@@ -28,7 +29,7 @@ def test_registry_and_definitions_are_consistent():
     core_names = {definition.name for definition in core_tool_definitions()}
     assert core_names <= registry_names, core_names - registry_names
     extras = registry_names - core_names
-    assert extras == {"read_spec", "run_verilator", "run_yosys", "run_openroad", "run_opensta"}
+    assert extras == {"read_spec"}
     for definition in core_tool_definitions():
         assert definition.input_schema["type"] == "object"
 
@@ -191,10 +192,18 @@ def test_glob_rules_and_limits(tmp_path):
     ok = run(call(executor, "glob", pattern="**/*.txt"))
     assert ok.output["matches"] == sorted(ok.output["matches"])
     assert {m.replace("\\", "/") for m in ok.output["matches"]} == {"a.txt", "b.txt", "sub/c.txt"}
-    for bad in ("../*", "/etc/*", "sub/../../*", "C:\\Windows\\*"):
+    for bad in (
+        "../*",
+        "/etc/*",
+        "sub/../../*",
+        "C:\\Windows\\*",
+        "D:data/*",
+        "\\\\server\\share\\*",
+        "sub\\..\\..\\*",
+    ):
         result = run(call(executor, "glob", pattern=bad))
         assert result.status == "failed", bad
-        assert result.error, bad
+        assert f'Glob pattern "{bad}" must remain below the configured run root' in result.error
     limited = run(call(executor, "glob", pattern="**/*", limit=2))
     assert len(limited.output["matches"]) == 2
     empty_pattern = run(call(executor, "glob", pattern=""))
@@ -718,6 +727,49 @@ def test_capability_policy_unit_matrix(tmp_path):
         run_root=root,
     )
     assert nopath.allowed is True
+
+
+@windows_only
+def test_policy_scopes_hold_when_a_file_resolves_in_the_extended_spelling(tmp_path, monkeypatch):
+    policy = CapabilityPolicy(
+        [CapabilityGrant(role="r", capabilities=["draft.write"], allowed_paths=["out"])]
+    )
+    resolve_files_in_extended_spelling(monkeypatch)
+
+    def evaluate(requested):
+        return policy.evaluate(
+            role="r",
+            capability="draft.write",
+            side_effect=SideEffectClass.MUTATING,
+            run_root=tmp_path,
+            requested_paths=[requested],
+        )
+
+    inside = evaluate("out/a.txt")
+    assert inside.allowed is False and inside.approval_required is True
+    for requested in ("elsewhere/a.txt", "out/../../x", "out_evil/a.txt"):
+        denied = evaluate(requested)
+        assert denied.allowed is False and denied.approval_required is False, requested
+        assert "outside the declared capability scope" in denied.reason, requested
+
+
+@windows_only
+def test_core_tools_work_when_a_file_resolves_in_the_extended_spelling(tmp_path, monkeypatch):
+    executor, ctx = build(tmp_path, declared=("out/draft.md",))
+    (ctx.run_root / "a.txt").write_text("alpha\n", "utf-8")
+    (tmp_path / "outside.txt").write_text("OUTSIDE-SECRET", "utf-8")
+    resolve_files_in_extended_spelling(monkeypatch)
+    read = run(call(executor, "read_file", path="a.txt"))
+    assert read.status == "succeeded" and read.output["lines"][0]["text"] == "alpha"
+    wrote = run(call(executor, "write_draft", path="out/draft.md", content="drafted"))
+    assert wrote.status == "succeeded", wrote.error
+    assert (ctx.run_root / "out" / "draft.md").read_text("utf-8") == "drafted"
+    assert run(call(executor, "glob", pattern="*.txt")).output["matches"] == ["a.txt"]
+    nested = run(call(executor, "glob", pattern="out/*.md")).output["matches"]
+    assert [match.replace("\\", "/") for match in nested] == ["out/draft.md"]
+    escape = run(call(executor, "read_file", path="../outside.txt"))
+    assert escape.status in {"failed", "blocked"}
+    assert "OUTSIDE-SECRET" not in json.dumps(escape.model_dump(mode="json"))
 
 
 def test_filesystem_read_reaches_unauthorized_artifact_blobs_and_journal(tmp_path):

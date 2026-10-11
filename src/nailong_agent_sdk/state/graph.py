@@ -16,6 +16,8 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from functools import partial
 from typing import Any
 
+from pydantic import BaseModel
+
 from ..foundations.dependency_graph import deterministic_cycles
 from ..foundations.identifiers import require_unique
 from .elastic import (
@@ -128,6 +130,8 @@ class StateGraph:
         self._status = {node_id: GraphNodeStatus.PENDING for node_id in self._nodes}
         self._results: dict[str, GraphNodeResult] = {}
         self._events: list[GraphEvent] = []
+        self._dumped_items: dict[int, tuple[BaseModel, dict[str, Any]]] = {}
+        self._dumped_shared_state: tuple[GraphSharedState, dict[str, Any]] | None = None
         self._validate_graph()
         self._validate_elastic()
         self._rebuild_routing_index()
@@ -162,25 +166,38 @@ class StateGraph:
         return self._results.get(node_id)
 
     def snapshot(self) -> dict[str, Any]:
-        return {
-            "nodes": [
-                self._nodes[node_id].model_dump(mode="json") for node_id in sorted(self._nodes)
-            ],
-            "edges": [edge.model_dump(mode="json") for edge in self._edges],
-            "shared_state": self._shared_state.model_dump(mode="json"),
+        previous = self._dumped_items
+        current: dict[int, tuple[BaseModel, dict[str, Any]]] = {}
+
+        def dumped(item: BaseModel) -> dict[str, Any]:
+            entry = previous.get(id(item))
+            if entry is None or entry[0] is not item:
+                entry = (item, item.model_dump(mode="json"))
+            current[id(item)] = entry
+            return entry[1]
+
+        shared = self._dumped_shared_state
+        if shared is None or shared[0] is not self._shared_state:
+            shared = (self._shared_state, self._shared_state.model_dump(mode="json"))
+        snapshot = {
+            "nodes": [dumped(self._nodes[node_id]) for node_id in sorted(self._nodes)],
+            "edges": [dumped(edge) for edge in self._edges],
+            "shared_state": shared[1],
             "statuses": {node_id: self._status[node_id].value for node_id in sorted(self._status)},
             "results": {
-                node_id: self._results[node_id].model_dump(mode="json")
-                for node_id in sorted(self._results)
+                node_id: dumped(self._results[node_id]) for node_id in sorted(self._results)
             },
-            "events": [event.model_dump(mode="json") for event in self._events],
+            "events": [dumped(event) for event in self._events],
             "max_elastic_depth": self._max_elastic_depth,
             "max_elastic_nodes": self._max_elastic_nodes,
             "elastic_depth_ceiling": self._elastic_depth_ceiling,
             "elastic_nodes_ceiling": self._elastic_nodes_ceiling,
-            "spawn_records": [record.model_dump(mode="json") for record in self._spawn_records],
-            "capacity_grants": [grant.model_dump(mode="json") for grant in self._capacity_grants],
+            "spawn_records": [dumped(record) for record in self._spawn_records],
+            "capacity_grants": [dumped(grant) for grant in self._capacity_grants],
         }
+        self._dumped_items = current
+        self._dumped_shared_state = shared
+        return snapshot
 
     @classmethod
     def from_snapshot(cls, payload: dict[str, Any]) -> StateGraph:
@@ -678,6 +695,7 @@ class StateGraph:
         join_id = elastic_join_id(parent_id)
         visible = self._dependencies_for(parent_id)
         taken: set[str] = set()
+        handoff_chars_used = 0
         problems: list[ElasticProblem | None] = []
         for request in requests:
             problem = check_spawn_request(
@@ -686,6 +704,7 @@ class StateGraph:
                 parent_routing_refs=parent.routing_refs,
                 visible_dependencies=visible,
                 taken_request_ids=taken,
+                handoff_chars_used=handoff_chars_used,
             )
             if problem is None:
                 existing = next(
@@ -704,6 +723,7 @@ class StateGraph:
                     )
             if problem is None:
                 taken.add(request.request_id)
+                handoff_chars_used += len(request.handoff or "")
             problems.append(problem)
         valid = [
             request for request, problem in zip(requests, problems, strict=True) if not problem

@@ -11,11 +11,6 @@ from __future__ import annotations
 
 from .chat import OpenAICompatibleAgentModel
 from .embeddings import OpenAICompatibleEmbeddingProvider
-from .semantic_gap import (
-    OpenAICompatibleSemanticGapAnalyzer,
-    SemanticGapAnalysis,
-    UntrustedSemanticGapFinding,
-)
 from .transport import (
     HttpxJsonTransport,
     HttpxStreamingJsonTransport,
@@ -34,11 +29,8 @@ __all__ = [
     "OpenAICompatibleAgentModel",
     "OpenAICompatibleEmbeddingProvider",
     "OpenAICompatibleEndpoint",
-    "OpenAICompatibleSemanticGapAnalyzer",
     "OpenAICompatibleVisionAdapter",
-    "SemanticGapAnalysis",
     "SourceVerifiedImageLoader",
     "StreamingJsonHttpTransport",
-    "UntrustedSemanticGapFinding",
     "UrlLibJsonTransport",
 ]

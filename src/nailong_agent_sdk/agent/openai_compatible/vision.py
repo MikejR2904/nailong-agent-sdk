@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from ...foundations.errors import AgentSdkError
+from ...foundations.paths import relative_to_base
 from ...specifications.documents import DocumentFormat, DocumentNode, DocumentNodeKind
 from ...specifications.vision import VisionProposal
 from .chat import _chat_content
@@ -47,7 +48,7 @@ class SourceVerifiedImageLoader:
             raise ValueError("SourceVerifiedImageLoader supports only PNG and JPEG documents.")
         candidate = (self._root / node.source.relative_path).resolve()
         try:
-            candidate.relative_to(self._root)
+            relative_to_base(candidate, self._root)
         except ValueError as error:
             raise ValueError("Image source path escapes the specification root.") from error
         if not candidate.is_file():

@@ -8,6 +8,7 @@ import json
 import re
 
 from ..foundations.contracts import EpisodeKind
+from ..foundations.hashing import estimate_tokens
 from .episode_models import EpisodeRecord
 
 
@@ -24,7 +25,7 @@ class LexicalEpisodeRelevanceScorer:
 
 def _episode_tokens(record: EpisodeRecord) -> int:
     payload = record.content if record.content is not None else {"description": record.description}
-    return max(1, len(json.dumps(payload, sort_keys=True, default=str)) // 4)
+    return estimate_tokens(payload)
 
 
 def _terms(value: str) -> set[str]:
@@ -41,8 +42,6 @@ def _provenance_weight(record: EpisodeRecord) -> float:
         return 1.0
     if record.kind is EpisodeKind.EXPLORATORY:
         return 0.65
-    if record.eda_manifest is not None:
-        return 0.20
     return 0.40
 
 

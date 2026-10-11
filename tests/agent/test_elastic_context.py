@@ -170,3 +170,45 @@ def test_a_child_without_a_recorded_result_is_listed_as_such():
     )
     text = render_elastic_instructions(node, stripped)
     assert "scope: the clock tree): no result recorded" in text
+
+
+def test_a_join_repeats_the_handoff_notes_of_its_requests_verbatim_before_the_results():
+    graph = finished_exploration(
+        {"b": ok({"finding": "four dividers"}), "a": ok({"finding": "two resets"})},
+        requests=[
+            req("b", handoff="Dividers A and B were checked.\nSkip the PLL."),
+            req("a", handoff="The reset tree goes last."),
+        ],
+    )
+    node, context = view(graph, "join:root")
+    text = render_elastic_instructions(node, context)
+    note_b = '- request "b": Dividers A and B were checked.\nSkip the PLL.'
+    note_a = '- request "a": The reset tree goes last.'
+    assert "Handoff notes the task wrote for its continuation" in text
+    assert note_b in text and note_a in text
+    assert text.index(note_b) < text.index(note_a) < text.index("Exploration results:")
+
+
+def test_handoff_notes_are_never_cut_by_the_budget_for_results():
+    notes = [req(f"c{i}", handoff="n" * 3_000) for i in range(2)]
+    graph = finished_exploration(
+        {f"c{i}": ok({"blob": "z" * 500}) for i in range(2)}, requests=notes
+    )
+    node, context = view(graph, "join:root")
+    text = render_elastic_instructions(node, context, max_result_chars=100, max_total_chars=500)
+    assert text.count("n" * 3_000) == 2
+    assert "omitted to stay within" in text
+
+
+def test_a_join_whose_requests_wrote_no_handoff_has_no_handoff_section():
+    graph = finished_exploration({"a": ok({"finding": "x"})})
+    node, context = view(graph, "join:root")
+    assert "Handoff notes" not in render_elastic_instructions(node, context)
+
+
+def test_a_child_is_not_shown_the_handoff_meant_for_the_continuation():
+    graph = StateGraph([n("root")], max_elastic_depth=1, max_elastic_nodes=2)
+    graph.mark_started("root")
+    graph.mark_terminal("root", done_with(req("probe", handoff="secret plan for later")))
+    node, context = view(graph, "elastic:root:probe")
+    assert "secret plan for later" not in render_elastic_instructions(node, context)

@@ -277,20 +277,22 @@ def test_inspect_run_counts_every_event_of_a_long_run(tmp_path):
 def test_cli_quality_agrees_with_ruff_on_this_checkout():
     result = cli("quality", REPO_ROOT, extra_path=RUFF.parent)
     payload = json.loads(result.stdout)
+    paths = payload["checked_paths"]
+    assert "src" in paths and "tests" in paths
     check = subprocess.run(
-        [RUFF, "check", "src", "--select", "F401,F811,E,F,I,UP"],
+        [RUFF, "check", *paths, "--select", "F401,F811,E,F,I,UP"],
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
     )
     fmt = subprocess.run(
-        [RUFF, "format", "--check", "src"], cwd=str(REPO_ROOT), capture_output=True, text=True
+        [RUFF, "format", "--check", *paths], cwd=str(REPO_ROOT), capture_output=True, text=True
     )
-    flagged = [
-        line for line in (fmt.stdout + fmt.stderr).splitlines() if line.startswith("Would reformat")
-    ]
     assert (check.returncode == 0 and fmt.returncode == 0) == payload["passed"]
-    assert payload["passed"], f"the SDK's own quality gate fails on its own source: {flagged}"
+    assert payload["passed"], (
+        f"the SDK's own quality gate fails on its own checkout ({paths}): "
+        f"{payload['diagnostics'][:1_500]}"
+    )
 
 
 @needs_ruff
@@ -432,3 +434,116 @@ def test_cli_verify_evidence_uses_the_verdict_exit_status(tmp_path):
     assert tampered.returncode == 1 and json.loads(tampered.stdout)["verified"] is False
     unknown = cli("verify-evidence", tmp_path, "ghost")
     assert unknown.returncode == 3 and 'Project state "ghost" is unknown' in unknown.stderr
+
+
+def record_run_with_evidence(root, run_id, project, count=2, wrong_hash_at=None):
+    from nailong_agent_sdk.agent.runtime import AgentRuntimeServices
+    from nailong_agent_sdk.foundations.contracts import ToolCall, ToolExecutionResult
+    from nailong_agent_sdk.observability.telemetry_models import (
+        TelemetryActor,
+        TelemetryAuthority,
+        TelemetryContext,
+    )
+    from nailong_agent_sdk.state.project_state_engine import ProjectStateReducer
+    from nailong_agent_sdk.state.project_state_models import StageStateSchema
+
+    services = AgentRuntimeServices.open(root)
+    try:
+        services.project_state_store.ensure(
+            project, StageStateSchema(schema_id="s-v1", stage="design")
+        )
+        scoped = services.result_journal.for_run(run_id)
+        handles = []
+        for index in range(count):
+            call = ToolCall(id=f"c{index}", name="echo", arguments={"i": index})
+            result = ToolExecutionResult(status="succeeded", output={"v": index})
+            handle = scoped.record(call, result)
+            recorded = (
+                handle.model_copy(update={"content_hash": "0" * 64})
+                if index == wrong_hash_at
+                else handle
+            )
+            services.project_state_store.apply(
+                project, ProjectStateReducer.tool_transition(call, result, recorded)
+            )
+            handles.append(handle)
+        services.audit_logs.append(run_id, "step", {"note": "recorded"})
+        services.telemetry.emit(
+            "agent.terminated",
+            TelemetryContext(run_id=run_id),
+            actor=TelemetryActor(kind="system", identifier="test"),
+            authority=TelemetryAuthority.DETERMINISTIC,
+            status="completed",
+        )
+        return handles
+    finally:
+        services.audit_logs.close()
+        services.telemetry.close()
+
+
+def test_cli_prune_runs_is_a_dry_run_until_told_to_apply(tmp_path):
+    record_run_with_evidence(tmp_path, "old-run", "p1")
+    missing_policy = cli("prune-runs", tmp_path)
+    assert missing_policy.returncode == 2 and "--older-than-seconds" in missing_policy.stderr
+    dry = cli("prune-runs", tmp_path, "--older-than-seconds", "0.001")
+    assert dry.returncode == 0, dry.stderr
+    report = json.loads(dry.stdout)
+    assert report["dry_run"] is True and [run["run_id"] for run in report["runs"]] == ["old-run"]
+    assert report["runs"][0]["journal_handles"] == 2 and report["problems"] == []
+    assert len(list((tmp_path / ".agent-tool-results").glob("result-*.json"))) == 2
+    assert not (tmp_path / ".agent-retention").exists()
+    applied = cli("prune-runs", tmp_path, "--older-than-seconds", "0.001", "--apply")
+    assert applied.returncode == 0, applied.stderr
+    done = json.loads(applied.stdout)
+    assert done["dry_run"] is False and done["runs"][0]["tombstone_sequence"] == 1
+    assert list((tmp_path / ".agent-tool-results").glob("result-*.json")) == []
+    assert (tmp_path / ".agent-retention" / "tombstones.jsonl").is_file()
+    verified = cli("verify-evidence", tmp_path, "p1")
+    assert verified.returncode == 0 and json.loads(verified.stdout)["pruned"] == 2
+    inspected = cli("inspect-run", tmp_path, "old-run")
+    assert inspected.returncode == 3 and "was pruned" in inspected.stderr
+
+
+def test_cli_prune_runs_names_bad_policies_and_bad_roots_and_flags_broken_chains(tmp_path):
+    bad_policy = cli("prune-runs", tmp_path, "--older-than-seconds", "0")
+    assert bad_policy.returncode == 3 and "older_than_seconds" in bad_policy.stderr
+    assert "Traceback" not in bad_policy.stderr
+    no_root = cli("prune-runs", tmp_path / "nowhere", "--older-than-seconds", "1")
+    assert no_root.returncode == 3 and "does not exist or is not a directory" in no_root.stderr
+    record_run_with_evidence(tmp_path, "tampered", "p1")
+    database = tmp_path / ".agent-telemetry" / "telemetry.sqlite3"
+    connection = sqlite3.connect(database)
+    row = connection.execute(
+        "SELECT event_json FROM events WHERE run_id='tampered' AND sequence=1"
+    ).fetchone()
+    payload = json.loads(row[0])
+    payload["status"] = "tampered"
+    connection.execute(
+        "UPDATE events SET event_json=? WHERE run_id='tampered' AND sequence=1",
+        (json.dumps(payload),),
+    )
+    connection.commit()
+    connection.close()
+    flagged = cli("prune-runs", tmp_path, "--older-than-seconds", "0.001", "--apply")
+    assert flagged.returncode == 1, flagged.stderr
+    report = json.loads(flagged.stdout)
+    assert report["runs"] == [] and report["problems"][0]["run_id"] == "tampered"
+    assert "left untouched as evidence" in report["problems"][0]["reason"]
+    assert len(list((tmp_path / ".agent-tool-results").glob("result-*.json"))) == 2
+
+
+def test_a_pruned_handle_whose_recorded_hash_differs_from_the_tombstone_is_a_mismatch(tmp_path):
+    from nailong_agent_sdk.agent.retention import RetentionPolicy, prune_run_root
+    from nailong_agent_sdk.developer_tools.inspect import verify_project_evidence
+
+    handles = record_run_with_evidence(tmp_path, "old-run", "p1", count=3, wrong_hash_at=1)
+    before = verify_project_evidence(tmp_path, "p1")
+    assert [m.evidence_id for m in before.mismatches] == [handles[1].handle_id]
+    prune_run_root(tmp_path, RetentionPolicy(older_than_seconds=0.001), dry_run=False)
+    after = verify_project_evidence(tmp_path, "p1")
+    assert after.verified is False and after.checked == 3 and after.pruned == 2
+    (mismatch,) = after.mismatches
+    assert mismatch.evidence_id == handles[1].handle_id and mismatch.journal_hash is None
+    assert mismatch.recorded_hash == "0" * 64
+    for needle in ("retention tombstone 1", 'run "old-run"', handles[1].content_hash):
+        assert needle in mismatch.reason, (needle, mismatch.reason)

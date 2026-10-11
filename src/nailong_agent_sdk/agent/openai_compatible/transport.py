@@ -27,6 +27,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import httpx
 
 from ...foundations.errors import AgentSdkError, TransientProviderError, redact_secrets
+from ...observability.trace_context import TRACEPARENT_HEADER
 
 # 429 (rate limited) and 5xx (server-side) are conventionally safe to retry;
 # other 4xx codes reflect a request the server has already rejected on its
@@ -441,6 +442,7 @@ class OpenAICompatibleEndpoint:
     api_key: str = field(repr=False)
     timeout_seconds: float = 30.0
     allow_insecure_http: bool = False
+    propagate_trace_context: bool = False
 
     def __post_init__(self) -> None:
         if not self.base_url.startswith(("http://", "https://")):
@@ -470,3 +472,9 @@ class OpenAICompatibleEndpoint:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+
+    def request_headers(self, trace_parent: str | None = None) -> dict[str, str]:
+        headers = self.headers
+        if self.propagate_trace_context and trace_parent:
+            headers[TRACEPARENT_HEADER] = trace_parent
+        return headers

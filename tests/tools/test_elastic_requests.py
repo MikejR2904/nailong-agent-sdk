@@ -86,6 +86,7 @@ def test_the_tool_is_a_serial_action_with_a_strict_schema():
         "scope",
         "instructions",
         "reason",
+        "handoff",
         "dependencies",
         "routing_refs",
     }

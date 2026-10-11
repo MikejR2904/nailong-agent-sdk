@@ -4,13 +4,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
-import json
 import re
 from typing import Any
 
 from ..foundations.errors import contains_secret_text
+from ..foundations.hashing import canonical_hash
 
 _FORBIDDEN_KEYS = {
     "access_key",
@@ -134,18 +133,11 @@ class OptionalDependencyError(RuntimeError):
     pass
 
 
-def content_digest(value: Any) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
-    )
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
 def canonical_digest(value: Any) -> str:
     """Return a SHA-256 digest after sanitization and canonical JSON encoding."""
 
     assert_sanitized_interop_value(value)
-    return content_digest(value)
+    return canonical_hash(value)
 
 
 def require_optional_module(module_name: str, extra_name: str) -> Any:

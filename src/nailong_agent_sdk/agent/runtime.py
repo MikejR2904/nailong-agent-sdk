@@ -20,12 +20,14 @@ from ..memory.context_projection import ContextProjectionPolicy, FileToolResultJ
 from ..memory.episode_store import InMemoryEpisodeStore
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.profiler import AgentRunProfiler
+from ..observability.telemetry_models import TelemetryContext
 from ..observability.telemetry_store import TelemetryStore
 from ..state.project_state_models import ProjectStateProjectionPolicy
 from ..state.project_state_store import FileProjectStateStore
 from ..tools.tools import ToolExecutor
 from .base_agent import AgentWatchdogPolicy, BaseAgent, PostToolHook, PreToolHook
 from .model import AgentModel
+from .retention import RunRetention
 from .verification import VerificationGateRegistry
 
 
@@ -45,7 +47,7 @@ class AgentRuntimeServices:
     audit_logs: AuditTranscriptStore
 
     @classmethod
-    def open(cls, run_root: Path) -> AgentRuntimeServices:
+    def open(cls, run_root: Path, *, audit_max_open_handles: int = 32) -> AgentRuntimeServices:
         """Create or reopen SDK-owned durable stores below ``run_root``."""
 
         resolved = run_root.resolve()
@@ -55,7 +57,15 @@ class AgentRuntimeServices:
             result_journal=FileToolResultJournal(resolved),
             project_state_store=FileProjectStateStore(resolved),
             telemetry=TelemetryStore(resolved),
-            audit_logs=AuditTranscriptStore(resolved),
+            audit_logs=AuditTranscriptStore(resolved, max_open_handles=audit_max_open_handles),
+        )
+
+    def retention(self) -> RunRetention:
+        return RunRetention(
+            self.run_root,
+            telemetry=self.telemetry,
+            audit_logs=self.audit_logs,
+            result_journal=self.result_journal,
         )
 
     def create_agent(
@@ -72,6 +82,7 @@ class AgentRuntimeServices:
         context_projection_policy: ContextProjectionPolicy | None = None,
         project_state_projection_policy: ProjectStateProjectionPolicy | None = None,
         episode_store_factory: Callable[[], InMemoryEpisodeStore] | None = None,
+        telemetry_context: TelemetryContext | None = None,
     ) -> BaseAgent:
         """Construct a BaseAgent with durable local audit and evidence stores.
 
@@ -95,6 +106,7 @@ class AgentRuntimeServices:
             project_state_store=self.project_state_store,
             episode_store_factory=episode_store_factory,
             telemetry=self.telemetry,
+            telemetry_context=telemetry_context,
             audit_logs=self.audit_logs,
             profiler=AgentRunProfiler(),
         )

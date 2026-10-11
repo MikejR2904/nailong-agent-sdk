@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import Field
 
 from ..foundations.contracts import StrictModel
+from ..foundations.paths import relative_to_base
 from .approvals import ApprovalRequest, ApprovalStatus
 
 # Credential and key-material locations that are always denied, independent of
@@ -41,6 +42,16 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "*.p12",
     "*.pfx",
 )
+
+
+def sensitive_pattern_for(path: Path | str) -> str | None:
+    posix = str(path).replace("\\", "/").lower()
+    for pattern in SENSITIVE_PATH_PATTERNS:
+        if any(
+            fnmatch.fnmatchcase(candidate, pattern.lower()) for candidate in (posix, posix + "/")
+        ):
+            return pattern
+    return None
 
 
 class SideEffectClass(StrEnum):
@@ -143,12 +154,7 @@ class CapabilityPolicy:
         patterns like ``*/.ssh/*``.
         """
 
-        resolved = str((run_root.resolve() / requested_path).resolve()).replace("\\", "/").lower()
-        candidates = (resolved, resolved + "/")
-        for pattern in SENSITIVE_PATH_PATTERNS:
-            if any(fnmatch.fnmatchcase(candidate, pattern.lower()) for candidate in candidates):
-                return pattern
-        return None
+        return sensitive_pattern_for((run_root.resolve() / requested_path).resolve())
 
     @staticmethod
     def _path_is_allowed(requested_path: str, allowed_paths: list[str], run_root: Path) -> bool:
@@ -157,13 +163,13 @@ class CapabilityPolicy:
         root = run_root.resolve()
         candidate = (root / requested_path).resolve()
         try:
-            candidate.relative_to(root)
+            relative_to_base(candidate, root)
         except ValueError:
             return False
         for allowed_path in allowed_paths:
             allowed = (root / allowed_path).resolve()
             try:
-                candidate.relative_to(allowed)
+                relative_to_base(candidate, allowed)
                 return True
             except ValueError:
                 continue

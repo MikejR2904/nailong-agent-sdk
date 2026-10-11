@@ -7,7 +7,12 @@ from __future__ import annotations
 from typing import Any
 
 from ...foundations.contracts import EpisodeKind, ToolConcurrency, ToolDefinition
-from ...state.elastic import ELASTIC_REQUEST_TOOL_NAME, MAX_ELASTIC_DEPENDENCIES
+from ...state.elastic import (
+    ELASTIC_REQUEST_TOOL_NAME,
+    MAX_ELASTIC_DEPENDENCIES,
+    MAX_ELASTIC_HANDOFF_CHARS,
+    MAX_ELASTIC_HANDOFF_TOTAL_CHARS,
+)
 
 
 def core_tool_definitions() -> list[ToolDefinition]:
@@ -296,7 +301,9 @@ def core_tool_definitions() -> list[ToolDefinition]:
             "and the requests of tasks running at the same time count against the plan's "
             "elastic capacity. A request that exceeds that capacity is refused here, or held for "
             "a controller decision when this task ends if the binding allows it and a grant "
-            "could still fit it.",
+            "could still fit it. The join node resumes this task with its task text and the "
+            "exploration results, not with this conversation, so put anything it must remember "
+            "in handoff.",
             {
                 "type": "object",
                 "properties": {
@@ -313,6 +320,15 @@ def core_tool_definitions() -> list[ToolDefinition]:
                     },
                     "instructions": {"type": "string", "minLength": 1, "maxLength": 8000},
                     "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    "handoff": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_ELASTIC_HANDOFF_CHARS,
+                        "description": "Notes for the join node that resumes this task, repeated "
+                        "to it word for word; at most "
+                        f"{MAX_ELASTIC_HANDOFF_TOTAL_CHARS} characters across this task's "
+                        "requests.",
+                    },
                     "dependencies": {
                         "type": "array",
                         "items": {"type": "string", "minLength": 1},

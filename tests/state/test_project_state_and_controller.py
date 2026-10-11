@@ -32,7 +32,6 @@ from nailong_agent_sdk.state.project_state_store import (
     InMemoryProjectStateStore,
 )
 from nailong_agent_sdk.state.shared_state import SharedSubstrateSnapshot
-from nailong_agent_sdk.state.stage_gates import StageCompletenessGate, StageCompletenessPolicy
 from tests.support.controllers import executing_runtime
 from tests.support.plans import AGENT, arun, ok, run_ok, simple_plan, task
 from tests.support.processes import child_environment
@@ -488,7 +487,7 @@ def test_editing_a_completed_artifact_returns_it_to_in_progress():
     assert artifact.status is ArtifactStatus.IN_PROGRESS and artifact.artifact_id == "sha256:edited"
 
 
-def test_stage_gate_with_required_artifacts_passes_once_the_controller_completes_them(tmp_path):
+def test_the_controller_completes_a_recorded_artifact_and_refuses_an_unrecorded_one(tmp_path):
     runtime = ControllerRuntime(tmp_path)
     snapshot = SharedSubstrateSnapshot(snapshot_id="snap", version="1", content_hash="h")
     profile = SkillToolProfile(stage="design", source_snapshot_id="snap")
@@ -500,18 +499,13 @@ def test_stage_gate_with_required_artifacts_passes_once_the_controller_completes
     runtime.approve_plan(controller.controller_id, True)
     runtime.dispatch(controller.controller_id)
     runtime._project_state_store.apply("snap", draft_outcome())
-    policy = StageCompletenessPolicy(
-        policy_id="p", stage="design", required_artifact_paths=["a.md"]
-    )
-    before = StageCompletenessGate().evaluate(
-        runtime.project_state(controller.controller_id), policy
-    )
-    assert not before.complete and before.incomplete_artifact_paths == ["a.md"]
+    (before,) = runtime.project_state(controller.controller_id).artifacts
+    assert before.relative_path == "a.md" and before.status is not ArtifactStatus.COMPLETE
     runtime.set_artifact_status(
         controller.controller_id, "a.md", ArtifactStatus.COMPLETE, reason="reviewed"
     )
-    decision = runtime.evaluate_stage_completeness(controller.controller_id, policy)
-    assert decision.complete, decision.reasons
+    (after,) = runtime.project_state(controller.controller_id).artifacts
+    assert after.status is ArtifactStatus.COMPLETE
     with pytest.raises(ValueError, match='Artifact "missing.md" is not recorded'):
         runtime.set_artifact_status(
             controller.controller_id, "missing.md", ArtifactStatus.COMPLETE, reason="x"

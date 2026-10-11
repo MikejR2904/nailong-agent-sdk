@@ -10,23 +10,17 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
 from ..foundations.identifiers import require_unique
 
-
-class SpecificationCategory(StrEnum):
-    FUNCTIONAL = "functional"
-    ARCHITECTURAL = "architectural"
-    INTERFACE = "interface"
-    PPA = "ppa"
-    PDK = "pdk"
-    VERIFICATION = "verification"
-    SAFETY_SECURITY = "safety-security"
-    ASSUMPTIONS = "assumptions"
+SpecificationCategory = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$"),
+]
 
 
 class DocumentFormat(StrEnum):
@@ -40,12 +34,8 @@ class DocumentFormat(StrEnum):
     YAML = "yaml"
     JSON = "json"
     XML = "xml"
-    SYSTEMRDL = "systemrdl"
-    SDC = "sdc"
-    UPF = "upf"
     DOT = "dot"
     PLANTUML = "plantuml"
-    WAVEDROM = "wavedrom"
     MERMAID = "mermaid"
     TIKZ = "tikz"
     SVG = "svg"

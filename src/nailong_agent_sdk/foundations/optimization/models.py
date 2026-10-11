@@ -2,7 +2,7 @@
 
 """PCKP problem, item, and solution contracts.
 
-The general model is a precedence-constrained knapsack problem (PCKP): selecting
+The general model is a prerequisite-constrained knapsack problem (PCKP): selecting
 an item requires selecting every immediate prerequisite.
 """
 

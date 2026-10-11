@@ -71,6 +71,7 @@ class ElasticRequestBuffer:
             parent_routing_refs=self._node.routing_refs,
             visible_dependencies=self._visible,
             taken_request_ids={item.request_id for item in self._requests},
+            handoff_chars_used=sum(len(item.handoff or "") for item in self._requests),
         )
         if problem is not None:
             raise ElasticRequestRejected(problem)

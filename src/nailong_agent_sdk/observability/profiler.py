@@ -8,8 +8,6 @@ records prompts, model reasoning, raw tool payloads, or provider-internal traces
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,6 +20,8 @@ from pydantic import Field, field_validator
 
 from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
+from ..foundations.hashing import canonical_hash, canonical_json
+from .trace_context import new_span_id, new_trace_id, require_span_id, require_trace_id
 
 
 class ProfileSpanKind(StrEnum):
@@ -57,7 +57,7 @@ class ProfileSpan(StrictModel):
     @classmethod
     def attributes_are_bounded_and_safe(cls, value: dict[str, Any]) -> dict[str, Any]:
         _assert_profile_safe(value)
-        if len(_canonical_json(value)) > 4_096:
+        if len(canonical_json(value)) > 4_096:
             raise ValueError("profile span attributes exceed the 4,096-character bound")
         return value
 
@@ -79,6 +79,7 @@ class AgentRunProfile(StrictModel):
 
     schema_version: str = "agent-run-profile-v1"
     run_id: str = Field(min_length=1)
+    trace_id: str | None = None
     task_id: str = Field(min_length=1)
     agent_identity: str = Field(min_length=1)
     started_at_utc: str
@@ -130,20 +131,37 @@ class AgentRunProfiler:
         self._status: ProfileSpanStatus | None = None
         self._spans: list[ProfileSpan] = []
         self._active: dict[str, _ActiveSpan] = {}
-        self._counter = 0
+        self._trace_id: str | None = None
         self._final_profile: AgentRunProfile | None = None
 
-    def begin_run(self, run_id: str, task_id: str, agent_identity: str) -> ProfileSpanHandle:
+    @property
+    def trace_id(self) -> str | None:
+        return self._trace_id
+
+    def begin_run(
+        self,
+        run_id: str,
+        task_id: str,
+        agent_identity: str,
+        *,
+        trace_id: str | None = None,
+        parent_span_id: str | None = None,
+    ) -> ProfileSpanHandle:
         with self._lock:
             if self._run_id is not None:
                 raise RuntimeError("AgentRunProfiler may profile only one run.")
+            if trace_id is not None:
+                require_trace_id(trace_id, "trace_id")
+            if parent_span_id is not None:
+                require_span_id(parent_span_id, "parent_span_id")
+            self._trace_id = trace_id or new_trace_id()
             self._run_id = run_id
             self._task_id = task_id
             self._agent_identity = agent_identity
             self._started_at_utc = _utc_now()
             self._started_monotonic_ns = monotonic_ns()
             self._started_cpu_ns = process_time_ns()
-            return self.start_span(ProfileSpanKind.RUN, "agent-run")
+            return self.start_span(ProfileSpanKind.RUN, "agent-run", parent_span_id=parent_span_id)
 
     def start_span(
         self,
@@ -160,10 +178,9 @@ class AgentRunProfiler:
                 raise RuntimeError("Cannot start a profile span after finish_run().")
             safe_attributes = dict(attributes or {})
             _assert_profile_safe(safe_attributes)
-            if len(_canonical_json(safe_attributes)) > 4_096:
+            if len(canonical_json(safe_attributes)) > 4_096:
                 raise ValueError("profile span attributes exceed the 4,096-character bound")
-            self._counter += 1
-            handle = ProfileSpanHandle(span_id=f"span-{self._counter}")
+            handle = ProfileSpanHandle(span_id=new_span_id())
             self._active[handle.span_id] = _ActiveSpan(
                 handle=handle,
                 parent_span_id=parent_span_id,
@@ -240,6 +257,7 @@ class AgentRunProfiler:
             payload = {
                 "schema_version": "agent-run-profile-v1",
                 "run_id": self._run_id,
+                "trace_id": self._trace_id,
                 "task_id": self._task_id,
                 "agent_identity": self._agent_identity,
                 "started_at_utc": self._started_at_utc,
@@ -253,7 +271,9 @@ class AgentRunProfiler:
                 ],
                 "integrity_hash": "",
             }
-            return AgentRunProfile.model_validate({**payload, "integrity_hash": _hash(payload)})
+            return AgentRunProfile.model_validate(
+                {**payload, "integrity_hash": canonical_hash(payload)}
+            )
 
     def write_json(self, destination: Path) -> Path:
         """Atomically persist a completed profile owned by the SDK consumer."""
@@ -304,14 +324,6 @@ def _assert_profile_safe(value: Any) -> None:
     elif isinstance(value, list):
         for nested in value:
             _assert_profile_safe(nested)
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _hash(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _utc_now() -> str:

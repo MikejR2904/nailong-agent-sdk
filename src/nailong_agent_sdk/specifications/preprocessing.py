@@ -13,13 +13,13 @@ import json
 import re
 import zipfile
 from pathlib import Path
-from typing import Any
 
 import yaml
 
 from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.identifiers import file_safe_name
 from ..foundations.json_limits import assert_json_depth
+from ..foundations.paths import relative_to_base
 from ..foundations.text import split_lines
 from .documents import (
     DocumentFormat,
@@ -27,7 +27,6 @@ from .documents import (
     DocumentNodeKind,
     DocumentTree,
     SourceRef,
-    SpecificationCategory,
     SpecificationDocument,
     SpecificationManifest,
     VisionStatus,
@@ -52,7 +51,10 @@ class SpecificationPreprocessor:
         if not isinstance(payload, dict):
             raise ValueError("Specification manifest must be a mapping.")
         if "documents" not in payload:
-            payload = self._legacy_manifest_to_documents(payload)
+            raise ValueError(
+                f'Specification manifest "{relative_manifest_path}" must contain a "documents" '
+                f"list; its top-level keys are {sorted(payload)}."
+            )
         return SpecificationManifest.model_validate(payload)
 
     def process_manifest(self, manifest: SpecificationManifest) -> list[DocumentTree]:
@@ -143,12 +145,8 @@ class SpecificationPreprocessor:
             DocumentFormat.TXT,
             DocumentFormat.MD,
             DocumentFormat.TEX,
-            DocumentFormat.SYSTEMRDL,
-            DocumentFormat.SDC,
-            DocumentFormat.UPF,
             DocumentFormat.PLANTUML,
             DocumentFormat.DOT,
-            DocumentFormat.WAVEDROM,
             DocumentFormat.MERMAID,
             DocumentFormat.TIKZ,
         }:
@@ -158,7 +156,6 @@ class SpecificationPreprocessor:
                 in {
                     DocumentFormat.PLANTUML,
                     DocumentFormat.DOT,
-                    DocumentFormat.WAVEDROM,
                     DocumentFormat.MERMAID,
                     DocumentFormat.TIKZ,
                 }
@@ -385,32 +382,10 @@ class SpecificationPreprocessor:
     def _resolve(self, relative_path: str) -> Path:
         candidate = (self._root / relative_path).resolve()
         try:
-            candidate.relative_to(self._root)
+            relative_to_base(candidate, self._root)
         except ValueError as error:
             raise ValueError("Specification path escapes the configured root.") from error
         return candidate
-
-    @staticmethod
-    def _legacy_manifest_to_documents(payload: dict[str, Any]) -> dict[str, Any]:
-        documents: list[dict[str, Any]] = []
-        categories = {
-            "functional_spec": SpecificationCategory.FUNCTIONAL,
-            "architectural_spec": SpecificationCategory.ARCHITECTURAL,
-            "interface_spec": SpecificationCategory.INTERFACE,
-            "ppa_spec": SpecificationCategory.PPA,
-            "pdk_spec": SpecificationCategory.PDK,
-            "verification_spec": SpecificationCategory.VERIFICATION,
-            "safety_security_spec": SpecificationCategory.SAFETY_SECURITY,
-            "assumptions_dependencies": SpecificationCategory.ASSUMPTIONS,
-        }
-        for key, category in categories.items():
-            section = payload.get(key, {})
-            for item in section.get("documents", []):
-                documents.append({**item, "category": category.value})
-            for interface in section.get("interfaces", []):
-                for item in interface.get("documents", []):
-                    documents.append({**item, "category": category.value})
-        return {"documents": documents}
 
 
 def keywords_from_task(text: str) -> set[str]:

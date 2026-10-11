@@ -11,10 +11,11 @@ lateral-state persistence channel.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Collection, Mapping
+import functools
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
+from typing import Concatenate
 
-from ..foundations.errors import AgentSdkError
 from ..tools.approvals import ApprovalRegistry, ApprovalRequest, ApprovalStatus
 from .coordination_records import RunRecord, _hash_run
 from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
@@ -31,6 +32,19 @@ from .graph_models import (
 from .planning import Plan, PlanValidationReport, PlanValidator, render_plan_errors
 from .run_state_store import RunStateStore
 from .shared_state import ExploratoryDiscovery, LateralDependencyRequest, SharedStateWrite
+
+
+def _serialized[**P, R](
+    method: Callable[Concatenate[HarnessCoordinator, str, P], R],
+) -> Callable[Concatenate[HarnessCoordinator, str, P], R]:
+    @functools.wraps(method)
+    def wrapper(self: HarnessCoordinator, run_id: str, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        if not self._store.exists(run_id):
+            return method(self, run_id, *args, **kwargs)
+        with self._store.locked(run_id):
+            return method(self, run_id, *args, **kwargs)
+
+    return wrapper
 
 
 def _approvals_resolved(requests: list[ApprovalRequest]) -> bool:
@@ -112,6 +126,7 @@ class HarnessCoordinator:
         self.get_run_state(run_id)
         return self._graphs[run_id].shared_state
 
+    @_serialized
     def cancel_run(self, run_id: str) -> RunRecord:
         record = self.get_run_state(run_id)
         graph = self._graphs[run_id]
@@ -119,6 +134,7 @@ class HarnessCoordinator:
         self._cancel_runnable_nodes(graph)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, cancelled=True)
 
+    @_serialized
     def publish_discovery(self, run_id: str, discovery: ExploratoryDiscovery) -> RunRecord:
         """Persist a source-backed discovery in the graph snapshot."""
 
@@ -127,6 +143,7 @@ class HarnessCoordinator:
         graph.publish_discovery(discovery)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def write_shared_value(self, run_id: str, state_write: SharedStateWrite) -> RunRecord:
         """Persist an immutable typed shared value in the graph snapshot."""
 
@@ -135,6 +152,7 @@ class HarnessCoordinator:
         graph.write_shared_value(state_write)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def request_lateral_dependency(
         self, run_id: str, request: LateralDependencyRequest
     ) -> RunRecord:
@@ -145,6 +163,7 @@ class HarnessCoordinator:
         graph.request_lateral_dependency(request)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def add_lateral_dependency(
         self,
         run_id: str,
@@ -159,6 +178,7 @@ class HarnessCoordinator:
         graph.add_lateral_dependency(producer_node_id, consumer_node_id, discovery_episode_id)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def grant_elastic_capacity(
         self,
         run_id: str,
@@ -176,12 +196,14 @@ class HarnessCoordinator:
         )
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def decline_elastic_requests(self, run_id: str, parent_node_id: str, reason: str) -> RunRecord:
         record = self.get_run_state(run_id)
         graph = self._graphs[run_id]
         graph.decline_elastic_requests(parent_node_id, reason)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def record_node_result(
         self,
         run_id: str,
@@ -206,7 +228,8 @@ class HarnessCoordinator:
         """Execute graph waves while persisting starts and terminal commits.
 
         The scheduler commits terminal results in canonical node-ID order after
-        each wave. A persisted `RUNNING` state is therefore always recoverable
+        each wave, and one save persists them together with the start of the
+        next wave. A persisted `RUNNING` state is therefore always recoverable
         by ``recover_interrupted_run`` rather than being silently replayed.
         """
 
@@ -215,12 +238,17 @@ class HarnessCoordinator:
             return record
         graph = self._graphs[run_id]
         limit = resolve_parallelism(max_parallelism)
+        unsaved = False
         while True:
             if run_id in self._cancelled:
                 self._cancel_runnable_nodes(graph)
                 return self._save(run_id, record.plan_id, graph, record.plan_validation, True)
             wave = graph.start_runnable_wave(max_parallelism=limit)
             if not wave:
+                if unsaved:
+                    return self._save(
+                        run_id, record.plan_id, graph, record.plan_validation, record.cancelled
+                    )
                 return record
             record = self._save(
                 run_id, record.plan_id, graph, record.plan_validation, record.cancelled
@@ -231,10 +259,9 @@ class HarnessCoordinator:
             )
             for node, result in zip(wave, results, strict=True):
                 graph.mark_terminal(node.node_id, result)
-                record = self._save(
-                    run_id, record.plan_id, graph, record.plan_validation, record.cancelled
-                )
+            unsaved = True
 
+    @_serialized
     def recover_interrupted_run(
         self,
         run_id: str,
@@ -263,6 +290,7 @@ class HarnessCoordinator:
             raise ValueError(f'Run "{run_id}" is unknown.')
         return self._approval_registry(run_id)
 
+    @_serialized
     def resume_run(self, run_id: str) -> RunRecord:
         """Re-read and integrity-verify the run, then re-open nodes whose approvals are decided.
 
@@ -287,6 +315,7 @@ class HarnessCoordinator:
         graph.reopen_blocked(decided)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def reopen_blocked_nodes(self, run_id: str, node_ids: list[str] | None = None) -> RunRecord:
         record = self.get_run_state(run_id)
         graph = self._graphs[run_id]
@@ -317,16 +346,6 @@ class HarnessCoordinator:
         validation: PlanValidationReport,
         cancelled: bool = False,
     ) -> RunRecord:
-        expected = self._fingerprints.get(run_id)
-        if expected is not None and self._store.fingerprint(run_id) != expected:
-            raise AgentSdkError(
-                "RUN_STATE_CONFLICT",
-                f'Run "{run_id}" was changed on disk by another writer after this coordinator '
-                "last read or wrote it, so saving now would overwrite that change. Use one "
-                "HarnessCoordinator per run root (share it with ControllerRuntime) or call "
-                "get_run_state to reload the run before changing it.",
-                {"run_id": run_id},
-            )
         cancelled = cancelled or run_id in self._cancelled
         snapshot = graph.snapshot()
         record = RunRecord(

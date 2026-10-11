@@ -9,7 +9,6 @@ marked untrusted, and named process execution remains delegated to ProcessSuperv
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import html
 import json
 import re
@@ -21,33 +20,29 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ...foundations.contracts import AgentFailure, ToolExecutionResult
+from ...foundations.detached import run_detached
+from ...foundations.hashing import sha256_hex
+from ...foundations.paths import relative_to_base
 from ...foundations.text import split_lines
 from ...foundations.version import http_user_agent
 from ...memory.context_projection import ToolResultJournal
 from ..artifacts import ArtifactStore
-from ..policy import SENSITIVE_PATH_PATTERNS
+from ..policy import sensitive_pattern_for
 from .helpers import (
     _bounded_float,
     _bounded_int,
     _bounded_regex_search,
     _fetch_public_text,
+    _leaves_run_root,
     _nonnegative_int,
     _read_lines,
     _render_pdf_page,
     _required_text,
-    _sha256,
     _strip_html,
     _text_argument,
 )
 
 _INTERNAL_STATE_PREFIX = ".agent-"
-
-
-def _matches_sensitive_pattern(path: Path) -> bool:
-    """Return whether ``path`` names a credential location denied in every run root."""
-
-    posix = str(path).replace("\\", "/").lower()
-    return any(fnmatch.fnmatchcase(posix, pattern.lower()) for pattern in SENSITIVE_PATH_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -68,7 +63,7 @@ class DuckDuckGoHtmlClient:
     """Small dependency-free search client. Search text is always untrusted evidence."""
 
     async def search(self, query: str, limit: int) -> list[SearchResult]:
-        return await asyncio.to_thread(self._search, query, limit)
+        return await run_detached(self._search, query, limit)
 
     @staticmethod
     def _search(query: str, limit: int) -> list[SearchResult]:
@@ -221,10 +216,10 @@ class CoreToolDispatcher:
             raise ValueError("Tool paths must be non-empty and relative to the run root.")
         target = (self._services.root / candidate).resolve()
         try:
-            target.relative_to(self._services.root)
+            relative_to_base(target, self._services.root)
         except ValueError as error:
             raise ValueError("Tool path escapes the configured run root.") from error
-        if _matches_sensitive_pattern(target):
+        if sensitive_pattern_for(target) is not None:
             raise ValueError(f'Tool path "{relative_path}" is a denied credential path.')
         return target
 
@@ -240,7 +235,7 @@ class CoreToolDispatcher:
 
     def _is_readable(self, resolved: Path) -> bool:
         root = self._services.root
-        relative = resolved.relative_to(root)
+        relative = relative_to_base(resolved, root)
         if relative.parts and relative.parts[0].lower().startswith(_INTERNAL_STATE_PREFIX):
             return False
         scope = self._services.read_scope
@@ -248,25 +243,28 @@ class CoreToolDispatcher:
             return True
         for allowed in scope:
             try:
-                resolved.relative_to((root / allowed).resolve())
+                relative_to_base(resolved, (root / allowed).resolve())
             except ValueError:
                 continue
             return True
         return False
 
     def _glob(self, pattern: str, limit: int) -> list[str]:
-        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-            raise ValueError("Glob pattern must remain below the configured run root.")
+        if _leaves_run_root(pattern):
+            raise ValueError(
+                f'Glob pattern "{pattern}" must remain below the configured run root; '
+                'absolute, drive-qualified and ".." patterns are refused.'
+            )
         matches: list[str] = []
         for candidate in self._services.root.glob(pattern):
             resolved = candidate.resolve()
             try:
-                resolved.relative_to(self._services.root)
+                relative = relative_to_base(resolved, self._services.root)
             except ValueError:
                 continue
-            if _matches_sensitive_pattern(resolved) or not self._is_readable(resolved):
+            if sensitive_pattern_for(resolved) is not None or not self._is_readable(resolved):
                 continue
-            matches.append(str(resolved.relative_to(self._services.root)))
+            matches.append(str(relative))
             if len(matches) == limit:
                 break
         return sorted(matches)
@@ -388,7 +386,7 @@ class CoreToolDispatcher:
             "handle_id": handle,
             "content": encoded[:max_chars],
             "truncated": len(encoded) > max_chars,
-            "content_hash": _sha256(encoded),
+            "content_hash": sha256_hex(encoded),
         }
 
     async def _web_fetch(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -400,7 +398,7 @@ class CoreToolDispatcher:
             self._services.max_web_chars,
         )
         page = _bounded_int(arguments.get("page", 1), "page", 1, 10_000)
-        return await asyncio.to_thread(
+        return await run_detached(
             _fetch_public_text,
             url,
             max_chars,
@@ -414,7 +412,7 @@ class CoreToolDispatcher:
         url = _required_text(arguments, "url")
         page = _bounded_int(arguments.get("page", 1), "page", 1, 10_000)
         scale = _bounded_float(arguments.get("scale", 2.0), "scale", 1.0, 4.0)
-        return await asyncio.to_thread(
+        return await run_detached(
             _render_pdf_page,
             url,
             page,

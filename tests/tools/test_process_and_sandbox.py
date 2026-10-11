@@ -22,6 +22,7 @@ from tests.support.processes import process_alive
 from tests.support.tools import run
 
 PY = sys.executable
+posix_only = pytest.mark.skipif(os.name != "posix", reason="resource limits are applied on POSIX")
 
 
 def template(name, code, *, timeout=30, **extra):
@@ -284,6 +285,56 @@ def test_resource_limit_reporting_is_honest_on_this_platform(tmp_path):
     if os.name == "nt":
         assert record.resource_limits_enforced == []
         assert record.resource_limits_unsupported == ["cpu_seconds"]
+
+
+@posix_only
+def test_posix_limits_are_applied_to_the_child_and_reported(tmp_path):
+    limits = ResourceLimits(cpu_seconds=5, max_file_bytes=1_000_000)
+    record = execute(tmp_path, template("limits", "print(1)", resource_limits=limits))
+    assert record.successful
+    assert sorted(record.resource_limits_enforced) == ["cpu_seconds", "max_file_bytes"]
+    assert record.resource_limits_unsupported == []
+
+
+@posix_only
+def test_a_child_that_spins_past_its_cpu_limit_is_reported_as_resource_limited(tmp_path):
+    spinner = template("spin", "while True: pass", resource_limits=ResourceLimits(cpu_seconds=1))
+    record = execute(tmp_path, spinner)
+    assert not record.successful and record.resource_limited
+    assert record.exit_kind is ProcessExitKind.RESOURCE_LIMIT
+    assert record.exit_signal == "SIGXCPU" and record.error_code == "PROCESS_RESOURCE_LIMIT"
+
+
+@posix_only
+def test_a_child_killed_for_writing_past_the_file_limit_is_reported_as_resource_limited(tmp_path):
+    writer = CommandTemplate(
+        name="big",
+        command=["sh", "-c", "exec head -c 2000000 /dev/zero > big.bin"],
+        timeout_seconds=30,
+        resource_limits=ResourceLimits(max_file_bytes=100_000),
+    )
+    record = execute(tmp_path, writer)
+    assert record.exit_kind is ProcessExitKind.RESOURCE_LIMIT and record.exit_signal == "SIGXFSZ"
+    assert (tmp_path / "big.bin").stat().st_size <= 100_000
+
+
+@posix_only
+def test_a_child_that_ignores_the_cpu_signal_is_still_stopped_by_the_hard_limit(tmp_path):
+    stubborn = template(
+        "stubborn",
+        """
+        import signal
+
+        signal.signal(signal.SIGXCPU, signal.SIG_IGN)
+        while True:
+            pass
+        """,
+        resource_limits=ResourceLimits(cpu_seconds=1),
+    )
+    started = time.monotonic()
+    record = execute(tmp_path, stubborn)
+    assert not record.successful and record.exit_signal == "SIGKILL"
+    assert time.monotonic() - started < 20
 
 
 def test_concurrent_executions(tmp_path):

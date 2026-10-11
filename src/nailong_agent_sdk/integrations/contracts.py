@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
@@ -92,53 +92,6 @@ class InteropReceipt(StrictModel):
     duration_ms: float | None = Field(default=None, ge=0)
     retry_count: int = Field(default=0, ge=0)
     detail_code: str | None = None
-
-
-class ExternalDecisionRequest(StrictModel):
-    """Bounded evaluator request with a sanitized state projection and question spec."""
-
-    schema_version: str = "agent-sdk-external-decision-request-v1"
-    purpose: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    state: dict[str, Any]
-    state_digest: str = Field(min_length=64, max_length=64)
-    question_spec_id: str = Field(min_length=1)
-    question_spec_version: str = Field(min_length=1)
-    question_spec_digest: str = Field(min_length=64, max_length=64)
-    model: str = Field(min_length=1)
-    deadline_seconds: float = Field(gt=0, le=300)
-
-    @field_validator("state")
-    @classmethod
-    def state_is_safe(cls, state: dict[str, Any]) -> dict[str, Any]:
-        return checked_interop_value(state)
-
-
-class ExternalDecisionResult(StrictModel):
-    """Normalized evaluator result suitable only for host policy consumption."""
-
-    schema_version: str = "agent-sdk-external-decision-result-v1"
-    status: InteropOperationStatus
-    model: str | None = None
-    provider_request_id: str | None = None
-    answers: dict[str, Any] = Field(default_factory=dict)
-    response_digest: str | None = Field(default=None, min_length=64, max_length=64)
-    input_tokens: int | None = Field(default=None, ge=0)
-    output_tokens: int | None = Field(default=None, ge=0)
-    duration_ms: float | None = Field(default=None, ge=0)
-    retry_count: int = Field(default=0, ge=0)
-    unavailable_reason: str | None = None
-
-    @field_validator("answers")
-    @classmethod
-    def answers_are_safe(cls, answers: dict[str, Any]) -> dict[str, Any]:
-        return checked_interop_value(answers)
-
-
-class ExternalDecisionProvider(Protocol):
-    """Read-only evaluator protocol; implementations cannot receive authority objects."""
-
-    async def evaluate(self, request: ExternalDecisionRequest) -> ExternalDecisionResult: ...
 
 
 SanitizedStateProjector = Callable[[Any], dict[str, Any]]

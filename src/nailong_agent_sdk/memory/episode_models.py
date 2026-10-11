@@ -48,8 +48,6 @@ class EpisodeRecord(StrictModel):
     depended_on_by: list[str] = Field(default_factory=list)
     description: str | None = None
     content: dict[str, Any] | None = None
-    requires_manifest: bool = False
-    eda_manifest: dict[str, Any] | None = None
     tombstone: str | None = None
     access_count: int = Field(default=0, ge=0)
     last_access_sequence: int = Field(default=0, ge=0)
@@ -167,8 +165,6 @@ class EpisodeStore(Protocol):
         dependencies: list[str],
         *,
         content: dict[str, Any] | None = None,
-        requires_manifest: bool = False,
-        eda_manifest: dict[str, Any] | None = None,
     ) -> EpisodeRecord: ...
 
     def close(self, episode_id: str, *, description: str | None = None) -> EpisodeRecord: ...

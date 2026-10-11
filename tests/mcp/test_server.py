@@ -1,35 +1,33 @@
 import asyncio
 import importlib.metadata
 import json
-import os
-import subprocess
+import sys
 import time
 
 import pytest
 
+from nailong_agent_sdk.tools.core import core_tool_definitions
 from tests.support.agents import definition, final, task, tool, tool_call
+from tests.support.chat_provider import chat_provider, final_chat, tool_chat
 from tests.support.mcp_server import Server, raw_post
-from tests.support.specs import req, spec, tree
 
 EXPECTED_TOOLS = {
     "approve_controller_plan",
     "approve_orchestration",
     "assemble_initial_context",
+    "cancel_agent_task",
     "cancel_controller",
     "cancel_orchestration",
     "cancel_run",
     "clear_project_blocker",
-    "classify_specification_version",
     "complete_controller",
     "create_controller",
-    "create_specification_git_lock",
     "create_telemetry_report",
-    "create_variant_worktree",
+    "decide_task_approval",
     "decline_elastic_requests",
     "dispatch_controller",
     "get_audit_log",
     "get_controller_state",
-    "get_git_repository_state",
     "get_orchestration",
     "get_project_state",
     "get_run_state",
@@ -39,11 +37,17 @@ EXPECTED_TOOLS = {
     "grant_elastic_capacity",
     "initialize_project_state",
     "list_metric_definitions",
+    "list_task_approvals",
+    "list_task_files",
     "list_telemetry_runs",
     "open_project_question",
     "prepare_orchestration",
     "process_specification_manifest",
+    "prune_runs",
     "publish_exploratory_discovery",
+    "read_task_file",
+    "reconcile_controller",
+    "reconcile_orchestration",
     "record_controller_node_result",
     "record_controller_stage_failure",
     "record_human_project_decision",
@@ -54,14 +58,11 @@ EXPECTED_TOOLS = {
     "resolve_project_question",
     "resume_run",
     "run_agent_task",
-    "select_task_context",
-    "soft_lock_specification",
     "start_run",
     "submit_approval",
     "submit_controller_plan",
     "submit_orchestration_for_approval",
     "validate_agent_definition",
-    "validate_gate_one",
     "validate_plan",
     "verify_provenance_contract",
 }
@@ -81,7 +82,7 @@ def test_server_exposes_exactly_the_documented_tools(server):
 
     tools = asyncio.run(listing())
     names = {t.name for t in tools}
-    assert names == EXPECTED_TOOLS and len(tools) == 52
+    assert names == EXPECTED_TOOLS and len(tools) == 53
     assert all(t.description and t.input_schema for t in tools)
 
 
@@ -137,6 +138,134 @@ def test_agent_tools(server):
         },
     )
     assert wrong_options["ok"] is False
+
+
+KEY = "sk-live-0123456789abcdef"
+BUILTIN = {item.name: item for item in core_tool_definitions()}
+
+
+def live_options(base_url, **changes):
+    endpoint = {"base_url": base_url, "api_key": KEY, "allow_insecure_http": True}
+    return {"model_endpoint": endpoint, **changes}
+
+
+def test_a_live_run_uses_the_model_tools_and_permissions_the_caller_supplies(server):
+    workspace = server.run_root / "workspaces" / "mcp-live-1"
+    workspace.mkdir(parents=True)
+    (workspace / "note.txt").write_text("the caller granted read access", "utf-8")
+    script = [tool_chat("c1", "read_file", {"path": "note.txt"}), final_chat()]
+    with chat_provider(script) as (base_url, requests):
+        run = server.call(
+            "run_agent_task",
+            {
+                "definition": definition(tools=[BUILTIN["read_file"]], max_iterations=4).model_dump(
+                    mode="json"
+                ),
+                "task": task("mcp-live-1").model_dump(mode="json"),
+                "runtime_options": live_options(
+                    base_url, permissions={"capabilities": ["filesystem.read"]}
+                ),
+            },
+        )
+    assert run["ok"] and run["result"]["status"] == "completed", run
+    assert requests[0]["headers"]["Authorization"] == f"Bearer {KEY}"
+    assert requests[0]["json"]["model"] == "fake-1"
+    assert "the caller granted read access" in json.dumps(requests[1]["json"]["messages"])
+    events = server.call("get_telemetry_events", {"run_id": "mcp-live-1", "limit": 500})
+    assert KEY not in json.dumps([run, events])
+
+
+def test_a_live_run_without_a_grant_is_blocked_with_the_missing_capability_named(server):
+    script = [tool_chat("c1", "read_file", {"path": "note.txt"}), final_chat()]
+    with chat_provider(script) as (base_url, _):
+        run = server.call(
+            "run_agent_task",
+            {
+                "definition": definition(tools=[BUILTIN["read_file"]], max_iterations=4).model_dump(
+                    mode="json"
+                ),
+                "task": task("mcp-live-2").model_dump(mode="json"),
+                "runtime_options": live_options(base_url),
+            },
+        )
+    assert run["ok"] and run["result"]["status"] == "blocked"
+    assert run["result"]["reason"] == 'Role "agent" lacks capability "filesystem.read".'
+
+
+COMMAND = {
+    "name": "greet",
+    "command": [sys.executable, "-c", "print('hello over the wire')"],
+    "timeout_seconds": 30,
+}
+
+
+def command_options(base_url):
+    return live_options(
+        base_url,
+        builtin_tools=["run_registered_command"],
+        command_templates=[COMMAND],
+        permissions={
+            "capabilities": ["process.execute"],
+            "approved_capabilities": ["process.execute"],
+        },
+    )
+
+
+def test_process_options_are_refused_unless_the_service_operator_enables_them(server):
+    with chat_provider([]) as (base_url, requests):
+        refused = server.call(
+            "run_agent_task",
+            {
+                "definition": definition().model_dump(mode="json"),
+                "task": task("mcp-live-3").model_dump(mode="json"),
+                "runtime_options": command_options(base_url),
+            },
+        )
+    assert refused["ok"] is False and requests == []
+    assert refused["errors"][0]["message"].endswith(
+        "Start the service with AGENT_RUNTIME_ALLOW_PROCESS_OPTIONS=1 to allow it."
+    )
+
+
+def test_an_operator_who_enables_process_options_lets_the_caller_declare_commands(tmp_path):
+    enabled = Server(tmp_path, extra_environment={"AGENT_RUNTIME_ALLOW_PROCESS_OPTIONS": "1"})
+    try:
+        script = [
+            tool_chat("c1", "run_registered_command", {"template_name": "greet"}),
+            final_chat(),
+        ]
+        with chat_provider(script) as (base_url, requests):
+            run = enabled.call(
+                "run_agent_task",
+                {
+                    "definition": definition(max_iterations=4).model_dump(mode="json"),
+                    "task": task("mcp-live-4").model_dump(mode="json"),
+                    "runtime_options": command_options(base_url),
+                },
+            )
+        assert run["ok"] and run["result"]["status"] == "completed", run
+        assert "hello over the wire" in json.dumps(requests[1]["json"]["messages"])
+    finally:
+        enabled.stop()
+
+
+def test_cancelling_a_task_that_is_not_running_names_it(server):
+    refused = server.call("cancel_agent_task", {"task_id": "never-started"})
+    assert refused["ok"] is False
+    assert refused["errors"][0]["message"] == 'No agent task "never-started" is running.'
+
+
+def test_options_that_contradict_each_other_are_rejected_before_anything_runs(server):
+    bad = server.call(
+        "run_agent_task",
+        {
+            "definition": definition().model_dump(mode="json"),
+            "task": task("mcp-live-5").model_dump(mode="json"),
+            "runtime_options": live_options("http://127.0.0.1:9/v1", scripted_turns=[final()]),
+        },
+    )
+    assert bad["ok"] is False
+    assert "model_endpoint and scripted_turns are mutually exclusive" in bad["errors"][0]["message"]
 
 
 def test_hostile_scripted_output_does_not_break_the_server(server):
@@ -538,7 +667,7 @@ def test_an_invalid_spawn_request_is_rejected_with_the_field_that_is_wrong(serve
     assert ("spawn_requests", 0, "instructions") in locations
 
 
-def test_specification_and_gate_tools(server):
+def test_specification_tools(server):
     (server.spec_root / "a.md").write_text("The adder shall add.\nIt shall be fast.\n", "utf-8")
     (server.spec_root / "specification-manifest.yaml").write_text(
         "documents:\n"
@@ -553,61 +682,9 @@ def test_specification_and_gate_tools(server):
     )
     missing = server.call("process_specification_manifest", {"manifest_path": "../outside.yaml"})
     assert missing["ok"] is False and "escapes" in missing["errors"][0]["message"]
-    trees = processed["trees"]
-    selection = server.call(
-        "select_task_context",
-        {"trees": trees, "stage": "rtl-development", "task_text": "adder", "scope_pointers": []},
-    )
-    assert selection["ok"], selection
-    specification = spec(reqs=[req("R1", checks=())], trees=[tree()]).model_dump(mode="json")
-    gate = server.call(
-        "validate_gate_one",
-        {"specification": specification, "required_categories": ["functional", "ppa"]},
-    )
-    assert gate["ok"] and gate["summary"]["critical"] == 1 and gate["summary"]["important"] == 1
-    metadata = {"version": "1.0.0", "change_kind": "major", "unified_specification_hash": "h"}
-    refused = server.call(
-        "soft_lock_specification",
-        {
-            "specification": specification,
-            "dependency_graph": gate["dependency_graph"],
-            "gap_report": gate["gap_report"],
-            "metadata": metadata,
-            "user_approved": False,
-        },
-    )
-    assert refused["decision"]["accepted"] is False
-    mismatched = server.call(
-        "soft_lock_specification",
-        {
-            "specification": specification,
-            "dependency_graph": gate["dependency_graph"],
-            "gap_report": gate["gap_report"],
-            "metadata": {**metadata, "version": "9.9.9"},
-            "user_approved": True,
-            "proceed_with_gaps": True,
-        },
-    )
-    assert mismatched["ok"] is False
-    assert mismatched["errors"][0]["message"] == (
-        'Version metadata version "9.9.9" does not match the specification version "1.0.0".'
-    )
-    assert not (server.spec_root / "unified-specification.yaml").exists()
-    accepted = server.call(
-        "soft_lock_specification",
-        {
-            "specification": specification,
-            "dependency_graph": gate["dependency_graph"],
-            "gap_report": gate["gap_report"],
-            "metadata": metadata,
-            "user_approved": True,
-            "proceed_with_gaps": True,
-        },
-    )
-    assert (
-        accepted["decision"]["accepted"] is True
-        and (server.spec_root / "unified-specification.yaml").is_file()
-    )
+    assert [tree["category"] for tree in processed["trees"]] == ["functional"]
+    keyed = server.call("process_specification_manifest", {"manifest_path": "a.md"})
+    assert keyed["ok"] is False and "must be a mapping" in keyed["errors"][0]["message"]
 
 
 def test_telemetry_tools(server):
@@ -631,100 +708,7 @@ def test_telemetry_tools(server):
     assert server.call("record_metric_observation", {"observation": {"nope": 1}})["ok"] is False
 
 
-def _git(cwd, *args):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
-def test_git_tools_with_a_real_repository(server):
-    repo = server.run_root / "specrepo"
-    repo.mkdir()
-    env = {"GIT_CEILING_DIRECTORIES": str(server.run_root)}
-    os.environ.update(env)
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "a@b.c")
-    _git(repo, "config", "user.name", "t")
-    (repo / "f.txt").write_text("x", "utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-q", "-m", "init")
-    state = server.call("get_git_repository_state", {"repository_path": "specrepo"})
-    assert state["ok"] and state["repository"]["clean"] is True
-    for escape in ("../outside", "..", "C:\\Windows", "/etc"):
-        refused = server.call("get_git_repository_state", {"repository_path": escape})
-        assert refused["ok"] is False
-    specification = spec(version="1.0.0", reqs=[req("R1")], trees=[tree()])
-    from nailong_agent_sdk.specifications.gate import SpecificationGate
-    from nailong_agent_sdk.specifications.git_versioning import _sha256
-
-    graph, report = SpecificationGate().validate(specification, required_categories=set())
-    metadata = {
-        "version": "1.0.0",
-        "change_kind": "major",
-        "unified_specification_hash": _sha256(specification.model_dump(mode="json")),
-        "soft_locked": True,
-    }
-    self_made_approval = {
-        "approved": True,
-        "approver_id": "anyone-at-all",
-        "reason": "self approved",
-        "action": "create-specification-lock",
-        "approval_id": "made-up",
-        "at_utc": "2026-01-01T00:00:00+00:00",
-    }
-    lock = server.call(
-        "create_specification_git_lock",
-        {
-            "repository_path": "specrepo",
-            "specification": specification.model_dump(mode="json"),
-            "dependency_graph": graph.model_dump(mode="json"),
-            "gap_report": report.model_dump(mode="json"),
-            "metadata": metadata,
-            "approval": self_made_approval,
-        },
-    )
-    assert lock["ok"], lock
-    unapproved = server.call(
-        "create_specification_git_lock",
-        {
-            "repository_path": "specrepo",
-            "specification": specification.model_dump(mode="json"),
-            "dependency_graph": graph.model_dump(mode="json"),
-            "gap_report": report.model_dump(mode="json"),
-            "metadata": metadata,
-            "approval": {**self_made_approval, "approved": False},
-        },
-    )
-    assert (
-        unapproved["ok"] is False
-        and "approved create-specification-lock" in unapproved["errors"][0]["message"]
-    )
-    classification = server.call(
-        "classify_specification_version",
-        {
-            "repository_path": "specrepo",
-            "version": "1.0.1",
-            "specification": specification.model_dump(mode="json"),
-            "dependency_graph": graph.model_dump(mode="json"),
-        },
-    )
-    assert classification["ok"] and classification["classification"]["recommended_bump"] == "patch"
-    variant = server.call(
-        "create_variant_worktree",
-        {
-            "repository_path": "specrepo",
-            "name": "var-a",
-            "branch": "variant/a",
-            "base_ref": "v1.0.0",
-            "specification_tag": "v1.0.0",
-            "purpose": "test",
-            "approval": {**self_made_approval, "action": "create-variant-worktree"},
-        },
-    )
-    assert variant["ok"], variant
-
-
-def test_orchestration_tools(server):
+def _orchestration_payloads(snapshot_id):
     policy = {
         "policy_id": "mcp-pol",
         "routing_rules": {"multi_agent_min_categories": 3, "multi_agent_min_blast_radius": 3},
@@ -750,10 +734,15 @@ def test_orchestration_tools(server):
     request = {
         "request_id": "req-mcp",
         "stage": "design",
-        "snapshot": {"snapshot_id": "snap-orch", "version": "1", "content_hash": "h"},
+        "snapshot": {"snapshot_id": snapshot_id, "version": "1", "content_hash": "h"},
         "gap_metadata": {"blast_radius": 9},
         "plan": _plan_payload(),
     }
+    return policy, request
+
+
+def test_orchestration_tools(server):
+    policy, request = _orchestration_payloads("snap-orch")
     prepared = server.call("prepare_orchestration", {"policy": policy, "request": request})
     assert prepared["ok"], prepared
     oid = prepared["orchestration"]["orchestration_id"]
@@ -781,6 +770,45 @@ def test_orchestration_tools(server):
     assert (
         server.call("get_orchestration", {"orchestration_id": "orchestration-404"})["ok"] is False
     )
+
+
+def test_reconcile_controller_cancels_a_controller_whose_run_was_cancelled_behind_its_back(server):
+    cid = _dispatched_controller(server, "snap-reconcile-controller", depth=0)
+    run_id = server.call("get_controller_state", {"controller_id": cid})["controller"]["run_id"]
+    assert server.call("cancel_run", {"run_id": run_id})["ok"]
+    state = server.call("get_controller_state", {"controller_id": cid})["controller"]
+    assert state["phase"] == "executing"
+    reconciled = server.call("reconcile_controller", {"controller_id": cid})
+    assert reconciled["ok"], reconciled
+    stores = [action["store"] for action in reconciled["report"]["actions"]]
+    assert "controller" in stores and "project-state" in stores
+    state = server.call("get_controller_state", {"controller_id": cid})["controller"]
+    assert state["phase"] == "cancelled"
+    again = server.call("reconcile_controller", {"controller_id": cid})
+    assert again["ok"] and again["report"]["actions"] == []
+    unknown = server.call("reconcile_controller", {"controller_id": "controller-404"})
+    assert unknown["ok"] is False and "controller-404" in unknown["errors"][0]["message"]
+
+
+def test_reconcile_orchestration_follows_a_controller_cancelled_behind_its_back(server):
+    policy, request = _orchestration_payloads("snap-reconcile-orchestration")
+    prepared = server.call("prepare_orchestration", {"policy": policy, "request": request})
+    oid = prepared["orchestration"]["orchestration_id"]
+    server.call("submit_orchestration_for_approval", {"orchestration_id": oid})
+    server.call("approve_orchestration", {"orchestration_id": oid, "approved": True})
+    controller_id = server.call("get_orchestration", {"orchestration_id": oid})["orchestration"][
+        "controller_id"
+    ]
+    assert server.call("cancel_controller", {"controller_id": controller_id, "reason": "x"})["ok"]
+    stored = server.call("get_orchestration", {"orchestration_id": oid})["orchestration"]
+    assert stored["status"] == "approved"
+    reconciled = server.call("reconcile_orchestration", {"orchestration_id": oid})
+    assert reconciled["ok"], reconciled
+    assert [action["store"] for action in reconciled["report"]["actions"]] == ["orchestration"]
+    stored = server.call("get_orchestration", {"orchestration_id": oid})["orchestration"]
+    assert stored["status"] == "cancelled"
+    missing = server.call("reconcile_orchestration", {"orchestration_id": "orchestration-404"})
+    assert missing["ok"] is False
 
 
 def test_path_traversal_through_run_and_controller_ids_does_not_leak_files(server):
@@ -838,7 +866,7 @@ def test_unauthenticated_clients_cannot_assert_human_authority(server):
     }
     assert {label: status for label, (status, _raw) in refused.items()} == {
         label: 401 for label in attempts
-    }
+    }, refused
     assert all(
         b"Unauthorized" in raw and b"bearer token" in raw for _status, raw in refused.values()
     )
@@ -848,6 +876,16 @@ def test_unauthenticated_clients_cannot_assert_human_authority(server):
     assert status == 200 and json.loads(raw)["result"]["structuredContent"]["ok"] is True
     state = server.call("get_project_state", {"project_id": "authority"})["state"]
     assert [d["decision_id"] for d in state["decisions"]] == ["real"]
+
+
+def test_a_refusal_reaches_a_client_whose_request_body_arrives_late(server):
+    base = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    delays = (0.0, 0.005, 0.05, 0.25)
+    outcomes = [
+        raw_post(server, _decision_call(f"late-{index}"), base, False, body_delay=delay)
+        for index, delay in enumerate(delays)
+    ]
+    assert [status for status, _raw in outcomes] == [401] * len(delays), outcomes
 
 
 def test_dns_rebinding_and_cross_origin_requests_are_refused(server):
@@ -1018,3 +1056,231 @@ def test_claim_1_one_writer_over_the_run_root_run_state_and_project_state_surviv
     work_items = sorted(w["work_item_id"] for w in state["work_items"])
     assert polls == ["completed"] * 4
     assert "d-locked" in decisions and "node:T1" in work_items, (decisions, work_items)
+
+
+def scripted_run(instance, task_id):
+    return instance.call(
+        "run_agent_task",
+        {
+            "definition": definition().model_dump(mode="json"),
+            "task": task(task_id).model_dump(mode="json"),
+            "runtime_options": {"scripted_turns": [final()]},
+        },
+    )
+
+
+def test_prune_runs_reports_by_default_and_deletes_only_when_told_to(tmp_path):
+    from nailong_agent_sdk.agent.retention import read_tombstones
+
+    instance = Server(tmp_path)
+    try:
+        for name in ("prune-a", "prune-b", "prune-c"):
+            assert scripted_run(instance, name)["result"]["status"] == "completed"
+        dry = instance.call("prune_runs", {"older_than_seconds": 0.001})
+        assert dry["ok"] is True and dry["report"]["dry_run"] is True
+        assert [run["run_id"] for run in dry["report"]["runs"]] == ["prune-a", "prune-b", "prune-c"]
+        assert not (instance.run_root / ".agent-retention").exists()
+        assert instance.call("get_telemetry_events", {"run_id": "prune-a"})["events"]
+        applied = instance.call(
+            "prune_runs", {"older_than_seconds": 0.001, "dry_run": False, "max_runs": 2}
+        )
+        assert applied["ok"] is True and applied["report"]["dry_run"] is False
+        assert [run["run_id"] for run in applied["report"]["runs"]] == ["prune-a", "prune-b"]
+        assert [run["tombstone_sequence"] for run in applied["report"]["runs"]] == [1, 2]
+        assert applied["report"]["problems"] == []
+        for pruned in ("prune-a", "prune-b"):
+            assert instance.call("get_telemetry_events", {"run_id": pruned})["events"] == []
+            assert instance.call("get_audit_log", {"run_id": pruned})["events"] == []
+        assert instance.call("get_telemetry_events", {"run_id": "prune-c"})["events"]
+        runs = instance.call("list_telemetry_runs")["runs"]
+        assert [item["run_id"] for item in runs] == ["prune-c"]
+        assert [item.run_id for item in read_tombstones(instance.run_root)] == [
+            "prune-a",
+            "prune-b",
+        ]
+        refused = instance.call("prune_runs", {"older_than_seconds": 0})
+        assert refused["ok"] is False and "older_than_seconds" in json.dumps(refused["errors"])
+        recent = instance.call("prune_runs", {"older_than_seconds": 3600, "dry_run": False})
+        assert recent["ok"] is True and recent["report"]["runs"] == []
+        assert sum(recent["report"]["kept"].values()) == 1
+    finally:
+        instance.stop()
+
+
+def test_the_audit_handle_budget_reaches_the_service_and_its_eviction_warning_names_it(tmp_path):
+    instance = Server(tmp_path, extra_environment={"AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES": "1"})
+    try:
+        for name in ("evict-a", "evict-b"):
+            assert scripted_run(instance, name)["result"]["status"] == "completed"
+        assert instance.call("get_audit_log", {"run_id": "evict-a"})["integrity_chain_valid"]
+    finally:
+        instance.stop()
+    log = "".join(instance.log_path.read_text("utf-8").split())
+    assert "Audittranscriptstoreevicted1" in log
+    assert "max_open_handles=1" in log and "AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES" in log
+
+
+WRITE_TOOL = BUILTIN["write_draft"]
+
+
+def write_options(base_url, **permissions):
+    return live_options(
+        base_url,
+        permissions={"capabilities": ["draft.write"], **permissions},
+        declared_output_paths=["out.txt", "notes/b.md"],
+    )
+
+
+def written_files_script():
+    return [
+        tool_chat("c1", "write_draft", {"path": "out.txt", "content": "first line\nsecond line\n"}),
+        tool_chat("c2", "write_draft", {"path": "notes/b.md", "content": "# note"}),
+        final_chat(),
+    ]
+
+
+def test_the_files_a_task_wrote_can_be_listed_and_read_over_the_wire(server):
+    with chat_provider(written_files_script()) as (base_url, _):
+        run = server.call(
+            "run_agent_task",
+            {
+                "definition": definition(tools=[WRITE_TOOL], max_iterations=6).model_dump(
+                    mode="json"
+                ),
+                "task": task("mcp-files-1").model_dump(mode="json"),
+                "runtime_options": write_options(base_url, approved_capabilities=["draft.write"]),
+            },
+        )
+    assert run["ok"] and run["result"]["status"] == "completed", run
+    listing = server.call("list_task_files", {"task_id": "mcp-files-1"})
+    assert listing["ok"] is True, listing
+    names = {entry["name"]: entry for entry in listing["listing"]["entries"]}
+    assert names["out.txt"]["kind"] == "file" and names["notes"]["kind"] == "directory"
+    nested = server.call("list_task_files", {"task_id": "mcp-files-1", "path": "notes"})
+    assert [e["path"] for e in nested["listing"]["entries"]] == ["notes/b.md"]
+    page = server.call(
+        "read_task_file", {"task_id": "mcp-files-1", "path": "out.txt", "max_bytes": 10}
+    )
+    assert (
+        page["ok"]
+        and page["file"]["content"] == "first line\n"[:10]
+        and page["file"]["next_offset"] == 10
+    )
+    rest = server.call(
+        "read_task_file",
+        {"task_id": "mcp-files-1", "path": "out.txt", "offset": page["file"]["next_offset"]},
+    )
+    assert page["file"]["content"] + rest["file"]["content"] == "first line\nsecond line\n"
+    assert rest["file"]["next_offset"] is None
+    raw = server.call(
+        "read_task_file", {"task_id": "mcp-files-1", "path": "notes/b.md", "encoding": "base64"}
+    )
+    assert raw["file"]["content"] == "IyBub3Rl"
+
+
+def test_reading_task_files_refuses_escapes_credentials_and_unknown_workspaces(server):
+    workspace = server.run_root / "workspaces" / "mcp-files-2"
+    workspace.mkdir(parents=True)
+    (workspace / ".env").write_text("TOKEN=secret", "utf-8")
+    (workspace / "ok.txt").write_text("fine", "utf-8")
+    for denied in ("../mcp-files-1/out.txt", ".env", "/etc/passwd"):
+        refused = server.call("read_task_file", {"task_id": "mcp-files-2", "path": denied})
+        assert refused["ok"] is False
+        message = refused["errors"][0]["message"]
+        assert "secret" not in message and message.startswith(f'Task file path "{denied}"')
+    hidden = server.call("list_task_files", {"task_id": "mcp-files-2"})
+    assert [e["name"] for e in hidden["listing"]["entries"]] == ["ok.txt"]
+    unknown = server.call("list_task_files", {"task_id": "no-such-task"})
+    assert unknown["ok"] is False
+    assert unknown["errors"][0]["message"] == (
+        'Agent task "no-such-task" has no workspace directory "workspaces/no-such-task": '
+        "nothing has been written there yet."
+    )
+    bad_workspace = server.call("list_task_files", {"task_id": "mcp-files-2", "workspace": "../x"})
+    assert bad_workspace["ok"] is False and "workspace" in bad_workspace["errors"][0]["message"]
+
+
+def test_a_task_that_waits_for_approval_is_paused_until_the_caller_decides_over_the_wire(server):
+    from concurrent.futures import ThreadPoolExecutor
+
+    script = [
+        tool_chat("c1", "write_draft", {"path": "out.txt", "content": "approved text"}),
+        final_chat(),
+    ]
+    with chat_provider(script) as (base_url, _):
+        arguments = {
+            "definition": definition(tools=[WRITE_TOOL], max_iterations=6).model_dump(mode="json"),
+            "task": task("mcp-wait-1").model_dump(mode="json"),
+            "runtime_options": write_options(base_url, approval_mode="wait"),
+        }
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            running = pool.submit(server.call, "run_agent_task", arguments)
+            pending = []
+            for _ in range(200):
+                listed = server.call("list_task_approvals", {"task_id": "mcp-wait-1"})
+                pending = [a for a in listed.get("approvals", []) if a["status"] == "pending"]
+                if pending:
+                    break
+                time.sleep(0.1)
+            assert pending, listed
+            assert not running.done()
+            request = pending[0]
+            assert request["capability"] == "draft.write" and request["run_id"] == "mcp-wait-1"
+            wrong = server.call(
+                "decide_task_approval",
+                {"task_id": "mcp-wait-1", "approval_id": "approval-99", "approved": True},
+            )
+            assert wrong["errors"][0]["message"] == (
+                'Agent task "mcp-wait-1" has no approval request "approval-99".'
+            )
+            decided = server.call(
+                "decide_task_approval",
+                {
+                    "task_id": "mcp-wait-1",
+                    "approval_id": request["approval_id"],
+                    "approved": True,
+                    "reason": "reviewed by the operator",
+                },
+            )
+            assert decided["ok"] and decided["approval"]["status"] == "approved"
+            run = running.result(60)
+    assert run["ok"] and run["result"]["status"] == "completed", run
+    written = server.call("read_task_file", {"task_id": "mcp-wait-1", "path": "out.txt"})
+    assert written["file"]["content"] == "approved text"
+    again = server.call(
+        "decide_task_approval",
+        {"task_id": "mcp-wait-1", "approval_id": request["approval_id"], "approved": False},
+    )
+    assert again["errors"][0]["message"] == 'No agent task "mcp-wait-1" is running.'
+
+
+def test_cancelling_a_task_stops_a_model_call_that_is_still_waiting_for_the_provider(server):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    release = threading.Event()
+    with chat_provider([final_chat()], hold=release) as (base_url, requests):
+        arguments = {
+            "definition": definition(max_iterations=4).model_dump(mode="json"),
+            "task": task("mcp-cancel-1").model_dump(mode="json"),
+            "runtime_options": live_options(base_url),
+        }
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                running = pool.submit(server.call, "run_agent_task", arguments)
+                for _ in range(100):
+                    if requests:
+                        break
+                    time.sleep(0.1)
+                assert requests, "the provider never received the model call"
+                started = time.monotonic()
+                cancelled = server.call("cancel_agent_task", {"task_id": "mcp-cancel-1"})
+                assert cancelled == {"ok": True, "cancelled": True}
+                run = running.result(30)
+                elapsed = time.monotonic() - started
+        finally:
+            release.set()
+    assert run["ok"] and run["result"]["status"] == "cancelled", run
+    assert run["result"]["reason"] == "Execution was cancelled while the model turn was running."
+    assert elapsed < 10, elapsed
+    assert server.call("list_metric_definitions")["ok"] is True

@@ -8,7 +8,6 @@ import pytest
 from nailong_agent_sdk.observability.metrics import register_standard_metric_definitions
 from nailong_agent_sdk.observability.telemetry_models import TelemetryContext
 from nailong_agent_sdk.observability.telemetry_store import TelemetryStore
-from nailong_agent_sdk.specifications.documents import SpecificationCategory
 from nailong_agent_sdk.specifications.retrieval import (
     DeterministicLexicalRetrievalIndex,
     GroundedRetrievalService,
@@ -27,7 +26,7 @@ from nailong_agent_sdk.specifications.retrieval_models import (
 )
 from tests.support.specs import node, sref, tree
 
-F, P = SpecificationCategory.FUNCTIONAL, SpecificationCategory.PPA
+F, P = "functional", "ppa"
 
 
 def trees():

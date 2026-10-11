@@ -9,12 +9,12 @@ events, never model claims.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from typing import Any
 
 from ..foundations.contracts import ToolCall, ToolExecutionResult, ToolResultHandle
 from ..foundations.errors import AgentSdkError
+from ..foundations.hashing import estimate_tokens, model_canonical_json
 from .project_state_models import (
     MAX_ARTIFACTS,
     MAX_BLOCKERS,
@@ -67,18 +67,18 @@ class ProjectStateProjector:
             "step_count": state.step_count,
             "state_hash": state.state_hash,
         }
-        used = _estimated_tokens(core)
+        used = estimate_tokens(core, model_canonical_json)
         artifacts: list[ProjectArtifactState] = []
         work_items: list[ProjectWorkItem] = []
         if used <= self._policy.token_budget:
             for artifact in reversed(state.artifacts):
-                cost = _estimated_tokens(artifact)
+                cost = estimate_tokens(artifact, model_canonical_json)
                 if used + cost > self._policy.token_budget:
                     continue
                 artifacts.append(artifact)
                 used += cost
             for work_item in reversed(state.work_items):
-                cost = _estimated_tokens(work_item)
+                cost = estimate_tokens(work_item, model_canonical_json)
                 if used + cost > self._policy.token_budget:
                     continue
                 work_items.append(work_item)
@@ -487,17 +487,8 @@ def _within_capacity[T](
     return [item for index, item in enumerate(items) if index not in dropped]
 
 
-def _canonical_json(value: Any) -> str:
-    def default(item: Any) -> Any:
-        if hasattr(item, "model_dump"):
-            return item.model_dump(mode="json")
-        return str(item)
-
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=default)
-
-
 def _bounded_value(value: Any, max_chars: int) -> Any:
-    encoded = _canonical_json(value)
+    encoded = model_canonical_json(value)
     if len(encoded) <= max_chars:
         return value
     return {
@@ -511,7 +502,3 @@ def _bounded_text(value: str | None, max_chars: int) -> str | None:
     if value is None or len(value) <= max_chars:
         return value
     return f"{value[:max_chars]}… [truncated]"
-
-
-def _estimated_tokens(value: Any) -> int:
-    return max(1, len(_canonical_json(value)) // 4)

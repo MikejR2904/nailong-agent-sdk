@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter
@@ -17,6 +17,7 @@ from ..foundations.contracts import (
     CompactedEpisodeStub,
     ContextProjectionMetadata,
     EpisodeSummary,
+    FallbackModelBinding,
     ModelBinding,
     ModelObservation,
     ScopedAgentTask,
@@ -122,6 +123,7 @@ class ModelContext:
     model_binding: ModelBinding | None = None
     output_schema: dict[str, Any] | None = None
     compacted_episodes: Sequence[CompactedEpisodeStub] = ()
+    trace_parent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -224,12 +226,16 @@ class FailoverAgentModel:
     streaming attempt; an adapter in the list that does not itself support
     streaming is called through its plain ``next_turn`` for its turn in the
     rotation rather than treated as an error.
+
+    ``bindings`` (one per adapter, primary first) gives each adapter its own model binding in
+    the context it receives, so adapters that validate the binding accept a fallback.
     """
 
     def __init__(
         self,
         models: Sequence[AgentModel],
         *,
+        bindings: Sequence[FallbackModelBinding] | None = None,
         max_retries_per_model: int = 2,
         base_backoff_seconds: float = 1.0,
         max_backoff_seconds: float = 20.0,
@@ -241,7 +247,13 @@ class FailoverAgentModel:
             raise ValueError("max_retries_per_model may not be negative.")
         if base_backoff_seconds < 0 or max_backoff_seconds < 0:
             raise ValueError("Backoff durations may not be negative.")
+        if bindings is not None and len(bindings) != len(models):
+            raise ValueError(
+                f"FailoverAgentModel received {len(bindings)} binding(s) for {len(models)} "
+                "adapter(s); pass exactly one binding per adapter, primary first."
+            )
         self._models = tuple(models)
+        self._bindings = tuple(bindings) if bindings is not None else None
         self._max_retries_per_model = max_retries_per_model
         self._base_backoff_seconds = base_backoff_seconds
         self._max_backoff_seconds = max_backoff_seconds
@@ -249,24 +261,40 @@ class FailoverAgentModel:
         self.attempts: list[ModelFailoverAttempt] = []
 
     async def next_turn(self, context: ModelContext) -> AgentTurn | ModelTurnResponse:
-        return await self._call_with_failover(lambda model: model.next_turn(context))
+        return await self._call_with_failover(
+            lambda model, index: model.next_turn(self._context_for(context, index))
+        )
 
     async def stream_turn(
         self, context: ModelContext, on_delta: ModelStreamListener
     ) -> AgentTurn | ModelTurnResponse:
-        async def call_one(model: AgentModel) -> AgentTurn | ModelTurnResponse:
+        async def call_one(model: AgentModel, index: int) -> AgentTurn | ModelTurnResponse:
+            attempt_context = self._context_for(context, index)
             if isinstance(model, StreamingAgentModel):
-                return await model.stream_turn(context, on_delta)
-            return await model.next_turn(context)
+                return await model.stream_turn(attempt_context, on_delta)
+            return await model.next_turn(attempt_context)
 
         return await self._call_with_failover(call_one)
 
-    async def _call_with_failover(self, call_model: Callable[[AgentModel], Awaitable[Any]]) -> Any:
+    def _context_for(self, context: ModelContext, index: int) -> ModelContext:
+        if self._bindings is None or index == 0:
+            return context
+        binding = self._bindings[index]
+        return replace(
+            context,
+            model_binding=ModelBinding(
+                provider=binding.provider, model=binding.model, parameters=binding.parameters
+            ),
+        )
+
+    async def _call_with_failover(
+        self, call_model: Callable[[AgentModel, int], Awaitable[Any]]
+    ) -> Any:
         call_attempts: list[ModelFailoverAttempt] = []
         for index, model in enumerate(self._models):
             for retry_number in range(self._max_retries_per_model + 1):
                 try:
-                    return await call_model(model)
+                    return await call_model(model, index)
                 except TransientProviderError as error:
                     self._record(
                         ModelFailoverAttempt(

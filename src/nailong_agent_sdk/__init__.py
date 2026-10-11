@@ -1,6 +1,6 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Python BaseAgent runtime and deterministic RTL-to-GDSII agent harness."""
+"""Python BaseAgent runtime and deterministic agent harness."""
 
 from __future__ import annotations
 
@@ -40,9 +40,7 @@ if TYPE_CHECKING:
         OpenAICompatibleAgentModel,
         OpenAICompatibleEmbeddingProvider,
         OpenAICompatibleEndpoint,
-        OpenAICompatibleSemanticGapAnalyzer,
         OpenAICompatibleVisionAdapter,
-        SemanticGapAnalysis,
         SourceVerifiedImageLoader,
         StreamingJsonHttpTransport,
         UrlLibJsonTransport,
@@ -60,11 +58,21 @@ if TYPE_CHECKING:
         UserModelSelection,
         WorkerAssignment,
     )
+    from .agent.retention import (
+        RetentionPolicy,
+        RetentionReport,
+        RunRetention,
+        RunTombstone,
+        prune_run_root,
+        read_tombstones,
+    )
     from .agent.runtime import AgentRuntimeServices
-    from .agent.specialists import (
-        placeholder_specialist_definition,
-        planning_agent_definition,
-        rtl_worker_definition,
+    from .agent.task_runner import (
+        AgentTaskRunner,
+        ModelEndpointOptions,
+        PermissionOptions,
+        TaskOptionError,
+        TaskRunOptions,
     )
     from .agent.verification import (
         CallableVerificationGate,
@@ -164,7 +172,6 @@ if TYPE_CHECKING:
         InMemoryToolResultJournal,
         ToolResultJournal,
     )
-    from .memory.context_selection import DesignStage, SelectedContext, TaskAwareContextSelector
     from .memory.episode_models import (
         CompactionResult,
         CompactionStatus,
@@ -232,29 +239,6 @@ if TYPE_CHECKING:
         EvidenceSelectionStatus,
         StructuralContextSelector,
     )
-    from .specifications.gate import Gate1ArtifactStore, SpecificationGate
-    from .specifications.gate_models import (
-        Gap,
-        GapReport,
-        GapSeverity,
-        GapType,
-        RequirementEntry,
-        SemanticGapAdmission,
-        SemanticGapFinding,
-        UnifiedSpecification,
-        VersionMetadata,
-    )
-    from .specifications.git_models import (
-        GitApproval,
-        GitRepositoryState,
-        SpecificationLockRecord,
-        SpecificationSnapshotRecord,
-        StructuralSpecificationDiff,
-        VariantWorktreeRecord,
-        VersionBump,
-        VersionClassification,
-    )
-    from .specifications.git_versioning import GitRepositoryAdapter, SpecificationVersionService
     from .specifications.preprocessing import SpecificationPreprocessor
     from .specifications.retrieval import (
         DeterministicLexicalRetrievalIndex,
@@ -324,6 +308,8 @@ if TYPE_CHECKING:
         ControllerPhase,
         ControllerRecord,
         GapMetadata,
+        ReconcileAction,
+        ReconcileReport,
         SkillToolProfile,
         WorkflowArchitecture,
     )
@@ -372,15 +358,8 @@ if TYPE_CHECKING:
         ProvenanceContractGate,
         ProvenanceGateDecision,
         ProvenanceRecord,
-        RunSharedState,
-        SharedStateStore,
         SharedSubstrateSnapshot,
         make_provenance_record,
-    )
-    from .state.stage_gates import (
-        StageCompletenessDecision,
-        StageCompletenessGate,
-        StageCompletenessPolicy,
     )
     from .tools.approvals import ApprovalRegistry, ApprovalRequest, ApprovalStatus
     from .tools.artifacts import ArtifactRecord, ArtifactStore, ArtifactWriteOccurrence
@@ -432,6 +411,17 @@ _EXPORTS: dict[str, str] = {
     "AgentRunProfiler": ".observability.profiler",
     "AgentRunStatus": ".foundations.contracts",
     "AgentRuntimeServices": ".agent.runtime",
+    "AgentTaskRunner": ".agent.task_runner",
+    "ModelEndpointOptions": ".agent.task_runner",
+    "PermissionOptions": ".agent.task_runner",
+    "TaskOptionError": ".agent.task_runner",
+    "TaskRunOptions": ".agent.task_runner",
+    "RetentionPolicy": ".agent.retention",
+    "RetentionReport": ".agent.retention",
+    "RunRetention": ".agent.retention",
+    "RunTombstone": ".agent.retention",
+    "prune_run_root": ".agent.retention",
+    "read_tombstones": ".agent.retention",
     "AgentWatchdogPolicy": ".agent.base_agent",
     "AgentWorktreeInfo": ".tools.worktree_models",
     "AgentWorktreeManager": ".tools.worktrees",
@@ -471,7 +461,6 @@ _EXPORTS: dict[str, str] = {
     "DelegatedRunFactory": ".tools.delegation",
     "DeterministicLexicalRetrievalIndex": ".specifications.retrieval",
     "DependencyProof": ".state.planning",
-    "DesignStage": ".memory.context_selection",
     "DockerSandbox": ".tools.sandbox",
     "DockerSandboxOptions": ".tools.sandbox_models",
     "DockerUnavailableError": ".tools.sandbox",
@@ -490,12 +479,7 @@ _EXPORTS: dict[str, str] = {
     "FailoverAgentModel": ".agent.model",
     "FileEpisodeStore": ".memory.episode_store",
     "FileToolResultJournal": ".memory.context_projection",
-    "Gap": ".specifications.gate_models",
     "GapMetadata": ".state.orchestration_models",
-    "GapReport": ".specifications.gate_models",
-    "GapSeverity": ".specifications.gate_models",
-    "GapType": ".specifications.gate_models",
-    "Gate1ArtifactStore": ".specifications.gate",
     "GraphEdge": ".state.graph_models",
     "GraphEdgeKind": ".state.graph_models",
     "GraphNode": ".state.graph_models",
@@ -508,9 +492,6 @@ _EXPORTS: dict[str, str] = {
     "GraphStateConflict": ".state.graph_models",
     "GraphStateConflictKind": ".state.graph_models",
     "GroundedRetrievalService": ".specifications.retrieval",
-    "GitApproval": ".specifications.git_models",
-    "GitRepositoryAdapter": ".specifications.git_versioning",
-    "GitRepositoryState": ".specifications.git_models",
     "HarnessCoordinator": ".state.harness_coordinator",
     "HarnessExecutionContext": ".tools.registry",
     "HarnessToolExecutor": ".tools.registry",
@@ -552,7 +533,6 @@ _EXPORTS: dict[str, str] = {
     "OpenAICompatibleAgentModel": ".agent.openai_compatible",
     "OpenAICompatibleEmbeddingProvider": ".agent.openai_compatible",
     "OpenAICompatibleEndpoint": ".agent.openai_compatible",
-    "OpenAICompatibleSemanticGapAnalyzer": ".agent.openai_compatible",
     "OpenAICompatibleVisionAdapter": ".agent.openai_compatible",
     "OrchestrationPolicy": ".agent.orchestrator",
     "OrchestrationRecord": ".agent.orchestrator",
@@ -581,6 +561,8 @@ _EXPORTS: dict[str, str] = {
     "ProvenanceGateDecision": ".state.shared_state",
     "ProvenanceRecord": ".state.shared_state",
     "QdrantRetrievalIndex": ".specifications.retrieval",
+    "ReconcileAction": ".state.orchestration_models",
+    "ReconcileReport": ".state.orchestration_models",
     "RedisRetrievalCache": ".specifications.retrieval",
     "ResolvedRetrieval": ".specifications.retrieval_models",
     "RetrievalCandidate": ".specifications.retrieval_models",
@@ -593,44 +575,31 @@ _EXPORTS: dict[str, str] = {
     "RetrievalStatus": ".specifications.retrieval_models",
     "RetrievalTelemetrySink": ".specifications.retrieval",
     "RunRecord": ".state.coordination_records",
-    "RunSharedState": ".state.shared_state",
     "RunStateStore": ".state.run_state_store",
     "RuntimeOptions": ".foundations.contracts",
     "ResourceLimits": ".tools.supervisor",
     "RegisteredTool": ".tools.registry",
-    "RequirementEntry": ".specifications.gate_models",
     "RetryPolicy": ".tools.supervisor",
     "ScopedAgentTask": ".foundations.contracts",
     "SearchResult": ".tools.core",
-    "SemanticGapAdmission": ".specifications.gate_models",
-    "SemanticGapAnalysis": ".agent.openai_compatible",
-    "SemanticGapFinding": ".specifications.gate_models",
-    "SelectedContext": ".memory.context_selection",
     "STANDARD_METRIC_DEFINITIONS": ".observability.metric_definitions",
-    "SharedStateStore": ".state.shared_state",
     "SharedSubstrateSnapshot": ".state.shared_state",
     "SandboxBackend": ".tools.sandbox",
     "SandboxKind": ".tools.sandbox_models",
     "SideEffectClass": ".tools.policy",
     "SkillContext": ".foundations.contracts",
     "SkillToolProfile": ".state.orchestration_models",
-    "SpecificationGate": ".specifications.gate",
     "SpecificationCategory": ".specifications.documents",
-    "SpecificationLockRecord": ".specifications.git_models",
     "SpecificationManifest": ".specifications.documents",
     "SpecificationPreprocessor": ".specifications.preprocessing",
-    "SpecificationSnapshotRecord": ".specifications.git_models",
-    "SpecificationVersionService": ".specifications.git_versioning",
     "ScriptedModel": ".agent.model",
     "ScriptedVisionAdapter": ".specifications.vision",
     "StateGraph": ".state.graph",
     "StreamingAgentModel": ".agent.model",
     "StreamingJsonHttpTransport": ".agent.openai_compatible",
-    "StructuralSpecificationDiff": ".specifications.git_models",
     "SourceRef": ".specifications.documents",
     "SourceVerifiedImageLoader": ".agent.openai_compatible",
     "SubagentCoordinator": ".tools.delegation",
-    "TaskAwareContextSelector": ".memory.context_selection",
     "TaskKind": ".tools.task_models",
     "TaskRecord": ".tools.task_models",
     "TaskScope": ".foundations.contracts",
@@ -652,12 +621,7 @@ _EXPORTS: dict[str, str] = {
     "ToolResultHandle": ".foundations.contracts",
     "ToolResultJournal": ".memory.context_projection",
     "UserModelSelection": ".agent.orchestrator",
-    "UnifiedSpecification": ".specifications.gate_models",
     "UnconfiguredVisionAdapter": ".specifications.vision",
-    "VersionMetadata": ".specifications.gate_models",
-    "VersionBump": ".specifications.git_models",
-    "VersionClassification": ".specifications.git_models",
-    "VariantWorktreeRecord": ".specifications.git_models",
     "VersionedInstructions": ".foundations.contracts",
     "UrlLibJsonTransport": ".agent.openai_compatible",
     "VisionAdapter": ".specifications.vision",
@@ -675,10 +639,7 @@ _EXPORTS: dict[str, str] = {
     "record_metric_unavailable": ".observability.metrics",
     "record_metric_value": ".observability.metrics",
     "register_standard_metric_definitions": ".observability.metrics",
-    "placeholder_specialist_definition": ".agent.specialists",
     "make_provenance_record": ".state.shared_state",
-    "planning_agent_definition": ".agent.specialists",
-    "rtl_worker_definition": ".agent.specialists",
     "WatchdogController": ".tools.supervisor",
     "WatchdogState": ".tools.supervisor",
     "CallableVerificationGate": ".agent.verification",
@@ -737,9 +698,6 @@ _EXPORTS: dict[str, str] = {
     "PckpSolution": ".foundations.optimization",
     "PckpStatus": ".foundations.optimization",
     "StructuralContextSelector": ".specifications.evidence_graph",
-    "StageCompletenessDecision": ".state.stage_gates",
-    "StageCompletenessGate": ".state.stage_gates",
-    "StageCompletenessPolicy": ".state.stage_gates",
     "load_pckp_cases": ".foundations.benchmarks",
     "run_pckp_benchmark": ".foundations.benchmarks",
     "write_pckp_benchmark_report": ".foundations.benchmarks",

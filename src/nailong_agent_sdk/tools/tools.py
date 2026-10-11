@@ -16,6 +16,7 @@ class ToolInvocationContext:
     task: ScopedAgentTask
     iteration: int
     call: ToolCall
+    trace_parent: str | None = None
 
 
 class ToolExecutor(Protocol):
@@ -30,7 +31,7 @@ class InMemoryTaskToolExecutor:
     """Safe deterministic tools used by protocol and cross-language tests.
 
     `read_locked_interface` is read-only and returns the verbatim task snapshot.
-    `echo` returns the validated argument payload. No filesystem or EDA process is
+    `echo` returns the validated argument payload. No filesystem or process is
     started by this test executor.
     """
 

@@ -9,14 +9,12 @@ before a context selector may expose content to a model.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from enum import StrEnum
-from typing import Any
 
 from pydantic import Field, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.hashing import canonical_hash
 from ..foundations.identifiers import require_unique
 from .documents import DocumentNode, SourceRef, SpecificationCategory
 
@@ -52,13 +50,13 @@ class RetrievalDocument(StrictModel):
     def stable_id(self) -> str:
         payload = {
             "snapshot_id": self.snapshot_id,
-            "category": self.category.value,
+            "category": self.category,
             "document_id": self.document_id,
             "node_id": self.node_id,
             "source_hash": self.source.source_hash,
             "location": self.source.location,
         }
-        return _canonical_digest(payload)
+        return canonical_hash(payload)
 
 
 class RetrievalCandidate(StrictModel):
@@ -95,13 +93,11 @@ class RetrievalQuery(StrictModel):
 
     @property
     def query_digest(self) -> str:
-        return _canonical_digest(
+        return canonical_hash(
             {
                 "snapshot_id": self.snapshot_id,
                 "query_text": self.query_text,
-                "allowed_categories": sorted(
-                    category.value for category in self.allowed_categories
-                ),
+                "allowed_categories": sorted(self.allowed_categories),
                 "limit": self.limit,
                 "policy_id": self.policy_id,
             }
@@ -123,9 +119,3 @@ class ResolvedRetrieval(StrictModel):
     result: RetrievalResult
     nodes: list[DocumentNode] = Field(default_factory=list)
     rejected_candidate_ids: list[str] = Field(default_factory=list)
-
-
-def _canonical_digest(value: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    ).hexdigest()

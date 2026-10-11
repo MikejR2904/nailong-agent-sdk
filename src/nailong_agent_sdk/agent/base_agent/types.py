@@ -30,6 +30,10 @@ class WatchdogExpired(TimeoutError):
         self.seconds = seconds
 
 
+class RunCancelled(Exception):
+    pass
+
+
 class AgentWatchdogPolicy:
     """Optional wall-clock limits and bounded concurrency for one agent invocation."""
 

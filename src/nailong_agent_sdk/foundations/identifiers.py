@@ -1,6 +1,11 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Identifier validation, injective file naming, and collision-free sequential reservation."""
+"""Identifier utilities for safe naming and unique reservations.
+This module enforces rules for IDs and filenames:
+- Validate that identifiers follow length and character rules.
+- Detect duplicates and require uniqueness.
+- Convert arbitrary strings into safe, injective filenames.
+- Reserve sequential identifiers without collisions, using exclusive file claims."""
 
 from __future__ import annotations
 
@@ -58,6 +63,8 @@ def require_unique(values: Iterable[Hashable], label: str) -> None:
 
 
 def file_safe_name(value: str) -> str:
+    # Convert a string to a safe filename; if already safe, return it,
+    # otherwise, replace unsafe chars, trim, and append a short SHA-256 digest
     if (
         len(value) <= _MAX_IDENTIFIER_CHARS
         and _SAFE_FILE_NAME.fullmatch(value) is not None
@@ -73,6 +80,8 @@ def file_safe_name(value: str) -> str:
 def reserve_sequential_identifier(
     claims: Path, prefix: str, is_taken: Callable[[str], bool], *, start: int = 1
 ) -> tuple[str, int]:
+    # Reserve a unique sequential identifier by 1) skipping taken identifiers and
+    # 2) use claim_exclusive to avoid collisions across processes
     number = max(1, start)
     while True:
         candidate = f"{prefix}-{number}"

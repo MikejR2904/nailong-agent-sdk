@@ -9,9 +9,7 @@ are never supplied by model output or by an MCP request.
 
 from __future__ import annotations
 
-import hashlib
 import inspect
-import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -87,40 +85,6 @@ class StatusIsCompleteGate:
         return VerificationDecision(True)
 
 
-class ValidateRtlTaskResultGate:
-    """Validate a declared RTLWorker result against the immutable task interface.
-
-    The framework requires the RTL stage to preserve the copied interface and return a
-    structured local-check result; it does not claim whole-design functional correctness
-    at this gate (updated framework design, pp. 65-66).
-    """
-
-    def verify(self, context: VerificationContext) -> VerificationDecision:
-        output = context.output
-        if not isinstance(output, dict):
-            return VerificationDecision(False, "RTL task output is not an object.")
-        if output.get("status") != "complete":
-            return VerificationDecision(False, 'RTL task output status is not "complete".')
-        draft_artifact_id = output.get("draft_artifact_id")
-        if not isinstance(draft_artifact_id, str) or not draft_artifact_id.startswith("sha256:"):
-            return VerificationDecision(
-                False, "RTL task output lacks a content-addressed draft artifact."
-            )
-        if not isinstance(output.get("checks"), list):
-            return VerificationDecision(False, "RTL task output lacks a checks list.")
-        expected_hash = hashlib.sha256(
-            json.dumps(context.task.locked_interface, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        ).hexdigest()
-        if output.get("locked_interface_hash") != expected_hash:
-            return VerificationDecision(
-                False,
-                "RTL task result does not attest to the exact locked-interface snapshot.",
-            )
-        return VerificationDecision(True)
-
-
 class VerificationGateRegistry:
     """Registry of host-owned named output acceptance gates.
 
@@ -129,10 +93,7 @@ class VerificationGateRegistry:
     """
 
     def __init__(self) -> None:
-        self._gates: dict[str, VerificationGate] = {
-            "status-is-complete": StatusIsCompleteGate(),
-            "validate-rtl-task-result": ValidateRtlTaskResultGate(),
-        }
+        self._gates: dict[str, VerificationGate] = {"status-is-complete": StatusIsCompleteGate()}
 
     def register(self, gate_id: str, gate: VerificationGate, *, replace: bool = False) -> None:
         """Register a local gate object under a stable definition-facing identifier."""
@@ -165,7 +126,7 @@ class VerificationGateRegistry:
     def unregister(self, gate_id: str) -> None:
         """Remove a non-built-in gate when an embedding application is reconfigured."""
 
-        if gate_id in {"status-is-complete", "validate-rtl-task-result"}:
+        if gate_id == "status-is-complete":
             raise ValueError("Built-in verification gates cannot be unregistered.")
         if gate_id not in self._gates:
             raise AgentSdkError(
@@ -198,10 +159,10 @@ class VerificationGateRegistry:
         result = gate.verify(VerificationContext(output=output, definition=definition, task=task))
         if inspect.isawaitable(result):
             result = await result
-        return _normalize_decision(result)
+        return normalize_verification_return(result)
 
 
-def _normalize_decision(result: VerificationReturn) -> VerificationDecision:
+def normalize_verification_return(result: VerificationReturn) -> VerificationDecision:
     if isinstance(result, VerificationDecision):
         return result
     if isinstance(result, bool):
@@ -213,7 +174,10 @@ def _normalize_decision(result: VerificationReturn) -> VerificationDecision:
         and (result[1] is None or isinstance(result[1], str))
     ):
         return VerificationDecision(result[0], result[1])
-    raise TypeError("Verification gate must return VerificationDecision, bool, or (bool, reason).")
+    raise TypeError(
+        "Verification gate must return VerificationDecision, bool, or (bool, reason) where "
+        f"reason is a string or None; got {type(result).__name__}."
+    )
 
 
 def _validate_gate_id(gate_id: str) -> None:

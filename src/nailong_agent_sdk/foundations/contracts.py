@@ -1,11 +1,14 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Serializable BaseAgent contract and task/result types.
-
-The project framework specifies a common BaseAgent contract with identity,
-instructions, typed input/output, narrow tools, model binding, memory,
-termination, and an optional deterministic verification gate (systems-design
-framework, updated PDF, p. 50–51).
+"""
+Serializable BaseAgent contract models and validation.
+This module defines the structured types that describe how agents run:
+- Agent definitions (identity, instructions, schemas, tools, model binding).
+- Task payloads, tool calls, turns, results, and lifecycle events.
+- Enums for memory scope, escalation, concurrency, run status, episode kind.
+- Validation helpers for JSON Schema, ensuring inputs/outputs match contracts.
+- Failure types with safe redaction so secrets and hidden reasoning never leak.
+Together these models form the durable contract between agent runtime and storage.
 """
 
 from __future__ import annotations
@@ -36,6 +39,8 @@ class StrictModel(BaseModel):
 
 
 class MemoryScope(StrEnum):
+    # Task-scoped is a temporary memory for just one task
+    # Cross-session is a persistent memory shared across tasks and sessions
     NONE = "none"
     TASK_SCOPED = "task-scoped"
     CROSS_SESSION = "cross-session"
@@ -106,7 +111,6 @@ class ToolDefinition(StrictModel):
     input_schema: dict[str, Any]
     episode_kind: EpisodeKind
     concurrency: ToolConcurrency = ToolConcurrency.SERIAL
-    requires_manifest: bool = False
 
     @field_validator("input_schema")
     @classmethod
@@ -117,6 +121,15 @@ class ToolDefinition(StrictModel):
 
 class AgentDefinition(StrictModel):
     """The data-only BaseAgent definition; runtime dependencies are injected separately."""
+
+    # identity: unique agent name, must be one line
+    # instructions: versioned text
+    # input_schema/output_schema: JSON Schema for inputs/outputs
+    # tools: list of tool definitions
+    # model_binding: primary model + fallbacks
+    # memory_scope/rationale: how memory is used
+    # termination_policy: max iterations, escalation target
+    # verification_gate_id: optional deterministic check
 
     identity: str = Field(min_length=1)
     instructions: VersionedInstructions
@@ -292,9 +305,9 @@ AgentTurn = Annotated[
 
 
 class RuntimeOptions(StrictModel):
-    """Options intentionally limited to deterministic execution until a model is selected."""
+    """Per-run limits and budgets; scripted turns drive a run that has no model endpoint."""
 
-    mode: Literal["deterministic"] = "deterministic"
+    mode: Literal["deterministic"] | None = None
     scripted_turns: list[AgentTurn] = Field(default_factory=list)
     run_deadline_seconds: float | None = Field(default=None, gt=0, le=86_400)
     model_turn_timeout_seconds: float | None = Field(default=None, gt=0, le=86_400)
@@ -324,7 +337,10 @@ class EpisodeSummary(StrictModel):
 
 
 class CompactedEpisodeStub(StrictModel):
-    """One-line residue of a compacted episode that stays visible to the model."""
+    """Minimal summary of a compacted episode.
+    Keeps a one-line residue (ID, kind, summary, optional tool info and status) so
+    the model can still see the episode's existence without storing the full transcript.
+    """
 
     episode_id: str = Field(min_length=1)
     kind: EpisodeKind

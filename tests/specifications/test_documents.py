@@ -1,5 +1,4 @@
 import asyncio
-import itertools
 import json
 import random
 import time
@@ -11,7 +10,6 @@ import yaml
 from nailong_agent_sdk.specifications.documents import (
     DocumentFormat,
     DocumentNodeKind,
-    SpecificationCategory,
     SpecificationDocument,
     SpecificationManifest,
     VisionStatus,
@@ -27,18 +25,6 @@ from nailong_agent_sdk.specifications.evidence_graph import (
     EvidenceSelectionStatus,
     StructuralContextSelector,
 )
-from nailong_agent_sdk.specifications.gate import (
-    Gate1ArtifactStore,
-    SpecificationGate,
-    classify_version_change,
-)
-from nailong_agent_sdk.specifications.gate_models import (
-    GapSeverity,
-    GapType,
-    SemanticGapFinding,
-    VersionChangeKind,
-    VersionMetadata,
-)
 from nailong_agent_sdk.specifications.preprocessing import (
     SpecificationPreprocessor,
     keywords_from_task,
@@ -48,7 +34,8 @@ from nailong_agent_sdk.specifications.vision import (
     UnconfiguredVisionAdapter,
     VisionProposal,
 )
-from tests.support.specs import node, req, spec, sref, tree
+from tests.support.extended_paths import resolve_files_in_extended_spelling, windows_only
+from tests.support.specs import node, sref, tree
 
 
 def arun(coro, timeout=60):
@@ -58,7 +45,7 @@ def arun(coro, timeout=60):
     return asyncio.run(guarded())
 
 
-def document(path, fmt, doc_id="d1", category=SpecificationCategory.FUNCTIONAL):
+def document(path, fmt, doc_id="d1", category="functional"):
     return SpecificationDocument(id=doc_id, title=doc_id, format=fmt, path=path, category=category)
 
 
@@ -72,7 +59,7 @@ def write(root, name, content, binary=False):
     return target
 
 
-def test_manifest_load_new_legacy_and_errors(tmp_path):
+def test_manifest_load_and_errors(tmp_path):
     write(
         tmp_path,
         "specification-manifest.yaml",
@@ -93,22 +80,25 @@ def test_manifest_load_new_legacy_and_errors(tmp_path):
     pre = SpecificationPreprocessor(tmp_path)
     manifest = pre.load_manifest()
     assert manifest.documents[0].id == "a"
-    legacy = {
-        "functional_spec": {
-            "documents": [{"id": "f", "title": "F", "format": "md", "path": "f.md"}]
-        },
-        "interface_spec": {
-            "interfaces": [
-                {"documents": [{"id": "i", "title": "I", "format": "md", "path": "i.md"}]}
-            ]
-        },
+    categorised = {
+        "documents": [
+            {"id": "f", "title": "F", "format": "md", "path": "f.md", "category": "any-label"},
+            {"id": "i", "title": "I", "format": "md", "path": "i.md", "category": "x.y_1"},
+        ]
     }
-    write(tmp_path, "legacy.yaml", yaml.safe_dump(legacy))
-    converted = pre.load_manifest("legacy.yaml")
-    assert {d.id: d.category.value for d in converted.documents} == {
-        "f": "functional",
-        "i": "interface",
-    }
+    write(tmp_path, "categorised.yaml", yaml.safe_dump(categorised))
+    loaded = pre.load_manifest("categorised.yaml")
+    assert {d.id: d.category for d in loaded.documents} == {"f": "any-label", "i": "x.y_1"}
+    write(tmp_path, "keyed.yaml", yaml.safe_dump({"functional_spec": {"documents": []}}))
+    with pytest.raises(ValueError) as keyed:
+        pre.load_manifest("keyed.yaml")
+    assert str(keyed.value) == (
+        'Specification manifest "keyed.yaml" must contain a "documents" list; '
+        "its top-level keys are ['functional_spec']."
+    )
+    for bad in ("", " ", "has space", "-leading", "x" * 65):
+        with pytest.raises(ValueError, match="category"):
+            SpecificationDocument(id="x", title="x", format="md", path="x.md", category=bad)
     write(tmp_path, "list.yaml", "- 1\n- 2\n")
     with pytest.raises(ValueError, match="must be a mapping"):
         pre.load_manifest("list.yaml")
@@ -127,6 +117,17 @@ def test_manifest_load_new_legacy_and_errors(tmp_path):
     with pytest.raises(ValueError, match="must be a mapping"):
         pre.load_manifest("empty.yaml")
     assert empty.exists()
+
+
+@windows_only
+def test_a_document_resolving_in_the_extended_spelling_stays_inside_the_root(tmp_path, monkeypatch):
+    write(tmp_path, "a.md", "alpha\n")
+    pre = SpecificationPreprocessor(tmp_path)
+    resolve_files_in_extended_spelling(monkeypatch)
+    result = pre.process_document(document("a.md", DocumentFormat.MD))
+    assert [n.node_id for n in result.nodes] == ["line-1"]
+    with pytest.raises(ValueError, match="escapes the configured root"):
+        pre.load_manifest("../outside.yaml")
 
 
 def test_text_nodes_locations_hashes_and_context(tmp_path):
@@ -160,7 +161,7 @@ def test_diagram_text_formats_kinds(tmp_path):
     for fmt, kind in (
         (DocumentFormat.PLANTUML, DocumentNodeKind.DIAGRAM),
         (DocumentFormat.DOT, DocumentNodeKind.DIAGRAM),
-        (DocumentFormat.SDC, DocumentNodeKind.TEXT),
+        (DocumentFormat.MERMAID, DocumentNodeKind.DIAGRAM),
         (DocumentFormat.TEX, DocumentNodeKind.TEXT),
     ):
         write(tmp_path, f"x.{fmt.value}", "line\n")
@@ -397,18 +398,6 @@ def test_vision_results_are_consumed_downstream(tmp_path):
     assert any("rst_n_unique_token" in d.text for d in documents)
 
 
-def test_unreviewed_image_nodes_are_flagged_by_gate1():
-    img = node(
-        "image-1",
-        {"filename": "p.png"},
-        kind=DocumentNodeKind.IMAGE,
-        vision_status=VisionStatus.REVIEW_REQUIRED,
-    )
-    specification = spec(reqs=[req("R1")], trees=[tree(nodes=[img])])
-    _, report = SpecificationGate().validate(specification, required_categories=set())
-    assert report.gaps, "REVIEW_REQUIRED image content passes Gate 1 with no gap"
-
-
 def test_keywords_from_task_ascii_only():
     assert keywords_from_task("Verify REQ-FUNC-001 and clk_div") == {
         "verify",
@@ -416,305 +405,6 @@ def test_keywords_from_task_ascii_only():
         "and",
         "clk_div",
     }
-
-
-def test_gate_basic_checks_and_severities():
-    requirements = [
-        req("R1", deps=["R2"]),
-        req("R2", deps=["R9"], checks=()),
-        req("R3", text="   "),
-        req("R4", deps=["R4"]),
-    ]
-    specification = spec(reqs=requirements, trees=[tree()])
-    graph, report = SpecificationGate().validate(
-        specification,
-        required_categories={SpecificationCategory.FUNCTIONAL, SpecificationCategory.PPA},
-    )
-    by_source = {}
-    for gap in report.gaps:
-        by_source.setdefault(gap.source, []).append(gap)
-    absence = [g for g in report.gaps if g.type is GapType.ABSENCE]
-    assert any(
-        g.locations == ["category:ppa"] and g.severity is GapSeverity.CRITICAL for g in absence
-    )
-    assert any(g.locations == ["R3"] for g in absence)
-    missing = [g for g in report.gaps if g.locations == ["R2", "R9"]]
-    assert len(missing) == 1 and missing[0].blast_radius == 2
-    verifiability = [g for g in report.gaps if g.type is GapType.VERIFIABILITY]
-    assert [g.locations for g in verifiability] == [["R2"]]
-    cycles = [g for g in report.gaps if g.description.startswith("Requirement dependency graph")]
-    assert [g.locations for g in cycles] == [["R4", "R4"]]
-    assert graph.nodes == ["R1", "R2", "R3", "R4"]
-    assert report.summary()["critical"] >= 3
-
-
-def _brute_cycle_exists(nodes, edges):
-    adjacency = {n: [] for n in nodes}
-    for a, b in edges:
-        adjacency[a].append(b)
-    state = {}
-
-    def visit(n):
-        state[n] = 1
-        for m in adjacency[n]:
-            if state.get(m) == 1:
-                return True
-            if m not in state and visit(m):
-                return True
-        state[n] = 2
-        return False
-
-    return any(n not in state and visit(n) for n in nodes)
-
-
-def test_cycle_detection_matches_brute_force_on_random_graphs():
-    from nailong_agent_sdk.foundations.dependency_graph import deterministic_cycles
-
-    rng = random.Random(7)
-    checked = 0
-    for _ in range(400):
-        n = rng.randint(1, 8)
-        nodes = [f"N{i}" for i in range(n)]
-        edges = [(rng.choice(nodes), rng.choice(nodes)) for _ in range(rng.randint(0, 12))]
-        cycles = deterministic_cycles(nodes, edges)
-        assert bool(cycles) == _brute_cycle_exists(nodes, edges), (nodes, edges)
-        edge_set = set(edges)
-        for cycle in cycles:
-            assert cycle[0] == cycle[-1]
-            assert all((a, b) in edge_set for a, b in itertools.pairwise(cycle))
-        checked += 1
-    assert checked == 400
-
-
-def test_gate_scales_to_large_dependency_graphs():
-    n = 20_000
-    chain = [req(f"R{i}", deps=[f"R{i + 1}"] if i + 1 < n else []) for i in range(n)]
-    started = time.monotonic()
-    _, report = SpecificationGate().validate(
-        spec(reqs=chain, trees=[tree()]), required_categories=set()
-    )
-    time.monotonic() - started
-    assert report.gaps == []
-    ring_n = 5_000
-    ring = [req(f"R{i}", deps=[f"R{(i + 1) % ring_n}"]) for i in range(ring_n)]
-    started = time.monotonic()
-    _, ring_report = SpecificationGate().validate(
-        spec(reqs=ring, trees=[tree()]), required_categories=set()
-    )
-    time.monotonic() - started
-    assert len(ring_report.gaps) == 1 and len(ring_report.gaps[0].locations) == ring_n + 1
-
-
-def test_duplicate_dependency_entries_do_not_duplicate_gaps():
-    requirements = [req("R1", deps=["R2", "R2"]), req("R2", deps=["R1"])]
-    _, report = SpecificationGate().validate(
-        spec(reqs=requirements, trees=[tree()]), required_categories=set()
-    )
-    cycle_gaps = [
-        g for g in report.gaps if g.description.startswith("Requirement dependency graph")
-    ]
-    assert len(cycle_gaps) == 1
-
-
-def _finding(**overrides):
-    values = dict(
-        finding_id="F1",
-        type=GapType.AMBIGUITY,
-        requirement_ids=["R1"],
-        source_refs=[sref(loc="line:R1")],
-        description="ambiguous",
-        suggested_fix="clarify",
-        analysis_provider="prov",
-        analysis_receipt_digest="a" * 64,
-    )
-    values.update(overrides)
-    return SemanticGapFinding(**values)
-
-
-def test_semantic_finding_admission_rules_and_model_validation():
-    specification = spec(reqs=[req("R1"), req("R2", deps=["R1"])], trees=[tree()])
-    gate = SpecificationGate()
-    graph, report = gate.validate(
-        specification,
-        required_categories=set(),
-        semantic_findings=[
-            _finding(finding_id="B-ok"),
-            _finding(finding_id="A-unknown", requirement_ids=["R404"]),
-            _finding(finding_id="C-foreign-source", source_refs=[sref(loc="line:ZZ")]),
-            _finding(finding_id="D-dup"),
-            _finding(finding_id="D-dup"),
-            _finding(
-                finding_id="E-incons",
-                type=GapType.INCONSISTENCY,
-                requirement_ids=["R1", "R2"],
-                source_refs=[sref(loc="line:R1"), sref(loc="line:R2")],
-            ),
-        ],
-    )
-    admissions = {a.finding_id: a for a in report.semantic_admissions}
-    assert admissions["B-ok"].accepted and admissions["E-incons"].accepted
-    assert not admissions["A-unknown"].accepted and "R404" in admissions["A-unknown"].reason
-    assert not admissions["C-foreign-source"].accepted
-    assert [a.accepted for a in report.semantic_admissions if a.finding_id == "D-dup"] == [
-        True,
-        False,
-    ]
-    repeated = [a for a in report.semantic_admissions if a.finding_id == "D-dup"][1]
-    assert repeated.reason == (
-        'Semantic finding ID "D-dup" repeats an earlier finding; '
-        "finding IDs must be unique per Gate 1 evaluation."
-    )
-    accepted_gap = next(g for g in report.gaps if g.source.startswith("semantic-analysis:prov"))
-    assert accepted_gap.model_analysis_required is True and accepted_gap.blast_radius >= 1
-    with pytest.raises(ValueError, match="CRITICAL"):
-        _finding(severity=GapSeverity.CRITICAL)
-    with pytest.raises(ValueError, match="semantic GapType"):
-        _finding(type=GapType.ABSENCE)
-    with pytest.raises(ValueError, match="at least two"):
-        _finding(type=GapType.INCONSISTENCY)
-    with pytest.raises(ValueError):
-        _finding(analysis_receipt_digest="G" * 64)
-    with pytest.raises(ValueError, match="unique"):
-        _finding(requirement_ids=["R1", "R1"])
-    assert report.summary()["semantic_findings_rejected"] == 3
-
-
-def test_soft_lock_decisions():
-    specification = spec(reqs=[req("R1", checks=())], trees=[tree()])
-    gate = SpecificationGate()
-    _, report = gate.validate(specification, required_categories=set())
-    metadata = VersionMetadata(
-        version="1.0.0",
-        change_kind=VersionChangeKind.MAJOR,
-        unified_specification_hash="not-the-real-hash",
-    )
-    refused = gate.soft_lock(specification, report, metadata, user_approved=False)
-    assert not refused.accepted and "Designer approval" in refused.warnings[0]
-    gaps = gate.soft_lock(specification, report, metadata, user_approved=True)
-    assert not gaps.accepted and "proceed_with_gaps" in gaps.warnings[-1]
-    forced = gate.soft_lock(
-        specification, report, metadata, user_approved=True, proceed_with_gaps=True
-    )
-    assert (
-        forced.accepted and forced.metadata.soft_locked and forced.metadata.user_override_with_gaps
-    )
-    clean_spec = spec(reqs=[req("R1")], trees=[tree()])
-    _, clean_report = gate.validate(clean_spec, required_categories=set())
-    clean = gate.soft_lock(clean_spec, clean_report, metadata, user_approved=True)
-    assert clean.accepted and not clean.metadata.user_override_with_gaps
-
-
-def test_soft_lock_refuses_a_report_or_metadata_written_for_another_version():
-    specification = spec(version="2.0.0", reqs=[req("R1")], trees=[tree()])
-    gate = SpecificationGate()
-    _, report = gate.validate(specification, required_categories=set())
-    metadata = VersionMetadata(
-        version="2.0.0", change_kind=VersionChangeKind.MAJOR, unified_specification_hash="h"
-    )
-    stale_report = report.model_copy(update={"document_version": "1.9.0"})
-    for approved in (True, False):
-        with pytest.raises(
-            ValueError,
-            match=r'Gap report document_version "1.9.0" does not match the specification '
-            r'version "2.0.0"',
-        ):
-            gate.soft_lock(specification, stale_report, metadata, user_approved=approved)
-    other = metadata.model_copy(update={"version": "2.0.1"})
-    with pytest.raises(
-        ValueError,
-        match=r'Version metadata version "2.0.1" does not match the specification '
-        r'version "2.0.0"',
-    ):
-        gate.soft_lock(specification, report, other, user_approved=True)
-    assert gate.soft_lock(specification, report, metadata, user_approved=True).accepted
-
-
-def test_classify_version_change_matrix():
-    base = spec(reqs=[req("R1"), req("R2")], trees=[tree()])
-    assert classify_version_change(None, base)[0] is VersionChangeKind.MAJOR
-    removed = spec(reqs=[req("R1")], trees=[tree()])
-    assert classify_version_change(base, removed)[0] is VersionChangeKind.MAJOR
-    changed = spec(reqs=[req("R1", text="different"), req("R2")], trees=[tree()])
-    kind, why = classify_version_change(base, changed)
-    assert kind is VersionChangeKind.MAJOR and "R1 (text)" in why[0]
-    added = spec(reqs=[req("R1"), req("R2"), req("R3")], trees=[tree()])
-    assert classify_version_change(base, added)[0] is VersionChangeKind.MINOR
-    checks_only = spec(reqs=[req("R1", checks=("a", "b")), req("R2")], trees=[tree()])
-    assert classify_version_change(base, checks_only)[0] is VersionChangeKind.PATCH
-    assert classify_version_change(base, base)[0] is VersionChangeKind.PATCH
-    both = spec(reqs=[req("R1", text="x"), req("R2"), req("R3")], trees=[tree()])
-    assert classify_version_change(base, both)[0] is VersionChangeKind.MAJOR
-
-
-def _persist(store, specification, plans=()):
-    gate = SpecificationGate()
-    graph, report = gate.validate(specification, required_categories=set())
-    metadata = VersionMetadata(
-        version=specification.version,
-        change_kind=VersionChangeKind.MAJOR,
-        unified_specification_hash="h",
-    )
-    store.persist(specification, graph, report, metadata, list(plans))
-
-
-def test_gate1_store_persist_and_yaml_roundtrip_of_hostile_strings(tmp_path):
-    tricky = [
-        "yes",
-        "no",
-        "null",
-        "~",
-        "1e3",
-        "0x1F",
-        "2026-01-01",
-        "  leading",
-        "trailing  ",
-        "tab\there",
-        "line1\nline2",
-        "colon: value",
-        "- dash",
-        "# hash",
-        '"quoted"',
-        "emoji \U0001f600",
-        "\u2028sep",
-        "\x85nel",
-        "a" * 600,
-        "ünï文",
-        "{braces}",
-        "[brackets]",
-        "&anchor",
-        "*alias",
-        "!tag",
-        "%dir",
-        "@at",
-        "`tick`",
-        "'single'",
-        "\ufeffbom",
-        "\x00nul",
-        "\x1bescape",
-    ]
-    store = Gate1ArtifactStore(tmp_path / "specifications")
-    mismatches = []
-    for text in tricky:
-        specification = spec(reqs=[req("R1", text=text)], trees=[tree()])
-        try:
-            _persist(store, specification)
-            loaded = yaml.safe_load(
-                (tmp_path / "specifications" / "unified-specification.yaml").read_text("utf-8")
-            )
-            if loaded["requirements"][0]["text"] != text:
-                mismatches.append((text, loaded["requirements"][0]["text"]))
-        except Exception as error:
-            mismatches.append((text, f"{type(error).__name__}: {str(error)[:80]}"))
-    assert mismatches == [], mismatches
-
-
-def test_gate1_store_leaves_no_stale_plans(tmp_path):
-    store = Gate1ArtifactStore(tmp_path / "specifications")
-    specification = spec(reqs=[req("R1")], trees=[tree()])
-    _persist(store, specification, plans=[{"n": 1}, {"n": 2}, {"n": 3}])
-    _persist(store, specification, plans=[{"n": 10}])
-    remaining = sorted(p.name for p in (tmp_path / "specifications" / "plans").iterdir())
-    assert remaining == ["plan-1.yaml"], remaining
 
 
 def _egraph(node_specs, relations=()):

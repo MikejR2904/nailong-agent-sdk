@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -20,12 +19,15 @@ from pydantic import Field, ValidationError, ValidationInfo, field_validator
 from ..foundations.atomic_io import exclusive_file_lock, replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError, assert_no_hidden_reasoning, redact_secrets
+from ..foundations.hashing import canonical_hash, canonical_json, sha256_hex
 from ..foundations.identifiers import file_safe_name
+from ..foundations.logging import get_logger
 from ..foundations.text import assert_well_formed_text
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import ChainBreak
 
 _TAIL_CHUNK_BYTES = 65_536
+_logger = get_logger("audit")
 
 
 class AuditLogEntry(StrictModel):
@@ -50,6 +52,14 @@ class AuditLogEntry(StrictModel):
     def safe_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
         assert_no_hidden_reasoning(payload)
         return payload
+
+
+class AuditFootprint(StrictModel):
+    run_id: str
+    entries: int = Field(ge=0)
+    bytes: int = Field(ge=0)
+    head_hash: str | None = None
+    last_at_utc: str | None = None
 
 
 class AuditTranscriptStore:
@@ -84,6 +94,12 @@ class AuditTranscriptStore:
         # A bounded LRU avoids repeated opens for active runs without allowing a
         # long-lived host to retain one descriptor for every historical run.
         self._handles: OrderedDict[str, IO[bytes]] = OrderedDict()
+        self._handle_evictions = 0
+        self._eviction_reported = False
+
+    @property
+    def handle_evictions(self) -> int:
+        return self._handle_evictions
 
     def _require_writable(self, operation: str) -> None:
         if self._read_only:
@@ -100,9 +116,23 @@ class AuditTranscriptStore:
         if len(self._handles) >= self._max_open_handles:
             _evicted_run_id, evicted_handle = self._handles.popitem(last=False)
             evicted_handle.close()
+            self._count_eviction()
         handle = self._jsonl_path(run_id).open("a+b")
         self._handles[run_id] = handle
         return handle
+
+    def _count_eviction(self) -> None:
+        self._handle_evictions += 1
+        if self._eviction_reported or self._handle_evictions < self._max_open_handles:
+            return
+        self._eviction_reported = True
+        _logger.warning(
+            "Audit transcript store evicted %d append handles: more than max_open_handles=%d "
+            "runs append at once, so each append past that reopens its file. Raise "
+            "max_open_handles (the MCP service reads AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES).",
+            self._handle_evictions,
+            self._max_open_handles,
+        )
 
     def append(
         self,
@@ -133,7 +163,7 @@ class AuditTranscriptStore:
                     previous_hash=tail.integrity_hash if tail is not None else None,
                 )
                 complete = prepared.model_copy(
-                    update={"integrity_hash": _hash(prepared.model_dump(mode="json"))}
+                    update={"integrity_hash": canonical_hash(prepared.model_dump(mode="json"))}
                 )
                 handle.write(complete.model_dump_json().encode("utf-8"))
                 handle.write(b"\n")
@@ -156,6 +186,43 @@ class AuditTranscriptStore:
             if len(entries) >= limit:
                 break
         return entries
+
+    def footprint(self, run_id: str) -> AuditFootprint:
+        path = self._jsonl_path(run_id)
+        rendered = self._root / f"{file_safe_name(run_id)}.transcript.md"
+        size = sum(item.stat().st_size for item in (path, rendered) if item.is_file())
+        tail = None
+        with self._lock:
+            if path.is_file() and path.stat().st_size:
+                with path.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    tail = _read_tail_entry(handle, handle.tell(), path.name)
+                _require_transcript_owner(tail, run_id, path.name)
+        return AuditFootprint(
+            run_id=run_id,
+            entries=tail.sequence if tail is not None else 0,
+            bytes=size,
+            head_hash=tail.integrity_hash if tail is not None else None,
+            last_at_utc=tail.occurred_at_utc if tail is not None else None,
+        )
+
+    def prune_run(self, run_id: str, *, dry_run: bool = False) -> AuditFootprint:
+        if not dry_run:
+            self._require_writable("prune_run")
+        footprint = self.footprint(run_id)
+        if dry_run or footprint.bytes == 0:
+            return footprint
+        path = self._jsonl_path(run_id)
+        rendered = self._root / f"{file_safe_name(run_id)}.transcript.md"
+        with self._lock:
+            with self._append_transaction(run_id):
+                handle = self._handles.pop(run_id, None)
+                if handle is not None:
+                    handle.close()
+                for target in (path, rendered):
+                    target.unlink(missing_ok=True)
+        path.with_suffix(".lock").unlink(missing_ok=True)
+        return footprint
 
     def snapshot_sequence(self, run_id: str) -> int:
         """Return the local append sequence used as a verification boundary."""
@@ -289,14 +356,14 @@ class AuditTranscriptStore:
 
 def _bound_and_redact(value: Any, max_chars: int) -> dict[str, Any]:
     redacted = redact_secrets(value)
-    encoded = _canonical_json(redacted)
+    encoded = canonical_json(redacted)
     if len(encoded) <= max_chars:
         if isinstance(redacted, dict):
             return redacted
         return {"value": redacted}
     return {
         "truncated": True,
-        "content_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "content_hash": sha256_hex(encoded),
         "original_chars": len(encoded),
         "preview": encoded[:max_chars],
     }
@@ -363,20 +430,12 @@ def _verified_entry_count(entries: Iterator[AuditLogEntry], failure: ChainBreak 
     return count
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _hash(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
 def _entries_chain_break(entries: Iterator[AuditLogEntry]) -> ChainBreak | None:
     return first_chain_break(
         entries,
         noun="audit entry",
         previous_attribute="previous_hash",
-        expected_hash=lambda entry: _hash(
+        expected_hash=lambda entry: canonical_hash(
             entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
         ),
     )

@@ -2,9 +2,11 @@ import asyncio
 import json
 import subprocess
 import sys
+import time
 
 import pytest
 
+from nailong_agent_sdk.mcp import security
 from nailong_agent_sdk.mcp.security import (
     BearerTokenMiddleware,
     ServerConfigurationError,
@@ -65,6 +67,7 @@ def test_a_non_loopback_bind_needs_an_explicit_host_allow_list_and_allows_no_ori
     loaded = settings(
         AGENT_RUNTIME_HOST="192.0.2.10",
         AGENT_RUNTIME_ALLOWED_HOSTS="runtime.internal:8001, 192.0.2.10:*",
+        AGENT_RUNTIME_ALLOW_PLAIN_HTTP="1",
     )
     security = loaded.transport_security()
     assert security.allowed_hosts == ["runtime.internal:8001", "192.0.2.10:*"]
@@ -72,6 +75,22 @@ def test_a_non_loopback_bind_needs_an_explicit_host_allow_list_and_allows_no_ori
     for entry in ("https://runtime.internal", "runtime.internal/mcp", "runtime internal"):
         with pytest.raises(ServerConfigurationError, match="bare host or host:port"):
             settings(AGENT_RUNTIME_HOST="192.0.2.10", AGENT_RUNTIME_ALLOWED_HOSTS=entry)
+
+
+def test_the_audit_handle_budget_defaults_to_the_stores_own_and_is_read_from_the_environment():
+    assert settings().audit_max_open_handles is None
+    assert settings(AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES="").audit_max_open_handles is None
+    assert settings(AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES=" 7 ").audit_max_open_handles == 7
+
+
+@pytest.mark.parametrize("raw", ["many", "0", "-3", "2.5"])
+def test_a_bad_audit_handle_budget_is_refused_naming_the_variable_and_value(raw):
+    with pytest.raises(ServerConfigurationError) as excinfo:
+        settings(AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES=raw)
+    assert (
+        f'AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES must be a whole number of at least 1, got "{raw}"'
+        in str(excinfo.value)
+    )
 
 
 def test_an_empty_host_is_refused():
@@ -125,6 +144,76 @@ def test_the_middleware_passes_only_the_exact_bearer_token():
         assert TOKEN not in body.decode()
 
 
+class Wire:
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+        self.log = []
+
+    async def receive(self):
+        self.log.append("receive")
+        if not self.chunks:
+            await asyncio.sleep(3600)
+        return self.chunks.pop(0)
+
+    async def send(self, message):
+        self.log.append(message["type"])
+
+
+def request_chunk(body, more_body):
+    return {"type": "http.request", "body": body, "more_body": more_body}
+
+
+def run_unauthorized(wire):
+    app = BearerTokenMiddleware(inner_app, token=TOKEN)
+    scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": []}
+    asyncio.run(app(scope, wire.receive, wire.send))
+
+
+ANSWERED = ["http.response.start", "http.response.body"]
+
+
+def test_a_refusal_waits_for_the_request_body_so_a_closing_client_can_read_it():
+    wire = Wire([request_chunk(b"first", True), request_chunk(b"second", False)])
+    run_unauthorized(wire)
+    assert wire.log == ["receive", "receive", *ANSWERED]
+
+
+def test_a_refusal_does_not_wait_for_a_client_that_has_gone():
+    wire = Wire([{"type": "http.disconnect"}])
+    run_unauthorized(wire)
+    assert wire.log == ["receive", *ANSWERED]
+
+
+def test_a_refusal_reads_no_more_than_the_discard_limit():
+    chunk = b"x" * (security.MAX_DISCARDED_BODY_BYTES // 2 + 1)
+    wire = Wire([request_chunk(chunk, True) for _ in range(4)])
+    run_unauthorized(wire)
+    assert wire.log == ["receive", "receive", *ANSWERED]
+    assert len(wire.chunks) == 2
+
+
+def test_a_refusal_gives_up_on_a_body_that_never_finishes(monkeypatch):
+    monkeypatch.setattr(security, "DISCARD_BODY_SECONDS", 0.05)
+    wire = Wire([request_chunk(b"start", True)])
+    started = time.monotonic()
+    run_unauthorized(wire)
+    assert time.monotonic() - started < 5
+    assert wire.log == ["receive", "receive", *ANSWERED]
+
+
+def test_an_authorized_request_keeps_its_body_for_the_app():
+    wire = Wire([request_chunk(b"payload", False)])
+    app = BearerTokenMiddleware(inner_app, token=TOKEN)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [(b"authorization", f"Bearer {TOKEN}".encode())],
+    }
+    asyncio.run(app(scope, wire.receive, wire.send))
+    assert wire.log == ANSWERED and len(wire.chunks) == 1
+
+
 def test_the_middleware_leaves_non_http_scopes_alone():
     seen = []
 
@@ -166,6 +255,10 @@ def test_the_middleware_closes_an_unauthenticated_websocket_without_reaching_the
         (
             {"AGENT_RUNTIME_AUTH_TOKEN": TOKEN, "AGENT_RUNTIME_HOST": "192.0.2.10"},
             "AGENT_RUNTIME_ALLOWED_HOSTS",
+        ),
+        (
+            {"AGENT_RUNTIME_AUTH_TOKEN": TOKEN, "AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES": "many"},
+            "AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES",
         ),
     ],
 )

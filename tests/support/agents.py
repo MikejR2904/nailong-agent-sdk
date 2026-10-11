@@ -35,7 +35,6 @@ def tool(
     kind=EpisodeKind.EXPLORATORY,
     concurrency=ToolConcurrency.SERIAL,
     schema=None,
-    requires_manifest=False,
 ):
     return ToolDefinition(
         name=name,
@@ -43,7 +42,6 @@ def tool(
         input_schema=schema or {"type": "object", "additionalProperties": True},
         episode_kind=kind,
         concurrency=concurrency,
-        requires_manifest=requires_manifest,
     )
 
 

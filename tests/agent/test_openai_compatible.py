@@ -13,7 +13,6 @@ from nailong_agent_sdk.agent.openai_compatible import (
     OpenAICompatibleAgentModel,
     OpenAICompatibleEmbeddingProvider,
     OpenAICompatibleEndpoint,
-    OpenAICompatibleSemanticGapAnalyzer,
 )
 from nailong_agent_sdk.agent.openai_compatible import transport as transport_module
 from nailong_agent_sdk.agent.openai_compatible.transport import (
@@ -27,7 +26,6 @@ from nailong_agent_sdk.foundations.contracts import (
 from nailong_agent_sdk.foundations.errors import AgentSdkError, TransientProviderError
 from tests.support.agents import FnExecutor, arun, definition, final, ok, task, tool
 from tests.support.model_context import FAKE_KEY, model_context
-from tests.support.specs import req, spec, tree
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -651,81 +649,3 @@ def test_embedding_provider_validation():
         assert excinfo.value.code == "OPENAI_COMPATIBLE_EMBEDDING_INVALID"
     with pytest.raises(ValueError, match="non-empty"):
         good.embed("   ")
-
-
-def test_semantic_gap_analyzer_failure_modes():
-    class FakeTransport:
-        def __init__(self, content):
-            self.content = content
-
-        def post_json(self, url, *, headers, payload, timeout_seconds):
-            return {"choices": [{"message": {"content": self.content}}]}
-
-    specification = spec(reqs=[req("R1"), req("R2")], trees=[tree()])
-    ep = endpoint("http://x/v1")
-
-    def analyze(content):
-        analyzer = OpenAICompatibleSemanticGapAnalyzer(
-            ep, provider="p", model="m", transport=FakeTransport(content)
-        )
-        return arun(analyzer.analyze(specification))
-
-    source = specification.requirements[0].source_refs[0].model_dump(mode="json")
-    good = analyze(
-        json.dumps(
-            {
-                "findings": [
-                    {
-                        "finding_id": "F1",
-                        "type": "ambiguity",
-                        "requirement_ids": ["R1"],
-                        "source_refs": [source],
-                        "description": "d",
-                        "suggested_fix": "f",
-                    }
-                ]
-            }
-        )
-    )
-    assert len(good.findings) == 1 and len(good.findings[0].analysis_receipt_digest) == 64
-    with pytest.raises(AgentSdkError) as not_json:
-        analyze("not json")
-    assert not_json.value.code == "OPENAI_COMPATIBLE_SEMANTIC_ANALYSIS_INVALID"
-    with pytest.raises(AgentSdkError) as wrong_shape:
-        analyze(
-            json.dumps(
-                {
-                    "findings": [
-                        {
-                            "finding_id": "F1",
-                            "type": "absence",
-                            "requirement_ids": ["R1"],
-                            "source_refs": [source],
-                            "description": "d",
-                            "suggested_fix": "f",
-                        }
-                    ]
-                }
-            )
-        )
-    assert wrong_shape.value.code == "OPENAI_COMPATIBLE_SEMANTIC_ANALYSIS_INVALID"
-    oversize = {
-        "findings": [
-            {
-                "finding_id": "F1",
-                "type": "ambiguity",
-                "requirement_ids": ["R1"],
-                "source_refs": [source],
-                "description": "x" * 5000,
-                "suggested_fix": "f",
-            }
-        ]
-    }
-    try:
-        analyze(json.dumps(oversize))
-        outcome = "accepted"
-    except AgentSdkError as error:
-        outcome = f"AgentSdkError:{error.code}"
-    except Exception as error:
-        outcome = f"{type(error).__name__}"
-    assert outcome.startswith("AgentSdkError"), outcome

@@ -13,7 +13,6 @@ exactly; it is deliberately an auditable heuristic-free mode, not a claim that
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterable
 from pathlib import Path
@@ -21,6 +20,7 @@ from typing import Any
 
 from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import EpisodeKind
+from ..foundations.hashing import sha256_hex, strict_canonical_json
 from ..foundations.identifiers import require_unique
 from ..foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem, PckpStatus
 from .episode_models import (
@@ -90,8 +90,6 @@ class InMemoryEpisodeStore:
         dependencies: list[str],
         *,
         content: dict[str, Any] | None = None,
-        requires_manifest: bool = False,
-        eda_manifest: dict[str, Any] | None = None,
     ) -> EpisodeRecord:
         require_unique(dependencies, "action episode dependencies")
         for dependency_id in dependencies:
@@ -108,8 +106,6 @@ class InMemoryEpisodeStore:
             EpisodeKind.ACTION,
             dependencies=dependencies,
             content=content,
-            requires_manifest=requires_manifest,
-            eda_manifest=eda_manifest,
         )
         for dependency_id in dependencies:
             dependency = self._records[dependency_id]
@@ -129,14 +125,6 @@ class InMemoryEpisodeStore:
         )
         self._records[episode_id] = closed
         return closed
-
-    def attach_eda_manifest(self, episode_id: str, manifest: dict[str, Any]) -> EpisodeRecord:
-        record = self._require(episode_id)
-        if record.kind is not EpisodeKind.ACTION:
-            raise ValueError("Only action episodes can receive EDA manifests.")
-        updated = record.model_copy(update={"eda_manifest": dict(manifest)})
-        self._records[episode_id] = updated
-        return updated
 
     def mark_accessed(self, episode_ids: Iterable[str]) -> None:
         """Record explicit harness/tool use for recency and frequency scoring."""
@@ -226,17 +214,14 @@ class InMemoryEpisodeStore:
                 "depends_on": record.depends_on,
                 "depended_on_by": record.depended_on_by,
                 "description": record.description,
-                "requires_manifest": record.requires_manifest,
-                "eda_manifest": record.eda_manifest,
                 "tombstone": record.tombstone,
                 "access_count": record.access_count,
                 "last_access_sequence": record.last_access_sequence,
             }
             for record in self.list()
         ]
-        encoded = json.dumps(structural, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return EpisodeCheckpoint(
-            graph_hash=hashlib.sha256(encoded).hexdigest(),
+            graph_hash=sha256_hex(strict_canonical_json(structural)),
             episodes=structural,
         )
 
@@ -288,9 +273,7 @@ class InMemoryEpisodeStore:
                         "strategy": CompactionStrategy.GREEDY_BASELINE.value,
                         "token_budget": token_budget,
                         "current_tokens": self.estimate_tokens(),
-                        "reason": (
-                            "No closed, dependency-free, manifest-complete episode is eligible."
-                        ),
+                        "reason": ("No closed, dependency-free episode is eligible."),
                     },
                 )
             self._compact_record(candidate.id)
@@ -332,15 +315,7 @@ class InMemoryEpisodeStore:
         mandatory.update(
             record.id
             for record in self._records.values()
-            if record.id in live_ids
-            and (
-                record.state is EpisodeState.OPEN
-                or (
-                    record.kind is EpisodeKind.ACTION
-                    and record.requires_manifest
-                    and record.eda_manifest is None
-                )
-            )
+            if record.id in live_ids and record.state is EpisodeState.OPEN
         )
         mandatory = self._dependency_closure(mandatory, live_ids)
         live_records = [self._require(item_id) for item_id in live_ids]
@@ -373,7 +348,7 @@ class InMemoryEpisodeStore:
             ],
         )
         solution = ExactPckpSolver(max_branch_nodes=policy.exact_max_branch_nodes).solve(problem)
-        query_hash = hashlib.sha256(relevance_query.encode("utf-8")).hexdigest()
+        query_hash = sha256_hex(relevance_query)
         if solution.status is PckpStatus.INFEASIBLE_MANDATORY:
             compacted = self._compact_unretained(live_ids - mandatory)
             status = (
@@ -448,19 +423,11 @@ class InMemoryEpisodeStore:
         mandatory.update(
             record.id
             for record in self._records.values()
-            if record.id in live_ids
-            and (
-                record.state is EpisodeState.OPEN
-                or (
-                    record.kind is EpisodeKind.ACTION
-                    and record.requires_manifest
-                    and record.eda_manifest is None
-                )
-            )
+            if record.id in live_ids and record.state is EpisodeState.OPEN
         )
         mandatory = self._dependency_closure(mandatory, live_ids)
         mandatory_tokens = self._tokens_for(mandatory)
-        query_hash = hashlib.sha256(relevance_query.encode("utf-8")).hexdigest()
+        query_hash = sha256_hex(relevance_query)
         if mandatory_tokens > token_budget:
             compacted = self._compact_unretained(live_ids - mandatory)
             status = (
@@ -725,8 +692,6 @@ class InMemoryEpisodeStore:
         substrate_backed: bool = False,
         snapshot_version: str | None = None,
         content: dict[str, Any] | None = None,
-        requires_manifest: bool = False,
-        eda_manifest: dict[str, Any] | None = None,
     ) -> EpisodeRecord:
         record = EpisodeRecord(
             id=f"episode-{self._next_id}",
@@ -736,8 +701,6 @@ class InMemoryEpisodeStore:
             snapshot_version=snapshot_version,
             depends_on=list(dependencies or []),
             content=content,
-            requires_manifest=requires_manifest,
-            eda_manifest=eda_manifest,
         )
         self._next_id += 1
         self._records[record.id] = record
@@ -755,11 +718,6 @@ class InMemoryEpisodeStore:
             and record.id not in protected_episode_ids
             and record.state is EpisodeState.CLOSED
             and not record.depended_on_by
-            and not (
-                record.kind is EpisodeKind.ACTION
-                and record.requires_manifest
-                and record.eda_manifest is None
-            )
         ]
 
         def priority(record: EpisodeRecord) -> tuple[int, str]:

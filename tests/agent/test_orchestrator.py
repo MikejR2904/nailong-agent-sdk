@@ -1,3 +1,4 @@
+import dataclasses
 import time
 
 import pytest
@@ -299,5 +300,42 @@ def test_an_orchestration_whose_controller_completed_cannot_be_cancelled(tmp_pat
             e.event_type for e in services.telemetry.list_events(record.orchestration_id, limit=100)
         ]
         assert "orchestration.cancelled" not in events
+    finally:
+        close_all(orchestrator, services)
+
+
+def test_a_cancel_made_while_the_graph_runs_is_not_overwritten_by_the_execution_outcome(tmp_path):
+    orchestrator = Orchestrator(tmp_path, make_policy())
+    record = arun(orchestrator.prepare(make_request(blast=0)))
+    orchestrator.submit_for_approval(record.orchestration_id)
+    orchestrator.approve(record.orchestration_id, True)
+    base_factory = make_factory()
+    cancels = []
+
+    def factory(context):
+        binding = base_factory(context)
+        adapter = binding.task_adapter
+
+        def cancelling_adapter(node, node_context):
+            if not cancels:
+                cancels.append(orchestrator.cancel(record.orchestration_id, "stop mid-run"))
+            return adapter(node, node_context)
+
+        return dataclasses.replace(binding, task_adapter=cancelling_adapter)
+
+    services = AgentRuntimeServices.open(tmp_path)
+    try:
+        executed = arun(
+            orchestrator.dispatch_and_execute(record.orchestration_id, services, factory),
+            timeout=300,
+        )
+        assert len(cancels) == 1
+        assert executed.status is OrchestrationStatus.CANCELLED
+        stored = orchestrator.get(record.orchestration_id)
+        assert stored.status is OrchestrationStatus.CANCELLED
+        controller = orchestrator.controller_runtime().get_controller(stored.controller_id)
+        assert controller.phase is ControllerPhase.CANCELLED
+        run = orchestrator.controller_runtime()._harness.get_run_state(stored.graph_run_id)
+        assert run.cancelled
     finally:
         close_all(orchestrator, services)

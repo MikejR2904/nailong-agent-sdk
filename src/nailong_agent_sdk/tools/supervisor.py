@@ -1,6 +1,6 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Deterministic watchdog and bounded process supervision for registered EDA commands."""
+"""Deterministic watchdog and bounded process supervision for registered commands."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ class CommandTemplate(StrictModel):
     """A registered, host-declared command; ``environment`` is opt-in and unset by default.
 
     Leaving ``environment`` unset preserves the historical behavior of
-    inheriting the full host environment — needed by many EDA toolchains for
+    inheriting the full host environment, which many toolchains need for
     ``PATH``, license-server variables, and similar. A host that wants the
     same allowlisting ``NativeSandbox``/``DockerSandbox`` apply, without
     switching this template to run inside one of those backends, sets it
@@ -466,7 +466,11 @@ def _resource_preexec(
 
     def apply() -> None:
         for resource_id, value, _name in limit_specs:
-            resource.setrlimit(resource_id, (value, value))
+            hard = value + 1 if resource_id == resource.RLIMIT_CPU else value
+            current_hard = resource.getrlimit(resource_id)[1]
+            if current_hard != resource.RLIM_INFINITY:
+                hard = min(hard, current_hard)
+            resource.setrlimit(resource_id, (value, hard))
 
     applied.extend(name for _resource_id, _value, name in limit_specs)
     return apply, applied, unsupported

@@ -1,11 +1,29 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Exact and greedy PCKP solvers.
+"""Prerequisite-Constrained Knapsack solvers for context retention.
 
-The exact solver uses a fixed-order, exact-arithmetic branch-and-bound search,
-or the exact Pareto-frontier tree dynamic program when the instance is a
-rooted forest. Neither solver makes model calls or uses random ordering, so
-both are reusable by episode retention and source-evidence packing.
+When an agent's context grows past its budget, something has to be evicted
+and something has to be retained. This is called the
+Prerequisite-Constrained Knapsack Problem (PCKP). It looks
+like a standard 0/1 knapsack (maximize a utility sum subject to a cost
+budget) with one addition: items may declare prerequisites. Selecting
+an item requires selecting its entire prerequisite closure. Some items
+may also be marked mandatory, meaning their closure must be selected
+regardless of budget. If the mandatory closure does not fit, the problem
+is infeasible.
+
+This module provides two solvers:
+- ExactPckpSolver: finds the optimal set (using tree DP for simple cases, or
+  branch-and-bound search for general DAGs). Always deterministic.
+- GreedyPckpBaseline: a simpler density-first heuristic, used for comparison.
+
+Both are deterministic (no randomness, no model calls) so the same input always
+produces the same selection. They are used for episode retention and evidence
+packing (deciding which pieces can fit within the limited context window), but
+the underlying problem is common.
+
+Credit to: https://dlnext.acm.org/doi/10.5555/3182683.3183062 and
+https://www.sciencedirect.com/science/article/abs/pii/S0377221706010642
 """
 
 from __future__ import annotations
@@ -13,6 +31,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from fractions import Fraction
 
+from ..hashing import sha256_hex, strict_canonical_json
 from .models import PckpItem, PckpProblem, PckpSolution, PckpStatus
 
 
@@ -469,13 +488,7 @@ def _is_rooted_forest(items: Iterable[PckpItem]) -> bool:
 
 
 def _problem_hash(problem: PckpProblem) -> str:
-    import hashlib
-    import json
-
-    payload = problem.model_dump(mode="json")
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return sha256_hex(strict_canonical_json(problem.model_dump(mode="json")))
 
 
 def _fraction_text(value: Fraction) -> str:

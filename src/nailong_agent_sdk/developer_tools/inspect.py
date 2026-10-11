@@ -9,7 +9,9 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from ..agent.retention import TombstonedHandle, tombstone_for_run, tombstoned_handles
 from ..foundations.contracts import StrictModel
+from ..foundations.errors import AgentSdkError
 from ..memory.context_projection import journal_content_hash
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.telemetry_store import TelemetryStore
@@ -50,6 +52,7 @@ class EvidenceVerification(StrictModel):
     checked: int
     verified: bool
     mismatches: list[EvidenceMismatch]
+    pruned: int = 0
 
 
 def verify_project_evidence(run_root: Path, project_id: str) -> EvidenceVerification:
@@ -59,6 +62,9 @@ def verify_project_evidence(run_root: Path, project_id: str) -> EvidenceVerifica
     journal_root = run_root.resolve() / ".agent-tool-results"
     mismatches: list[EvidenceMismatch] = []
     seen: set[tuple[str, str | None]] = set()
+    pruned = 0
+    tombstoned: dict[str, TombstonedHandle] | None = None
+    tombstone_failure: str | None = None
     for event in events:
         for evidence in event.evidence:
             key = (evidence.evidence_id, evidence.content_hash)
@@ -68,13 +74,36 @@ def verify_project_evidence(run_root: Path, project_id: str) -> EvidenceVerifica
             try:
                 actual = journal_content_hash(journal_root, evidence.evidence_id)
             except ValueError as error:
+                if tombstoned is None:
+                    try:
+                        tombstoned = tombstoned_handles(run_root)
+                    except AgentSdkError as failure:
+                        tombstoned, tombstone_failure = {}, str(failure)
+                record = tombstoned.get(evidence.evidence_id)
+                if record is not None and record.content_hash == evidence.content_hash:
+                    pruned += 1
+                    continue
+                if record is not None:
+                    reason = (
+                        f'Evidence "{evidence.evidence_id}" of project "{project_id}" at '
+                        f"revision {event.revision} records content hash {evidence.content_hash}, "
+                        f"but retention tombstone {record.tombstone_sequence} for run "
+                        f'"{record.run_id}" recorded the pruned journal file with hash '
+                        f"{record.content_hash}."
+                    )
+                elif tombstone_failure is not None:
+                    reason = (
+                        f"{error} The retention tombstones cannot vouch for it: {tombstone_failure}"
+                    )
+                else:
+                    reason = str(error)
                 mismatches.append(
                     EvidenceMismatch(
                         evidence_id=evidence.evidence_id,
                         revision=event.revision,
                         recorded_hash=evidence.content_hash,
                         journal_hash=None,
-                        reason=str(error),
+                        reason=reason,
                     )
                 )
                 continue
@@ -97,6 +126,7 @@ def verify_project_evidence(run_root: Path, project_id: str) -> EvidenceVerifica
         checked=len(seen),
         verified=not mismatches,
         mismatches=mismatches,
+        pruned=pruned,
     )
 
 
@@ -119,7 +149,7 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
             statuses[event.status] += 1
             event_hashes.append(event.integrity_hash)
         if not event_hashes:
-            raise ValueError(f'Telemetry run "{run_id}" is unknown.')
+            raise ValueError(_unknown_run_message(run_root, run_id))
         metrics = telemetry.list_metrics(run_id)
         metric_availability = _counts(metric.availability.value for metric in metrics)
         telemetry_failure = telemetry.chain_break(run_id)
@@ -156,6 +186,20 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
         metric_availability=metric_availability,
         audit_entry_count=audit_entry_count,
         report=report,
+    )
+
+
+def _unknown_run_message(run_root: Path, run_id: str) -> str:
+    try:
+        tombstone = tombstone_for_run(run_root, run_id)
+    except AgentSdkError:
+        tombstone = None
+    if tombstone is None:
+        return f'Telemetry run "{run_id}" is unknown.'
+    return (
+        f'Telemetry run "{run_id}" was pruned at {tombstone.pruned_at_utc} by retention '
+        f"tombstone {tombstone.sequence}; it held {tombstone.telemetry.event_count} events "
+        f"ending at hash {tombstone.telemetry.head_hash}."
     )
 
 

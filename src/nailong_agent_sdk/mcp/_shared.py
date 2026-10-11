@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from ..agent.orchestrator import Orchestrator
+from ..agent.retention import RunRetention
+from ..agent.task_runner import AgentTaskRunner
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.telemetry_store import TelemetryStore
-from ..specifications.gate import Gate1ArtifactStore, SpecificationGate
-from ..specifications.git_versioning import GitRepositoryAdapter, SpecificationVersionService
 from ..specifications.preprocessing import SpecificationPreprocessor
 from ..state.controller_runtime import ControllerRuntime
 from ..state.harness_coordinator import HarnessCoordinator
@@ -52,10 +52,9 @@ class McpContext:
     controller_runtime: ControllerRuntime
     specification_root: Path
     preprocessor: SpecificationPreprocessor
-    specification_gate: SpecificationGate
-    gate_store: Gate1ArtifactStore
     plan_validator: PlanValidator
-    versioning: SpecificationVersionService
+    task_runner: AgentTaskRunner
+    retention: RunRetention
     orchestrators: dict[str, Orchestrator] = field(default_factory=dict)
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -104,19 +103,6 @@ class McpContext:
 
         setattr(wrapper, "__signature__", inspect.signature(function, eval_str=True))
         return wrapper
-
-    def repository_for(self, relative_path: str) -> GitRepositoryAdapter:
-        candidate = Path(relative_path)
-        if candidate.is_absolute() or not relative_path.strip():
-            raise ValueError(
-                "Git repository paths must be non-empty and relative to the runtime root."
-            )
-        target = (self.run_root / candidate).resolve()
-        try:
-            target.relative_to(self.run_root.resolve())
-        except ValueError as error:
-            raise ValueError("Git repository path escapes the runtime root.") from error
-        return GitRepositoryAdapter(target)
 
     def orchestration_for(self, orchestration_id: str) -> Orchestrator:
         """Recover a policy shell; executable worker bindings remain host-local."""

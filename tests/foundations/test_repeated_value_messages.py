@@ -16,7 +16,6 @@ from nailong_agent_sdk.mcp.client_types import McpHttpServerConfig, McpStdioServ
 from nailong_agent_sdk.memory.episode_store import InMemoryEpisodeStore
 from nailong_agent_sdk.specifications.documents import (
     DocumentFormat,
-    SpecificationCategory,
     SpecificationDocument,
     SpecificationManifest,
 )
@@ -39,7 +38,7 @@ from tests.support.agents import definition, tool
 from tests.support.elastic import req as elastic_request
 from tests.support.orchestration import make_policy, make_request
 from tests.support.plans import task as plan_task
-from tests.support.specs import req, spec, sref
+from tests.support.specs import sref
 
 
 class Colour(enum.StrEnum):
@@ -113,7 +112,7 @@ def manifest_document(document_id):
         title="t",
         format=DocumentFormat.MD,
         path=f"{document_id}.md",
-        category=SpecificationCategory.FUNCTIONAL,
+        category="functional",
     )
 
 
@@ -238,15 +237,11 @@ CASES = {
         lambda: SpecificationManifest(documents=[manifest_document("d1"), manifest_document("d1")]),
         'specification document IDs must be unique; repeated: "d1"',
     ),
-    "requirement ids": (
-        lambda: spec(reqs=[req("R1"), req("R1")]),
-        'unified specification requirement IDs must be unique; repeated: "R1"',
-    ),
     "retrieval categories": (
         lambda: RetrievalQuery(
             snapshot_id="s",
             query_text="q",
-            allowed_categories=[SpecificationCategory.FUNCTIONAL] * 2,
+            allowed_categories=["functional"] * 2,
         ),
         'retrieval allowed_categories must be unique; repeated: "functional"',
     ),

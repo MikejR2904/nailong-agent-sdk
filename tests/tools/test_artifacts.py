@@ -7,6 +7,7 @@ import time
 import pytest
 
 from nailong_agent_sdk.tools.artifacts import ArtifactStore
+from tests.support.extended_paths import resolve_files_in_extended_spelling, windows_only
 from tests.support.processes import child_environment
 
 WORKER = r"""
@@ -97,6 +98,22 @@ def test_manifest_lookup_cannot_leave_the_manifest_directory(tmp_path):
     (tmp_path / "outside_record.json").write_text(json.dumps(record), "utf-8")
     found = store.get("../../outside_record")
     assert found is None
+
+
+@windows_only
+def test_a_target_resolving_in_the_extended_spelling_stays_inside_the_run_root(
+    tmp_path, monkeypatch
+):
+    store = ArtifactStore(tmp_path / "run")
+    store.write_text("shared/out.txt", "first")
+    resolve_files_in_extended_spelling(monkeypatch)
+    record = store.write_text("shared/out.txt", "second")
+    assert store.read_text(record.artifact_id) == "second"
+    assert (tmp_path / "run" / "shared" / "out.txt").read_text("utf-8") == "second"
+    for escaping in ("../outside.txt", "shared/../../outside.txt"):
+        with pytest.raises(ValueError, match="Artifact path escapes the configured run root"):
+            store.write_text(escaping, "x")
+    assert not (tmp_path / "outside.txt").exists()
 
 
 def test_multiprocess_writers_to_the_same_path_stay_consistent(tmp_path):

@@ -6,8 +6,8 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 |---|---:|---|
 | [`developer_tools/__init__.py`](#developer_tools__init__py---public-surface-of-the-developer-utilities) | 42 | public surface of the developer utilities |
 | [`developer_tools/catalog.py`](#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 134 | the `nailong-agent-sdk-dev` command line |
-| [`developer_tools/inspect.py`](#developer_toolsinspectpy---read-only-run-evidence-inspection) | 167 | read-only run evidence inspection |
+| [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 181 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/inspect.py`](#developer_toolsinspectpy---read-only-run-evidence-inspection) | 211 | read-only run evidence inspection |
 | [`developer_tools/quality.py`](#developer_toolsqualitypy---closed-ruff-quality-check) | 92 | closed Ruff quality check |
 | [`developer_tools/validate.py`](#developer_toolsvalidatepy---contract-file-validation) | 97 | contract-file validation |
 
@@ -42,9 +42,9 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/cli.py` - the `nailong-agent-sdk-dev` command line
 
-*134 lines · depends on: `developer_tools/catalog.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
+*181 lines · depends on: `agent/retention.py`, `developer_tools/catalog.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py`, `foundations/errors.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
 
-**Role in the workflow.** Subcommands `catalog`, `validate`, `inspect-run`, `verify-evidence` and `quality`; each prints its report as JSON. Exit status: 0 success, 1 the artifact was inspected and is invalid, failed or has a broken chain, 2 usage error (argparse), 3 operational error.
+**Role in the workflow.** Subcommands `catalog`, `validate`, `inspect-run`, `verify-evidence` and `quality`; each prints its report as JSON. Exit status: 0 success, 1 the artifact was inspected and is invalid, failed or has a broken chain, 2 usage error (argparse), 3 operational error. `prune-runs` is the one command that can change a run root, and only with `--apply`.
 
 **Contents**
 
@@ -54,6 +54,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 - `_validate(arguments: argparse.Namespace) -> object` - Handler for `validate`. · *Called by:* `developer_tools/cli.py::main`
 - `_inspect_run(arguments: argparse.Namespace) -> object` - Handler for `inspect-run`. · *Called by:* `developer_tools/cli.py::main`
 - `_verify_evidence(arguments: argparse.Namespace) -> object` - Handler for `verify-evidence`. · *Called by:* `developer_tools/cli.py::main`
+- `_prune_runs(arguments: argparse.Namespace) -> object` - `prune-runs <run_root> --older-than-seconds N [--keep-most-recent K] [--max-runs M] [--include-unfinished] [--export-reports] [--apply]`: builds a `RetentionPolicy` and calls `prune_run_root`. Without `--apply` it is a dry run that writes nothing; the JSON is the `RetentionReport`, and the exit status is 1 when it lists a problem (a broken chain), 3 for an invalid policy, a missing run root or a failure to prune. · *Called by:* `developer_tools/cli.py::main`
 - `_quality(arguments: argparse.Namespace) -> object` - Handler for `quality`. · *Called by:* `developer_tools/cli.py::main`
 - `_exit_status(result: object) -> int` - 1 if any of `valid`, `passed`, `telemetry_chain_valid`, `audit_chain_valid`, `verified` is False on the result, else 0. · *Called by:* `developer_tools/cli.py::main`
 - `_to_json(value: object) -> object` - Converts a pydantic result to JSON-compatible data. · *Called by:* `developer_tools/cli.py::main`
@@ -64,7 +65,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/inspect.py` - read-only run evidence inspection
 
-*167 lines · depends on: `foundations/contracts.py`, `memory/context_projection.py`, `observability/audit_log.py`, `observability/telemetry_store.py`, `state/project_state_store.py` · used by: `developer_tools/__init__.py`, `developer_tools/cli.py` · not re-exported at the package root*
+*211 lines · depends on: `agent/retention.py`, `foundations/contracts.py`, `foundations/errors.py`, `memory/context_projection.py`, `observability/audit_log.py`, `observability/telemetry_store.py`, `state/project_state_store.py` · used by: `developer_tools/__init__.py`, `developer_tools/cli.py` · not re-exported at the package root*
 
 **Role in the workflow.** Verifies the telemetry and audit chains of one run and summarises event types, statuses and metric availability from every event; `verify_project_evidence` cross-checks a project's recorded tool-result hashes against the result journal. Both open the stores read-only, so a mistyped path creates nothing.
 
@@ -74,10 +75,11 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
   - fields: `schema_version`, `run_id`, `telemetry_chain_valid`, `audit_chain_valid`, `telemetry_chain_failure`, `audit_chain_failure`, `event_count`, `metric_count`, `event_types`, `statuses`, `metric_availability`, `audit_entry_count`, `report`
 - **class `EvidenceMismatch`** *(pydantic model; bases: StrictModel)* - One recorded tool-result handle that disagrees with the journal: the evidence id, the project-state revision that recorded it, the recorded hash, the hash the journal file produces (None if unreadable) and a reason naming both. · *Instantiated by:* `developer_tools/inspect.py::verify_project_evidence`
   - fields: `evidence_id`, `revision`, `recorded_hash`, `journal_hash`, `reason`
-- **class `EvidenceVerification`** *(pydantic model; bases: StrictModel)* - Project id, how many distinct tool-result evidence records were checked, `verified` (true when none mismatched) and the mismatches. · *Instantiated by:* `developer_tools/inspect.py::verify_project_evidence`
-  - fields: `schema_version`, `project_id`, `checked`, `verified`, `mismatches`
-- `verify_project_evidence(run_root: Path, project_id: str) -> EvidenceVerification` - Opens the project-state store read-only (an unknown project or run root raises), walks every event's `tool-result-handle` evidence once per distinct (id, hash) and recomputes each handle's hash from `.agent-tool-results/` with `journal_content_hash`; a missing, corrupt or different file becomes an `EvidenceMismatch`. Detects journal files overwritten after the evidence was recorded. · *Called by:* `developer_tools/cli.py::_verify_evidence`
+- **class `EvidenceVerification`** *(pydantic model; bases: StrictModel)* - Project id, how many distinct tool-result evidence records were checked, `verified` (true when none mismatched) the mismatches and how many handles were accepted through a retention tombstone (`pruned`). · *Instantiated by:* `developer_tools/inspect.py::verify_project_evidence`
+  - fields: `schema_version`, `project_id`, `checked`, `verified`, `mismatches`, `pruned`
+- `verify_project_evidence(run_root: Path, project_id: str) -> EvidenceVerification` - Opens the project-state store read-only (an unknown project or run root raises), walks every event's `tool-result-handle` evidence once per distinct (id, hash) and recomputes each handle's hash from `.agent-tool-results/` with `journal_content_hash`; a missing, corrupt or different file becomes an `EvidenceMismatch`. Detects journal files overwritten after the evidence was recorded. A handle whose journal file is gone is accepted when a retention tombstone names it with the hash the project state recorded (counted in `pruned`); it is a mismatch when the hashes differ, when no tombstone names it or when the tombstone chain is broken (the reason says so). · *Called by:* `developer_tools/cli.py::_verify_evidence`
 - `inspect_run(run_root: Path, run_id: str) -> RunInspection` - Requires an existing run root with a telemetry database (otherwise a `ValueError` naming the root or database), opens the stores read-only, streams every event of the run (page by page), reads all metrics and counts every audit entry, verifies both chains and builds the summary; an unknown run raises. A root without audit logs reports zero entries and gets no audit directory. · *Called by:* `developer_tools/cli.py::_inspect_run`
+- `_unknown_run_message(run_root: Path, run_id: str) -> str` - `Telemetry run "<id>" is unknown.`, or, when a retention tombstone names the run, that it was pruned, when, by which tombstone, and how many events it held and the hash they ended at. · *Called by:* `developer_tools/inspect.py::inspect_run`
 - `_counts(values: Iterable[str]) -> dict[str, int]` - Sorted occurrence counts of an iterable of strings. · *Called by:* `developer_tools/inspect.py::inspect_run`
 - `_sorted(counts: Counter[str]) -> dict[str, int]` - A counter as a dict sorted by key. · *Called by:* `developer_tools/inspect.py::_counts`, `developer_tools/inspect.py::inspect_run`
 

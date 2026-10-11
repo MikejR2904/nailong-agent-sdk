@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -37,12 +36,14 @@ from ...foundations.contracts import (
     validate_tool_arguments,
 )
 from ...foundations.errors import AgentSdkError, TransientProviderError, redact_hidden_reasoning
+from ...foundations.hashing import canonical_hash, canonical_json, estimate_tokens
 from ...memory.context import assemble_initial_context
 from ...memory.context_projection import (
     ContextProjectionPolicy,
     ContextProjector,
     InMemoryToolResultJournal,
     ToolResultJournal,
+    journal_for_run,
 )
 from ...memory.episode_models import CompactionStatus, CompactionStrategy, EpisodeState
 from ...memory.episode_store import InMemoryEpisodeStore
@@ -67,6 +68,7 @@ from ...observability.telemetry_models import (
     TelemetrySeverity,
 )
 from ...observability.telemetry_store import TelemetryStore
+from ...observability.trace_context import format_traceparent, resource_attributes
 from ...state.project_state_engine import ProjectStateProjector, ProjectStateReducer
 from ...state.project_state_models import (
     ProjectState,
@@ -93,6 +95,7 @@ from .types import (
     CancellationToken,
     PostToolHook,
     PreToolHook,
+    RunCancelled,
     ToolBatchExecution,
     ToolCallOutcome,
     WatchdogExpired,
@@ -102,6 +105,9 @@ from .types import (
 # reuses identical validation state for every untrusted model response.
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
 _STATE_SUMMARY_HEADROOM_CHARS = 512
+_CANCELLATION_POLL_SECONDS = 0.05
+_PROFILE_EVENT_SPAN_LIMIT = 512
+_SPAN_ATTRIBUTE_TEXT_CHARS = 256
 
 
 class BaseAgent:
@@ -166,6 +172,9 @@ class BaseAgent:
         self._profile_root_span: ProfileSpanHandle | None = None
         self._provider_usage_reported = False
         self._active_audit_run_id: str | None = None
+        self._active_journal: ToolResultJournal | None = None
+        self._active_cancellation: CancellationToken | None = None
+        self._active_telemetry_context: TelemetryContext | None = None
         self._owns_profiler = profiler is None
         self._telemetry_start_sequence = 0
 
@@ -189,6 +198,13 @@ class BaseAgent:
         self._active_project_state = None
         self._profile_root_span = None
         self._active_audit_run_id = None
+        self._active_journal = None
+        self._active_cancellation = None
+        self._active_telemetry_context = None
+
+    def _trace_parent_for(self, span_id: str) -> str | None:
+        trace_id = self.profiler.trace_id
+        return None if trace_id is None else format_traceparent(trace_id, span_id)
 
     async def _run(
         self,
@@ -205,24 +221,35 @@ class BaseAgent:
         continuation: ProviderContinuation | None = None
         self._provider_usage_reported = False
         protected_episode_ids: frozenset[str] = frozenset()
-        telemetry_context = self.telemetry_context or TelemetryContext(
+        caller_context = self.telemetry_context or TelemetryContext(
             run_id=task.id,
             task_id=task.id,
             agent_id=self.definition.identity,
         )
+        caller_span_id = caller_context.span_id or caller_context.parent_span_id
         if self._owns_profiler:
             self.profiler = AgentRunProfiler()
         try:
             root_span = self.profiler.begin_run(
-                telemetry_context.run_id,
+                caller_context.run_id,
                 task.id,
                 self.definition.identity,
+                trace_id=caller_context.trace_id,
+                parent_span_id=caller_span_id,
             )
         except RuntimeError as error:
             raise RuntimeError(
                 f"This BaseAgent was given an AgentRunProfiler that already profiled a run "
                 f"({error}); pass a new profiler or create a new BaseAgent for each task."
             ) from error
+        telemetry_context = caller_context.model_copy(
+            update={
+                "trace_id": self.profiler.trace_id,
+                "span_id": root_span.span_id,
+                "parent_span_id": caller_span_id,
+            }
+        )
+        self._active_telemetry_context = telemetry_context
         project_id = self._project_id_for(task)
         project_state = self.project_state_store.ensure(project_id, self._stage_schema_for(task))
         self._active_project_id = project_id
@@ -234,6 +261,8 @@ class BaseAgent:
             else None
         )
         self._active_audit_run_id = telemetry_context.run_id
+        self._active_journal = journal_for_run(self.result_journal, telemetry_context.run_id)
+        self._active_cancellation = cancellation
         if self.telemetry is not None:
             register_standard_metric_definitions(self.telemetry)
             self._telemetry_start_sequence = self.telemetry.run_snapshot_sequence(
@@ -544,8 +573,8 @@ class BaseAgent:
                     AgentRunStatus.BLOCKED,
                     task,
                     iteration - 1,
-                    "CONTEXT_DEADLOCK: no closed, dependency-free, manifest-complete episode "
-                    "can be compacted within the configured episode budget.",
+                    "CONTEXT_DEADLOCK: no closed, dependency-free episode can be compacted "
+                    "within the configured episode budget.",
                     prompt,
                     episodes,
                     events,
@@ -589,7 +618,12 @@ class BaseAgent:
                     ProfileSpanKind.MODEL_TURN,
                     "model-turn",
                     parent_span_id=self._profile_root_span.span_id,
-                    attributes={"iteration": iteration},
+                    attributes={
+                        "iteration": iteration,
+                        "gen_ai.operation.name": "chat",
+                        "gen_ai.provider.name": self.definition.model_binding.provider,
+                        "gen_ai.request.model": self.definition.model_binding.model,
+                    },
                 )
                 model_context = ModelContext(
                     task=task,
@@ -603,6 +637,7 @@ class BaseAgent:
                     model_binding=self.definition.model_binding,
                     output_schema=self.definition.output_schema,
                     compacted_episodes=projection.compacted_episodes,
+                    trace_parent=self._trace_parent_for(model_span.span_id),
                 )
                 stream_listener = self._guarded_stream_listener(emit, iteration)
                 if stream_listener is not None and isinstance(self.model, StreamingAgentModel):
@@ -618,12 +653,31 @@ class BaseAgent:
                 except WatchdogExpired:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.TIMED_OUT)
                     raise
+                except RunCancelled:
+                    self.profiler.finish_span(model_span, ProfileSpanStatus.CANCELLED)
+                    raise
                 except Exception:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.FAILED)
                     raise
                 else:
-                    self.profiler.finish_span(model_span, ProfileSpanStatus.COMPLETED)
+                    self.profiler.finish_span(
+                        model_span,
+                        ProfileSpanStatus.COMPLETED,
+                        attributes=_model_turn_attributes(response),
+                    )
                 transient_failures = 0
+            except RunCancelled:
+                return self._terminate(
+                    AgentRunStatus.CANCELLED,
+                    task,
+                    iteration,
+                    "Execution was cancelled while the model turn was running.",
+                    prompt,
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
+                )
             except WatchdogExpired as expired:
                 reason = (
                     "WATCHDOG_MODEL_TIMEOUT: model turn exceeded "
@@ -794,6 +848,18 @@ class BaseAgent:
                         self.watchdog_policy.model_turn_timeout_seconds,
                         deadline,
                     )
+                except RunCancelled:
+                    return self._terminate(
+                        AgentRunStatus.CANCELLED,
+                        task,
+                        iteration,
+                        "Execution was cancelled while forwarding tool results to the provider.",
+                        prompt,
+                        episodes,
+                        events,
+                        emit,
+                        projection_history,
+                    )
                 except WatchdogExpired as expired:
                     timeout_detail = _watchdog_detail(expired, "per-turn watchdog timeout")
                     failure = AgentFailure(
@@ -936,6 +1002,20 @@ class BaseAgent:
                     ),
                     self.watchdog_policy.verification_timeout_seconds,
                     deadline,
+                )
+            except RunCancelled:
+                self.profiler.finish_span(verification_span, ProfileSpanStatus.CANCELLED)
+                return self._terminate(
+                    AgentRunStatus.CANCELLED,
+                    task,
+                    iteration,
+                    f"Execution was cancelled while verification gate "
+                    f"{self.definition.verification_gate_id!r} was running.",
+                    prompt,
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
                 )
             except WatchdogExpired as expired:
                 self.profiler.finish_span(verification_span, ProfileSpanStatus.TIMED_OUT)
@@ -1266,7 +1346,13 @@ class BaseAgent:
             ProfileSpanKind.TOOL,
             call.name,
             parent_span_id=self._profile_root_span.span_id if self._profile_root_span else None,
-            attributes={"iteration": iteration, "tool_call_id": call.id},
+            attributes={
+                "iteration": iteration,
+                "tool_call_id": _span_attribute_text(call.id),
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": _span_attribute_text(call.name),
+                "gen_ai.tool.call.id": _span_attribute_text(call.id),
+            },
         )
         try:
             outcome = await self._execute_tool_call(
@@ -1278,6 +1364,7 @@ class BaseAgent:
                 memory,
                 emit,
                 deadline,
+                self._trace_parent_for(span.span_id),
             )
         except Exception:
             self.profiler.finish_span(span, ProfileSpanStatus.FAILED)
@@ -1300,6 +1387,7 @@ class BaseAgent:
         memory: InMemoryEpisodeStore,
         emit: Callable[..., None],
         deadline: float | None,
+        trace_parent: str | None = None,
     ) -> ToolCallOutcome:
         tool = self._tool_definition(call)
         if tool is None:
@@ -1354,6 +1442,7 @@ class BaseAgent:
             task=task,
             iteration=iteration,
             call=effective_call,
+            trace_parent=trace_parent,
         )
         emit("tool-requested", iteration, tool=call.name, tool_call_id=call.id)
         try:
@@ -1381,6 +1470,17 @@ class BaseAgent:
                 await self._await_with_watchdog(
                     hook(context, result), self.watchdog_policy.tool_call_timeout_seconds, deadline
                 )
+        except RunCancelled:
+            result = ToolExecutionResult(
+                status="failed",
+                error=f'Tool "{call.name}" was interrupted because the run was cancelled.',
+            )
+            return self._record_unexecuted_result(
+                call,
+                result,
+                iteration,
+                terminal_status=AgentRunStatus.CANCELLED,
+            )
         except WatchdogExpired as expired:
             timeout_detail = _watchdog_detail(expired, "tool-call watchdog timeout")
             failure = AgentFailure(
@@ -1515,17 +1615,14 @@ class BaseAgent:
         else:
             episode = episodes.add_action(summary, call.consumed_episode_ids, payload)
             memory.mark_accessed(call.consumed_episode_ids)
-            manifest = result.output.get("manifest") if isinstance(result.output, dict) else None
             memory_episode = memory.open_action(
-                self.definition.identity,
-                call.consumed_episode_ids,
-                content=payload,
-                requires_manifest=tool.requires_manifest,
-                eda_manifest=manifest if isinstance(manifest, dict) else None,
+                self.definition.identity, call.consumed_episode_ids, content=payload
             )
             memory.close(memory_episode.id)
             episode_id = episode.id
-        projected = self.context_projector.project_tool_result(call, result, self.result_journal)
+        projected = self.context_projector.project_tool_result(
+            call, result, self._active_journal or self.result_journal
+        )
         return ToolCallOutcome(
             call=call,
             result=result,
@@ -1561,7 +1658,9 @@ class BaseAgent:
         iteration: int,
         terminal_status: AgentRunStatus | None = None,
     ) -> ToolCallOutcome:
-        projected = self.context_projector.project_tool_result(call, result, self.result_journal)
+        projected = self.context_projector.project_tool_result(
+            call, result, self._active_journal or self.result_journal
+        )
         return ToolCallOutcome(
             call=call,
             result=result,
@@ -1594,12 +1693,7 @@ class BaseAgent:
         native protocol; it is never appended to the SDK's ordinary observations.
         """
 
-        content = json.dumps(
-            outcome.result.model_dump(mode="json"),
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
+        content = canonical_json(outcome.result.model_dump(mode="json"))
         limit = self.context_projector.policy.tool_result_preview_chars
         truncated = len(content) > limit
         if truncated:
@@ -1631,8 +1725,8 @@ class BaseAgent:
             (candidate for candidate in self.definition.tools if candidate.name == call.name), None
         )
 
-    @staticmethod
     async def _await_with_watchdog(
+        self,
         operation: Awaitable[Any],
         operation_timeout_seconds: float | None,
         deadline: float | None,
@@ -1648,12 +1742,14 @@ class BaseAgent:
             if timeout is None or remaining < timeout:
                 timeout = remaining
                 source = "run-deadline"
+        cancellation = self._active_cancellation
+        awaited = operation if cancellation is None else _interruptible(operation, cancellation)
         if timeout is None:
-            return await operation
+            return await awaited
         scope = asyncio.timeout(timeout)
         try:
             async with scope:
-                result = await operation
+                result = await awaited
         except TimeoutError as error:
             if scope.expired():
                 raise WatchdogExpired(source, operation_timeout_seconds) from error
@@ -1852,11 +1948,17 @@ class BaseAgent:
             self.profiler.finish_span(
                 self._profile_root_span,
                 profile_status,
-                attributes={"agent_status": status.value, "iterations": iterations},
+                attributes={
+                    "agent_status": status.value,
+                    "iterations": iterations,
+                    "gen_ai.operation.name": "invoke_agent",
+                    "gen_ai.agent.name": _span_attribute_text(self.definition.identity),
+                },
             )
         profile = self.profiler.finish_run(profile_status)
+        profile_dump = profile.model_dump(mode="json")
         if self.telemetry is not None:
-            telemetry_context = self.telemetry_context or TelemetryContext(
+            telemetry_context = self._active_telemetry_context or TelemetryContext(
                 run_id=task.id,
                 task_id=task.id,
                 agent_id=self.definition.identity,
@@ -1871,11 +1973,15 @@ class BaseAgent:
                 status=status.value,
                 payload={
                     "integrity_hash": profile.integrity_hash,
+                    "trace_id": profile.trace_id,
+                    "resource": resource_attributes(),
                     "wall_duration_ns": profile.wall_duration_ns,
                     "process_cpu_duration_ns": profile.process_cpu_duration_ns,
                     "phase_counts": {
                         summary.kind.value: summary.count for summary in profile.summaries
                     },
+                    "span_count": len(profile.spans),
+                    "spans": profile_dump["spans"][-_PROFILE_EVENT_SPAN_LIMIT:],
                 },
             )
             if not self._provider_usage_reported:
@@ -1912,7 +2018,7 @@ class BaseAgent:
                 self.telemetry.iter_events(
                     telemetry_context.run_id, after_sequence=self._telemetry_start_sequence
                 ),
-                profile.model_dump(mode="json"),
+                profile_dump,
                 completed=status is AgentRunStatus.COMPLETED,
                 terminal_reason=reason,
                 source_event_id=profile_event.event_id,
@@ -1923,6 +2029,7 @@ class BaseAgent:
                     "profile-completed",
                     {
                         "integrity_hash": profile.integrity_hash,
+                        "trace_id": profile.trace_id,
                         "status": status.value,
                         "phase_counts": {
                             summary.kind.value: summary.count for summary in profile.summaries
@@ -1944,12 +2051,9 @@ class BaseAgent:
             episodes=episodes.list(),
             projection_history=list(projection_history),
             events=list(events),
-            profile=profile.model_dump(mode="json"),
+            profile=profile_dump,
         )
-        self._active_project_id = None
-        self._active_project_state = None
-        self._profile_root_span = None
-        self._active_audit_run_id = None
+        self._clear_active_run()
         return result
 
     def _record_tool_outcome(
@@ -2031,7 +2135,7 @@ class BaseAgent:
     @staticmethod
     def _bounded_json_text(value: Any, max_chars: int) -> str:
         try:
-            encoded = json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+            encoded = canonical_json(value)
         except TypeError:
             encoded = str(value)
         return encoded if len(encoded) <= max_chars else f"{encoded[:max_chars]}...(truncated)"
@@ -2055,7 +2159,7 @@ class BaseAgent:
             "prompt": prompt.model_dump(mode="json"),
             "project_state": project_state_view.model_dump(mode="json"),
         }
-        return max(1, len(json.dumps(payload, sort_keys=True, separators=(",", ":"))) // 4)
+        return estimate_tokens(payload)
 
     @staticmethod
     def _with_projection_history(
@@ -2065,10 +2169,52 @@ class BaseAgent:
         return result.model_copy(update={"projection_history": list(projection_history)})
 
 
+async def _until_cancelled(cancellation: CancellationToken) -> None:
+    while not cancellation.is_cancelled():
+        await asyncio.sleep(_CANCELLATION_POLL_SECONDS)
+
+
+async def _interruptible(operation: Awaitable[Any], cancellation: CancellationToken) -> Any:
+    work = asyncio.ensure_future(operation)
+    watcher = asyncio.ensure_future(_until_cancelled(cancellation))
+    try:
+        await asyncio.wait({work, watcher}, return_when=asyncio.FIRST_COMPLETED)
+    except BaseException:
+        work.cancel()
+        watcher.cancel()
+        await asyncio.gather(work, watcher, return_exceptions=True)
+        raise
+    if work.done():
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        return work.result()
+    work.cancel()
+    await asyncio.gather(work, return_exceptions=True)
+    raise RunCancelled
+
+
 def _watchdog_detail(expired: WatchdogExpired, label: str) -> str:
     if expired.source == "run-deadline":
         return "the run's configured deadline"
     return f"its {expired.seconds}s {label}"
+
+
+def _span_attribute_text(value: str) -> str:
+    if len(value) <= _SPAN_ATTRIBUTE_TEXT_CHARS:
+        return value
+    return value[: _SPAN_ATTRIBUTE_TEXT_CHARS - 3] + "..."
+
+
+def _model_turn_attributes(response: Any) -> dict[str, Any]:
+    usage = response.usage if isinstance(response, ModelTurnResponse) else None
+    if usage is None:
+        return {}
+    reported = {
+        "gen_ai.usage.input_tokens": usage.input_tokens,
+        "gen_ai.usage.output_tokens": usage.output_tokens,
+        "gen_ai.response.id": _span_attribute_text(usage.request_id) if usage.request_id else None,
+    }
+    return {name: value for name, value in reported.items() if value is not None}
 
 
 def _state_update_failure(error: Exception) -> AgentFailure:
@@ -2107,14 +2253,4 @@ def project_state_hash_from_result(
 ) -> str:
     """Produce provenance for a terminal state reduction without retaining its raw output."""
 
-    import hashlib
-    import json
-
-    return hashlib.sha256(
-        json.dumps(
-            {"status": status.value, "output": output, "reason": reason},
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    return canonical_hash({"status": status.value, "output": output, "reason": reason})

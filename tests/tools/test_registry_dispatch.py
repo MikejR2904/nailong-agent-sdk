@@ -10,26 +10,55 @@ def template(name, code):
     return CommandTemplate(name=name, command=[sys.executable, "-c", code], timeout_seconds=30)
 
 
-def test_a_command_template_tool_runs_its_template_and_names_the_tool_when_it_fails(tmp_path):
-    templates = [
-        template("verilator", "print('lint clean')"),
-        template("yosys", "import sys; print('synthesis failed'); sys.exit(2)"),
+def command_tools():
+    registry = HarnessToolRegistry.with_extensions(
+        [
+            RegisteredTool("run_lint", "lint.run", SideEffectClass.PROCESS, "lint"),
+            RegisteredTool("run_build", "build.run", SideEffectClass.PROCESS, "build"),
+        ],
+        handlers={},
+    )
+    grants = [
+        CapabilityGrant(role="worker", capabilities=["lint.run", "build.run"], allowed_paths=["."])
     ]
-    executor, _ = build(tmp_path, templates=templates, approve=("rtl.verilator", "rtl.yosys"))
-    clean = run(call(executor, "run_verilator"))
+    return registry, grants
+
+
+def test_the_default_registry_declares_no_domain_specific_command_tool():
+    declared = {tool.name for tool in HarnessToolRegistry.default_tools() if tool.command_template}
+    assert declared == set()
+
+
+def test_a_command_template_tool_runs_its_template_and_names_the_tool_when_it_fails(tmp_path):
+    registry, grants = command_tools()
+    templates = [
+        template("lint", "print('lint clean')"),
+        template("build", "import sys; print('build failed'); sys.exit(2)"),
+    ]
+    executor, _ = build(
+        tmp_path,
+        templates=templates,
+        registry=registry,
+        grants=grants,
+        approve=("lint.run", "build.run"),
+    )
+    clean = run(call(executor, "run_lint"))
     assert clean.status == "succeeded"
-    assert clean.output["template_name"] == "verilator" and "lint clean" in clean.output["output"]
-    failed = run(call(executor, "run_yosys"))
+    assert clean.output["template_name"] == "lint" and "lint clean" in clean.output["output"]
+    failed = run(call(executor, "run_build"))
     assert failed.status == "failed" and failed.output["return_code"] == 2
     assert failed.error == (
-        'PROCESS_EXIT_NONZERO: registered command "run_yosys" exited with code 2.'
+        'PROCESS_EXIT_NONZERO: registered command "run_build" exited with code 2.'
     )
 
 
 def test_a_command_template_tool_without_a_registered_template_names_it(tmp_path):
-    executor, _ = build(tmp_path, templates=[], approve=("physical.openroad",))
-    result = run(call(executor, "run_openroad"))
-    assert result.status == "failed" and '"openroad"' in result.error
+    registry, grants = command_tools()
+    executor, _ = build(
+        tmp_path, templates=[], registry=registry, grants=grants, approve=("build.run",)
+    )
+    result = run(call(executor, "run_build"))
+    assert result.status == "failed" and '"build"' in result.error
 
 
 def test_grep_artifact_reports_the_matching_lines_of_an_authorized_artifact(tmp_path):

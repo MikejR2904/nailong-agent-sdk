@@ -1,6 +1,6 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Command-line interface for read-only Agent SDK developer workflows."""
+"""Command-line interface for Agent SDK developer workflows; only ``prune-runs --apply`` writes."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from pathlib import Path
 
 import yaml
 
+from ..agent.retention import RetentionPolicy, prune_run_root
+from ..foundations.errors import AgentSdkError
 from .catalog import build_public_api_catalog, write_public_api_catalog
 from .inspect import inspect_run, verify_project_evidence
 from .quality import RuffUnavailableError, check_source_quality
@@ -22,7 +24,14 @@ EXIT_OK = 0
 EXIT_NEGATIVE_VERDICT = 1
 EXIT_USAGE = 2
 EXIT_OPERATIONAL_ERROR = 3
-_OPERATIONAL_ERRORS = (OSError, ValueError, yaml.YAMLError, sqlite3.Error, RuffUnavailableError)
+_OPERATIONAL_ERRORS = (
+    OSError,
+    ValueError,
+    yaml.YAMLError,
+    sqlite3.Error,
+    RuffUnavailableError,
+    AgentSdkError,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         "inspect-run": lambda: _inspect_run(arguments),
         "verify-evidence": lambda: _verify_evidence(arguments),
         "quality": lambda: _quality(arguments),
+        "prune-runs": lambda: _prune_runs(arguments),
     }
     try:
         result = commands[arguments.command]()
@@ -52,7 +62,10 @@ def main(argv: list[str] | None = None) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nailong-agent-sdk-dev",
-        description="Read-only catalog, contract validation, and run-inspection utilities.",
+        description=(
+            "Catalog, contract validation, run-inspection and run-retention utilities; only "
+            "prune-runs --apply changes a run root."
+        ),
         epilog=(
             f"Exit status: {EXIT_OK} success; {EXIT_NEGATIVE_VERDICT} the artifact was inspected "
             f"and is invalid, failed or has a broken chain; {EXIT_USAGE} command-line usage "
@@ -79,6 +92,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     evidence.add_argument("run_root", type=Path)
     evidence.add_argument("project_id")
+
+    prune = subparsers.add_parser(
+        "prune-runs",
+        help="Report, or with --apply delete, finished runs idle for longer than a threshold.",
+    )
+    prune.add_argument("run_root", type=Path)
+    prune.add_argument("--older-than-seconds", type=float, required=True)
+    prune.add_argument("--keep-most-recent", type=int, default=0)
+    prune.add_argument("--max-runs", type=int)
+    prune.add_argument("--include-unfinished", action="store_true")
+    prune.add_argument("--export-reports", action="store_true")
+    prune.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete the runs; without it the command only reports what it would delete.",
+    )
 
     quality = subparsers.add_parser(
         "quality", help="Run the closed Ruff unused-import, lint, and formatting checks."
@@ -110,6 +139,17 @@ def _verify_evidence(arguments: argparse.Namespace) -> object:
     return verify_project_evidence(arguments.run_root, arguments.project_id)
 
 
+def _prune_runs(arguments: argparse.Namespace) -> object:
+    policy = RetentionPolicy(
+        older_than_seconds=arguments.older_than_seconds,
+        keep_most_recent=arguments.keep_most_recent,
+        max_runs=arguments.max_runs,
+        include_unfinished=arguments.include_unfinished,
+        export_reports=arguments.export_reports,
+    )
+    return prune_run_root(arguments.run_root, policy, dry_run=not arguments.apply)
+
+
 def _quality(arguments: argparse.Namespace) -> object:
     return check_source_quality(
         arguments.checkout_root,
@@ -117,7 +157,14 @@ def _quality(arguments: argparse.Namespace) -> object:
     )
 
 
-_VERDICT_FIELDS = ("valid", "passed", "telemetry_chain_valid", "audit_chain_valid", "verified")
+_VERDICT_FIELDS = (
+    "valid",
+    "passed",
+    "telemetry_chain_valid",
+    "audit_chain_valid",
+    "verified",
+    "clean",
+)
 
 
 def _exit_status(result: object) -> int:

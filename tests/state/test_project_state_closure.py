@@ -6,7 +6,6 @@ from nailong_agent_sdk.state.project_state_store import (
     FileProjectStateStore,
     InMemoryProjectStateStore,
 )
-from nailong_agent_sdk.state.stage_gates import StageCompletenessGate, StageCompletenessPolicy
 from tests.support.controllers import executing_runtime
 from tests.support.project_state import SCHEMA, T, transition
 
@@ -131,17 +130,16 @@ def test_clearing_an_unknown_blocker_or_without_a_reason_is_refused(store):
     assert len(store.load("p").blocked) == 1
 
 
-def test_the_stage_gate_passes_once_every_question_and_blocker_is_closed(store):
+def test_resolving_the_question_and_clearing_the_blocker_empties_both_lists(store):
     store.apply("p", open_question())
     store.apply("p", blocked_tool_outcome())
-    policy = StageCompletenessPolicy(policy_id="gate", stage="design")
-    before = StageCompletenessGate().evaluate(store.load("p"), policy)
-    assert not before.complete
-    assert before.open_question_ids == ["q1"] and before.blocker_ids == ["tool:c1"]
+    before = store.load("p")
+    assert [question.question_id for question in before.open_questions] == ["q1"]
+    assert [blocker.blocker_id for blocker in before.blocked] == ["tool:c1"]
     store.apply("p", resolve())
     store.apply("p", clear())
-    after = StageCompletenessGate().evaluate(store.load("p"), policy)
-    assert after.complete and after.reasons == []
+    after = store.load("p")
+    assert after.open_questions == [] and after.blocked == []
 
 
 def test_a_closed_question_survives_a_restart_as_history_not_as_state(tmp_path):

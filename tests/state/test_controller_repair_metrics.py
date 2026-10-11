@@ -5,7 +5,6 @@ from nailong_agent_sdk.state.controller_runtime import ControllerRuntime
 from nailong_agent_sdk.state.graph_models import GraphNodeKind, GraphNodeResult, GraphNodeStatus
 from nailong_agent_sdk.state.orchestration_models import ControllerPhase
 from nailong_agent_sdk.state.shared_state import ProvenanceRecord, provenance_hash
-from nailong_agent_sdk.state.stage_gates import StageCompletenessPolicy
 from tests.support.controllers import new_controller
 from tests.support.plans import AGENT, arun, simple_plan
 
@@ -50,17 +49,12 @@ async def failing(node, context):
     return GraphNodeResult(status=GraphNodeStatus.FAILED, reason="probe crashed")
 
 
-@pytest.mark.parametrize("path", ["explicit", "completeness", "provenance", "graph-failure"])
+@pytest.mark.parametrize("path", ["explicit", "provenance", "graph-failure"])
 def test_every_path_that_enters_repair_records_the_repair_metrics(tmp_path, path):
     telemetry, runtime, cid = executing(tmp_path)
     try:
         if path == "explicit":
             runtime.record_stage_failure(cid, "the designer asked for a repair")
-        elif path == "completeness":
-            policy = StageCompletenessPolicy(
-                policy_id="p", stage="design", required_artifact_paths=["missing.md"]
-            )
-            assert not runtime.evaluate_stage_completeness(cid, policy).complete
         elif path == "provenance":
             decision = runtime.verify_provenance_contract(cid, [rejected_record()], "v1")
             assert not decision.accepted
@@ -78,18 +72,15 @@ def test_every_path_that_enters_repair_records_the_repair_metrics(tmp_path, path
 def test_the_failure_that_passes_the_repair_cap_records_the_escalation(tmp_path):
     telemetry, runtime, cid = executing(tmp_path)
     try:
-        policy = StageCompletenessPolicy(
-            policy_id="p", stage="design", required_artifact_paths=["missing.md"]
-        )
         first_run = runtime.get_controller(cid).run_id
-        runtime.evaluate_stage_completeness(cid, policy)
+        runtime.record_stage_failure(cid, "the first attempt left the artifact missing")
         assert runtime.get_controller(cid).phase is ControllerPhase.REPAIR_REQUIRED
         runtime.submit_plan(cid, simple_plan("repaired"))
         runtime.approve_plan(cid, True)
         runtime.dispatch(cid)
         second_run = runtime.get_controller(cid).run_id
         assert second_run != first_run
-        runtime.evaluate_stage_completeness(cid, policy)
+        runtime.record_stage_failure(cid, "the repaired attempt left it missing too")
         assert runtime.get_controller(cid).phase is ControllerPhase.ESCALATED
 
         def recorded(run_id, metric_id):

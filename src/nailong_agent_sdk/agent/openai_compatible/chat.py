@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 from collections.abc import Mapping, Sequence
@@ -13,6 +12,7 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from ...foundations.contracts import AgentTurn, ModelBinding
+from ...foundations.detached import run_detached
 from ...foundations.errors import AgentSdkError
 from ..model import (
     AgentModel,
@@ -68,10 +68,10 @@ class OpenAICompatibleAgentModel(AgentModel):
     async def next_turn(self, context: ModelContext) -> ModelTurnResponse:
         binding = self._require_binding(context)
         payload = self._chat_payload(context, binding)
-        response = await asyncio.to_thread(
+        response = await run_detached(
             self._transport.post_json,
             self._endpoint.url_for("/chat/completions"),
-            headers=self._endpoint.headers,
+            headers=self._endpoint.request_headers(context.trace_parent),
             payload=payload,
             timeout_seconds=self._endpoint.timeout_seconds,
         )
@@ -94,7 +94,7 @@ class OpenAICompatibleAgentModel(AgentModel):
         accumulator = _ChatStreamAccumulator()
         async for chunk in self._streaming_transport.stream_json(
             self._endpoint.url_for("/chat/completions"),
-            headers=self._endpoint.headers,
+            headers=self._endpoint.request_headers(context.trace_parent),
             payload=payload,
             timeout_seconds=self._endpoint.timeout_seconds,
         ):

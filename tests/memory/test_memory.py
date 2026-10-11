@@ -20,7 +20,6 @@ from nailong_agent_sdk.memory.context_projection import (
     FileToolResultJournal,
     InMemoryToolResultJournal,
 )
-from nailong_agent_sdk.memory.context_selection import DesignStage, TaskAwareContextSelector
 from nailong_agent_sdk.memory.episode_models import (
     CompactionStatus,
     CompactionStrategy,
@@ -30,14 +29,6 @@ from nailong_agent_sdk.memory.episode_models import (
 from nailong_agent_sdk.memory.episode_scoring import _episode_tokens
 from nailong_agent_sdk.memory.episode_store import FileEpisodeStore, InMemoryEpisodeStore
 from nailong_agent_sdk.memory.episodes import InMemoryEpisodeGraph
-from nailong_agent_sdk.specifications.documents import (
-    DocumentFormat,
-    DocumentNode,
-    DocumentNodeKind,
-    DocumentTree,
-    SourceRef,
-    SpecificationCategory,
-)
 from tests.support.agents import definition as agent_definition
 from tests.support.agents import tool
 
@@ -72,15 +63,11 @@ def test_store_lifecycle_rules():
         store.open_action("a", [e.id, e.id])
     with pytest.raises(ValueError, match="unknown"):
         store.open_action("a", ["episode-77"])
-    with pytest.raises(ValueError, match="Only action"):
-        store.attach_eda_manifest(e.id, {"m": 1})
     store.mark_accessed([e.id, e.id])
     assert store.get(e.id).access_count == 1
 
 
-def make_random_store(
-    rng: random.Random, n_exploratory: int, n_action: int, *, size=400, manifest_prob=0.0
-):
+def make_random_store(rng: random.Random, n_exploratory: int, n_action: int, *, size=400):
     store = InMemoryEpisodeStore()
     explore = []
     for i in range(n_exploratory):
@@ -90,13 +77,7 @@ def make_random_store(
     actions = []
     for j in range(n_action):
         deps = rng.sample(explore, min(len(explore), rng.choice([0, 1, 1, 2])))
-        manifest = rng.random() < manifest_prob
-        r = store.open_action(
-            "a",
-            deps,
-            content={"result": "a" * rng.randint(size // 4, size)},
-            requires_manifest=manifest,
-        )
+        r = store.open_action("a", deps, content={"result": "a" * rng.randint(size // 4, size)})
         store.close(r.id)
         actions.append(r.id)
     return store, explore, actions
@@ -114,9 +95,7 @@ def test_compaction_invariants_hold_on_random_episode_graphs(strategy):
     rng = random.Random(2026)
     policy = PaskCompactionPolicy(strategy=strategy)
     for trial in range(60):
-        store, explore, actions = make_random_store(
-            rng, rng.randint(1, 9), rng.randint(0, 9), manifest_prob=0.2
-        )
+        store, explore, actions = make_random_store(rng, rng.randint(1, 9), rng.randint(0, 9))
         all_ids = explore + actions
         protected = set(rng.sample(all_ids, min(len(all_ids), rng.choice([0, 0, 1, 2]))))
         active = rng.choice([None, rng.choice(all_ids)])
@@ -143,9 +122,6 @@ def test_compaction_invariants_hold_on_random_episode_graphs(strategy):
                 trial,
                 "protected episode compacted",
             )
-        for record in after.values():
-            if record.requires_manifest and record.eda_manifest is None:
-                assert record.state is not EpisodeState.COMPACTED
         for record in after.values():
             if record.state is not EpisodeState.COMPACTED:
                 for dep in record.depends_on:
@@ -212,22 +188,16 @@ def test_compaction_is_deterministic():
     assert run() == run()
 
 
-def test_open_and_manifest_incomplete_episodes_force_deadlock_not_loss():
+def test_open_episodes_force_deadlock_not_loss_until_they_are_closed():
     store = InMemoryEpisodeStore()
     e = store.open_exploratory("a", content={"r": "x" * 2000})
     store.close(e.id, description="d")
-    a = store.open_action("a", [e.id], content={"r": "y" * 2000}, requires_manifest=True)
-    store.close(a.id)
+    a = store.open_action("a", [e.id], content={"r": "y" * 2000})
     result = store.compact(10)
-    assert result.status in (
-        CompactionStatus.CONTEXT_DEADLOCK,
-        CompactionStatus.PROTECTED_OVER_BUDGET,
-    )
-    assert (
-        store.get(a.id).state is EpisodeState.CLOSED
-        and store.get(e.id).state is EpisodeState.CLOSED
-    )
-    store.attach_eda_manifest(a.id, {"outputs": []})
+    assert result.status is CompactionStatus.CONTEXT_DEADLOCK
+    assert store.get(a.id).state is EpisodeState.OPEN
+    assert store.get(e.id).state is EpisodeState.CLOSED
+    store.close(a.id)
     assert store.compact(10).status is not CompactionStatus.CONTEXT_DEADLOCK
 
 
@@ -404,91 +374,3 @@ def test_initial_context_is_ordered_and_by_value():
     ]
     locked["signals"].append("mutated")
     assert context.sections[2].value["locked_interface"] == {"signals": ["a"]}
-
-
-def _node(node_id, text, location="line:1"):
-    return DocumentNode(
-        node_id=node_id,
-        kind=DocumentNodeKind.TEXT,
-        content=text,
-        source=SourceRef(
-            document_id="d1",
-            relative_path="d1.md",
-            source_hash="h",
-            format=DocumentFormat.MD,
-            location=location,
-        ),
-    )
-
-
-def _tree(category=SpecificationCategory.FUNCTIONAL, nodes=None):
-    return DocumentTree(
-        document_id="d1",
-        title="t",
-        category=category,
-        format=DocumentFormat.MD,
-        relative_path="d1.md",
-        source_hash="h",
-        nodes=nodes or [],
-    )
-
-
-def test_selector_prunes_by_stage_and_matches_keywords_and_pointers():
-    trees = [
-        _tree(
-            nodes=[
-                _node("n1", "The adder shall add two values"),
-                _node("n2", "Unrelated clock text"),
-            ]
-        )
-    ]
-    selector = TaskAwareContextSelector()
-    chosen = selector.select(trees, DesignStage.RTL_DEVELOPMENT, "implement adder logic")
-    assert [n.node_id for n in chosen.nodes] == ["n1"]
-    assert selector.select(trees, DesignStage.PHYSICAL_DESIGN, "implement adder logic").nodes == []
-    by_pointer = selector.select(trees, DesignStage.RTL_DEVELOPMENT, "zzz", ["line:1"])
-    assert len(by_pointer.nodes) == 2
-
-
-def test_selector_scope_pointers_are_case_insensitive_against_content():
-    trees = [
-        _tree(
-            nodes=[
-                _node("n1", "REQ-FUNC-001 The adder shall add two values", location="line:7"),
-                _node("n2", "other"),
-            ]
-        )
-    ]
-    chosen = TaskAwareContextSelector().select(
-        trees, DesignStage.RTL_DEVELOPMENT, "qqq", ["REQ-FUNC-001"]
-    )
-    assert [n.node_id for n in chosen.nodes] == ["n1"], (
-        "an upper-case requirement id used as a scope pointer did not match its node"
-    )
-
-
-def test_selector_ignores_blank_scope_pointers():
-    trees = [
-        _tree(
-            nodes=[
-                _node("n1", "The adder shall add two values"),
-                _node("n2", "Unrelated clock text"),
-            ]
-        )
-    ]
-    chosen = TaskAwareContextSelector().select(
-        trees, DesignStage.RTL_DEVELOPMENT, "zzz", ["", "   "]
-    )
-    assert chosen.nodes == []
-    assert chosen.selected_document_ids == []
-
-
-def test_selection_reasons_name_what_matched_each_document():
-    selector = TaskAwareContextSelector()
-    trees = [_tree(nodes=[_node("n1", "REQ-7 The adder shall add", location="line:3")])]
-    by_pointer = selector.select(trees, DesignStage.RTL_DEVELOPMENT, "qqq", ["REQ-7"])
-    by_keyword = selector.select(trees, DesignStage.RTL_DEVELOPMENT, "adder", ["nothing-like-this"])
-    by_both = selector.select(trees, DesignStage.RTL_DEVELOPMENT, "adder", ["REQ-7"])
-    assert by_pointer.selection_reasons == {"d1": ["scope-pointer"]}
-    assert by_keyword.selection_reasons == {"d1": ["keyword-match"]}
-    assert by_both.selection_reasons == {"d1": ["scope-pointer", "keyword-match"]}

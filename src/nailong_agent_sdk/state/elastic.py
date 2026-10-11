@@ -21,6 +21,8 @@ DEFAULT_MAX_ELASTIC_DEPTH = 1
 DEFAULT_MAX_ELASTIC_NODES = 3
 MAX_ELASTIC_REQUESTS_PER_RESULT = 32
 MAX_ELASTIC_DEPENDENCIES = 64
+MAX_ELASTIC_HANDOFF_CHARS = 4_000
+MAX_ELASTIC_HANDOFF_TOTAL_CHARS = 8_000
 ELASTIC_JOIN_COST = 1
 
 
@@ -35,6 +37,7 @@ class ElasticRefusalCode(StrEnum):
     DEPTH_CEILING_REACHED = "ELASTIC_DEPTH_CEILING_REACHED"
     BATCH_DECLINED = "ELASTIC_BATCH_DECLINED"
     REQUEST_LIMIT_REACHED = "ELASTIC_REQUEST_LIMIT_REACHED"
+    HANDOFF_LIMIT_REACHED = "ELASTIC_HANDOFF_LIMIT_REACHED"
 
 
 class ElasticSpawnRequest(StrictModel):
@@ -42,6 +45,7 @@ class ElasticSpawnRequest(StrictModel):
     scope: str = Field(min_length=1, max_length=2_000)
     instructions: str = Field(min_length=1, max_length=8_000)
     reason: str = Field(min_length=1, max_length=2_000)
+    handoff: str | None = Field(default=None, min_length=1, max_length=MAX_ELASTIC_HANDOFF_CHARS)
     dependencies: list[str] = Field(default_factory=list, max_length=MAX_ELASTIC_DEPENDENCIES)
     routing_refs: DiscoveryRoutingRefs = Field(default_factory=DiscoveryRoutingRefs)
 
@@ -50,10 +54,10 @@ class ElasticSpawnRequest(StrictModel):
     def request_id_is_an_identifier(cls, value: str) -> str:
         return validate_identifier(value, "Elastic request_id")
 
-    @field_validator("scope", "instructions", "reason")
+    @field_validator("scope", "instructions", "reason", "handoff")
     @classmethod
-    def text_is_not_blank(cls, value: str, info: ValidationInfo) -> str:
-        if not value.strip():
+    def text_is_not_blank(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is not None and not value.strip():
             raise ValueError(f"{info.field_name} must not be blank")
         return value
 
@@ -260,6 +264,7 @@ def check_spawn_request(
     parent_routing_refs: DiscoveryRoutingRefs,
     visible_dependencies: Collection[str],
     taken_request_ids: Collection[str],
+    handoff_chars_used: int = 0,
 ) -> ElasticProblem | None:
     if request.request_id in taken_request_ids:
         return ElasticProblem(
@@ -286,6 +291,17 @@ def check_spawn_request(
             f'Request "{request.request_id}" claims routing references that node '
             f'"{parent_node_id}" does not hold ({detail}); a child may only narrow its '
             "parent's references.",
+        )
+    handoff_chars = len(request.handoff or "")
+    if handoff_chars_used + handoff_chars > MAX_ELASTIC_HANDOFF_TOTAL_CHARS:
+        return ElasticProblem(
+            ElasticRefusalCode.HANDOFF_LIMIT_REACHED,
+            f'Request "{request.request_id}" carries a handoff of {handoff_chars} characters, '
+            f'which would bring the handoffs of node "{parent_node_id}" to '
+            f"{handoff_chars_used + handoff_chars} characters, above the limit of "
+            f"{MAX_ELASTIC_HANDOFF_TOTAL_CHARS}; the earlier requests already use "
+            f"{handoff_chars_used}. Shorten it, or keep only what the continuation needs.",
+            grantable=False,
         )
     return None
 

@@ -9,14 +9,13 @@ they are not replayed as the agent's ordinary reasoning context.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.hashing import model_canonical_json, sha256_hex
 from ..foundations.identifiers import require_unique
 from ..foundations.json_limits import assert_json_depth
 
@@ -143,7 +142,7 @@ class StateAction(StrictModel):
     @classmethod
     def summary_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
         assert_json_depth(value, "state action summary")
-        if len(_canonical_json(value)) > 4_096:
+        if len(model_canonical_json(value)) > 4_096:
             raise ValueError("state action summary exceeds the 4,096-character bound")
         return value
 
@@ -331,7 +330,7 @@ def project_state_hash(state: ProjectState) -> str:
 
 def project_state_hash_from_payload(payload: dict[str, Any]) -> str:
     stable = {key: value for key, value in payload.items() if key != "state_hash"}
-    return hashlib.sha256(_canonical_json(stable).encode("utf-8")).hexdigest()
+    return sha256_hex(model_canonical_json(stable))
 
 
 def _event_hash(
@@ -344,8 +343,8 @@ def _event_hash(
     previous_state_hash: str,
     state_hash: str,
 ) -> str:
-    return hashlib.sha256(
-        _canonical_json(
+    return sha256_hex(
+        model_canonical_json(
             {
                 "project_id": project_id,
                 "revision": revision,
@@ -356,18 +355,9 @@ def _event_hash(
                 "previous_state_hash": previous_state_hash,
                 "state_hash": state_hash,
             }
-        ).encode("utf-8")
-    ).hexdigest()
+        )
+    )
 
 
 def _ensure_unique[T](items: list[T], key: str, label: str) -> None:
     require_unique([getattr(item, key) for item in items], label)
-
-
-def _canonical_json(value: Any) -> str:
-    def default(item: Any) -> Any:
-        if hasattr(item, "model_dump"):
-            return item.model_dump(mode="json")
-        return str(item)
-
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=default)

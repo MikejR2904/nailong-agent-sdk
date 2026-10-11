@@ -16,9 +16,10 @@ import time
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from ...foundations.hashing import sha256_hex
 from ...foundations.text import split_lines
 from ...foundations.version import http_user_agent
 
@@ -384,7 +385,7 @@ def _render_pdf_page(
 
     if png_bytes is None:
         raise ValueError("render_pdf_page could not encode the rendered page as PNG.")
-    doc_key = _sha256(url)[:16]
+    doc_key = sha256_hex(url)[:16]
     image_ref = f"pdf:{doc_key}:p{page}:page"
     if image_cache is not None:
         image_cache[image_ref] = ("png", png_bytes)
@@ -416,7 +417,7 @@ def _parse_pdf_page(
             f"web_fetch PDF page {page} is out of range; this document has "
             f"{total_pages} page(s). Valid pages are 1 through {total_pages}."
         )
-    doc_key = _sha256(url)[:16]
+    doc_key = sha256_hex(url)[:16]
     images: list[dict[str, Any]] = []
     text_parts: list[str] = []
     pages_included: list[int] = []
@@ -559,6 +560,14 @@ def _bounded_int(value: Any, name: str, lower: int, upper: int) -> int:
     return result
 
 
+def _leaves_run_root(pattern: str) -> bool:
+    for flavour in (PurePosixPath, PureWindowsPath):
+        parsed = flavour(pattern)
+        if parsed.root or parsed.drive or ".." in parsed.parts:
+            return True
+    return False
+
+
 def _bounded_float(value: Any, name: str, lower: float, upper: float) -> float:
     if not isinstance(value, (float, int)) or isinstance(value, bool):
         raise ValueError(f'Argument "{name}" must be numeric.')
@@ -570,9 +579,3 @@ def _bounded_float(value: Any, name: str, lower: float, upper: float) -> float:
 
 def _strip_html(value: str) -> str:
     return html.unescape(re.sub(r"<[^<>]*>", "", value)).strip()
-
-
-def _sha256(value: str) -> str:
-    import hashlib
-
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()

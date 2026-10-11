@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nailong-agent-sdk"
-version = "0.17.0"
+version = "0.1.0"
 description = "Extensible Python BaseAgent runtime, grounded retrieval, governed orchestration, deterministic controller, profiling, verification gates, and MCP harness for the Agent-Assisted Design framework"
 requires-python = ">=3.12"
 license = "MIT"
@@ -68,7 +68,10 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = ["-q"]
+addopts = ["-q", "--strict-markers"]
+markers = [
+    "docker: needs a reachable Docker daemon; skipped when none answers",
+]
 
 [tool.ruff]
 line-length = 100

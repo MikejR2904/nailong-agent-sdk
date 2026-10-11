@@ -6,23 +6,23 @@ Everything between a model's tool request and the real world. `tools.py` defines
 |---|---:|---|
 | [`tools/__init__.py`](#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
 | [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 178 | typed approval gates for state-changing actions |
-| [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution) | 264 | content-addressed artifact store with immutable write attribution |
+| [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution) | 265 | content-addressed artifact store with immutable write attribution |
 | [`tools/core/__init__.py`](#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
-| [`tools/core/definitions.py`](#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 340 | typed declarations of the governed core tool set |
-| [`tools/core/helpers.py`](#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 578 | private validation, HTTP and isolated-regex helpers behind the core tools |
+| [`tools/core/definitions.py`](#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 356 | typed declarations of the governed core tool set |
+| [`tools/core/helpers.py`](#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 581 | private validation, HTTP and isolated-regex helpers behind the core tools |
 | [`tools/core/regex_worker.py`](#toolscoreregex_workerpy---standalone-regex-worker-run-in-an-isolated-interpreter) | 38 | standalone regex worker run in an isolated interpreter |
-| [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 490 | portable governed tools: dispatcher, services and web search |
+| [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 488 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
-| [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 159 | agent-side queue and tool executor for elastic spawn requests |
-| [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 170 | deny-by-default capability policy |
-| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 348 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
+| [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 176 | deny-by-default capability policy |
+| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 327 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
-| [`tools/supervisor.py`](#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 487 | registered-command execution with timeout, bounded output and process-tree kill |
+| [`tools/supervisor.py`](#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
 | [`tools/task_models.py`](#toolstask_modelspy---records-for-background-tasks) | 43 | records for background tasks |
 | [`tools/tasks.py`](#toolstaskspy---background-task-lifecycle-start-poll-stop) | 258 | background task lifecycle: start, poll, stop |
-| [`tools/tools.py`](#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 72 | the ToolExecutor protocol and two deterministic test executors |
-| [`tools/worktree_models.py`](#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 25 | record for an agent's git worktree |
+| [`tools/tools.py`](#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 73 | the ToolExecutor protocol and two deterministic test executors |
+| [`tools/worktree_models.py`](#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 181 | git worktree isolation for concurrent agents |
 
 ---
@@ -37,7 +37,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/approvals.py` - typed approval gates for state-changing actions
 
-*178 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py` · used by: `state/harness_coordinator.py`, `tools/policy.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*178 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py` · used by: `agent/task_runner.py`, `state/harness_coordinator.py`, `tools/policy.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** When `CapabilityPolicy` says a mutating or process capability needs approval, `HarnessToolExecutor` files a request here (a pending request for the same run, node and capability is reused) and returns a BLOCKED tool result carrying the approval id; a human or controller later answers it (MCP `submit_approval`) and `resume_run` re-opens the node. A registry bound to a path persists to `<run>.approvals.json`, so requests and decisions survive a restart.
 
@@ -49,17 +49,17 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - fields: `approval_id`, `run_id`, `node_id`, `capability`, `reason`, `status`, `decision_reason`
 - **class `_PersistedApprovals`** *(pydantic model; bases: StrictModel)* - On-disk form of a registry: schema version `approvals-v1`, the next id counter and the requests.
   - fields: `schema_version`, `next_id`, `requests`
-- **class `ApprovalRegistry`** *(class)* - In-memory owner of approval state as typed data rather than conversation text. · *Instantiated by:* `state/harness_coordinator.py::HarnessCoordinator.get_run_state`, `state/harness_coordinator.py::HarnessCoordinator.start_run`
+- **class `ApprovalRegistry`** *(class)* - In-memory owner of approval state as typed data rather than conversation text. · *Instantiated by:* `agent/task_runner.py::_RunToken.__init__`, `state/harness_coordinator.py::HarnessCoordinator._approval_registry`
   - `ApprovalRegistry.__init__(path: Path | None=None) -> None` - Starts empty with the id counter at 1; given a path it loads the persisted file (if present) and re-reads it whenever its modification time or size changes.
-  - `ApprovalRegistry.request(run_id: str, node_id: str, capability: str, reason: str) -> ApprovalRequest` - Returns the existing pending request for the same run, node and capability, otherwise creates a pending `approval-N`; when persisted, the whole read-modify-write runs under a cross-process lock (`APPROVAL_LOCK_TIMEOUT`). · *Called by:* `openai_compatible/transport.py::UrlLibJsonTransport.post_json`, `orchestrator/orchestrator.py::Orchestrator._assign_workers`, `orchestrator/orchestrator.py::Orchestrator._build_bindings`, `orchestrator/orchestrator.py::Orchestrator._emit` (+30 more)
-  - `ApprovalRegistry.submit(approval_id: str, approved: bool, reason: str | None=None) -> ApprovalRequest` - Records approve/reject exactly once; an unknown id raises, and an already-decided request raises naming the decision it already has. · *Called by:* `state/harness_coordinator.py::HarnessCoordinator.submit_approval`
+  - `ApprovalRegistry.request(run_id: str, node_id: str, capability: str, reason: str) -> ApprovalRequest` - Returns the existing pending request for the same run, node and capability, otherwise creates a pending `approval-N`; when persisted, the whole read-modify-write runs under a cross-process lock (`APPROVAL_LOCK_TIMEOUT`). · *Called by:* `agent/elastic_context.py::_child_entry`, `agent/elastic_context.py::render_elastic_instructions`, `agent/graph_agent_executor.py::GraphAgentExecutor.execute`, `openai_compatible/transport.py::UrlLibJsonTransport.post_json` (+52 more)
+  - `ApprovalRegistry.submit(approval_id: str, approved: bool, reason: str | None=None) -> ApprovalRequest` - Records approve/reject exactly once; an unknown id raises, and an already-decided request raises naming the decision it already has. · *Called by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`, `agent/task_runner.py::AgentTaskRunner.decide_approval`, `state/harness_coordinator.py::HarnessCoordinator.submit_approval`
   - `ApprovalRegistry.get(approval_id: str) -> ApprovalRequest | None` - Returns a request by id (refreshing from disk first) or None. · *Called within this file by:* `tools/approvals.py::ApprovalRegistry.submit`
   - `ApprovalRegistry.find(run_id: str, node_id: str, capability: str) -> ApprovalRequest | None` - The latest request for a run, node and capability (whatever its status), or None. · *Called by:* `tools/registry.py::HarnessToolExecutor._approval_for`
   - `ApprovalRegistry.list(run_id: str | None=None) -> list[ApprovalRequest]` - All requests (optionally for one run) sorted by numeric approval id.
   - `ApprovalRegistry._matching(run_id: str, node_id: str, capability: str) -> list[ApprovalRequest]` - Requests for a run, node and capability in id order.
   - `ApprovalRegistry._transaction() -> Iterator[None]` *(contextmanager)* - Context manager for one mutation: holds the thread lock, and for a persisted registry also the file lock, reloads the file, runs the body and saves only if something changed. · *Called within this file by:* `tools/approvals.py::ApprovalRegistry.request`, `tools/approvals.py::ApprovalRegistry.submit`
   - `ApprovalRegistry._refresh() -> None` - Reloads the file when its modification time or size differs from the last read.
-  - `ApprovalRegistry._load(path: Path) -> None` - Reads and validates the persisted file (retrying transient sharing violations) and replaces the in-memory requests and counter.
+  - `ApprovalRegistry._load(path: Path) -> None` - Reads and validates the persisted file (retrying transient sharing violations) and replaces the in-memory requests and counter. · *Called within this file by:* `tools/approvals.py::ApprovalRegistry._refresh`, `tools/approvals.py::ApprovalRegistry._transaction`
   - `ApprovalRegistry._save(path: Path) -> None` - Writes the persisted form through a unique temporary file and `replace_atomic`, then records the new fingerprint.
 - `_approval_order(request: ApprovalRequest) -> tuple[int, str]` - Sort key `(numeric suffix of the id, id)`.
 
@@ -67,7 +67,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/artifacts.py` - content-addressed artifact store with immutable write attribution
 
-*264 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/text.py` · used by: `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*265 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/paths.py`, `foundations/text.py` · used by: `agent/task_runner.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** `write_draft`/`edit_draft` write declared outputs through this store; `read_artifact`, `grep_artifact` and `diff_declared_artifacts` read them back by `sha256:` id. Each write also leaves an immutable occurrence record naming the run, node and task, which later proves that a draft was authored by the current task.
 
@@ -77,21 +77,21 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - fields: `artifact_id`, `relative_path`, `sha256`, `size_bytes`, `kind`, `manifest`, `occurrence_id`
 - **class `ArtifactWriteOccurrence`** *(pydantic model; bases: StrictModel)* - Immutable attribution of one write: occurrence id, artifact id, path, hash, size, kind, writer manifest and UTC time. · *Instantiated by:* `tools/artifacts.py::ArtifactStore._register`
   - fields: `occurrence_id`, `artifact_id`, `relative_path`, `sha256`, `size_bytes`, `kind`, `manifest`, `written_at_utc`
-- **class `ArtifactStore`** *(class)* - Persists artifacts under one run root: output files, immutable content blobs, one manifest per content id and one occurrence record per write.
+- **class `ArtifactStore`** *(class)* - Persists artifacts under one run root: output files, immutable content blobs, one manifest per content id and one occurrence record per write. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `ArtifactStore.__init__(run_root: Path) -> None` - Creates the run root and the `.agent-artifacts/{content,occurrences}` directories and an RLock.
   - `ArtifactStore.root() -> Path` *(property)* - Property: the resolved run root.
-  - `ArtifactStore.write_text(relative_path: str, content: str, *, kind: str='draft', manifest: dict[str, Any] | None=None) -> ArtifactRecord` - Writes the UTF-8 content to the (root-contained) output path atomically, then registers it; returns the record. · *Called by:* `orchestrator/state_store.py::OrchestrationStateStore.save`, `orchestrator/state_store.py::OrchestrationStateStore.save_policy`, `developer_tools/catalog.py::write_public_api_catalog`, `foundations/benchmarks.py::write_pckp_benchmark_report` (+11 more)
+  - `ArtifactStore.write_text(relative_path: str, content: str, *, kind: str='draft', manifest: dict[str, Any] | None=None) -> ArtifactRecord` - Writes the UTF-8 content to the (root-contained) output path atomically, then registers it; returns the record. · *Called by:* `orchestrator/state_store.py::OrchestrationStateStore.save`, `orchestrator/state_store.py::OrchestrationStateStore.save_policy`, `developer_tools/catalog.py::write_public_api_catalog`, `foundations/benchmarks.py::write_pckp_benchmark_report` (+10 more)
   - `ArtifactStore.register_existing(relative_path: str, *, kind: str, manifest: dict[str, Any] | None=None) -> ArtifactRecord` - Registers a file that already exists below the root (error if it does not). · *No in-package callers (public API, entry point, or protocol hook).*
-  - `ArtifactStore.read_text(artifact_id: str) -> str` - Reads from the immutable content blob (falling back to the output path for legacy records) and verifies the SHA-256 before returning text. · *Called by:* `orchestrator/state_store.py::OrchestrationStateStore.load`, `orchestrator/state_store.py::OrchestrationStateStore.load_policy`, `orchestrator/state_store.py::OrchestrationStateStore.save_policy`, `developer_tools/validate.py::_load_structured_file` (+24 more)
+  - `ArtifactStore.read_text(artifact_id: str) -> str` - Reads from the immutable content blob (falling back to the output path for legacy records) and verifies the SHA-256 before returning text. · *Called by:* `developer_tools/validate.py::_load_structured_file`, `foundations/atomic_io.py::read_text_retrying`, `foundations/benchmarks.py::load_pckp_cases`, `memory/context_projection.py::FileToolResultJournal.handles_of` (+15 more)
   - `ArtifactStore.get(artifact_id: str) -> ArtifactRecord | None` - Loads the artifact manifest by id; an id that is not `sha256:<64 hex>` returns None without touching the disk. · *Called within this file by:* `tools/artifacts.py::ArtifactStore.occurrence_matches_task_draft`, `tools/artifacts.py::ArtifactStore.read_text`
   - `ArtifactStore.get_occurrence(occurrence_id: str) -> ArtifactWriteOccurrence | None` - Loads one occurrence record by `occ-<32 hex>` id, or None (a malformed id never reaches the file system). · *Called by:* `tools/artifacts.py::ArtifactStore.occurrence_matches_task_draft`
   - `ArtifactStore.occurrence_matches_task_draft(occurrence_id: str, artifact_id: str, *, run_id: str, node_id: str, task_id: str, declared_output_paths: tuple[str, ...]) -> bool` - True only if the occurrence is for that artifact, wrote a declared output path, and its manifest names the given run, node and task. · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
-  - `ArtifactStore.diff(base_artifact_id: str, draft_artifact_id: str) -> dict[str, Any]` - Unified diff of two artifacts' text (lines split on newline only), returned with both ids. · *Called by:* `specifications/git_versioning.py::SpecificationVersionService.classify`, `specifications/git_versioning.py::_major_rationale`, `core/services.py::CoreToolDispatcher._diff`, `tools/registry.py::HarnessToolExecutor._execute_registered`
+  - `ArtifactStore.diff(base_artifact_id: str, draft_artifact_id: str) -> dict[str, Any]` - Unified diff of two artifacts' text (lines split on newline only), returned with both ids. · *Called by:* `core/services.py::CoreToolDispatcher._diff`, `tools/registry.py::HarnessToolExecutor._execute_registered`
   - `ArtifactStore._register(target: Path, relative_path: str, content: bytes, kind: str, manifest: dict[str, Any]) -> ArtifactRecord` - Hashes content, saves the blob once, saves the manifest on first registration, and always writes a new unique occurrence record. · *Called within this file by:* `tools/artifacts.py::ArtifactStore.register_existing`, `tools/artifacts.py::ArtifactStore.write_text`
   - `ArtifactStore._content_path(digest: str) -> Path` - Path of the immutable blob for a digest. · *Called by:* `tools/artifacts.py::ArtifactStore._register`, `tools/artifacts.py::ArtifactStore.read_text`
   - `ArtifactStore._manifest_path(artifact_id: str) -> Path` - Portable manifest filename for an artifact id (colon replaced). · *Called by:* `tools/artifacts.py::ArtifactStore._existing_manifest_path`, `tools/artifacts.py::ArtifactStore._register`
   - `ArtifactStore._existing_manifest_path(artifact_id: str) -> Path | None` - Finds a manifest under the portable name or the legacy colon name. · *Called by:* `tools/artifacts.py::ArtifactStore._register`, `tools/artifacts.py::ArtifactStore.get`
-  - `ArtifactStore._resolve_relative(relative_path: str) -> Path` - Resolves a relative path under the run root, rejecting absolute, empty and root-escaping paths. · *Called by:* `tools/artifacts.py::ArtifactStore.read_text`, `tools/artifacts.py::ArtifactStore.register_existing`, `tools/artifacts.py::ArtifactStore.write_text`
+  - `ArtifactStore._resolve_relative(relative_path: str) -> Path` - Resolves a relative path under the run root, rejecting absolute, empty and root-escaping paths; containment is judged with `relative_to_base`, so the spelling Windows gives the resolved target does not matter. · *Called by:* `tools/artifacts.py::ArtifactStore.read_text`, `tools/artifacts.py::ArtifactStore.register_existing`, `tools/artifacts.py::ArtifactStore.write_text`
   - `ArtifactStore._atomic_write_bytes(target: Path, content: bytes) -> None` *(staticmethod)* - Writes bytes to a unique temporary file then replaces the target with retry. · *Called by:* `tools/artifacts.py::ArtifactStore._register`, `tools/artifacts.py::ArtifactStore.write_text`
 - `_safe_name(value: str) -> str` - Filename-safe version of an id. · *Called within this file by:* `tools/artifacts.py::ArtifactStore._manifest_path`
 - `_replace_with_retry(temporary: Path, target: Path, *, attempts: int=5) -> None` - Compatibility wrapper around `replace_atomic`. · *Called within this file by:* `tools/artifacts.py::ArtifactStore._atomic_write_bytes`
@@ -102,7 +102,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/core/__init__.py` - public surface of the portable core tools
 
-*25 lines · depends on: `tools/core/definitions.py`, `tools/core/services.py` · used by: `tools/registry.py` · not re-exported at the package root*
+*25 lines · depends on: `tools/core/definitions.py`, `tools/core/services.py` · used by: `agent/task_runner.py`, `tools/registry.py` · not re-exported at the package root*
 
 **Role in the workflow.** Re-exports `CoreToolDispatcher`, `CoreToolServices`, the search client types and `core_tool_definitions`.
 
@@ -110,20 +110,20 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/core/definitions.py` - typed declarations of the governed core tool set
 
-*340 lines · depends on: `foundations/contracts.py`, `state/elastic.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 1 name(s)*
+*356 lines · depends on: `foundations/contracts.py`, `state/elastic.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** A host opts into the core tools by copying these `ToolDefinition`s into `AgentDefinition.tools`; the model sees their names, descriptions and schemas.
 
 **Contents**
 
-- `core_tool_definitions() -> list[ToolDefinition]` - Returns the 18 declarations: read_file, glob, grep, write_draft, edit_draft, read_artifact, grep_artifact, diff_declared_artifacts, get_tool_result, web_fetch, render_pdf_page, web_search, sleep, ask_human_question, brief, notebook_edit, run_registered_command, request_elastic_node (an action tool that queues an exploration request). · *No in-package callers (public API, entry point, or protocol hook).*
-  - `core_tool_definitions.definition(name: str, description: str, schema: dict[str, Any], *, write: bool=False) -> ToolDefinition` - Builds one `ToolDefinition`: write tools are action/serial, all others exploratory/parallel-safe. · *Called by:* `base_agent/agent.py::BaseAgent.__init__`, `base_agent/agent.py::BaseAgent._accept_final_turn`, `base_agent/agent.py::BaseAgent._execute_tool_call`, `base_agent/agent.py::BaseAgent._record_executed_result` (+23 more)
+- `core_tool_definitions() -> list[ToolDefinition]` - Returns the 18 declarations: read_file, glob, grep, write_draft, edit_draft, read_artifact, grep_artifact, diff_declared_artifacts, get_tool_result, web_fetch, render_pdf_page, web_search, sleep, ask_human_question, brief, notebook_edit, run_registered_command, request_elastic_node (an action tool that queues an exploration request; its optional `handoff` carries notes for the join that resumes the requester). · *Called by:* `agent/task_runner.py::AgentTaskRunner._builtin_definitions`
+  - `core_tool_definitions.definition(name: str, description: str, schema: dict[str, Any], *, write: bool=False) -> ToolDefinition` - Builds one `ToolDefinition`: write tools are action/serial, all others exploratory/parallel-safe. · *Called by:* `base_agent/agent.py::BaseAgent.__init__`, `base_agent/agent.py::BaseAgent._accept_final_turn`, `base_agent/agent.py::BaseAgent._execute_tool_call`, `base_agent/agent.py::BaseAgent._record_executed_result` (+26 more)
 
 ---
 
 ### `tools/core/helpers.py` - private validation, HTTP and isolated-regex helpers behind the core tools
 
-*578 lines · depends on: `foundations/text.py`, `foundations/version.py` · used by: `tools/core/services.py` · not re-exported at the package root*
+*581 lines · depends on: `foundations/hashing.py`, `foundations/text.py`, `foundations/version.py` · used by: `tools/core/services.py` · not re-exported at the package root*
 
 **Role in the workflow.** Called only by `CoreToolDispatcher` (mostly through `asyncio.to_thread`) to implement grep, web_fetch, render_pdf_page and argument validation. Regex work runs in the standalone `regex_worker.py` script in a separate interpreter, and every fetch connects only to addresses it has validated as public.
 
@@ -155,9 +155,9 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - `_text_argument(arguments: dict[str, Any], key: str) -> str` - Like `_required_text` but accepts an empty string (for content and replacement text). · *Called by:* `tools/core/services.py::CoreToolDispatcher._edit_draft`, `tools/core/services.py::CoreToolDispatcher._notebook_edit`, `tools/core/services.py::CoreToolDispatcher._write_draft`
 - `_nonnegative_int(value: Any, name: str) -> int` - Argument must be a non-negative integer (not a bool). · *Called by:* `core/helpers.py::_bounded_int`, `core/services.py::CoreToolDispatcher._dispatch`
 - `_bounded_int(value: Any, name: str, lower: int, upper: int) -> int` - Non-negative integer within [lower, upper]. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`, `core/services.py::CoreToolDispatcher._grep`, `core/services.py::CoreToolDispatcher._notebook_edit`, `core/services.py::CoreToolDispatcher._read_result` (+3 more)
+- `_leaves_run_root(pattern: str) -> bool` - True if a glob pattern is rooted, drive-qualified or contains `..` under either the POSIX or the Windows path convention, so a Windows-style pattern is refused on every platform with the same error. · *Called by:* `core/services.py::CoreToolDispatcher._glob`
 - `_bounded_float(value: Any, name: str, lower: float, upper: float) -> float` - Number within [lower, upper] (not a bool). · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`, `core/services.py::CoreToolDispatcher._render_pdf_page`
 - `_strip_html(value: str) -> str` - Removes tags and unescapes entities. · *Called by:* `core/services.py::DuckDuckGoHtmlClient._search`
-- `_sha256(value: str) -> str` - SHA-256 hex of a string. · *Called within this file by:* `core/helpers.py::_parse_pdf_page`, `core/helpers.py::_render_pdf_page`
 
 **Algorithms & invariants.** Every network helper names its tool in error text and appends a likely-cause hint for HTTP errors; every redirect hop is re-validated against the public-address rules (including IPv4 addresses embedded in IPv6 forms), and the connection is pinned to the validated addresses so a second DNS answer cannot redirect it. One total deadline bounds the connect, headers and body of a fetch.
 
@@ -173,7 +173,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 **Contents**
 
-- `main() -> None` - Reads the request, compiles the pattern (case-insensitive unless asked otherwise), searches every line of every document and writes one JSON result: the matches (path, 1-based line, text cut to 1,000 characters) and whether the limit stopped the search, or `{error: ...}` for an invalid pattern (the regex error text) or any other failure (`Type: message`). · *No in-package callers (public API, entry point, or protocol hook).*
+- `main() -> None` - Reads the request, compiles the pattern (case-insensitive unless asked otherwise), searches every line of every document and writes one JSON result: the matches (path, 1-based line, text cut to 1,000 characters) and whether the limit stopped the search, or `{error: ...}` for an invalid pattern (the regex error text) or any other failure (`Type: message`). · *Called within this file by:* `core/regex_worker.py::<module>`
 - `_emit(outcome: dict[str, object]) -> None` - Writes the outcome as JSON to stdout and flushes. · *Called within this file by:* `tools/core/regex_worker.py::main`
 
 **Algorithms & invariants.** The pattern runs with Python's backtracking `re` engine, so a pathological pattern can run for ever; isolation in a separate process is what makes the deadline enforceable.
@@ -182,19 +182,18 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/core/services.py` - portable governed tools: dispatcher, services and web search
 
-*490 lines · depends on: `foundations/contracts.py`, `foundations/text.py`, `foundations/version.py`, `memory/context_projection.py`, `tools/artifacts.py`, `tools/core/helpers.py`, `tools/policy.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 4 name(s)*
+*488 lines · depends on: `foundations/contracts.py`, `foundations/detached.py`, `foundations/hashing.py`, `foundations/paths.py`, `foundations/text.py`, `foundations/version.py`, `memory/context_projection.py`, `tools/artifacts.py`, `tools/core/helpers.py`, `tools/policy.py` · used by: `tools/core/__init__.py` · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** `CoreToolDispatcher.execute(name, arguments)` is the implementation behind the core tool names. `HarnessToolExecutor` calls it after policy checks; hosts that skip the governed harness (such as the job-agent app) call it directly. Heavy work (grep scanning, web fetch, PDF render, search) runs in worker threads; small file operations run inline.
 
 **Contents**
 
-- `_matches_sensitive_pattern(path: Path) -> bool` - True if a path matches a built-in credential-location deny pattern; the comparison is case-insensitive. · *Called by:* `core/services.py::CoreToolDispatcher._glob`, `core/services.py::CoreToolDispatcher._path`
 - **class `SearchResult`** *(dataclass)* - One web search hit: title, URL, snippet. · *Instantiated by:* `core/services.py::DuckDuckGoHtmlClient._search`
   - fields: `title`, `url`, `snippet`
 - **class `WebSearchClient`** *(Protocol; bases: Protocol)* - Protocol for a pluggable search backend.
   - `WebSearchClient.search(query: str, limit: int) -> list[SearchResult]` *(async)* - Return up to `limit` results for a query.
-- **class `DuckDuckGoHtmlClient`** *(class)* - Dependency-free default search client scraping DuckDuckGo's HTML endpoint; results are untrusted evidence. · *Instantiated by:* `core/services.py::CoreToolDispatcher._web_search`
-  - `DuckDuckGoHtmlClient.search(query: str, limit: int) -> list[SearchResult]` *(async)* - Runs the blocking search in a worker thread. · *Called within this file by:* `core/services.py::DuckDuckGoHtmlClient._search`
+- **class `DuckDuckGoHtmlClient`** *(class)* - Dependency-free default search client scraping DuckDuckGo's HTML endpoint; results are untrusted evidence. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`, `core/services.py::CoreToolDispatcher._web_search`
+  - `DuckDuckGoHtmlClient.search(query: str, limit: int) -> list[SearchResult]` *(async)* - Runs the blocking search on a detached daemon thread (`run_detached`), so cancelling the run does not wait for the request. · *Called within this file by:* `core/services.py::DuckDuckGoHtmlClient._search`
   - `DuckDuckGoHtmlClient._search(query: str, limit: int) -> list[SearchResult]` *(staticmethod)* - POSTs the query, raises a clear error when the response is a rate-limit/bot challenge (so it is not mistaken for zero results), and parses titles, URLs and snippets with regexes. · *Called by:* `core/services.py::DuckDuckGoHtmlClient.search`
 - **class `CoreToolServices`** *(dataclass)* - Dependencies and limits for the dispatcher: run root, artifact store, declared output paths, journal, search client, human responder, read/web/grep bounds and the PDF byte/image caches. · *Instantiated by:* `tools/registry.py::HarnessToolExecutor.__init__`
   - fields: `root`, `artifacts`, `declared_output_paths`, `result_journal`, `search_client`, `ask_human`, `max_read_bytes`, `max_web_chars`, `write_manifest`, `pdf_image_cache`, `pdf_bytes_cache`, `max_grep_files`, `max_grep_total_bytes`, `max_grep_seconds`, `max_fetch_seconds`, `read_scope`
@@ -202,11 +201,11 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - **class `CoreToolDispatcher`** *(class)* - Executes one core tool by name; policy is applied by the caller. · *Instantiated by:* `tools/registry.py::HarnessToolExecutor.__init__`
   - `CoreToolDispatcher.__init__(services: CoreToolServices) -> None` - Stores the services.
   - `CoreToolDispatcher.execute(name: str, arguments: dict[str, Any]) -> ToolExecutionResult` *(async)* - Runs `_dispatch` and wraps any exception into a failed `ToolExecutionResult` with a `CORE_TOOL_EXECUTION_FAILED` failure naming the tool and exception type.
-  - `CoreToolDispatcher._dispatch(name: str, arguments: dict[str, Any]) -> Any` *(async)* - Name-keyed if-chain mapping each tool name to its implementation; unknown names raise. · *Called by:* `core/services.py::CoreToolDispatcher.execute`
-  - `CoreToolDispatcher._path(relative_path: str) -> Path` - Resolves a run-root-relative path, rejecting absolute, escaping and credential paths. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`, `core/services.py::CoreToolDispatcher._edit_draft`, `core/services.py::CoreToolDispatcher._grep_documents`, `core/services.py::CoreToolDispatcher._notebook_edit`
+  - `CoreToolDispatcher._dispatch(name: str, arguments: dict[str, Any]) -> Any` *(async)* - Name-keyed if-chain mapping each tool name to its implementation; unknown names raise. · *Called within this file by:* `core/services.py::CoreToolDispatcher.execute`
+  - `CoreToolDispatcher._path(relative_path: str) -> Path` - Resolves a run-root-relative path, rejecting absolute, escaping and credential paths; containment is judged with `relative_to_base`. · *Called by:* `agent/retention.py::_TombstoneAppender.__init__`, `agent/retention.py::_TombstoneAppender.record`, `integrations/_utils.py::assert_sanitized_interop_value`, `tools/approvals.py::ApprovalRegistry.__init__` (+5 more)
   - `CoreToolDispatcher._read_path(relative_path: str) -> Path` - Resolves a requested path for reading and raises, quoting it, when it is SDK-internal run state or outside the read scope. · *Called within this file by:* `tools/core/services.py::CoreToolDispatcher._dispatch`
-  - `CoreToolDispatcher._is_readable(resolved: Path) -> bool` - False for anything whose first component starts with `.agent-` (telemetry, audit, run, journal and project-state directories) or, when a read scope is set, that lies outside every allowed path.
-  - `CoreToolDispatcher._glob(pattern: str, limit: int) -> list[str]` - Lists up to `limit` matching paths under the root, excluding escapes, credential paths, SDK-internal `.agent-*` state and anything outside the read scope. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`, `core/services.py::CoreToolDispatcher._grep_documents`
+  - `CoreToolDispatcher._is_readable(resolved: Path) -> bool` - False for anything whose first component starts with `.agent-` (telemetry, audit, run, journal and project-state directories) or, when a read scope is set, that lies outside every allowed path; paths are compared with `relative_to_base`.
+  - `CoreToolDispatcher._glob(pattern: str, limit: int) -> list[str]` - Lists up to `limit` matching paths under the root, excluding credential paths, SDK-internal `.agent-*` state and anything outside the read scope; a rooted, drive-qualified or `..` pattern is refused naming the pattern (`_leaves_run_root`), and each match is reported relative to the root (`relative_to_base`). · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`, `core/services.py::CoreToolDispatcher._grep_documents`
   - `CoreToolDispatcher._grep(arguments: dict[str, Any]) -> dict[str, Any]` *(async)* - Collects candidate files in a thread, then runs the regex search in the isolated child process. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
   - `CoreToolDispatcher._grep_documents(file_glob: str) -> tuple[list[tuple[str, str]], bool]` - Reads matching UTF-8 files within the file-count and byte limits and reports whether the scan was truncated. · *Called by:* `core/services.py::CoreToolDispatcher._grep`
   - `CoreToolDispatcher._write_draft(arguments: dict[str, Any]) -> dict[str, Any]` - Writes a declared output path through the artifact store with the write manifest. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
@@ -216,8 +215,8 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `CoreToolDispatcher._read_artifact(arguments: dict[str, Any]) -> dict[str, Any]` - Returns an artifact's text by id. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
   - `CoreToolDispatcher._grep_artifact(arguments: dict[str, Any]) -> dict[str, Any]` - Returns the line numbers in an artifact containing a literal string. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
   - `CoreToolDispatcher._read_result(arguments: dict[str, Any]) -> dict[str, Any]` - Reads a journal handle and returns its JSON truncated to `max_chars` with a content hash (the way the model retrieves compacted results). · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
-  - `CoreToolDispatcher._web_fetch(arguments: dict[str, Any]) -> dict[str, Any]` *(async)* - Validates arguments and runs `_fetch_public_text` in a worker thread with the PDF caches and the services' `max_fetch_seconds` deadline. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
-  - `CoreToolDispatcher._render_pdf_page(arguments: dict[str, Any]) -> dict[str, Any]` *(async)* - Validates arguments and runs the PDF page render in a worker thread. · *Called within this file by:* `core/services.py::CoreToolDispatcher._dispatch`
+  - `CoreToolDispatcher._web_fetch(arguments: dict[str, Any]) -> dict[str, Any]` *(async)* - Validates arguments and runs `_fetch_public_text` on a detached daemon thread (`run_detached`) with the PDF caches and the services' `max_fetch_seconds` deadline. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
+  - `CoreToolDispatcher._render_pdf_page(arguments: dict[str, Any]) -> dict[str, Any]` *(async)* - Validates arguments and runs the PDF page render on a detached daemon thread (`run_detached`). · *Called within this file by:* `core/services.py::CoreToolDispatcher._dispatch`
   - `CoreToolDispatcher._web_search(arguments: dict[str, Any]) -> dict[str, Any]` *(async)* - Uses the configured (or default DuckDuckGo) client and returns results marked untrusted. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
   - `CoreToolDispatcher._ask_human(arguments: dict[str, Any]) -> dict[str, Any]` *(async)* - Awaits the configured human responder; error if none is configured. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
   - `CoreToolDispatcher._notebook_edit(arguments: dict[str, Any]) -> dict[str, Any]` - Replaces or appends to one cell of a declared notebook JSON (a malformed notebook raises naming the path), extending the cell list as needed, and saves it as a new artifact. · *Called by:* `core/services.py::CoreToolDispatcher._dispatch`
@@ -254,7 +253,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/elastic_requests.py` - agent-side queue and tool executor for elastic spawn requests
 
-*159 lines · depends on: `foundations/contracts.py`, `state/elastic.py`, `state/graph_models.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py` · re-exported at the package root: 3 name(s)*
+*160 lines · depends on: `foundations/contracts.py`, `state/elastic.py`, `state/graph_models.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** How an agent asks for exploration. The `request_elastic_node` tool (declared in `core_tool_definitions`, granted to a profile through the `graph.elastic.request` capability) never touches the graph: it queues a typed request that `GraphAgentExecutor` attaches to the node's result when the run completes, so the controller, not the agent, decides what runs.
 
@@ -264,8 +263,8 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `ElasticRequestRejected.__init__(problem: ElasticProblem) -> None` - Keeps the code and uses the problem's message.
 - **class `ElasticRequestBuffer`** *(class)* - One node run's queue of elastic requests. `add` applies the same admission rules as the scheduler (duplicate id, visible dependencies, narrowing routing references, a per-task limit of 32) and checks the capacity the node was handed, counting the join each batch adds. With a reservation from the scheduler the check also counts what tasks running at the same time have queued, first come, first served. It refuses overflow unless the binding escalates it, and always refuses a request that no capacity grant could admit (a ceiling). The scheduler stays the authority at commit. · *Instantiated by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
   - `ElasticRequestBuffer.__init__(node: GraphNode, capacity: ElasticCapacity | None, visible_dependencies: Collection[str], *, limit: int=MAX_ELASTIC_REQUESTS_PER_RESULT, escalate_...` - Takes the node, the capacity from its execution context (None skips the capacity check), the dependencies it can see, the per-task limit, the escalate-overflow flag and the optional reservation handle.
-  - `ElasticRequestBuffer.requests() -> list[ElasticSpawnRequest]` *(property)* - Property: a copy of the queued requests, in the order they were made. · *Called by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
-  - `ElasticRequestBuffer.add(request: ElasticSpawnRequest) -> dict[str, Any]` - Queues one request and returns the receipt (request id, queued count, child depth, nodes remaining after the queue, whether a capacity decision will be needed and when it will run), or raises `ElasticRequestRejected` naming the code and numbers. With a reservation the whole queue is reserved first; an escalated overflow gives the hold back, because that batch waits for a controller decision. · *Called by:* `developer_tools/inspect.py::verify_project_evidence`, `foundations/contracts.py::ModelBinding.fallback_bindings_are_distinct`, `foundations/dependency_graph.py::deterministic_cycles`, `foundations/dependency_graph.py::reverse_reachable_nodes` (+21 more)
+  - `ElasticRequestBuffer.requests() -> list[ElasticSpawnRequest]` *(property)* - Property: a copy of the queued requests, in the order they were made. · *Called by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`, `state/graph.py::StateGraph._apply_spawn_requests`, `state/graph.py::StateGraph._filtered_shared_state_for`, `state/graph.py::StateGraph.request_lateral_dependency` (+2 more)
+  - `ElasticRequestBuffer.add(request: ElasticSpawnRequest) -> dict[str, Any]` - Queues one request and returns the receipt (request id, queued count, child depth, nodes remaining after the queue, whether a capacity decision will be needed and when it will run), or raises `ElasticRequestRejected` naming the code and numbers. With a reservation the whole queue is reserved first; an escalated overflow gives the hold back, because that batch waits for a controller decision. A request whose `handoff` would bring the queue's handoffs past 8,000 characters is refused with `ELASTIC_HANDOFF_LIMIT_REACHED`, naming the lengths. · *Called by:* `developer_tools/inspect.py::verify_project_evidence`, `foundations/contracts.py::ModelBinding.fallback_bindings_are_distinct`, `foundations/dependency_graph.py::deterministic_cycles`, `foundations/dependency_graph.py::reverse_reachable_nodes` (+20 more)
   - `ElasticRequestBuffer._remaining_after_queue() -> int | None` - Elastic nodes still free after this queue: the reservation's unreserved count, else the capacity's remaining nodes less the queued requests and the join; None without either. · *Called by:* `tools/elastic_requests.py::ElasticRequestBuffer.add`
   - `ElasticRequestBuffer._overflow(requested: int) -> ElasticProblem | None` - The problem with queueing `requested` requests, or None: asked of the reservation when there is one (which holds the capacity on success), otherwise checked against the capacity the node was handed. · *Called by:* `tools/elastic_requests.py::ElasticRequestBuffer.add`
 - **class `ElasticRequestToolExecutor`** *(class)* - Tool executor that serves `request_elastic_node` from the queue and passes every other tool to the wrapped executor (or fails naming the tool when there is none). · *Instantiated by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
@@ -276,24 +275,25 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/policy.py` - deny-by-default capability policy
 
-*170 lines · depends on: `foundations/contracts.py`, `tools/approvals.py` · used by: `agent/orchestrator/models.py`, `mcp/client_bridge.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*176 lines · depends on: `foundations/contracts.py`, `foundations/paths.py`, `tools/approvals.py` · used by: `agent/orchestrator/models.py`, `agent/task_files.py`, `agent/task_runner.py`, `mcp/client_bridge.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** `HarnessToolExecutor.execute` asks `CapabilityPolicy.evaluate` before every governed tool call and either runs, blocks, or requests an approval based on the answer.
 
 **Contents**
 
+- `sensitive_pattern_for(path: Path | str) -> str | None` - The first built-in credential pattern that matches a path (compared case-insensitively on the forward-slash form, also with a trailing slash so a whole directory such as `.ssh` is caught), or None. The policy, the core read tools and the task file reader share it. · *Called by:* `agent/task_files.py::_entry`, `agent/task_files.py::_target`, `core/services.py::CoreToolDispatcher._glob`, `core/services.py::CoreToolDispatcher._path` (+1 more)
 - **class `SideEffectClass`** *(enum; bases: StrEnum)* - read-only, mutating, process or destructive.
   - members: `READ_ONLY`, `MUTATING`, `PROCESS`, `DESTRUCTIVE`
-- **class `CapabilityGrant`** *(pydantic model; bases: StrictModel)* - What one role may do: capability names and the paths it may touch.
+- **class `CapabilityGrant`** *(pydantic model; bases: StrictModel)* - What one role may do: capability names and the paths it may touch. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - fields: `role`, `capabilities`, `allowed_paths`
 - **class `PolicyDecision`** *(pydantic model; bases: StrictModel)* - Allowed or not, with the reason, whether approval is required and the request if any. · *Instantiated by:* `tools/policy.py::CapabilityPolicy.evaluate`
   - fields: `allowed`, `reason`, `approval_required`, `approval_request`
-- **class `CapabilityPolicy`** *(class)* - Checks sensitive paths, role grant, path containment and typed approval state in that order.
+- **class `CapabilityPolicy`** *(class)* - Checks sensitive paths, role grant, path containment and typed approval state in that order. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `CapabilityPolicy.__init__(grants: list[CapabilityGrant]) -> None` - Indexes grants by role.
   - `CapabilityPolicy.read_scope(role: str) -> tuple[str, ...]` - The paths a role may read: its grant's `allowed_paths` when the grant holds `filesystem.read`, otherwise none. · *Called by:* `tools/registry.py::HarnessToolExecutor.__init__`
   - `CapabilityPolicy.evaluate(*, role: str, capability: str, side_effect: SideEffectClass, run_root: Path, requested_paths: list[str]=(), approval: ApprovalRequest | None=None)...` - Order: deny built-in credential paths (no grant can override) -> role must hold the capability -> every requested path must be inside the grant's allowed paths -> read-only is allowed; anything else needs a matching, approved typed approval (missing, pending and rejected each have their own reason).
-  - `CapabilityPolicy._sensitive_pattern_match(requested_path: str, run_root: Path) -> str | None` *(staticmethod)* - Resolves a requested path against the run root and returns the matching built-in deny pattern (case-insensitive; also checks a trailing-slash form so whole-directory requests are caught). · *Called by:* `tools/policy.py::CapabilityPolicy.evaluate`
-  - `CapabilityPolicy._path_is_allowed(requested_path: str, allowed_paths: list[str], run_root: Path) -> bool` *(staticmethod)* - True if the resolved path stays under the run root and under at least one allowed path (empty list means nothing is allowed). · *Called by:* `tools/policy.py::CapabilityPolicy.evaluate`
+  - `CapabilityPolicy._sensitive_pattern_match(requested_path: str, run_root: Path) -> str | None` *(staticmethod)* - Resolves a requested path against the run root and returns `sensitive_pattern_for` of it. · *Called by:* `tools/policy.py::CapabilityPolicy.evaluate`
+  - `CapabilityPolicy._path_is_allowed(requested_path: str, allowed_paths: list[str], run_root: Path) -> bool` *(staticmethod)* - True if the resolved path stays under the run root and under at least one allowed path (empty list means nothing is allowed); both tests use `relative_to_base`. · *Called by:* `tools/policy.py::CapabilityPolicy.evaluate`
 
 **Algorithms & invariants.** `SENSITIVE_PATH_PATTERNS` (ssh keys, aws, gcloud, azure, gnupg, docker, kube, netrc, `.env*`, `.npmrc`, `.pypirc`, `.git-credentials`, `.pgpass`, `*.pem`, `*.p12`, `*.pfx`, private keys) is matched case-insensitively and checked before any grant is consulted.
 
@@ -303,24 +303,24 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/registry.py` - capability-bound harness tool registry and its BaseAgent executor
 
-*348 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `foundations/text.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
+*327 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** The governed `ToolExecutor`: `BaseAgent` hands it every tool call; it applies policy and approvals, then runs a host handler, a core tool, a registered process command or a built-in spec/artifact reader. The registry is closed: no generic shell and no dynamically named tool.
 
 **Contents**
 
-- **class `HarnessExecutionContext`** *(dataclass)* - Non-prompt state for one scheduled node: run/node/role, plan task, run root, artifact store, policy, approvals, supervisor, spec snapshots, declared outputs, approval ids, journal, search client, human responder and PDF image cache.
+- **class `HarnessExecutionContext`** *(dataclass)* - Non-prompt state for one scheduled node: run/node/role, plan task, run root, artifact store, policy, approvals, supervisor, spec snapshots, declared outputs, approval ids, journal, search client, human responder and PDF image cache. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - fields: `run_id`, `node_id`, `role`, `plan_task`, `run_root`, `artifacts`, `policy`, `approvals`, `supervisor`, `spec_snapshots`, `declared_output_paths`, `approval_ids_by_capability`, `result_journal`, `search_client`, `ask_human`, `pdf_image_cache`
 - **class `RegisteredTool`** *(dataclass)* - Name, capability, side-effect class and an optional command template name. · *Instantiated by:* `mcp/client_bridge.py::mcp_tools_as_extensions`, `tools/registry.py::HarnessToolRegistry.default_tools`
   - fields: `name`, `capability`, `side_effect`, `command_template`
-- **class `HarnessToolRegistry`** *(class)* - Closed registry of tool names with optional custom handlers. · *Instantiated by:* `orchestrator/orchestrator.py::Orchestrator.__init__`
+- **class `HarnessToolRegistry`** *(class)* - Closed registry of tool names with optional custom handlers. · *Instantiated by:* `orchestrator/orchestrator.py::Orchestrator.__init__`, `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `HarnessToolRegistry.__init__(tools: list[RegisteredTool] | None=None, *, custom_handlers: dict[str, HarnessToolHandler] | None=None) -> None` - Builds the name map (default tools if none are given), rejecting duplicates and handlers for unregistered tools.
-  - `HarnessToolRegistry.default_tools() -> list[RegisteredTool]` *(staticmethod)* - The 23 standard declarations (spec/file/artifact/web tools, sleep, brief, human question, `request_elastic_node` with capability `graph.elastic.request`, `run_registered_command`, and the Verilator/Yosys/OpenROAD/OpenSTA process tools). · *Called by:* `tools/registry.py::HarnessToolRegistry.__init__`, `tools/registry.py::HarnessToolRegistry.with_extensions`
-  - `HarnessToolRegistry.with_extensions(extensions: list[RegisteredTool], *, handlers: dict[str, HarnessToolHandler]) -> HarnessToolRegistry` *(classmethod)* - Default tools plus host-defined extra tools and their handlers. · *No in-package callers (public API, entry point, or protocol hook).*
+  - `HarnessToolRegistry.default_tools() -> list[RegisteredTool]` *(staticmethod)* - The 19 standard declarations (spec/file/artifact/web tools, sleep, brief, human question, `request_elastic_node` with capability `graph.elastic.request` and `run_registered_command`). No domain-specific command is built in: a host declares its own process tools, such as a linter or a build step, through `with_extensions`. · *Called by:* `tools/registry.py::HarnessToolRegistry.__init__`, `tools/registry.py::HarnessToolRegistry.with_extensions`
+  - `HarnessToolRegistry.with_extensions(extensions: list[RegisteredTool], *, handlers: dict[str, HarnessToolHandler]) -> HarnessToolRegistry` *(classmethod)* - Default tools plus host-defined extra tools and their handlers. · *Called by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `HarnessToolRegistry.resolve(name: str) -> RegisteredTool | None` - Looks up a registered tool by name.
-  - `HarnessToolRegistry.names() -> tuple[str, ...]` - Sorted tuple of registered names. · *Called by:* `mcp/client.py::McpClientManager.__init__`, `tools/sandbox.py::DockerSandbox._enforced_limit_names`
+  - `HarnessToolRegistry.names() -> tuple[str, ...]` - Sorted tuple of registered names. · *Called by:* `agent/task_runner.py::AgentTaskRunner._builtin_definitions`, `agent/task_runner.py::AgentTaskRunner._prepare_tools`, `mcp/client.py::McpClientManager.__init__`, `tools/sandbox.py::DockerSandbox._enforced_limit_names` (+1 more)
   - `HarnessToolRegistry.handler_for(name: str) -> HarnessToolHandler | None` - The custom handler registered for a name, if any. · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
-- **class `HarnessToolExecutor`** *(class; bases: ToolExecutor)* - Bridges BaseAgent tool calls into policy-governed typed harness actions.
+- **class `HarnessToolExecutor`** *(class; bases: ToolExecutor)* - Bridges BaseAgent tool calls into policy-governed typed harness actions. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `HarnessToolExecutor.__init__(registry: HarnessToolRegistry, context: HarnessExecutionContext) -> None` - Stores the registry and context and builds an internal `CoreToolDispatcher` from the context, limiting reads to the role's read scope.
   - `HarnessToolExecutor.execute(tool: ToolDefinition, invocation: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Resolve the tool, collect requested write paths, look up any approval for the capability, evaluate policy; blocked decisions return BLOCKED (filing an approval request when one is needed); otherwise run the tool and convert exceptions into a failed result with `HARNESS_TOOL_EXECUTION_FAILED`. · *Called within this file by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
   - `HarnessToolExecutor._approval_for(capability: str)` - The approval registered for a capability in this context, else the latest request this node filed for it, so a decision made after the block is found. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
@@ -329,7 +329,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - `_process_failure_message(name: str, process: ProcessExecutionRecord) -> str` - `<code>: registered command "<name>" <what happened>` for a failed process (exit code, timeout, cancellation or resource limit). · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
 - `_string_argument(arguments: dict[str, Any], key: str) -> str` - Argument must be a non-empty string. · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
 
-**Algorithms & invariants.** Note that `read_artifact`, `grep_artifact` and `diff_declared_artifacts` are implemented here with plan-task authorization checks, separately from the unauthorized versions in `core/services.py`.
+**Algorithms & invariants.** `read_artifact` and `grep_artifact` check the plan-task authorization here and then run the implementation in `core/services.py`; `diff_declared_artifacts` has its own authorization (including occurrence proof) here and calls `ArtifactStore.diff`.
 
 *Module-level names:* `HarnessToolHandler`
 
@@ -388,9 +388,9 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/supervisor.py` - registered-command execution with timeout, bounded output and process-tree kill
 
-*487 lines · depends on: `foundations/contracts.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `tools/sandbox_models.py` · used by: `tools/registry.py`, `tools/sandbox.py`, `tools/tasks.py` · re-exported at the package root: 8 name(s)*
+*491 lines · depends on: `foundations/contracts.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `tools/sandbox_models.py` · used by: `agent/task_runner.py`, `tools/registry.py`, `tools/sandbox.py`, `tools/tasks.py` · re-exported at the package root: 8 name(s)*
 
-**Role in the workflow.** `run_registered_command` and the EDA process tools reach this supervisor. It never runs a raw string: only a host-registered `CommandTemplate`, with watchdog events recorded to telemetry.
+**Role in the workflow.** `run_registered_command` and any process tool a host declares reach this supervisor. It never runs a raw string: only a host-registered `CommandTemplate`, with watchdog events recorded to telemetry.
 
 **Contents**
 
@@ -410,9 +410,9 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - **class `WatchdogController`** *(class)* - Emits structured watchdog state changes; the supervisor performs the actual kill. · *Instantiated by:* `tools/supervisor.py::ProcessSupervisor._execute_once`
   - `WatchdogController.__init__(telemetry: TelemetryStore | None=None, telemetry_context: TelemetryContext | None=None) -> None` - Stores the optional telemetry store and context.
   - `WatchdogController.emit(state: WatchdogState, *, payload: dict[str, Any] | None=None) -> None` - Records a `watchdog.<state>` telemetry event (no-op without telemetry).
-- **class `ProcessSupervisor`** *(class)* - Runs only registered commands with bounded capture, a timeout and process-tree termination. · *Instantiated by:* `tools/sandbox.py::NativeSandbox.run`
+- **class `ProcessSupervisor`** *(class)* - Runs only registered commands with bounded capture, a timeout and process-tree termination. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`, `tools/sandbox.py::NativeSandbox.run`
   - `ProcessSupervisor.__init__(templates: list[CommandTemplate]=(), *, telemetry: TelemetryStore | None=None, telemetry_context_factory: Callable[[str], TelemetryContext] | None...` - Indexes templates by name and stores telemetry wiring.
-  - `ProcessSupervisor.template(name: str) -> CommandTemplate | None` - A registered template by name, or None. · *Called by:* `tools/sandbox.py::DockerSandbox._build_argv`, `tools/sandbox.py::DockerSandbox._run_with_env_file`, `tools/sandbox.py::DockerSandbox.run`, `tools/sandbox.py::NativeSandbox.run` (+4 more)
+  - `ProcessSupervisor.template(name: str) -> CommandTemplate | None` - A registered template by name, or None. · *Called by:* `agent/task_runner.py::AgentTaskRunner.run`, `agent/task_runner.py::TaskRunOptions.options_are_consistent`, `tools/sandbox.py::DockerSandbox._build_argv`, `tools/sandbox.py::DockerSandbox._run_with_env_file` (+6 more)
   - `ProcessSupervisor.execute(template_name: str, *, cwd: Path, env: dict[str, str] | None=None) -> ProcessExecutionRecord` *(async)* - Validates the template and cwd, resolves the environment (call-site override, else the template policy, else inherit), and retries retryable idempotent failures with linear backoff.
   - `ProcessSupervisor._execute_once(template: CommandTemplate, *, cwd: Path, attempts: int, env: dict[str, str] | None=None) -> ProcessExecutionRecord` *(async)* - Spawns the process in its own group/session (an OS error at spawn is re-raised naming the template and command after a FAILED watchdog event), captures output concurrently, waits for exit by polling the return code with the timeout, terminates the group on timeout or cancellation, drains output for at most a second, classifies the exit and emits watchdog events. · *Called by:* `tools/supervisor.py::ProcessSupervisor.execute`
   - `ProcessSupervisor._terminate_process_group(process: asyncio.subprocess.Process) -> list[str]` *(async, staticmethod)* - POSIX: SIGTERM the group, wait 1 s, then SIGKILL; Windows: delegates to the taskkill helper; returns the termination path. · *Called by:* `tools/supervisor.py::ProcessSupervisor._execute_once`
@@ -425,7 +425,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - `_drain_output(output_task: asyncio.Task[None], process: asyncio.subprocess.Process) -> list[str]` *(async)* - Waits up to a second for the reader to finish; otherwise abandons it and reports `OUTPUT_PIPE_HELD_BY_DESCENDANT` (a surviving child still holds the pipe).
 - `_abandon_output(output_task: asyncio.Task[None], process: asyncio.subprocess.Process) -> None` *(async)* - Cancels the reader and closes the process transport so no pipe handle leaks.
 - `_resource_preexec(limits: ResourceLimits) -> tuple[Callable[[], None] | None, list[str], list[str]]` - Builds the POSIX preexec function that applies rlimits and lists which limits were enforced or unsupported. · *Called by:* `tools/supervisor.py::ProcessSupervisor._execute_once`
-  - `_resource_preexec.apply() -> None` - Child-side function that calls `setrlimit` for each requested limit. · *Called within this file by:* `tools/supervisor.py::_resource_preexec`
+  - `_resource_preexec.apply() -> None` - Child-side function that calls `setrlimit` for each requested limit. The CPU limit is soft at the requested seconds and hard one second later (never above the inherited hard limit), so a runaway child receives `SIGXCPU`, which is reported as resource-limited, before `SIGKILL`; the other limits use the same value for both. · *Called within this file by:* `tools/supervisor.py::_resource_preexec`
 - `_signal_name(return_code: int | None) -> str | None` - Names the signal behind a negative return code. · *Called by:* `tools/supervisor.py::ProcessSupervisor._execute_once`
 - `_is_resource_signal(return_code: int | None) -> bool` - True for SIGXCPU/SIGXFSZ (CPU or file-size limit exceeded). · *Called by:* `tools/supervisor.py::ProcessSupervisor._execute_once`
 
@@ -481,17 +481,17 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/tools.py` - the ToolExecutor protocol and two deterministic test executors
 
-*72 lines · depends on: `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `integrations/langchain.py`, `integrations/langgraph.py`, `mcp/agent_tools.py`, `tools/elastic_requests.py` (+1 more) · not re-exported at the package root*
+*73 lines · depends on: `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `agent/task_runner.py`, `integrations/langchain.py`, `integrations/langgraph.py`, `tools/elastic_requests.py` (+1 more) · not re-exported at the package root*
 
 **Role in the workflow.** `BaseAgent` depends only on `ToolExecutor`: any object with `async execute(tool, context)` can serve a run.
 
 **Contents**
 
-- **class `ToolInvocationContext`** *(dataclass)* - What an executor receives with each call: agent identity, task, iteration and the call. · *Instantiated by:* `base_agent/agent.py::BaseAgent._execute_tool_call`
-  - fields: `agent_identity`, `task`, `iteration`, `call`
+- **class `ToolInvocationContext`** *(dataclass)* - What an executor receives with each call: agent identity, task, iteration, the call and the `traceparent` of the call's span (None outside `BaseAgent`), for an executor that calls another service and wants to continue the trace. · *Instantiated by:* `base_agent/agent.py::BaseAgent._execute_tool_call`
+  - fields: `agent_identity`, `task`, `iteration`, `call`, `trace_parent`
 - **class `ToolExecutor`** *(Protocol; bases: Protocol)* - Protocol: `execute(tool, context)` returns a `ToolExecutionResult`.
   - `ToolExecutor.execute(tool: ToolDefinition, context: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Protocol method.
-- **class `InMemoryTaskToolExecutor`** *(class)* - Safe deterministic tools for protocol tests: `read_locked_interface` and `echo`; no filesystem or process. · *Instantiated by:* `mcp/agent_tools.py::register_agent_tools.run_agent_task`
+- **class `InMemoryTaskToolExecutor`** *(class)* - Safe deterministic tools for protocol tests: `read_locked_interface` and `echo`; no filesystem or process. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `InMemoryTaskToolExecutor.__init__() -> None` - Starts with an empty call log.
   - `InMemoryTaskToolExecutor.execute(tool: ToolDefinition, context: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Returns the locked interface or the arguments for the two known tools, otherwise a failure naming the tool.
 - **class `RecordingToolExecutor`** *(dataclass)* - Test double that returns pre-configured results by tool name and records calls.
@@ -502,9 +502,9 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/worktree_models.py` - record for an agent's git worktree
 
-*25 lines · depends on: `foundations/contracts.py` · used by: `tools/delegation.py`, `tools/worktrees.py` · re-exported at the package root: 1 name(s)*
+*20 lines · depends on: `foundations/contracts.py` · used by: `tools/delegation.py`, `tools/worktrees.py` · re-exported at the package root: 1 name(s)*
 
-**Role in the workflow.** Returned by `AgentWorktreeManager`; distinct from the specification variant worktrees in `specifications/git_models.py`.
+**Role in the workflow.** Returned by `AgentWorktreeManager`.
 
 **Contents**
 
@@ -524,9 +524,9 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - `validate_worktree_slug(slug: str) -> str` - Accepts a slug only if it is non-empty, at most 64 chars, relative, and every `/`-separated segment is letters, digits, dots, underscores or dashes (no `.` or `..`). · *Called by:* `tools/worktrees.py::AgentWorktreeManager.create_worktree`
 - **class `AgentWorktreeManager`** *(class)* - Creates, lists and removes worktrees beneath one base directory.
   - `AgentWorktreeManager.__init__(base_dir: Path) -> None` - Stores the base directory, an empty tracking map and the per-slug locks.
-  - `AgentWorktreeManager.create_worktree(repository_path: Path, slug: str, *, branch: str | None=None, agent_id: str | None=None) -> AgentWorktreeInfo` *(async)* - Validates the slug and serializes concurrent creates of the same slug; returns the tracked worktree if present, otherwise delegates to `_create_untracked`.
+  - `AgentWorktreeManager.create_worktree(repository_path: Path, slug: str, *, branch: str | None=None, agent_id: str | None=None) -> AgentWorktreeInfo` *(async)* - Validates the slug and serializes concurrent creates of the same slug; returns the tracked worktree if present, otherwise delegates to `_create_untracked`. · *Called by:* `tools/delegation.py::SubagentCoordinator.delegate`
   - `AgentWorktreeManager._create_untracked(repository_path: Path, slug: str, branch: str | None, agent_id: str | None) -> AgentWorktreeInfo` *(async)* - Refuses a slug that differs from a tracked one only by letter case and an existing untracked path, requires `repository_path` to be the repository root, then adds the worktree: a new branch from HEAD, or the existing branch of that name. · *Called within this file by:* `tools/worktrees.py::AgentWorktreeManager.create_worktree`
-  - `AgentWorktreeManager.remove_worktree(slug: str) -> bool` *(async)* - Runs `git worktree remove --force` and untracks it; False if the slug is unknown. · *Called by:* `tools/delegation.py::SubagentCoordinator.delegate.run_with_cleanup`
+  - `AgentWorktreeManager.remove_worktree(slug: str) -> bool` *(async)* - Runs `git worktree remove --force` and untracks it; False if the slug is unknown. · *Called by:* `tools/delegation.py::SubagentCoordinator.delegate.cleanup`
   - `AgentWorktreeManager.get_worktree(slug: str) -> AgentWorktreeInfo | None` - The tracked worktree for a slug, or None. · *No in-package callers (public API, entry point, or protocol hook).*
   - `AgentWorktreeManager.list_worktrees() -> list[AgentWorktreeInfo]` - Tracked worktrees sorted by slug. · *No in-package callers (public API, entry point, or protocol hook).*
 - `_require_repository_root(repository: Path) -> None` *(async)* - Raises `ValueError` naming both paths when git reports a different top-level directory than the one given, so a worktree is never created in an enclosing repository by accident. · *Called by:* `tools/worktrees.py::AgentWorktreeManager._create_untracked`

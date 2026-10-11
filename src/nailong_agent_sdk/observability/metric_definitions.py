@@ -13,6 +13,14 @@ from typing import Any
 from .telemetry_models import MetricDefinition
 
 
+def _instrument_for(unit: str, aggregation: str) -> str:
+    if unit == "milliseconds":
+        return "histogram"
+    if aggregation == "sum":
+        return "counter"
+    return "gauge"
+
+
 def _definition(
     metric_id: str,
     name: str,
@@ -21,6 +29,7 @@ def _definition(
     formula: str,
     **kwargs: Any,
 ) -> MetricDefinition:
+    kwargs.setdefault("instrument", _instrument_for(unit, kwargs.get("aggregation", "")))
     return MetricDefinition(
         metric_id=metric_id,
         name=name,
@@ -387,95 +396,5 @@ STANDARD_METRIC_DEFINITIONS: tuple[MetricDefinition, ...] = (
         aggregation="sum",
         missing_data_rule="unavailable for non-process tools",
         source_description="ProcessSupervisor",
-    ),
-    _definition(
-        "research.ppa_drift_rate",
-        "PPA drift rate",
-        "ratio",
-        "lower",
-        "explicit experiment formula",
-        aggregation="mean",
-        missing_data_rule="unavailable until measured by an EDA wrapper",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.wns_gap_ns",
-        "Worst negative slack gap",
-        "nanoseconds",
-        "lower",
-        "explicit experiment formula",
-        aggregation="mean",
-        missing_data_rule="unavailable until OpenSTA/OpenROAD evidence is parsed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.drc_lvs_clean_rate",
-        "DRC/LVS clean rate",
-        "ratio",
-        "higher",
-        "clean checks / total checks",
-        aggregation="mean",
-        missing_data_rule="unavailable until signoff evidence is parsed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.interface_mismatch_count",
-        "Interface mismatch count",
-        "count",
-        "lower",
-        "explicit experiment count",
-        aggregation="sum",
-        missing_data_rule="unavailable until interface comparison is observed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.human_correction_rate",
-        "Human correction rate",
-        "ratio",
-        "lower",
-        "character difference(first draft, approved version) / first draft characters",
-        aggregation="mean",
-        missing_data_rule="unavailable until attributable drafts and approvals exist",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.first_pass_acceptance_rate",
-        "First-pass acceptance rate",
-        "ratio",
-        "higher",
-        "accepted first drafts / all first drafts",
-        aggregation="mean",
-        missing_data_rule="unavailable until human approvals are observed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.downstream_rework_cost_seconds",
-        "Downstream rework cost",
-        "seconds",
-        "lower",
-        "measured physical/synthesis rework duration",
-        aggregation="sum",
-        missing_data_rule="unavailable until EDA execution evidence is parsed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.insight_accuracy",
-        "Physical-feedback insight accuracy",
-        "ratio",
-        "higher",
-        "human-verified correct diagnostic insights / reviewed insights",
-        aggregation="mean",
-        missing_data_rule="unavailable until human review is recorded",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.retrieval_precision",
-        "Exact-signal retrieval precision",
-        "ratio",
-        "higher",
-        "correct retrieved exact signal names / retrieved signal names",
-        aggregation="mean",
-        missing_data_rule="unavailable until labelled retrieval evaluation exists",
-        source_description="Research evaluation input",
     ),
 )

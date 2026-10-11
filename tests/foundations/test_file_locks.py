@@ -1,4 +1,5 @@
 import errno
+import subprocess
 import sys
 import time
 import types
@@ -8,6 +9,7 @@ import pytest
 from nailong_agent_sdk.foundations import atomic_io
 from nailong_agent_sdk.foundations.atomic_io import exclusive_file_lock
 from nailong_agent_sdk.foundations.errors import AgentSdkError
+from tests.support.processes import child_environment
 
 LOCK_EX, LOCK_NB, LOCK_UN = 2, 4, 8
 
@@ -69,3 +71,45 @@ def test_the_posix_lock_is_released_with_unlock(monkeypatch):
     monkeypatch.setitem(sys.modules, "fcntl", module)
     atomic_io._release_posix_lock(7)
     assert calls == [(7, LOCK_UN)]
+
+
+HOLDER = """
+import sys
+import time
+from pathlib import Path
+
+from nailong_agent_sdk.foundations.atomic_io import exclusive_file_lock
+
+with exclusive_file_lock(Path(sys.argv[1]), timeout_seconds=10):
+    print("locked", flush=True)
+    time.sleep(600)
+"""
+
+
+def test_a_lock_held_by_another_process_is_released_when_that_process_is_killed(tmp_path):
+    path = tmp_path / "held.lock"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLDER, str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=child_environment(),
+    )
+    try:
+        assert holder.stdout.readline().strip() == "locked", holder.stderr.read()
+        with (
+            pytest.raises(AgentSdkError) as raised,
+            exclusive_file_lock(path, timeout_seconds=0.3, timeout_code="HELD_LOCK_TIMEOUT"),
+        ):
+            pass
+        assert raised.value.code == "HELD_LOCK_TIMEOUT"
+        holder.kill()
+        holder.wait(timeout=30)
+        started = time.monotonic()
+        with exclusive_file_lock(path, timeout_seconds=10):
+            pass
+        assert time.monotonic() - started < 5
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=30)

@@ -247,6 +247,17 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
+    @ctx.tool(server, "reconcile_controller")
+    def reconcile_controller(controller_id: str) -> dict[str, Any]:
+        """Re-derive the project state from the controller's graph run results and cancel the
+        controller if its run was cancelled, after an operation that failed between writes."""
+
+        try:
+            report = ctx.controller_runtime.reconcile(controller_id)
+            return {"ok": True, "report": report.model_dump(mode="json")}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
     @ctx.tool(server, "cancel_controller")
     def cancel_controller(controller_id: str, reason: str) -> dict[str, Any]:
         """Cancel the active graph run and its vertical controller record."""

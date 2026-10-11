@@ -21,7 +21,13 @@ from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
-from mcp.types import CONNECTION_CLOSED, METHOD_NOT_FOUND, CallToolResult, ReadResourceResult
+from mcp.types import (
+    CONNECTION_CLOSED,
+    METHOD_NOT_FOUND,
+    REQUEST_TIMEOUT,
+    CallToolResult,
+    ReadResourceResult,
+)
 
 from ..foundations.errors import redact_secrets
 from ..foundations.identifiers import require_unique
@@ -55,6 +61,16 @@ class McpResourceReadError(McpClientError):
     pass
 
 
+class McpCallTimeoutError(McpToolCallError, McpResourceReadError):
+    def __init__(self, server_name: str, action: str, seconds: float) -> None:
+        super().__init__(
+            f"MCP {action} timed out after {seconds:g}s without an answer from server "
+            f'"{server_name}"; the connection stays open for later calls.'
+        )
+        self.server_name = server_name
+        self.seconds = seconds
+
+
 @dataclass
 class _Connection:
     stop: asyncio.Event
@@ -81,6 +97,7 @@ class McpClientManager:
         }
         self._sessions: dict[str, ClientSession] = {}
         self._connections: dict[str, _Connection] = {}
+        self._pings: dict[str, asyncio.Task[None]] = {}
 
     async def connect_all(self) -> None:
         """Connect every configured server; a per-server failure does not abort the rest."""
@@ -88,17 +105,22 @@ class McpClientManager:
         await asyncio.gather(
             *(self._connect(name) for name in self._configs if name not in self._connections)
         )
+        for name in self._configs:
+            self._start_ping(name)
 
     async def reconnect(self, name: str) -> None:
         if name not in self._configs:
             raise ValueError(f'No MCP server named "{name}" is configured.')
         await self._close_one(name)
         await self._connect(name)
+        self._start_ping(name)
 
     async def close(self) -> None:
         """Close every active session. Safe to call more than once."""
 
-        await asyncio.gather(*(self._close_one(name) for name in list(self._connections)))
+        await asyncio.gather(
+            *(self._close_one(name) for name in {*self._connections, *self._pings})
+        )
 
     def list_statuses(self) -> list[McpConnectionStatus]:
         return [self._statuses[name] for name in sorted(self._statuses)]
@@ -109,15 +131,26 @@ class McpClientManager:
     def list_resources(self) -> list[McpResourceInfo]:
         return [resource for status in self.list_statuses() for resource in status.resources]
 
-    async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> str:
+    async def call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> str:
         """Invoke one connected tool and return its content flattened to text."""
 
+        _require_positive(timeout_seconds)
         session = self._require_session(server_name)
         action = f'tool call to "{server_name}::{tool_name}"'
+        seconds = self._call_timeout(server_name, timeout_seconds)
         try:
-            result = await session.call_tool(tool_name, arguments)
+            result = await session.call_tool(tool_name, arguments, read_timeout_seconds=seconds)
         except Exception as error:
-            raise self._session_failure(server_name, action, error, McpToolCallError) from error
+            raise self._session_failure(
+                server_name, action, error, McpToolCallError, seconds
+            ) from error
         if not isinstance(result, CallToolResult):
             raise McpToolCallError(
                 f'MCP server "{server_name}" returned an unsupported '
@@ -132,13 +165,23 @@ class McpClientManager:
             raise McpToolCallError(f'MCP tool "{server_name}::{tool_name}" failed: {text}')
         return text
 
-    async def read_resource(self, server_name: str, uri: str) -> str:
+    async def read_resource(
+        self, server_name: str, uri: str, *, timeout_seconds: float | None = None
+    ) -> str:
+        _require_positive(timeout_seconds)
         session = self._require_session(server_name)
         action = f'resource read "{server_name}::{uri}"'
+        seconds = self._call_timeout(server_name, timeout_seconds)
+        deadline = asyncio.timeout(seconds)
         try:
-            result = await session.read_resource(uri)
+            async with deadline:
+                result = await session.read_resource(uri)
         except Exception as error:
-            raise self._session_failure(server_name, action, error, McpResourceReadError) from error
+            if seconds is not None and isinstance(error, TimeoutError) and deadline.expired():
+                raise McpCallTimeoutError(server_name, action, seconds) from error
+            raise self._session_failure(
+                server_name, action, error, McpResourceReadError, seconds
+            ) from error
         if not isinstance(result, ReadResourceResult):
             raise McpResourceReadError(
                 f'MCP server "{server_name}" returned an unsupported '
@@ -149,6 +192,11 @@ class McpClientManager:
             for item in result.contents
         ]
         return "\n".join(parts).strip()
+
+    def _call_timeout(self, server_name: str, override: float | None) -> float | None:
+        if override is not None:
+            return override
+        return self._configs[server_name].call_timeout_seconds
 
     def _require_session(self, server_name: str) -> ClientSession:
         session = self._sessions.get(server_name)
@@ -166,17 +214,26 @@ class McpClientManager:
         action: str,
         error: Exception,
         failure: type[McpClientError],
+        timeout_seconds: float | None = None,
     ) -> McpClientError:
+        if (
+            timeout_seconds is not None
+            and isinstance(error, MCPError)
+            and error.code == REQUEST_TIMEOUT
+        ):
+            return McpCallTimeoutError(server_name, action, timeout_seconds)
         if isinstance(error, MCPError) and error.code == CONNECTION_CLOSED:
             self._sessions.pop(server_name, None)
             config = self._configs[server_name]
-            self._statuses[server_name] = McpConnectionStatus(
-                name=server_name,
-                state=McpConnectionState.FAILED,
-                transport=_transport_kind(config),
-                auth_configured=_auth_configured(config),
-                detail=f"connection closed by the server during the {action}",
-            )
+            current = self._statuses.get(server_name)
+            if current is None or current.state is McpConnectionState.CONNECTED:
+                self._statuses[server_name] = McpConnectionStatus(
+                    name=server_name,
+                    state=McpConnectionState.FAILED,
+                    transport=_transport_kind(config),
+                    auth_configured=_auth_configured(config),
+                    detail=f"connection closed by the server during the {action}",
+                )
             return McpServerNotConnectedError(
                 f'MCP server "{server_name}" closed its connection during the {action}.'
             )
@@ -313,7 +370,61 @@ class McpClientManager:
             detail=detail,
         )
 
+    def _start_ping(self, name: str) -> None:
+        config = self._configs[name]
+        if config.ping_interval_seconds is None or name in self._pings:
+            return
+        connected = self._statuses[name].state is McpConnectionState.CONNECTED
+        if connected or config.reconnect_on_ping_failure:
+            self._pings[name] = asyncio.create_task(
+                self._ping_loop(name, config, config.ping_interval_seconds),
+                name=f"mcp-ping-{name}",
+            )
+
+    async def _stop_ping(self, name: str) -> None:
+        task = self._pings.get(name)
+        if task is None or task is asyncio.current_task():
+            return
+        del self._pings[name]
+        task.cancel()
+        await asyncio.wait({task})
+
+    async def _ping_loop(self, name: str, config: McpServerConfig, interval: float) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            session = self._sessions.get(name)
+            if session is not None:
+                failure = await _ping_failure(session, config.ping_timeout_seconds)
+                if failure is None:
+                    continue
+                await self._declare_unresponsive(name, config, failure)
+            if not config.reconnect_on_ping_failure:
+                self._pings.pop(name, None)
+                return
+            connection = self._connections.get(name)
+            if connection is not None:
+                await self._release(name, connection)
+            await self._connect(name)
+
+    async def _declare_unresponsive(
+        self, name: str, config: McpServerConfig, failure: BaseException
+    ) -> None:
+        detail = _liveness_detail(config, failure)
+        _logger.warning("MCP server %s stopped answering: %s", name, detail)
+        self._sessions.pop(name, None)
+        self._statuses[name] = McpConnectionStatus(
+            name=name,
+            state=McpConnectionState.FAILED,
+            transport=_transport_kind(config),
+            auth_configured=_auth_configured(config),
+            detail=detail,
+        )
+        connection = self._connections.get(name)
+        if connection is not None:
+            await self._release(name, connection)
+
     async def _close_one(self, name: str) -> None:
+        await self._stop_ping(name)
         connection = self._connections.get(name)
         if connection is None:
             return
@@ -328,12 +439,15 @@ class McpClientManager:
 
     async def _release(self, name: str, connection: _Connection) -> None:
         if self._connections.get(name) is connection:
-            del self._connections[name]
             self._sessions.pop(name, None)
         connection.stop.set()
         if not connection.established:
             connection.task.cancel()
-        await asyncio.wait({connection.task})
+        try:
+            await asyncio.wait({connection.task})
+        finally:
+            if self._connections.get(name) is connection and connection.task.done():
+                del self._connections[name]
         if not connection.task.cancelled() and connection.task.exception() is not None:
             _logger.debug(
                 "MCP connection task for %s ended with %r", name, connection.task.exception()
@@ -378,18 +492,44 @@ def _auth_configured(config: McpServerConfig) -> bool:
     return bool(config.headers)
 
 
-def _failure_detail(config: McpServerConfig, error: BaseException, http_statuses: list[int]) -> str:
+def _target(config: McpServerConfig) -> str:
     if isinstance(config, McpStdioServerConfig):
-        target = f'stdio command "{config.command}"'
-    else:
-        parts = urlsplit(config.url)
-        endpoint = f"{parts.scheme}://{parts.hostname or ''}"
-        if parts.port is not None:
-            endpoint = f"{endpoint}:{parts.port}"
-        target = f'HTTP endpoint "{endpoint}{parts.path}"'
+        return f'stdio command "{config.command}"'
+    parts = urlsplit(config.url)
+    endpoint = f"{parts.scheme}://{parts.hostname or ''}"
+    if parts.port is not None:
+        endpoint = f"{endpoint}:{parts.port}"
+    return f'HTTP endpoint "{endpoint}{parts.path}"'
+
+
+def _failure_detail(config: McpServerConfig, error: BaseException, http_statuses: list[int]) -> str:
     reasons = "; ".join(_leaf_descriptions(error))
     answered = f"; the endpoint answered HTTP {http_statuses[-1]}" if http_statuses else ""
-    return str(redact_secrets(f"{target} failed to connect: {reasons}{answered}"))
+    return str(redact_secrets(f"{_target(config)} failed to connect: {reasons}{answered}"))
+
+
+def _liveness_detail(config: McpServerConfig, failure: BaseException) -> str:
+    if isinstance(failure, TimeoutError):
+        reason = f"no answer to a ping within {config.ping_timeout_seconds:g}s"
+    else:
+        reason = "; ".join(_leaf_descriptions(failure))
+    return str(redact_secrets(f"{_target(config)} stopped answering: {reason}"))
+
+
+def _require_positive(timeout_seconds: float | None) -> None:
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise ValueError(f"timeout_seconds must be positive, got {timeout_seconds:g}.")
+
+
+async def _ping_failure(session: ClientSession, timeout_seconds: float) -> BaseException | None:
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            await session.send_ping()
+    except asyncio.CancelledError:
+        raise
+    except (Exception, BaseExceptionGroup) as failure:
+        return failure
+    return None
 
 
 def _leaf_descriptions(error: BaseException) -> list[str]:

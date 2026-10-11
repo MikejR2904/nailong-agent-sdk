@@ -11,7 +11,6 @@ from typing import Any
 
 from ..foundations.contracts import AgentFailure, ToolDefinition, ToolExecutionResult
 from ..foundations.identifiers import require_unique
-from ..foundations.text import split_lines
 from ..memory.context_projection import ToolResultJournal
 from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
 from ..state.planning import PlanTask
@@ -99,12 +98,6 @@ class HarnessToolRegistry:
                 ELASTIC_REQUEST_TOOL_NAME, "graph.elastic.request", SideEffectClass.READ_ONLY
             ),
             RegisteredTool("run_registered_command", "process.execute", SideEffectClass.PROCESS),
-            RegisteredTool("run_verilator", "rtl.verilator", SideEffectClass.PROCESS, "verilator"),
-            RegisteredTool("run_yosys", "rtl.yosys", SideEffectClass.PROCESS, "yosys"),
-            RegisteredTool(
-                "run_openroad", "physical.openroad", SideEffectClass.PROCESS, "openroad"
-            ),
-            RegisteredTool("run_opensta", "physical.opensta", SideEffectClass.PROCESS, "opensta"),
         ]
 
     @classmethod
@@ -261,25 +254,11 @@ class HarnessToolExecutor(ToolExecutor):
         }:
             return await self._core.execute(tool.name, arguments)
 
-        if tool.name == "read_artifact":
+        if tool.name in {"read_artifact", "grep_artifact"}:
             artifact_id = _string_argument(arguments, "artifact_id")
             if artifact_id not in self._context.plan_task.authorized_artifact_ids:
                 raise ValueError("Artifact is not authorized for this PlanTask.")
-            return {
-                "artifact_id": artifact_id,
-                "content": self._context.artifacts.read_text(artifact_id),
-            }
-
-        if tool.name == "grep_artifact":
-            artifact_id = _string_argument(arguments, "artifact_id")
-            needle = _string_argument(arguments, "needle")
-            if artifact_id not in self._context.plan_task.authorized_artifact_ids:
-                raise ValueError("Artifact is not authorized for this PlanTask.")
-            lines = split_lines(self._context.artifacts.read_text(artifact_id))
-            return {
-                "artifact_id": artifact_id,
-                "matches": [index + 1 for index, line in enumerate(lines) if needle in line],
-            }
+            return await self._core.execute(tool.name, arguments)
 
         if tool.name == "diff_declared_artifacts":
             base = _string_argument(arguments, "base_artifact_id")

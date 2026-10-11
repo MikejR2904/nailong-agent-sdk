@@ -26,30 +26,40 @@ class McpConnectionState(StrEnum):
 
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 30.0
 MAX_CONNECT_TIMEOUT_SECONDS = 3_600.0
+MAX_CALL_TIMEOUT_SECONDS = 86_400.0
+DEFAULT_PING_TIMEOUT_SECONDS = 10.0
+MAX_PING_SECONDS = 3_600.0
 
 
-class McpStdioServerConfig(StrictModel):
-    """A local MCP server launched as a child process over stdio."""
+class McpServerOptions(StrictModel):
+    """The settings every outbound MCP server connection takes, whatever its transport."""
 
     name: str = Field(min_length=1)
+    connect_timeout_seconds: float = Field(
+        default=DEFAULT_CONNECT_TIMEOUT_SECONDS, gt=0, le=MAX_CONNECT_TIMEOUT_SECONDS
+    )
+    call_timeout_seconds: float | None = Field(default=None, gt=0, le=MAX_CALL_TIMEOUT_SECONDS)
+    ping_interval_seconds: float | None = Field(default=None, gt=0, le=MAX_PING_SECONDS)
+    ping_timeout_seconds: float = Field(
+        default=DEFAULT_PING_TIMEOUT_SECONDS, gt=0, le=MAX_PING_SECONDS
+    )
+    reconnect_on_ping_failure: bool = False
+
+
+class McpStdioServerConfig(McpServerOptions):
+    """A local MCP server launched as a child process over stdio."""
+
     command: str = Field(min_length=1)
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] | None = None
     cwd: str | None = None
-    connect_timeout_seconds: float = Field(
-        default=DEFAULT_CONNECT_TIMEOUT_SECONDS, gt=0, le=MAX_CONNECT_TIMEOUT_SECONDS
-    )
 
 
-class McpHttpServerConfig(StrictModel):
+class McpHttpServerConfig(McpServerOptions):
     """A remote MCP server reached over the streamable-HTTP transport."""
 
-    name: str = Field(min_length=1)
     url: str = Field(min_length=1)
     headers: dict[str, str] | None = None
-    connect_timeout_seconds: float = Field(
-        default=DEFAULT_CONNECT_TIMEOUT_SECONDS, gt=0, le=MAX_CONNECT_TIMEOUT_SECONDS
-    )
 
 
 McpServerConfig = McpStdioServerConfig | McpHttpServerConfig
