@@ -4,6 +4,7 @@
 This module provides small, dependency-free helpers for safe local file handling:
 - `file_fingerprint`: detect if a file has changed (inode, mtime, size).
 - `replace_atomic`: atomically swap a prepared temp file into place, retrying on transient errors.
+- `fsync_directory`: make a rename in a directory durable (a no-op on Windows).
 - `read_text_retrying`: read a UTF-8 file with retries if another process briefly blocks access.
 - `unique_temporary_path`: generate a collision-free temp filename next to a target.
 - `claim_exclusive`: create a file only if it doesn't already exist (used to claim resources).
@@ -65,6 +66,21 @@ def read_text_retrying(path: Path, *, attempts: int = 10) -> str:
         except PermissionError:
             time.sleep(0.005 * (attempt + 1))
     return path.read_text(encoding="utf-8")
+
+
+def fsync_directory(directory: Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def unique_temporary_path(target: Path) -> Path:

@@ -50,6 +50,7 @@ class AgentWorktreeManager:
         self._base_dir = base_dir
         self._worktrees: dict[str, AgentWorktreeInfo] = {}
         self._slug_locks: dict[str, asyncio.Lock] = {}
+        self._repository_locks: dict[str, asyncio.Lock] = {}
 
     async def create_worktree(
         self,
@@ -96,19 +97,20 @@ class AgentWorktreeManager:
                 "manager; remove it manually before reusing this slug."
             )
         worktree_branch = branch or f"agent-worktree-{flat_slug}"
-        branch_exists, _stdout, _error = await _run_git(
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            f"refs/heads/{worktree_branch}",
-            cwd=resolved_repository,
-        )
-        arguments = (
-            ("worktree", "add", str(worktree_path), worktree_branch)
-            if branch_exists == 0
-            else ("worktree", "add", "-b", worktree_branch, str(worktree_path), "HEAD")
-        )
-        code, _stdout, error = await _run_git(*arguments, cwd=resolved_repository)
+        async with self._repository_lock(resolved_repository):
+            branch_exists, _stdout, _error = await _run_git(
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{worktree_branch}",
+                cwd=resolved_repository,
+            )
+            arguments = (
+                ("worktree", "add", str(worktree_path), worktree_branch)
+                if branch_exists == 0
+                else ("worktree", "add", "-b", worktree_branch, str(worktree_path), "HEAD")
+            )
+            code, _stdout, error = await _run_git(*arguments, cwd=resolved_repository)
         if code != 0:
             raise RuntimeError(f"git worktree add failed: {error}")
 
@@ -129,13 +131,17 @@ class AgentWorktreeManager:
         info = self._worktrees.get(slug)
         if info is None:
             return False
-        code, _stdout, error = await _run_git(
-            "worktree", "remove", "--force", info.path, cwd=info.base_repository_path
-        )
+        async with self._repository_lock(Path(info.base_repository_path)):
+            code, _stdout, error = await _run_git(
+                "worktree", "remove", "--force", info.path, cwd=info.base_repository_path
+            )
         if code != 0:
             raise RuntimeError(f"git worktree remove failed: {error}")
         del self._worktrees[slug]
         return True
+
+    def _repository_lock(self, repository: Path) -> asyncio.Lock:
+        return self._repository_locks.setdefault(str(repository), asyncio.Lock())
 
     def get_worktree(self, slug: str) -> AgentWorktreeInfo | None:
         return self._worktrees.get(slug)

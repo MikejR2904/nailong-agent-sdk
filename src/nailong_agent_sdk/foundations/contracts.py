@@ -386,6 +386,8 @@ class ContextProjectionMetadata(StrictModel):
     compacted_episode_ids: list[str] = Field(default_factory=list)
     omitted_observation_count: int = Field(default=0, ge=0)
     omitted_compacted_count: int = Field(default=0, ge=0)
+    semantic_summary_ids: list[str] = Field(default_factory=list)
+    omitted_summary_count: int = Field(default=0, ge=0)
 
 
 class AgentLifecycleEvent(StrictModel):
@@ -396,6 +398,8 @@ class AgentLifecycleEvent(StrictModel):
         "state-updated",
         "context-projected",
         "context-compacted",
+        "semantic-compaction",
+        "episodes-rehydrated",
         "turn-started",
         "tool-batch-requested",
         "tool-batch-completed",
@@ -403,6 +407,7 @@ class AgentLifecycleEvent(StrictModel):
         "tool-completed",
         "provider-tool-results-forwarded",
         "model-turn-retrying",
+        "model-turn-cancelled",
         "stream-listener-failed",
         "output-rejected",
         "verification-completed",
@@ -431,6 +436,8 @@ class AgentResult(StrictModel):
     context: AgentPrompt | None = None
     project_state: dict[str, Any] | None = None
     episodes: list[EpisodeSummary] = Field(default_factory=list)
+    episodes_total: int | None = Field(default=None, ge=0)
+    episodes_omitted: int = Field(default=0, ge=0)
     projection_history: list[ContextProjectionMetadata] = Field(default_factory=list)
     events: list[AgentLifecycleEvent] = Field(default_factory=list)
     profile: dict[str, Any] | None = None

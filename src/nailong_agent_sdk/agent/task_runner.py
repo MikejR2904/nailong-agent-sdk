@@ -40,6 +40,8 @@ from ..tools.tools import InMemoryTaskToolExecutor, ToolExecutor, ToolInvocation
 from .base_agent import AgentWatchdogPolicy, CancellationToken, PostToolHook, PreToolHook
 from .model import AgentModel, FailoverAgentModel, ScriptedModel
 from .openai_compatible import (
+    AsyncJsonHttpTransport,
+    HttpxAsyncJsonTransport,
     JsonHttpTransport,
     OpenAICompatibleAgentModel,
     OpenAICompatibleEndpoint,
@@ -180,13 +182,13 @@ class AgentTaskRunner:
         *,
         allow_process_options: bool = True,
         process_options_hint: str = "",
-        transport: JsonHttpTransport | None = None,
+        transport: JsonHttpTransport | AsyncJsonHttpTransport | None = None,
         streaming_transport: StreamingJsonHttpTransport | None = None,
     ) -> None:
         self._services = services
         self._allow_process_options = allow_process_options
         self._process_options_hint = process_options_hint
-        self._transport = transport
+        self._transport = transport or HttpxAsyncJsonTransport()
         self._streaming_transport = streaming_transport
         self._running: dict[str, _RunToken] = {}
         self._running_lock = threading.Lock()
@@ -582,13 +584,16 @@ class _ApprovalWaitingExecutor(ToolExecutor):
         )
         request = await self._decision(approval_id)
         if request.status is ApprovalStatus.PENDING:
-            self._record_decision(request, "timed-out")
-            return result.model_copy(
-                update={
-                    "error": f'Approval "{approval_id}" for capability "{request.capability}" '
-                    f"was not decided within {self._timeout_seconds:g}s."
-                }
-            )
+            request = self._expire(request)
+            if request.decision_reason == self._expiry_reason:
+                self._record_decision(request, "timed-out")
+                return result.model_copy(
+                    update={
+                        "error": f'Approval "{approval_id}" for capability '
+                        f'"{request.capability}" was not decided within '
+                        f"{self._timeout_seconds:g}s."
+                    }
+                )
         self._record_decision(request, request.status.value)
         if request.status is ApprovalStatus.APPROVED:
             return await self._inner.execute(tool, invocation)
@@ -599,6 +604,16 @@ class _ApprovalWaitingExecutor(ToolExecutor):
                 f"was rejected{detail}"
             }
         )
+
+    @property
+    def _expiry_reason(self) -> str:
+        return f"Expired: not decided within {self._timeout_seconds:g}s."
+
+    def _expire(self, request: ApprovalRequest) -> ApprovalRequest:
+        try:
+            return self._approvals.submit(request.approval_id, False, self._expiry_reason)
+        except ValueError:
+            return self._approvals.get(request.approval_id) or request
 
     async def _decision(self, approval_id: str) -> ApprovalRequest:
         loop = asyncio.get_running_loop()

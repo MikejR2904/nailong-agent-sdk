@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **131 files, 416 classes and 1,327 functions** (methods and nested closures included).
+covers **143 files, 505 classes and 1,720 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -68,8 +68,11 @@ import of a fresh interpreter, which the test suite checks for all of them.
 3. **Loop `iteration = 1..max_iterations`.** Stop if the run deadline passed (FAILED) or the
    caller cancelled (CANCELLED).
 4. **Project context** (`ContextProjector.project`): compact episodes over budget, keep the
-   newest observations that fit, and build the stubs of compacted episodes. Emit the
-   `context-projected` event and the context metrics.
+   newest observations that fit, and build the stubs of compacted episodes. With a semantic
+   episode store (`SemanticCompactor`) the episodes PCKP did not keep are also archived,
+   summarized and verified, on a worker thread under the run deadline and the cancellation
+   token, and the verified summaries join the projection. Emit the `context-projected`
+   event (and `semantic-compaction` when a pass ran) and the context metrics.
 5. **Three guards** end the run BLOCKED before any model call: `CONTEXT_DEADLOCK` (nothing can
    be compacted), `PROJECT_STATE_BUDGET_EXCEEDED` (the mandatory state exceeds its 2,000-token
    view) and `CONTEXT_BUDGET_EXCEEDED` (prompt plus state exceed the context budget).
@@ -100,12 +103,16 @@ The Chat Completions adapter sends three messages plus any continuation:
   `recent_observations` (the newest observations that fit the budget); `episode_summaries`
   (one line per retained episode); `compacted_episodes` (one-line stubs with a status and a
   `handle_id` for episodes whose content was dropped, within a 1,500-token allowance, newest
-  first); and `omitted_compacted_count`.
+  first); `omitted_compacted_count`; and, only when a semantic episode store produced them,
+  `semantic_summaries` (verified digests of groups of compacted episodes, each with the
+  episode ids and journal handles it came from, at most 16 of each listed beside their
+  counts, within a 1,200-token allowance) and `omitted_summary_count`.
 * **continuation** - for providers that issued tool calls, the raw assistant tool calls and the
   matching bounded tool results, only for the latest batch.
 
 Defaults: context budget 12,000 estimated tokens, episode budget 6,000, tool-result preview
-1,024 characters, stub budget 1,500, stub summary 160 characters, project-state view 2,000.
+1,024 characters, stub budget 1,500, stub summary 160 characters, semantic-summary budget
+1,200, project-state view 2,000.
 Estimates are characters divided by four. The model never sees raw tool output beyond the
 preview: the full result is journalled and the model can fetch it with the `get_tool_result`
 tool and a handle id.
@@ -117,6 +124,22 @@ their prerequisites) and chooses the rest by solving a dependency-closed knapsac
 (a Pareto-frontier tree DP for rooted forests whose state count stays within 50,000, otherwise
 branch and bound with a cap that degrades to BEST_EFFORT). Compacted episodes keep only a tombstone plus their summary; the
 stub list keeps them findable.
+
+**Semantic compaction** (opt-in: give the episode store a `SemanticCompactor`). PCKP's
+choice is unchanged; what changes is what happens to the episodes it did not keep. They
+keep their payloads until their group has been archived (`memory/episode_archive.py`:
+content-addressed, read back and compared), summarized by the host's `EpisodeSummarizer`
+(`ExtractiveEpisodeSummarizer` needs no model) and verified: the archive entries are
+intact, dependencies resolve, every claim quotes its cited episodes verbatim, every failed
+or blocked episode is mentioned, no number or identifier appears that the sources do not
+contain, and the digest is small enough; an optional judge can then only veto. Only then
+is the payload released and the record linked to its summary and archive entry. A group
+that fails any step keeps its originals and is retried up to a limit; groups follow real
+`depends_on` edges, never similarity. When more than 12 summaries are active they are
+consolidated into parents (up to level 3, children kept for provenance), an optional
+ceiling on active records and edges evicts archived, summarized records from the active
+graph, and `rehydrate` (or `rehydration_token_budget`, for an action that consumes a
+compacted episode) restores originals from the archive within a token budget.
 
 ## Workflow 3 - how a tool call is governed
 
@@ -280,6 +303,7 @@ the run options. Everything else is a parameter too:
 | add a model provider | implement `AgentModel` (`agent/model.py`); use `agent/openai_compatible/chat.py` as the template; wrap several in `FailoverAgentModel` |
 | change what the model sees | `agent/openai_compatible/chat.py::_chat_payload`, `memory/context_projection.py`, `foundations/contracts.py` (`ModelContext` fields live in `agent/model.py`) |
 | change compaction | `memory/episode_store.py` (strategies), `memory/episode_scoring.py`, `foundations/optimization/` (solvers) |
+| change how compacted episodes are summarized, verified, evicted or restored | `memory/semantic_compaction.py` (`SemanticCompactor` and its checks), `memory/episode_archive.py`, `SemanticCompactionPolicy` in `memory/episode_models.py`, `InMemoryEpisodeStore._semantic_pass` and `rehydrate` |
 | add a verification gate | register on a `VerificationGateRegistry` (`agent/verification.py`) |
 | add a project-state transition | `state/project_state_models.py` (`StateTransitionKind`), `ProjectStateReducer.apply` in `state/project_state_engine.py` |
 | add a graph node kind or executor | `state/graph_models.py` (`GraphNodeKind`), the executor map passed to `execute_graph` |
@@ -299,6 +323,11 @@ the run options. Everything else is a parameter too:
 * **Projection** - the bounded view of memory and state built for one turn. **Compaction** -
   dropping an episode's content while keeping a tombstone. **Stub** - the one-line, handle-bearing
   residue of a compacted episode. **Handle** - an opaque id of a journalled full result.
+* **Semantic summary** - a verified, provenance-carrying digest of compacted episodes
+  (`SemanticEpisodeSummary`): derived text that names its source episodes, their archived
+  snapshots and journal handles, and is never evidence in itself. **Archive** - the
+  content-addressed store of original episode snapshots. **Rehydration** - restoring an
+  archived episode to live.
 * **Wave** - the set of graph nodes that are runnable together. **Controller** - the vertical
   state machine (plan, approval, dispatch, repair, escalation). **Harness** - the deterministic
   runtime around the model: policy, journal, state, audit.
@@ -310,38 +339,40 @@ the run options. Everything else is a parameter too:
 
 | File | Lines | Role |
 |---|---:|---|
-| [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 789 | the public API surface (lazy re-exports) |
+| [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 887 | the public API surface (lazy re-exports) |
 | [`agent/__init__.py`](agent.md#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2256 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2410 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
-| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 273 | runs registered BaseAgent bindings as graph nodes |
-| [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 361 | provider-neutral model contract, streaming events and failover |
-| [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 36 | public surface of the OpenAI-compatible adapters |
-| [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 613 | Chat Completions adapter for the agent model contract |
+| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 294 | runs registered BaseAgent bindings as graph nodes |
+| [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 418 | provider-neutral model contract, streaming events and failover |
+| [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
+| [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 746 | Chat Completions adapter for the agent model contract |
 | [`agent/openai_compatible/embeddings.py`](agent.md#agentopenai_compatibleembeddingspy---synchronous-embedding-provider-for-retrieval-indexes) | 68 | synchronous embedding provider for retrieval indexes |
-| [`agent/openai_compatible/transport.py`](agent.md#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 480 | JSON HTTP transports and endpoint configuration |
+| [`agent/openai_compatible/transport.py`](agent.md#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 537 | JSON HTTP transports and endpoint configuration |
 | [`agent/openai_compatible/vision.py`](agent.md#agentopenai_compatiblevisionpy---image-proposals-through-a-verified-byte-loader) | 163 | image proposals through a verified byte loader |
 | [`agent/orchestrator/__init__.py`](agent.md#agentorchestrator__init__py---public-surface-of-the-orchestrator-package) | 31 | public surface of the orchestrator package |
 | [`agent/orchestrator/models.py`](agent.md#agentorchestratormodelspy---user-owned-orchestration-policy-request-and-record-contracts) | 180 | user-owned orchestration policy, request and record contracts |
-| [`agent/orchestrator/orchestrator.py`](agent.md#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 989 | deterministic composition of policy, plan, controller and graph execution |
+| [`agent/orchestrator/orchestrator.py`](agent.md#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 991 | deterministic composition of policy, plan, controller and graph execution |
 | [`agent/orchestrator/state_store.py`](agent.md#agentorchestratorstate_storepy---atomic-local-persistence-of-orchestration-records-and-policies) | 119 | atomic local persistence of orchestration records and policies |
-| [`agent/retention.py`](agent.md#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 445 | opt-in pruning of finished runs with a hash-chained tombstone for each |
+| [`agent/retention.py`](agent.md#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 646 | opt-in pruning of finished runs with a hash-chained tombstone for each |
+| [`agent/retention_anchor.py`](agent.md#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
+| [`agent/retention_inventory.py`](agent.md#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
 | [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 112 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](agent.md#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
-| [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 648 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
+| [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 663 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](agent.md#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 187 | host-registered, bounded output-acceptance gates |
 | [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 42 | public surface of the developer utilities |
 | [`developer_tools/catalog.py`](developer_tools.md#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 181 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 403 | the `nailong-agent-sdk-dev` command line |
 | [`developer_tools/inspect.py`](developer_tools.md#developer_toolsinspectpy---read-only-run-evidence-inspection) | 211 | read-only run evidence inspection |
 | [`developer_tools/quality.py`](developer_tools.md#developer_toolsqualitypy---closed-ruff-quality-check) | 92 | closed Ruff quality check |
 | [`developer_tools/validate.py`](developer_tools.md#developer_toolsvalidatepy---contract-file-validation) | 97 | contract-file validation |
 | [`foundations/__init__.py`](foundations.md#foundations__init__py---package-marker-for-the-dependency-free-layer) | 4 | package marker for the dependency-free layer |
-| [`foundations/atomic_io.py`](foundations.md#foundationsatomic_iopy---crash-safe-file-publication-exclusive-claims-and-cross-process-locks) | 158 | crash-safe file publication, exclusive claims and cross-process locks |
+| [`foundations/atomic_io.py`](foundations.md#foundationsatomic_iopy---crash-safe-file-publication-exclusive-claims-and-cross-process-locks) | 174 | crash-safe file publication, exclusive claims and cross-process locks |
 | [`foundations/benchmarks.py`](foundations.md#foundationsbenchmarkspy---reproducible-exact-vs-greedy-pckp-benchmark-harness) | 88 | reproducible exact-vs-greedy PCKP benchmark harness |
-| [`foundations/contracts.py`](foundations.md#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 526 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
+| [`foundations/contracts.py`](foundations.md#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 533 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
 | [`foundations/dependency_graph.py`](foundations.md#foundationsdependency_graphpy---deterministic-cycle-and-blast-radius-traversal-over-dependent-prerequisite-edges) | 104 | deterministic cycle and blast-radius traversal over (dependent, prerequisite) edges |
 | [`foundations/detached.py`](foundations.md#foundationsdetachedpy---run-a-blocking-call-on-a-daemon-thread-that-the-awaiting-task-may-abandon) | 42 | run a blocking call on a daemon thread that the awaiting task may abandon |
 | [`foundations/errors.py`](foundations.md#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 284 | typed SDK errors and secret/reasoning redaction for durable records |
@@ -354,6 +385,7 @@ the run options. Everything else is a parameter too:
 | [`foundations/optimization/solvers.py`](foundations.md#foundationsoptimizationsolverspy---exact-tree-dp--branch-and-bound-and-greedy-pckp-solvers) | 503 | exact (tree DP / branch-and-bound) and greedy PCKP solvers |
 | [`foundations/paths.py`](foundations.md#foundationspathspy---comparison-of-windows-extended-length-path-spellings-as-one-location) | 40 | comparison of Windows extended-length path spellings as one location |
 | [`foundations/record_locks.py`](foundations.md#foundationsrecord_lockspy---per-record-cross-process-locks-re-entrant-for-the-holding-thread) | 62 | per-record cross-process locks, re-entrant for the holding thread |
+| [`foundations/run_fence.py`](foundations.md#foundationsrun_fencepy---per-run-write-fence-that-retention-raises-before-it-deletes-a-runs-records) | 139 | per-run write fence that retention raises before it deletes a run's records |
 | [`foundations/text.py`](foundations.md#foundationstextpy---newline-only-line-splitting-and-utf-8-well-formedness-for-durable-text) | 50 | newline-only line splitting and UTF-8 well-formedness for durable text |
 | [`foundations/version.py`](foundations.md#foundationsversionpy---the-installed-package-name-and-version-and-the-identity-strings-derived-from-them) | 23 | the installed package name and version, and the identity strings derived from them |
 | [`integrations/__init__.py`](integrations.md#integrations__init__py---public-surface-of-the-integrations-package) | 109 | public surface of the integrations package |
@@ -367,38 +399,47 @@ the run options. Everything else is a parameter too:
 | [`integrations/jev/models.py`](integrations.md#integrationsjevmodelspy---jev-question-answer-request-result-and-receipt-contracts) | 171 | Jev question, answer, request, result and receipt contracts |
 | [`integrations/jev/receipts.py`](integrations.md#integrationsjevreceiptspy---receipt-sinks-for-jev-evaluations) | 57 | receipt sinks for Jev evaluations |
 | [`integrations/langchain.py`](integrations.md#integrationslangchainpy---optional-langchain-adapters) | 266 | optional LangChain adapters |
-| [`integrations/langgraph.py`](integrations.md#integrationslanggraphpy---optional-langgraph-adapters) | 299 | optional LangGraph adapters |
+| [`integrations/langgraph.py`](integrations.md#integrationslanggraphpy---optional-langgraph-adapters) | 308 | optional LangGraph adapters |
 | [`integrations/receipts.py`](integrations.md#integrationsreceiptspy---receipt-sinks-for-external-operations) | 65 | receipt sinks for external operations |
 | [`mcp/__init__.py`](mcp.md#mcp__init__py---package-marker-for-the-mcp-surface) | 3 | package marker for the MCP surface |
-| [`mcp/_shared.py`](mcp.md#mcp_sharedpy---shared-context-and-error-formatting-for-every-tool-group) | 117 | shared context and error formatting for every tool group |
-| [`mcp/agent_tools.py`](mcp.md#mcpagent_toolspy---mcp-tools-for-agent-contract-validation-context-assembly-and-scripted-runs) | 159 | MCP tools for agent contract validation, context assembly and scripted runs |
-| [`mcp/client.py`](mcp.md#mcpclientpy---outbound-mcp-client-lifecycle) | 541 | outbound MCP client lifecycle |
-| [`mcp/client_bridge.py`](mcp.md#mcpclient_bridgepy---opt-in-bridge-from-external-mcp-tools-to-governed-harness-tools) | 92 | opt-in bridge from external MCP tools to governed harness tools |
-| [`mcp/client_types.py`](mcp.md#mcpclient_typespy---typed-configuration-and-status-for-the-outbound-mcp-client) | 89 | typed configuration and status for the outbound MCP client |
-| [`mcp/controller_tools.py`](mcp.md#mcpcontroller_toolspy---mcp-tools-for-the-deterministic-controller) | 269 | MCP tools for the deterministic controller |
-| [`mcp/orchestration_tools.py`](mcp.md#mcporchestration_toolspy---mcp-tools-for-plan-validation-graph-runs-and-orchestration-compilation) | 126 | MCP tools for plan validation, graph runs and orchestration compilation |
-| [`mcp/project_state_tools.py`](mcp.md#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 192 | MCP tools for project working memory |
-| [`mcp/run_tools.py`](mcp.md#mcprun_toolspy---mcp-tools-for-graph-run-state-cancellation-approvals-and-resumption) | 59 | MCP tools for graph run state, cancellation, approvals and resumption |
-| [`mcp/security.py`](mcp.md#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 253 | bearer-token authentication and host checks for the HTTP service |
-| [`mcp/server.py`](mcp.md#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 177 | MCP server factory and loopback entry point |
+| [`mcp/_shared.py`](mcp.md#mcp_sharedpy---shared-context-and-error-formatting-for-every-tool-group) | 154 | shared context and error formatting for every tool group |
+| [`mcp/agent_tools.py`](mcp.md#mcpagent_toolspy---mcp-tools-for-agent-contract-validation-context-assembly-and-scripted-runs) | 215 | MCP tools for agent contract validation, context assembly and scripted runs |
+| [`mcp/arguments.py`](mcp.md#mcpargumentspy---refuse-tool-arguments-the-mcp-surface-does-not-define-instead-of-dropping-them-silently) | 116 | refuse tool arguments the MCP surface does not define instead of dropping them silently |
+| [`mcp/authority.py`](mcp.md#mcpauthoritypy---who-may-call-which-tool-host-and-approver-credentials-decision-binding-and-its-audit) | 441 | who may call which tool: host and approver credentials, decision binding and its audit |
+| [`mcp/client.py`](mcp.md#mcpclientpy---outbound-mcp-client-lifecycle) | 550 | outbound MCP client lifecycle |
+| [`mcp/client_bridge.py`](mcp.md#mcpclient_bridgepy---opt-in-bridge-from-external-mcp-tools-to-governed-harness-tools) | 94 | opt-in bridge from external MCP tools to governed harness tools |
+| [`mcp/client_types.py`](mcp.md#mcpclient_typespy---typed-configuration-and-status-for-the-outbound-mcp-client) | 90 | typed configuration and status for the outbound MCP client |
+| [`mcp/controller_tools.py`](mcp.md#mcpcontroller_toolspy---mcp-tools-for-the-deterministic-controller) | 337 | MCP tools for the deterministic controller |
+| [`mcp/orchestration_tools.py`](mcp.md#mcporchestration_toolspy---mcp-tools-for-plan-validation-graph-runs-and-orchestration-compilation) | 154 | MCP tools for plan validation, graph runs and orchestration compilation |
+| [`mcp/project_state_tools.py`](mcp.md#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 265 | MCP tools for project working memory |
+| [`mcp/run_tools.py`](mcp.md#mcprun_toolspy---mcp-tools-for-graph-run-state-cancellation-approvals-and-resumption) | 105 | MCP tools for graph run state, cancellation, approvals and resumption |
+| [`mcp/security.py`](mcp.md#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 357 | bearer-token authentication and host checks for the HTTP service |
+| [`mcp/server.py`](mcp.md#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 197 | MCP server factory and loopback entry point |
 | [`mcp/specification_tools.py`](mcp.md#mcpspecification_toolspy---mcp-tool-for-specification-parsing) | 40 | MCP tool for specification parsing |
-| [`mcp/telemetry_tools.py`](mcp.md#mcptelemetry_toolspy---mcp-tools-for-telemetry-audit-logs-and-metrics) | 176 | MCP tools for telemetry, audit logs and metrics |
+| [`mcp/telemetry_tools.py`](mcp.md#mcptelemetry_toolspy---mcp-tools-for-telemetry-audit-logs-and-metrics) | 209 | MCP tools for telemetry, audit logs and metrics |
 | [`memory/__init__.py`](memory.md#memory__init__py---package-marker-for-episode-memory-and-context-assembly) | 3 | package marker for episode memory and context assembly |
 | [`memory/context.py`](memory.md#memorycontextpy---builds-the-fixed-initial-prompt-for-a-run) | 51 | builds the fixed initial prompt for a run |
-| [`memory/context_projection.py`](memory.md#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 464 | per-turn bounded context projection and the tool-result journal |
-| [`memory/episode_models.py`](memory.md#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 172 | episode records, compaction policy and the retention contracts |
-| [`memory/episode_scoring.py`](memory.md#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 53 | deterministic lexical relevance and cost helpers for retention |
-| [`memory/episode_store.py`](memory.md#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 815 | episode lifecycle and the three deterministic compaction strategies |
-| [`memory/episodes.py`](memory.md#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 76 | task-scoped episode graph of one-line summaries |
+| [`memory/context_projection.py`](memory.md#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 588 | per-turn bounded context projection and the tool-result journal |
+| [`memory/entailment_screen.py`](memory.md#memoryentailment_screenpy---deterministic-lexical-screen-for-claims-that-contradict-or-outrun-their-cited-evidence) | 117 | deterministic lexical screen for claims that contradict or outrun their cited evidence |
+| [`memory/episode_archive.py`](memory.md#memoryepisode_archivepy---content-addressed-archive-of-the-original-snapshots-of-compacted-episodes) | 290 | content-addressed archive of the original snapshots of compacted episodes |
+| [`memory/episode_models.py`](memory.md#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 630 | episode records, compaction policy and the retention contracts |
+| [`memory/episode_scoring.py`](memory.md#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 77 | deterministic lexical relevance and cost helpers for retention |
+| [`memory/episode_store.py`](memory.md#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 1872 | episode lifecycle and the three deterministic compaction strategies |
+| [`memory/episodes.py`](memory.md#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 97 | task-scoped episode graph of one-line summaries |
+| [`memory/memory_snapshot.py`](memory.md#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
+| [`memory/semantic_compaction.py`](memory.md#memorysemantic_compactionpy---dependency-aware-summarization-verification-and-safe-commit-of-compacted-episodes) | 1133 | dependency-aware summarization, verification and safe commit of compacted episodes |
+| [`memory/summarization_scheduler.py`](memory.md#memorysummarization_schedulerpy---bounded-background-queue-for-summarization-work-that-never-blocks-its-caller) | 190 | bounded background queue for summarization work that never blocks its caller |
+| [`memory/summary_ledger.py`](memory.md#memorysummary_ledgerpy---the-summaries-of-one-episode-store-and-where-each-one-lives) | 192 | the summaries of one episode store and where each one lives |
 | [`observability/__init__.py`](observability.md#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
-| [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 447 | append-only, hash-chained, per-run JSONL audit transcript |
+| [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 463 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/metric_definitions.py`](observability.md#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 400 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](observability.md#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
+| [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 829 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
 | [`observability/profiler.py`](observability.md#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
 | [`observability/telemetry_helpers.py`](observability.md#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
-| [`observability/telemetry_models.py`](observability.md#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 201 | telemetry event, context, actor and metric contracts |
-| [`observability/telemetry_store.py`](observability.md#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 632 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
-| [`observability/trace_context.py`](observability.md#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 157 | W3C Trace Context ids, the traceparent header and the process resource |
+| [`observability/telemetry_models.py`](observability.md#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 221 | telemetry event, context, actor and metric contracts |
+| [`observability/telemetry_store.py`](observability.md#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 722 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
+| [`observability/trace_context.py`](observability.md#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 181 | W3C Trace Context ids, the traceparent header and the process resource |
 | [`specifications/__init__.py`](specifications.md#specifications__init__py---package-marker-for-the-specification-pipeline) | 3 | package marker for the specification pipeline |
 | [`specifications/documents.py`](specifications.md#specificationsdocumentspy---manifest-document-node-and-source-locator-contracts) | 126 | manifest, document, node and source-locator contracts |
 | [`specifications/evidence_graph.py`](specifications.md#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 358 | source-preserving evidence graph with required closure and bounded packing |
@@ -407,12 +448,12 @@ the run options. Everything else is a parameter too:
 | [`specifications/retrieval_models.py`](specifications.md#specificationsretrieval_modelspy---retrieval-document-query-candidate-and-result-contracts) | 121 | retrieval document, query, candidate and result contracts |
 | [`specifications/vision.py`](specifications.md#specificationsvisionpy---vision-extraction-adapter-protocol-and-trivial-adapters) | 43 | vision-extraction adapter protocol and trivial adapters |
 | [`state/__init__.py`](state.md#state__init__py---package-marker-for-durable-run-state) | 3 | package marker for durable run state |
-| [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 873 | durable facade over the controller, the graph run, project state and telemetry |
+| [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 876 | durable facade over the controller, the graph run, project state and telemetry |
 | [`state/coordination_records.py`](state.md#statecoordination_recordspy---durable-run-record-and-its-integrity-hash) | 42 | durable run record and its integrity hash |
 | [`state/elastic.py`](state.md#stateelasticpy---typed-elastic-node-requests-specs-spawn-records-and-the-admission-checks) | 353 | typed elastic-node requests, specs, spawn records and the admission checks |
-| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1463 | deterministic wave scheduler and authoritative typed run state |
-| [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 227 | typed node, edge, event and shared-state contracts for the run graph |
-| [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 366 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
+| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1471 | deterministic wave scheduler and authoritative typed run state |
+| [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 228 | typed node, edge, event and shared-state contracts for the run graph |
+| [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 369 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
 | [`state/orchestration.py`](state.md#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 439 | controller state machine and its crash-safe store |
 | [`state/orchestration_models.py`](state.md#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 110 | controller phase, routing-rule and record contracts |
 | [`state/planning.py`](state.md#stateplanningpy---typed-plan-contracts-and-the-deterministic-plan-validator) | 496 | typed plan contracts and the deterministic plan validator |
@@ -432,7 +473,7 @@ the run options. Everything else is a parameter too:
 | [`tools/delegation.py`](tools.md#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 176 | deny-by-default capability policy |
-| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 327 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 333 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](tools.md#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
@@ -440,9 +481,9 @@ the run options. Everything else is a parameter too:
 | [`tools/tasks.py`](tools.md#toolstaskspy---background-task-lifecycle-start-poll-stop) | 258 | background task lifecycle: start, poll, stop |
 | [`tools/tools.py`](tools.md#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 73 | the ToolExecutor protocol and two deterministic test executors |
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
-| [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 181 | git worktree isolation for concurrent agents |
+| [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 131 files, 416 classes and 1327 functions (including methods and nested closures), each with a written description.*
+*Coverage: 143 files, 505 classes and 1720 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 
@@ -451,6 +492,7 @@ the run options. Everything else is a parameter too:
 | `pyproject.toml` | Package metadata (`nailong-agent-sdk` 0.1.0, Python >= 3.12), hatchling build, console script `nailong-agent-sdk-dev`, optional extras `langgraph`, `langchain`, `jev`, `redis-cache`, `interop`, Ruff and pytest settings (strict markers; `docker` marks the tests that need a Docker daemon) |
 | `examples/` | Eight runnable scripts using a scripted model: custom verification and profiling, developer tools, durable runtime with PASK, elastic exploration, framework interoperability, governed core tools, grounded retrieval, orchestration |
 | `scripts/run_pckp_benchmark.py`, `benchmarks/` | Runs the frozen PCKP comparison cases in `pckp_cases.json` and writes `results/pckp-report.json` |
+| `scripts/run_memory_benchmark.py`, `scripts/run_state_save_benchmark.py` | The long-horizon memory comparison (PCKP alone, extractive digests, a bounded graph, and a corrupting summarizer with and without a verifier; it writes `benchmarks/results/memory-benchmark-report.json`) and the run-state save profile (`run-state-save-report.json`). `scripts/`, `benchmarks/` and `examples/` are in `.gitignore`, so neither the scripts nor their reports are tracked |
 | `tests/` | The pytest suite (`python -m pytest tests`, more than 1,000 tests): unit and integration tests per package folder, cross-module, concurrency and long-run checks in `tests/links/`, and a spawned MCP server and a stub evaluator in `tests/support/`. No test calls a real model provider. `python -m pytest -m "not docker"` skips the live Docker sandbox tests, which also skip themselves when no daemon answers; Windows-only and POSIX-only tests skip on the other platform |
 | `.github/workflows/ci.yml` | Ruff, the suite on ubuntu and windows for Python 3.12 and 3.13, and the Docker sandbox tests against a real daemon |
 | `test/` | Outputs of real-workload validation scenarios run against a live OpenAI-compatible provider (generated documents and a generated game). It is not a pytest suite |
@@ -532,54 +574,138 @@ and the further defects it found; the third table lists them, again each with a 
 | Elastic hand-off | A join used to know only its task text and the exploration results. A request can now carry a `handoff` (up to 4,000 characters; 8,000 across one task's requests, refused with `ELASTIC_HANDOFF_LIMIT_REACHED` and the numbers) that `render_elastic_instructions` prints in the join's task word for word, so the requester's own notes survive the continuation |
 | MCP client and service | The client bounds a call (`call_timeout_seconds` on the config or `timeout_seconds` on the call): an unanswered call raises `McpCallTimeoutError` naming the server, the call and the seconds, and the session stays usable. It can ping a server (`ping_interval_seconds`, `ping_timeout_seconds`): one that stops answering is marked FAILED with its command or endpoint named and, with `reconnect_on_ping_failure`, reconnected. The service serves HTTPS when `AGENT_RUNTIME_TLS_CERTFILE` and `AGENT_RUNTIME_TLS_KEYFILE` are set (the pair is loaded at startup, and a bad pair is refused naming the variable or file) and refuses a non-loopback bind without TLS unless `AGENT_RUNTIME_ALLOW_PLAIN_HTTP=1` says a proxy terminates it; such a bind used to start in plain HTTP. `McpServerOptions` is the new base of the two config classes |
 | Audit handles and retention | `AgentRuntimeServices.open(audit_max_open_handles=)` and `AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES` set the audit store's append-handle budget; evictions are counted (`handle_evictions`) and one warning names the budget when the count reaches it. Retention is opt-in: `RunRetention.prune(policy)` (MCP `prune_runs`, `nailong-agent-sdk-dev prune-runs`) deletes finished runs that have been idle for `older_than_seconds` - their telemetry events and metrics, audit transcript and the tool-result files recorded under the run id (the journal now indexes handles by run, and never reuses a handle number) - whole runs only, after writing a hash-chained tombstone with the final chain heads and every handle's hash. It reports by default, deletes nothing without a policy, leaves a run whose chain is broken as evidence, finishes an interrupted prune without a second tombstone, and `verify-evidence` accepts a pruned handle that a tombstone vouches for. Episode records are single files that are replaced, so they do not grow |
-| `run_agent_task` | The files an agent wrote can be listed and read (`list_task_files`, `read_task_file`: bounded pages as UTF-8 or base64; paths outside the workspace, `.agent-*` state and credential patterns are refused); an approval can be decided during the run (`permissions.approval_mode` `wait`, `list_task_approvals`, `decide_task_approval`; the request and the decision are telemetry events); and `cancel_agent_task` interrupts the model call, tool call, hook, gate or approval wait in flight, because the cancellation token is raced against every awaited operation and the model request and the network tools run on detached daemon threads that the run does not wait for. The server registers 53 tools |
+| `run_agent_task` | The files an agent wrote can be listed and read (`list_task_files`, `read_task_file`: bounded pages as UTF-8 or base64; paths outside the workspace, `.agent-*` state and credential patterns are refused); an approval can be decided during the run (`permissions.approval_mode` `wait`, `list_task_approvals`, `decide_task_approval`; the request and the decision are telemetry events); and `cancel_agent_task` interrupts the model call, tool call, hook, gate or approval wait in flight, because the cancellation token is raced against every awaited operation and the model request and the network tools run on detached daemon threads that the run does not wait for. The server registered 53 tools at that point; `list_run_approvals` and `inventory_retention` were added later, so it registers 55 now |
 | Packaging | `jsonschema-specifications` and `referencing` are declared dependencies; `# noqa` directives for rules that are not enabled were removed |
-| Trace context | A run has a W3C trace id and every profile span a random 16-hex span id (`observability/trace_context.py`); `TelemetryContext` refuses a `trace_id`, `span_id` or `parent_span_id` that is not W3C-shaped, naming the field (events already stored with another shape stay readable); `BaseAgent` stamps the trace id and the run's root span id on every event of a run and continues a caller's trace (`telemetry_context`, or `TaskRunOptions.traceparent`); the `agent.profile-completed` event now persists the trace id, the process resource and the most recent 512 spans, so a trace can be rebuilt from the ledger alone; model-turn and tool spans carry `gen_ai.*` attributes (operation, provider, model, usage, tool name and call id) and receive their own `traceparent` (`ModelContext.trace_parent`, `ToolInvocationContext.trace_parent`); an endpoint sends it to the provider only with `propagate_trace_context`; metric definitions declare an OpenTelemetry-style instrument kind. A tool-call id or name longer than 4,096 characters no longer fails the run when its span is opened (attribute text is cut to 256 characters). Cost: about 3 microseconds more per context that carries trace ids and about 3 ms once per 80-span run, against about 1.7 ms for each emitted event |
+| Trace context | A run has a W3C trace id and every profile span a random 16-hex span id (`observability/trace_context.py`); `TelemetryContext` refuses a `trace_id`, `span_id` or `parent_span_id` that is not W3C-shaped, naming the field (events already stored with another shape stay readable); `BaseAgent` stamps the trace id and the run's root span id on every event of a run and continues a caller's trace (`telemetry_context`, or `TaskRunOptions.traceparent`); the `agent.profile-completed` event now persists the trace id, the process resource and the most recent 512 spans, so a trace can be rebuilt from the ledger alone; model-turn and tool spans carry `gen_ai.*` attributes (operation, provider, model, usage, tool name and call id) and receive their own `traceparent` (`ModelContext.trace_parent`, `ToolInvocationContext.trace_parent`); an endpoint sends it to the provider only with `propagate_trace_context`; metric definitions declare an OpenTelemetry-style instrument kind. The agents, controller and orchestration of one graph run share the trace derived from the run id (`graph_run_trace_id`), and the agent roots hang under the run's `invoke_workflow` span; `observability/otlp.py` and `nailong-agent-sdk-dev export-otlp` send spans, log records and metric points to an OTLP/HTTP collector from the ledger; MCP servers receive `traceparent` in the request's `_meta` only with `propagate_trace_context`, and `run_agent_task` continues the request's `_meta.traceparent`. A tool-call id or name longer than 4,096 characters no longer fails the run when its span is opened (attribute text is cut to 256 characters). Cost: about 3 microseconds more per context that carries trace ids and about 3 ms once per 80-span run, against about 1.7 ms for each emitted event |
+| Episode memory | `InMemoryEpisodeGraph` kept every tool payload in a second list for the life of the run although nothing read it, so the payload of a compacted episode was never freed; it no longer stores payloads (the `payload` arguments are accepted and ignored). Compacted episodes can now be archived, summarized and verified before their payloads are released (`SemanticCompactor`, `FileEpisodeArchive`, `ExtractiveEpisodeSummarizer`), consolidated into a bounded hierarchy, evicted from the active graph and restored on demand; the projector shows verified summaries within their own budget and `ModelContext.semantic_summaries` carries them. A compaction the run abandons (cancellation, deadline) commits nothing afterwards (`CompactionGuard`). It is all opt-in: a store without a compactor behaves exactly as before. |
+
+### Resolved by the open-items remediation
+
+Each row starts from a written list of open items. None was treated as fixed until it was
+reproduced or its code path read; each names the original failure, the change and the tests
+that fail without it. A suggested change that measurement did not justify is listed after the
+table, not built.
+
+| Area | Resolved |
+|---|---|
+| Semantic memory after a restart | `FileEpisodeStore.persist` wrote `episodes.json`, `summaries.json` and `evicted.json` with no loader, so a restart lost the summaries, the evicted index and every attempt counter, and files written at different moments could not be told apart. It now writes one sealed snapshot per generation, `.agent-memory/snapshots/snapshot-<generation>.json` (live records, evicted index, resident summaries, the index of every summary, quarantine, counters and the structural graph hash; temporary file, fsync, atomic rename, directory fsync), and `FileEpisodeStore.restore()` adopts the newest generation that passes `snapshot_problems` (schema, integrity hash, duplicate or dangling ids, summary and archive hashes, archive entries present and equal), reporting each rejected generation with its reasons. Nothing is restored into a store that already holds episodes, `retain_generations` (3) bounds the disk, and a crash while writing leaves the previous generation whole. `tests/memory/test_memory_persistence.py` |
+| Bounded summary lifecycle | Summaries, superseded ones too, stayed in memory for the life of the store, so a long run's summary set had no ceiling. A `SummaryLedger` now tracks each summary as `active`, `superseded` or `archived`: a parent supersedes its children and a superseded summary is written to the summary archive (`summary-archive-<sha256>`, read back and compared before its resident copy is dropped); `max_active_summaries` and `max_active_summary_tokens` archive the oldest unpinned top-level summaries when consolidation is not enough, and a summary that covers an episode that is live again is pinned. An archived summary stays retrievable (`load_summary`, `summary_for(..., resolve_archived=True)`) and its child ids, source hashes and archive ids still lead to the original episodes. `BaseAgent(episode_history_limit=)` (`InMemoryEpisodeGraph(retained_limit=)`) bounds the per-run one-line list while keeping every episode's kind, so a later action can still name an episode whose line was dropped; `AgentResult.episodes` stays the complete history by default and, with a limit, is the newest N with `episodes_total` and `episodes_omitted` saying what was dropped. `tests/memory/test_memory_persistence.py`, `tests/agent/test_episode_history.py` |
+| Semantic verification | A passing deterministic check was recorded as verification although a claim that contradicts its own quoted evidence passes it. A summary now carries a `SummaryVerificationRecord`: every stage that ran, with its kind (`deterministic-extractive`, `heuristic-entailment-screen`, `claim-judge`, `summary-judge`), verifier id and version and the policy hash, and `extractive_verified`, `entailment_checked` and `host_judged` keep the three claims apart. New optional stages: the lexical `HeuristicEntailmentScreen` (`entailment_screen`); a host `ClaimJudge` that receives each claim with the excerpts it cites (`require_claim_verdicts` turns a missing or unclear verdict into a failure); the existing `SummaryJudge`. `actions-covered` (on by default) requires every action episode to be cited, a rejected summary can be kept for audit (`on_semantic_failure="quarantine"`, at most `max_quarantined`) and a `fallback` summarizer is tried when the first rejects or fails. A judge can only veto: it runs after the deterministic checks and never rescues a summary that failed one. Measured on the labeled adversarial set (`tests/support/adversarial_summaries.py`: 24 scenarios, 264 wrong and 72 faithful summaries in 11 and 3 categories) the deterministic checks alone accept 45.5% of the wrong summaries (every status flip, negation, fabricated fact, reworded flip and quantifier flip) and reject none of the faithful ones; adding the lexical screen gives 9.1% and 33.3% (it still accepts every reworded flip and rejects every far paraphrase); a judge that knows the label gives 0% and 0% by construction, and one that errs on 10% of its calls gives 0.8% and 20.8%. The last two rows describe the pipeline, not a model: the SDK ships no model judge. `tests/memory/test_semantic_verification.py` |
+| Summarization off the projection path | With a slow or unavailable provider the projection step waited for the summarizer. `SemanticCompactionPolicy.background_summarization` hands each group to a `SummarizationScheduler` (daemon workers, a queue bounded by `max_queued_summarizations`, a per-job timeout; a job past it is abandoned and counted, and once the abandoned ones still running reach a limit the scheduler refuses work). The projection returns at once and the payloads stay (`pending_episode_ids`); a later pass commits a finished job only when its source episodes are still compacted, unchanged and unsummarized (otherwise `jobs_stale`), so a late result changes nothing. `settle_background` and `close_background` wait for or drop the work, `BaseAgent` closes it when a run ends, and the abandon guard still stops every commit. Measured over eight groups with a summarizer that takes 0.1, 0.5 or 1.0 s per group: `compact` returns in 2 ms, 3 ms or 1 ms in background mode and takes 0.81 s, 4.0 s or 8.0 s in synchronous mode; one worker commits all eight jobs in the same total time and four workers in 0.21 s, 1.0 s or 2.0 s. `tests/memory/test_background_summarization.py` |
+| Pruning against concurrent writers | A run that received an event, a metric, an audit entry or a tool result between the last check and the delete lost it silently; only a telemetry append that landed before the final sequence check was caught. Retention now raises a per-run fence (`.agent-retention/fences/<run>.fence`) before it examines a run. Every writer waits for it to lift (10 s) and checks it again inside its own critical section, so a record is accepted wholly before the fence or refused with `RUN_PRUNING`; retention then waits for writes already inside their transaction (`quiesce`), measures, writes the tombstone, deletes and releases the fence. An interrupted prune keeps the fence, so writers stay out until the next applied pass finishes it, and a fence left before any tombstone is released by the next applied pass. The `mcp-decisions` stream is protected from retention. `tests/agent/test_retention_fence.py` (a writer arriving mid-prune is refused and not deleted; writers that wait out a prune continue as a new incarnation and lose nothing; a write inside its transaction is kept; a writer that passed its pre-check just before the fence is still refused; interrupted prunes) |
+| Retention evidence, inventory and vacuum | A tombstone log had no outside anchor, so removing its newest entries went unnoticed. `export_tombstone_anchor` and `verify_tombstone_anchor` write and check an anchor kept outside the run root (verdicts `matches`, `advanced`, `truncated`, `diverged`, `chain-broken`, `unreadable`); `RunRetention(anchor_path=)`, `prune-runs --anchor` and `AGENT_RUNTIME_RETENTION_ANCHOR_PATH` check it before a pass, refuse to continue over a log that no longer matches and refresh it after. `inventory_run_root` (developer command `inventory`, MCP `inventory_retention`) reports every resource class under a run root with its owner, what references it and a disposition (`prunable`, `reclaimable`, `protected` with the rule), writing nothing. `TelemetryStore.maintenance_report` shows the reclaimable bytes of the telemetry file and `vacuum` (`vacuum-telemetry --apply`) returns them, refusing while a run is fenced or without free space for the rewrite and reporting `PRAGMA integrity_check`. `tests/agent/test_retention_anchor.py`, `tests/agent/test_retention_inventory.py`, `tests/observability/test_telemetry_maintenance.py`, `tests/mcp/test_retention_tools.py` |
+| MCP approval authority | The HTTP service's single token let whoever held it approve what it had started. There are now two credentials: `AGENT_RUNTIME_AUTH_TOKEN` (host: starts and steers work and reads) and `AGENT_RUNTIME_APPROVER_TOKEN` (approver: reads state and decides approvals). Every tool has an operation class (read, host or approval; an unclassified tool is host), the credential decides the class and nothing the caller writes does, and without an approver token the approval tools are disabled unless `AGENT_RUNTIME_ALLOW_HOST_APPROVALS=1` opts back into one credential. A decision must carry the digest of what the approver reviewed (`request_hash`, `plan_hash`, `state_hash` or `run_hash`, read from the matching read tool) and `issued_at_utc` (at most `AGENT_RUNTIME_APPROVAL_MAX_AGE_SECONDS`, 300 by default, old). A replayed, expired, stale, unbound or unauthorized decision is refused before the operation runs, and every decision writes hash-chained `mcp.decision.authorized` (before the operation) and `applied` or `failed` (after) events naming the credential by a hash prefix in the protected `mcp-decisions` stream. The TypeScript backend (`runtimeCredentials.ts`, `PythonAgentRuntimeClient.ts`) reads the two secrets apart, refuses equal values and sends the binding with each decision. `tests/mcp/test_authority_*.py` (36 tests in four files) and the updated server and client tests |
+| Python-only capabilities over MCP | A caller that sent `verification_gates`, `pre_tool_hooks` or `cancellation` to a tool over MCP saw a successful call that ignored them, because the MCP library drops arguments a tool does not declare. `ToolArgumentGuard` (server middleware) now refuses a call that names an argument the tool does not define, names it and, for a Python-only capability of `AgentTaskRunner.run`, says why MCP cannot carry it; `run_agent_task`'s `runtime_options` refuse the same names, and a test pins the runner's parameters against `PYTHON_ONLY_CAPABILITIES`. `tests/mcp/test_capability_boundaries.py` |
+| Model-request cancellation | A cancelled run said nothing about the provider's request. `model-turn-cancelled` now records what happened at three levels: logical (always: the task is cancelled and a late response commits nothing), transport (`connection-closed` through the async httpx transport or a closed stream, `detached` for a blocking request that keeps running on its daemon thread, `not-started`, `unreported`) and provider (`confirmed` only when a host `provider_cancel` hook said so, `requested` when it was asked and did not confirm, `unsupported` for Chat Completions, which has no operation that stops a request, so the provider may finish and bill it). `AgentTaskRunner` uses `HttpxAsyncJsonTransport` by default, so a cancelled non-streaming request closes its connection instead of being abandoned on a thread. `tests/agent/test_model_cancellation.py` (13 tests) |
+| Trace export | A span whose parent was not in the export pointed at a span the collector never received without saying so, and the `invoke_workflow` span ended at the last controller bookkeeping event. Spans whose parent is outside the export now keep their `parentSpanId` and carry `nailong.parent_span_exported=false` (counted as `parents_not_exported`); the graph-run span runs from the first controller event to the last `graph.executed` event and states its `nailong.window.basis` and pass counts; dependency links carry `nailong.link.basis=declared-graph-edge`. `tests/observability/test_otlp_coverage.py` |
+| Elastic recovery (verified, no defect found) | The crash-recovery path was exercised end to end instead of assumed: only bindings declared idempotent are replayed; a replayed node starts its task over with no conversation; the join receives the findings and the handoff after a crash and no finished child runs again; a join that is not declared replay-safe fails and keeps the findings; a failed non-idempotent node enters the bounded repair path; the host can replay one interrupted node explicitly; recovering twice repeats nothing; a second process that lost the declaration fails the node instead of guessing. `tests/agent/test_orchestrator_elastic_recovery.py` (9 tests) |
+
+Examined and left alone:
+
+| Item | Decision |
+|---|---|
+| Delta persistence of run state | Not built. `scripts/run_state_save_benchmark.py` (a chain of no-op nodes, one save per node, development machine) gives 1.8 s for 200 nodes (8.9 ms per save, 29 MB written), 8.5 s for 600 (14.1 ms, 260 MB) and 21.4 s for 1,000 (21.4 ms, 722 MB); at 1,000 nodes fsync is about 35% of the time, the snapshot file 26%, the run hash 24% and the graph snapshot 6%. A delta format would remove most of the snapshot bytes but neither the fsyncs nor the run hash, and needs a loader for existing snapshots; a save stays in tens of milliseconds at these sizes. |
+| Multiple-choice PCKP | Not implemented, by instruction; the evaluation is under "Still open" item 8. |
+| Deleting `reclaimable` resources | No deletion path. Workspaces hold an agent's work product, archives are content-addressed evidence and the rest are records other records name; the inventory says what the reference rules would allow and nothing removes it. |
+| A provider-side cancel for Chat Completions | The protocol has none. The `provider_cancel` hook exists for a host whose provider has one; the SDK reports `unsupported` otherwise. |
 
 ### Still open
 
 1. **[inspected] Retention covers telemetry, audit transcripts and tool-result journals of
    finished runs and nothing else.** Project states, graph runs, controllers,
-   orchestrations, workspaces and exported reports are kept for ever, as are journal files
-   recorded without a run id. A run that receives an event in the instant between the last
-   check and its deletion loses its history (the telemetry sequence check before and at the
-   delete catches every other revival), so `older_than_seconds` should be far longer than
-   any task's resubmission delay. A tombstone log has no outside anchor: removing its last
-   tombstone cannot be detected. The telemetry database reuses the pages of pruned rows but
-   keeps its file size until someone runs a `VACUUM`.
-2. **[inspected] A run's persistence cost grows with its size.** Each `RunStateStore.save` still
-   rewrites the whole fixed-state snapshot (nodes, edges, statuses, results) and hashes the
-   whole run, so a save costs time proportional to the run and the total to its square, with
-   a small constant: a 400-node dependency chain takes about 4 s, 600 nodes about 7 s and
-   1,000 nodes about 17 s on the development machine, about half of it inside
-   `RunStateStore.save` (two fsyncs and the snapshot write per save). Making a save
-   proportional to what changed needs a delta format for those collections and a loader for
-   the existing snapshots.
-3. **[inspected] MCP.** The HTTP service's token identifies the host, not an approver:
-   whoever holds it can record human decisions and decide task approvals. A second
-   credential for approvers needs the TypeScript backend to hold two secrets, and waits for
-   that work.
-4. **[inspected] Platform coverage beyond Windows and Ubuntu.** The suite passes on Windows
-   (Python 3.13) and on Ubuntu 24.04 under WSL2 (Python 3.12), and
-   `.github/workflows/ci.yml` runs Ruff and the suite on ubuntu and windows for Python 3.12 and
-   3.13. That workflow and the live Docker sandbox tests
-   (`tests/tools/test_docker_sandbox_live.py`, skipped without a daemon) have not been executed
-   yet. macOS, a run root shared between Windows and WSL processes, and Docker engines other
-   than Docker Desktop's are untried.
+   orchestrations, workspaces, exported reports, semantic memory and its archive are kept for
+   ever, as are journal files recorded without a run id. `inventory_run_root` lists them with
+   their owner and what references them and marks some `reclaimable`, but no SDK operation
+   deletes them: a deletion rule needs the host to say what it may drop. A tombstone anchor
+   detects the removal or rewriting of entries it covers; it does not cover entries written
+   after it and is only as independent as the place it is kept. A run that is pruned and later
+   run again under the same id starts a new chain with its own tombstone, and a reader that
+   held the old handles finds them gone, so `older_than_seconds` should be far longer than any
+   task's resubmission delay. The telemetry file keeps its size until someone runs `vacuum`.
+2. **[measured] A run's persistence cost grows with its size.** Each `RunStateStore.save`
+   rewrites the whole fixed-state snapshot and hashes the whole run, so the bytes written grow
+   with the square of the node count: 200 nodes take 1.8 s, 600 take 8.5 s and 1,000 take
+   21.4 s on the development machine (8.9, 14.1 and 21.4 ms per save; 29, 260 and 722 MB
+   written), most of it fsync, the snapshot file and the run hash. A delta format was not
+   built, for the reasons under "Examined and left alone"; it becomes the next step for graphs
+   of several thousand nodes or for storage that charges for bytes written.
+3. **[inspected] MCP approvals separate roles, not people.** The two credentials separate who
+   runs work from who approves it; whoever holds the approver token is "the approver" for
+   every approval, `approver_label` is a note the caller writes, and the credential's hash
+   prefix in the `mcp-decisions` stream says which secret decided, not who held it. A
+   deployment that needs per-person accountability needs its own identity layer in front of
+   the service. `AGENT_RUNTIME_ALLOW_HOST_APPROVALS=1` puts both roles back on one token and is
+   recorded in each decision. The argument guard uses the MCP library's server-middleware API
+   (`mcp` 2.2.0, marked provisional upstream). The TypeScript backend's changes were
+   type-checked against stubs only, because its dependencies could not be installed offline,
+   and its unit and end-to-end tests have not been run.
+4. **[measured] Platform coverage beyond Windows and Ubuntu.** Executed on 2026-10-14 from
+   the final working tree: the full suite on Windows 11 with Python 3.13.1 (1,810 passed, 10
+   skipped: six live Docker sandbox tests, which skip because no daemon answers, and four
+   resource-limit tests that apply on POSIX only) and on Ubuntu 24.04 under WSL2 with Python
+   3.12.3 (1,798 passed, 22 skipped: the same six Docker tests and sixteen tests of Windows
+   or case-insensitive filesystem behaviour such as extended-length path spelling, reserved
+   device names and NTFS aliases). Ruff check and format check pass on `src` and `tests`.
+   Not executed: Windows with Python 3.12 and Ubuntu with Python 3.13 (a 3.12 interpreter
+   exists on the Windows machine but has no dependencies installed), the GitHub Actions
+   workflow itself (`.github/workflows/ci.yml` has never run, so the matrix, the lint job
+   and the Docker job are untested as configured), the live Docker sandbox tests (Docker
+   Desktop does not start on this machine), macOS, a run root shared between Windows and WSL
+   processes, and Docker engines other than Docker Desktop's. Support is not claimed for
+   those.
 5. **[inspected] Elastic nodes.** A join re-runs the requester's definition with the
    findings and the requester's `handoff` notes in its task text, not the original
    conversation, and a node replayed after a crash starts its task again from the
    beginning, which is why only bindings declared idempotent are replayed.
-6. **[inspected] `run_agent_task` limits.** Python hooks, verification gates and sub-agents
-   are available to the Python API (`AgentTaskRunner.run`) but not over MCP, where the
-   caller has only the options `TaskRunOptions` names. A cancelled model request on the
-   default (non-streaming) transport is abandoned, not aborted: the provider may finish and
-   bill it, and the thread ends when it answers or its timeout passes.
-7. **[inspected] Trace context reaches one agent run at a time.** `GraphAgentExecutor`,
-   `Orchestrator` and the LangGraph node build their agents without a `telemetry_context`,
-   so each node's run has its own trace; the graph's node execution context does not
-   carry the graph run id, which a shared trace needs. Spans are stored in the
-   `agent.profile-completed` event (the most recent 512) and nothing exports them to an
-   OTLP endpoint; `tracestate` and baggage are not carried. A trace id a caller chose
-   before ids were checked is still read and verified from the ledger, but cannot be
-   given to a new `TelemetryContext`.
+   `tests/agent/test_orchestrator_elastic_recovery.py` pins this.
+6. **[inspected] `run_agent_task` limits.** Python hooks, verification gates, cancellation
+   tokens, sub-agents and a model object are available to the Python API
+   (`AgentTaskRunner.run`) but not over MCP; a call that names one is refused with the
+   argument's name and the reason instead of being ignored. A cancelled model request is
+   cancelled logically at once and its late response commits nothing, but the provider is not
+   told: Chat Completions has no operation that stops a request, so the provider may finish
+   generating and bill it. `ModelCancellationOutcome.provider` is `confirmed` only when the
+   host supplies a `provider_cancel` hook that says so. The default non-streaming transport
+   closes the connection; a custom blocking transport is detached on a daemon thread until
+   the provider answers or its timeout passes.
+7. **[inspected] Trace export is a read-side JSON exporter.** `export-otlp` sends OTLP/HTTP
+   JSON only (no protobuf, no gRPC), one request per run and signal, read from the ledger
+   after the fact; a run's profile event keeps its most recent 512 spans (`spans_omitted`
+   reports the rest); `tracestate` and baggage are not read or sent; a node's dependencies
+   become span links only when `--graph-run` (or `graph_dependencies`) supplies them from
+   the run record, and a run executed without a controller has no `invoke_workflow` span, so
+   its node roots name a parent that is not exported (they are marked
+   `nailong.parent_span_exported=false` and counted); the workflow span runs from the first
+   controller event to the last execution pass and says so, it is not the nodes' own timing;
+   the built-in web tools reach public hosts only and never send `traceparent`, and an MCP
+   server gets it only with `propagate_trace_context`. A trace id a caller chose before ids
+   were checked is still read and verified from the ledger, but cannot be given to a new
+   `TelemetryContext`.
+8. **[measured] Semantic compaction is verified, not proven.** Without a host judge the
+   checks show that each claim's evidence occurs verbatim in the episodes it cites, that
+   failed episodes and action episodes are mentioned and that no new number or identifier
+   appears, but not that the claim follows from the evidence: on the labeled adversarial set
+   they accept 45.5% of the wrong summaries and reject none of the faithful ones. The lexical
+   screen lowers that to 9.1% at the price of rejecting 33.3% of the faithful ones, and only
+   a `ClaimJudge` or `SummaryJudge` the host supplies can close the rest; the SDK ships no
+   model summarizer and no model judge. `ExtractiveEpisodeSummarizer` quotes rather than
+   abstracts, so a digest of one episode is about as large as the stub it replaces; the gain
+   is the freed payload, bounded growth through consolidation and archiving, and the
+   provenance. A group whose sources total fewer than `compression_floor_tokens` is not
+   summarized and keeps its payload. Over a synthetic 240-episode run with one fixed context
+   budget (`scripts/run_memory_benchmark.py`, seeds 7, 8 and 9, a deterministic text reader
+   in place of a model) PCKP alone leaves task reconstruction at 0.19 (failure F1 0.43) with
+   4.1k visible tokens, and extractive digests give 0.43 (F1 0.89) with 5.3k visible tokens
+   and faithfulness 1.0; the bounded arm keeps 60 of the 240 active records at the same
+   accuracy and reads the evicted ones through the archive. A summarizer that corrupts 35% of
+   its groups is caught by the deterministic checks except for contradictions of the quoted
+   evidence (one seed of three accepted 2 of 12 contradicted claims, faithfulness 0.83), and
+   a rule that sees the ground truth removes those. These numbers bound what a model could
+   recover from the context; they do not measure reasoning, and the verifier arms use
+   ground truth that a deployment does not have. The projection pass runs on a worker thread
+   inside the projection step unless `background_summarization` is on, in which case a result
+   commits one or more passes later. A multiple-choice form of PCKP (one choice per episode
+   between the full payload, a digest and a tombstone under a single budget) was evaluated
+   and not implemented: the utility of a digest cannot be measured without a model or
+   labelled tasks, an action's prerequisites must stay full whatever a digest says, and the
+   episode and summary budgets already bound the two representations separately.

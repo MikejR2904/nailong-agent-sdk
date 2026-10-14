@@ -9,9 +9,11 @@ that is validated against the SDK's existing typed contracts before a caller can
 
 from __future__ import annotations
 
-from .chat import OpenAICompatibleAgentModel
+from .chat import OpenAICompatibleAgentModel, ProviderCancel, ProviderCancelRequest
 from .embeddings import OpenAICompatibleEmbeddingProvider
 from .transport import (
+    AsyncJsonHttpTransport,
+    HttpxAsyncJsonTransport,
     HttpxJsonTransport,
     HttpxStreamingJsonTransport,
     JsonHttpTransport,
@@ -22,6 +24,8 @@ from .transport import (
 from .vision import ImageBytesLoader, OpenAICompatibleVisionAdapter, SourceVerifiedImageLoader
 
 __all__ = [
+    "AsyncJsonHttpTransport",
+    "HttpxAsyncJsonTransport",
     "HttpxJsonTransport",
     "HttpxStreamingJsonTransport",
     "ImageBytesLoader",
@@ -30,6 +34,8 @@ __all__ = [
     "OpenAICompatibleEmbeddingProvider",
     "OpenAICompatibleEndpoint",
     "OpenAICompatibleVisionAdapter",
+    "ProviderCancel",
+    "ProviderCancelRequest",
     "SourceVerifiedImageLoader",
     "StreamingJsonHttpTransport",
     "UrlLibJsonTransport",

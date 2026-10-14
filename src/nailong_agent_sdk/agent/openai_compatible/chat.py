@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -16,17 +18,21 @@ from ...foundations.detached import run_detached
 from ...foundations.errors import AgentSdkError
 from ..model import (
     AgentModel,
+    ModelCancellationOutcome,
     ModelContext,
     ModelStreamCompleted,
     ModelStreamListener,
     ModelTextDelta,
     ModelToolCallDelta,
     ModelTurnResponse,
+    ProviderCancellation,
     ProviderContinuation,
     ProviderToolResult,
     ProviderUsage,
+    TransportCancellation,
 )
 from .transport import (
+    AsyncJsonHttpTransport,
     HttpxStreamingJsonTransport,
     JsonHttpTransport,
     OpenAICompatibleEndpoint,
@@ -36,6 +42,19 @@ from .transport import (
 )
 
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
+PROVIDER_CANCEL_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class ProviderCancelRequest:
+    task_id: str
+    request_id: str
+    provider: str
+    model: str
+    streamed: bool
+
+
+ProviderCancel = Callable[[ProviderCancelRequest], Awaitable[bool]]
 
 
 class OpenAICompatibleAgentModel(AgentModel):
@@ -52,8 +71,9 @@ class OpenAICompatibleAgentModel(AgentModel):
         *,
         provider: str,
         model: str,
-        transport: JsonHttpTransport | None = None,
+        transport: JsonHttpTransport | AsyncJsonHttpTransport | None = None,
         streaming_transport: StreamingJsonHttpTransport | None = None,
+        provider_cancel: ProviderCancel | None = None,
     ) -> None:
         if not provider.strip():
             raise ValueError("OpenAI-compatible provider identifier must be non-empty.")
@@ -64,18 +84,103 @@ class OpenAICompatibleAgentModel(AgentModel):
         self._model = model
         self._transport = transport or UrlLibJsonTransport()
         self._streaming_transport = streaming_transport or HttpxStreamingJsonTransport()
+        self._provider_cancel = provider_cancel
+        self._cancellations: dict[str, ModelCancellationOutcome] = {}
 
     async def next_turn(self, context: ModelContext) -> ModelTurnResponse:
         binding = self._require_binding(context)
         payload = self._chat_payload(context, binding)
-        response = await run_detached(
-            self._transport.post_json,
-            self._endpoint.url_for("/chat/completions"),
-            headers=self._endpoint.request_headers(context.trace_parent),
-            payload=payload,
-            timeout_seconds=self._endpoint.timeout_seconds,
-        )
+        request = {
+            "headers": self._endpoint.request_headers(context.trace_parent),
+            "payload": payload,
+            "timeout_seconds": self._endpoint.timeout_seconds,
+        }
+        url = self._endpoint.url_for("/chat/completions")
+        aborts_on_cancel = isinstance(self._transport, AsyncJsonHttpTransport)
+        try:
+            if isinstance(self._transport, AsyncJsonHttpTransport):
+                response = await self._transport.apost_json(url, **request)
+            else:
+                response = await run_detached(self._transport.post_json, url, **request)
+        except asyncio.CancelledError:
+            await self._record_cancellation(
+                context.task.id, binding, aborts_on_cancel, request_id=None, streamed=False
+            )
+            raise
         return self._turn_response_from(response)
+
+    def cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome | None:
+        return self._cancellations.pop(task_id, None)
+
+    async def _record_cancellation(
+        self,
+        task_id: str,
+        binding: ModelBinding,
+        connection_closed: bool,
+        *,
+        request_id: str | None,
+        streamed: bool,
+    ) -> None:
+        provider: ProviderCancellation = "unsupported"
+        detail = (
+            "the Chat Completions protocol has no operation that stops a request, so the "
+            "provider may finish generating it and bill for it"
+        )
+        if self._provider_cancel is not None and request_id is not None:
+            provider, detail = await self._ask_provider_to_cancel(
+                task_id, binding, request_id, streamed
+            )
+        elif self._provider_cancel is not None:
+            detail = (
+                "a provider cancellation is configured but the provider had not named the "
+                "request yet, so there was nothing to cancel by id"
+            )
+        transport: TransportCancellation
+        if connection_closed:
+            transport = "connection-closed"
+            detail = f"the connection to the provider was closed; {detail}"
+        else:
+            transport = "detached"
+            detail = (
+                "the blocking request keeps running on a detached thread until the provider "
+                f"answers or {self._endpoint.timeout_seconds:g}s pass, and its response is "
+                f"discarded; {detail}"
+            )
+        self._cancellations[task_id] = ModelCancellationOutcome(
+            transport=transport,
+            provider=provider,
+            request_id=request_id,
+            detail=detail,
+        )
+
+    async def _ask_provider_to_cancel(
+        self, task_id: str, binding: ModelBinding, request_id: str, streamed: bool
+    ) -> tuple[ProviderCancellation, str]:
+        assert self._provider_cancel is not None
+        request = ProviderCancelRequest(
+            task_id=task_id,
+            request_id=request_id,
+            provider=binding.provider,
+            model=binding.model,
+            streamed=streamed,
+        )
+        try:
+            confirmed = await asyncio.wait_for(
+                self._provider_cancel(request), PROVIDER_CANCEL_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            return "requested", (
+                f"the provider cancellation for request {request_id} did not answer within "
+                f"{PROVIDER_CANCEL_TIMEOUT_SECONDS:g}s"
+            )
+        except Exception as error:
+            return "requested", (
+                f"the provider cancellation for request {request_id} failed: "
+                f"{type(error).__name__}: {error}"
+            )
+        if confirmed is True:
+            return "confirmed", f"the provider confirmed cancelling request {request_id}"
+        return "requested", f"the provider did not confirm cancelling request {request_id}"
 
     async def stream_turn(
         self, context: ModelContext, on_delta: ModelStreamListener
@@ -92,14 +197,24 @@ class OpenAICompatibleAgentModel(AgentModel):
         payload = {**self._chat_payload(context, binding), "stream": True}
         payload["stream_options"] = {"include_usage": True}
         accumulator = _ChatStreamAccumulator()
-        async for chunk in self._streaming_transport.stream_json(
-            self._endpoint.url_for("/chat/completions"),
-            headers=self._endpoint.request_headers(context.trace_parent),
-            payload=payload,
-            timeout_seconds=self._endpoint.timeout_seconds,
-        ):
-            for event in accumulator.consume(chunk):
-                await _emit(on_delta, event)
+        try:
+            async for chunk in self._streaming_transport.stream_json(
+                self._endpoint.url_for("/chat/completions"),
+                headers=self._endpoint.request_headers(context.trace_parent),
+                payload=payload,
+                timeout_seconds=self._endpoint.timeout_seconds,
+            ):
+                for event in accumulator.consume(chunk):
+                    await _emit(on_delta, event)
+        except asyncio.CancelledError:
+            await self._record_cancellation(
+                context.task.id,
+                binding,
+                True,
+                request_id=accumulator.response_id,
+                streamed=True,
+            )
+            raise
         response = accumulator.finalize()
         result = self._turn_response_from(response)
         await _emit(on_delta, ModelStreamCompleted(usage=result.usage))
@@ -213,6 +328,13 @@ class OpenAICompatibleAgentModel(AgentModel):
                 context.projection.omitted_compacted_count if context.projection else 0
             ),
         }
+        if context.semantic_summaries:
+            volatile_context["semantic_summaries"] = [
+                item.model_dump(mode="json") for item in context.semantic_summaries
+            ]
+            volatile_context["omitted_summary_count"] = (
+                context.projection.omitted_summary_count if context.projection else 0
+            )
         system = (
             "You are an untrusted proposal component in a governed agent runtime. "
             "Use only declared function tools when a tool is needed. If no tool is needed, "
@@ -229,6 +351,13 @@ class OpenAICompatibleAgentModel(AgentModel):
             "still older compacted calls are not listed. Check all of these before choosing "
             "your next action so you do not repeat a call whose outcome you already have."
         )
+        if context.semantic_summaries:
+            system += (
+                " semantic_summaries, when present, are verified digests of groups of earlier "
+                "calls that are no longer listed individually: they carry facts, decisions and "
+                "unresolved_issues with the episode ids they came from. A digest is derived, "
+                "not evidence; fetch a source handle in source_handles when its detail matters."
+            )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(stable_context, separators=(",", ":"))},
@@ -529,6 +658,10 @@ class _ChatStreamAccumulator:
         self._tool_calls: dict[int, dict[str, Any]] = {}
         self._usage: dict[str, Any] | None = None
         self._finish_reason: str | None = None
+
+    @property
+    def response_id(self) -> str | None:
+        return self._response_id
 
     def consume(self, chunk: Mapping[str, Any]) -> list[ModelTextDelta | ModelToolCallDelta]:
         events: list[ModelTextDelta | ModelToolCallDelta] = []

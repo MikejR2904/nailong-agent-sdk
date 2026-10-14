@@ -17,6 +17,7 @@ from ..state.project_state_models import (
     StateTransitionKind,
 )
 from ._shared import McpContext, _validation_errors
+from .authority import McpOperation
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
@@ -40,7 +41,7 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "get_project_state", exclusive=False)
+    @ctx.tool(server, "get_project_state", exclusive=False, operation=McpOperation.READ)
     def get_project_state(project_id: str) -> dict[str, Any]:
         """Return current project state; history remains separate audit evidence."""
 
@@ -52,7 +53,9 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "record_human_project_decision", exclusive=False)
+    @ctx.tool(
+        server, "record_human_project_decision", exclusive=False, operation=McpOperation.APPROVAL
+    )
     def record_human_project_decision(
         project_id: str,
         decision_id: str,
@@ -60,93 +63,163 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
         status: str,
         evidence_id: str,
         source_spans: list[str] | None = None,
+        state_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
     ) -> dict[str, Any]:
-        """Record a human-owned decision with explicit source evidence, never a model claim."""
+        """Record a human-owned decision with explicit source evidence, never a model claim.
+
+        An approver credential must send `state_hash` (`state.state_hash` of
+        `get_project_state`) and `issued_at_utc` (the instant the approver decided);
+        `approver_label` is the caller's unverified note on who decided and is only
+        recorded."""
 
         try:
-            state = ctx.project_states.apply(
-                project_id,
-                StateTransition(
-                    kind=StateTransitionKind.HUMAN_DECISION,
-                    actor=StateAuthority.HUMAN,
-                    action_id=f"human-decision:{decision_id}",
-                    payload={"decision_id": decision_id, "content": content, "status": status},
-                    evidence=[
-                        StateEvidence(
-                            evidence_id=evidence_id,
-                            kind="human-decision-source",
-                            source_spans=source_spans or [],
-                        )
-                    ],
-                ),
-            )
-            return {"ok": True, "state": state.model_dump(mode="json")}
+            with (
+                ctx.project_states.locked(project_id),
+                ctx.gate.decide(
+                    "record_human_project_decision",
+                    subject=f'project state "{project_id}"',
+                    approved=None,
+                    binding_field="state_hash",
+                    expected=state_hash,
+                    actual=lambda: ctx.project_states.load(project_id).state_hash,
+                    issued_at_utc=issued_at_utc,
+                    label=approver_label,
+                    reason=content,
+                ) as receipt,
+            ):
+                state = ctx.project_states.apply(
+                    project_id,
+                    StateTransition(
+                        kind=StateTransitionKind.HUMAN_DECISION,
+                        actor=StateAuthority.HUMAN,
+                        action_id=f"human-decision:{decision_id}",
+                        payload={
+                            "decision_id": decision_id,
+                            "content": content,
+                            "status": status,
+                        },
+                        evidence=[
+                            StateEvidence(
+                                evidence_id=evidence_id,
+                                kind="human-decision-source",
+                                source_spans=source_spans or [],
+                            )
+                        ],
+                    ),
+                )
+            return {"ok": True, "state": state.model_dump(mode="json"), **receipt.fields()}
         except ValidationError as error:
             return {"ok": False, "errors": _validation_errors(error)}
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "resolve_project_question", exclusive=False)
+    @ctx.tool(server, "resolve_project_question", exclusive=False, operation=McpOperation.APPROVAL)
     def resolve_project_question(
         project_id: str,
         question_id: str,
         resolution: str,
         evidence_id: str,
         source_spans: list[str] | None = None,
+        state_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
     ) -> dict[str, Any]:
-        """Close an open question with the human's recorded answer and its source evidence."""
+        """Close an open question with the human's recorded answer and its source evidence.
+
+        An approver credential must send `state_hash` (`state.state_hash` of
+        `get_project_state`) and `issued_at_utc` (the instant the approver decided);
+        `approver_label` is the caller's unverified note on who decided and is only
+        recorded."""
 
         try:
-            state = ctx.project_states.apply(
-                project_id,
-                StateTransition(
-                    kind=StateTransitionKind.QUESTION_RESOLVED,
-                    actor=StateAuthority.HUMAN,
-                    action_id=f"question-resolved:{question_id}",
-                    payload={"question_id": question_id, "resolution": resolution},
-                    evidence=[
-                        StateEvidence(
-                            evidence_id=evidence_id,
-                            kind="human-question-resolution-source",
-                            source_spans=source_spans or [],
-                        )
-                    ],
-                ),
-            )
-            return {"ok": True, "state": state.model_dump(mode="json")}
+            with (
+                ctx.project_states.locked(project_id),
+                ctx.gate.decide(
+                    "resolve_project_question",
+                    subject=f'project state "{project_id}"',
+                    approved=None,
+                    binding_field="state_hash",
+                    expected=state_hash,
+                    actual=lambda: ctx.project_states.load(project_id).state_hash,
+                    issued_at_utc=issued_at_utc,
+                    label=approver_label,
+                    reason=resolution,
+                ) as receipt,
+            ):
+                state = ctx.project_states.apply(
+                    project_id,
+                    StateTransition(
+                        kind=StateTransitionKind.QUESTION_RESOLVED,
+                        actor=StateAuthority.HUMAN,
+                        action_id=f"question-resolved:{question_id}",
+                        payload={"question_id": question_id, "resolution": resolution},
+                        evidence=[
+                            StateEvidence(
+                                evidence_id=evidence_id,
+                                kind="human-question-resolution-source",
+                                source_spans=source_spans or [],
+                            )
+                        ],
+                    ),
+                )
+            return {"ok": True, "state": state.model_dump(mode="json"), **receipt.fields()}
         except ValidationError as error:
             return {"ok": False, "errors": _validation_errors(error)}
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "clear_project_blocker", exclusive=False)
+    @ctx.tool(server, "clear_project_blocker", exclusive=False, operation=McpOperation.APPROVAL)
     def clear_project_blocker(
         project_id: str,
         blocker_id: str,
         reason: str,
         evidence_id: str,
         source_spans: list[str] | None = None,
+        state_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
     ) -> dict[str, Any]:
-        """Clear a recorded blocker once its blocking requirement has been resolved."""
+        """Clear a recorded blocker once its blocking requirement has been resolved.
+
+        An approver credential must send `state_hash` (`state.state_hash` of
+        `get_project_state`) and `issued_at_utc` (the instant the approver decided);
+        `approver_label` is the caller's unverified note on who decided and is only
+        recorded."""
 
         try:
-            state = ctx.project_states.apply(
-                project_id,
-                StateTransition(
-                    kind=StateTransitionKind.BLOCKER_CLEARED,
-                    actor=StateAuthority.HUMAN,
-                    action_id=f"blocker-cleared:{blocker_id}",
-                    payload={"blocker_id": blocker_id, "reason": reason},
-                    evidence=[
-                        StateEvidence(
-                            evidence_id=evidence_id,
-                            kind="human-blocker-clearance-source",
-                            source_spans=source_spans or [],
-                        )
-                    ],
-                ),
-            )
-            return {"ok": True, "state": state.model_dump(mode="json")}
+            with (
+                ctx.project_states.locked(project_id),
+                ctx.gate.decide(
+                    "clear_project_blocker",
+                    subject=f'project state "{project_id}"',
+                    approved=None,
+                    binding_field="state_hash",
+                    expected=state_hash,
+                    actual=lambda: ctx.project_states.load(project_id).state_hash,
+                    issued_at_utc=issued_at_utc,
+                    label=approver_label,
+                    reason=reason,
+                ) as receipt,
+            ):
+                state = ctx.project_states.apply(
+                    project_id,
+                    StateTransition(
+                        kind=StateTransitionKind.BLOCKER_CLEARED,
+                        actor=StateAuthority.HUMAN,
+                        action_id=f"blocker-cleared:{blocker_id}",
+                        payload={"blocker_id": blocker_id, "reason": reason},
+                        evidence=[
+                            StateEvidence(
+                                evidence_id=evidence_id,
+                                kind="human-blocker-clearance-source",
+                                source_spans=source_spans or [],
+                            )
+                        ],
+                    ),
+                )
+            return {"ok": True, "state": state.model_dump(mode="json"), **receipt.fields()}
         except ValidationError as error:
             return {"ok": False, "errors": _validation_errors(error)}
         except Exception as error:

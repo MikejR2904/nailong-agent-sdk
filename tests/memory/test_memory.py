@@ -47,6 +47,32 @@ def test_episode_graph_rules():
     assert [e.id for e in graph.list()] == [e1.id, a1.id]
 
 
+def test_a_compacted_episodes_payload_is_not_kept_alive_by_the_episode_graph():
+    import gc
+    import weakref
+
+    class Tracked(dict):
+        pass
+
+    graph = InMemoryEpisodeGraph()
+    store = InMemoryEpisodeStore()
+    witnesses = []
+    for index in range(6):
+        result = Tracked(text="x" * 4000, index=index)
+        witnesses.append(weakref.ref(result))
+        payload = {"call": {"id": f"c{index}"}, "result": result}
+        graph.add_exploratory(f"read {index}", payload)
+        record = store.open_exploratory("agent", content=payload)
+        store.close(record.id, description=f"read {index}")
+        del result, payload, record
+    compacted = store.compact(1, relevance_query="read").compacted_episode_ids
+    gc.collect()
+    assert len(compacted) >= 5
+    alive = [index for index, ref in enumerate(witnesses) if ref() is not None]
+    assert alive == [] or len(alive) <= 1
+    assert [episode.summary for episode in graph.list()][0] == "read 0"
+
+
 def test_store_lifecycle_rules():
     store = InMemoryEpisodeStore()
     e = store.open_exploratory("a", content={"x": 1})

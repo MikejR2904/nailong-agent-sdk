@@ -44,6 +44,7 @@ class McpServerOptions(StrictModel):
         default=DEFAULT_PING_TIMEOUT_SECONDS, gt=0, le=MAX_PING_SECONDS
     )
     reconnect_on_ping_failure: bool = False
+    propagate_trace_context: bool = False
 
 
 class McpStdioServerConfig(McpServerOptions):

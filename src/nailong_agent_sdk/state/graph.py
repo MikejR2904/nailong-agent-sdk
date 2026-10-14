@@ -321,6 +321,7 @@ class StateGraph:
         node_id: str,
         *,
         shared_state: GraphSharedState | None = None,
+        run_id: str | None = None,
     ) -> GraphNodeExecutionContext:
         """Return only declared predecessor results and a frozen state view."""
 
@@ -345,6 +346,7 @@ class StateGraph:
             else {}
         )
         return GraphNodeExecutionContext(
+            run_id=run_id,
             dependencies=dependencies,
             shared_state=self._filtered_shared_state_for(node_id, shared_state),
             elastic_capacity=ElasticCapacity(
@@ -441,6 +443,7 @@ class StateGraph:
         executors: Mapping[GraphNodeKind, NodeExecutor],
         *,
         max_parallelism: int | None = None,
+        run_id: str | None = None,
     ) -> dict[str, GraphNodeResult]:
         """Execute graph waves with a frozen graph-shared-state view per wave."""
 
@@ -448,7 +451,10 @@ class StateGraph:
         while wave := self.start_runnable_wave(max_parallelism=limit):
             wave_state = self.shared_state
             wave_results = await asyncio.gather(
-                *(self.execute_node(node, executors, shared_state=wave_state) for node in wave)
+                *(
+                    self.execute_node(node, executors, shared_state=wave_state, run_id=run_id)
+                    for node in wave
+                )
             )
             for node, result in zip(wave, wave_results, strict=True):
                 self.mark_terminal(node.node_id, result)
@@ -461,6 +467,7 @@ class StateGraph:
         executors: Mapping[GraphNodeKind, NodeExecutor],
         *,
         shared_state: GraphSharedState | None = None,
+        run_id: str | None = None,
     ) -> GraphNodeResult:
         """Run one started node and turn executor failures into typed results."""
 
@@ -473,7 +480,8 @@ class StateGraph:
         else:
             try:
                 result = await executor(
-                    node, self.execution_context(node.node_id, shared_state=shared_state)
+                    node,
+                    self.execution_context(node.node_id, shared_state=shared_state, run_id=run_id),
                 )
             except Exception as error:
                 result = GraphNodeResult(

@@ -255,7 +255,10 @@ class HarnessCoordinator:
             )
             wave_state = graph.shared_state
             results = await asyncio.gather(
-                *(graph.execute_node(node, executors, shared_state=wave_state) for node in wave)
+                *(
+                    graph.execute_node(node, executors, shared_state=wave_state, run_id=run_id)
+                    for node in wave
+                )
             )
             for node, result in zip(wave, results, strict=True):
                 graph.mark_terminal(node.node_id, result)

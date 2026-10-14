@@ -17,7 +17,9 @@ if TYPE_CHECKING:
     )
     from .agent.model import (
         AgentModel,
+        CancellationReportingModel,
         FailoverAgentModel,
+        ModelCancellationOutcome,
         ModelFailoverAttempt,
         ModelStreamCompleted,
         ModelStreamEvent,
@@ -33,6 +35,8 @@ if TYPE_CHECKING:
         StreamingAgentModel,
     )
     from .agent.openai_compatible import (
+        AsyncJsonHttpTransport,
+        HttpxAsyncJsonTransport,
         HttpxJsonTransport,
         HttpxStreamingJsonTransport,
         ImageBytesLoader,
@@ -41,6 +45,7 @@ if TYPE_CHECKING:
         OpenAICompatibleEmbeddingProvider,
         OpenAICompatibleEndpoint,
         OpenAICompatibleVisionAdapter,
+        ProviderCancelRequest,
         SourceVerifiedImageLoader,
         StreamingJsonHttpTransport,
         UrlLibJsonTransport,
@@ -59,12 +64,26 @@ if TYPE_CHECKING:
         WorkerAssignment,
     )
     from .agent.retention import (
+        RetentionAnchorStatus,
         RetentionPolicy,
         RetentionReport,
         RunRetention,
         RunTombstone,
+        export_tombstone_anchor,
         prune_run_root,
         read_tombstones,
+        verify_tombstone_anchor,
+    )
+    from .agent.retention_anchor import (
+        AnchorVerdict,
+        AnchorVerification,
+        TombstoneAnchor,
+    )
+    from .agent.retention_inventory import (
+        InventoryItem,
+        ResourceClass,
+        RunRootInventory,
+        inventory_run_root,
     )
     from .agent.runtime import AgentRuntimeServices
     from .agent.task_runner import (
@@ -150,6 +169,9 @@ if TYPE_CHECKING:
         langgraph_interrupt_payload,
         parse_structured_sdk_turn,
     )
+    from .mcp.authority import (
+        McpAuthorityPolicy,
+    )
     from .mcp.client import McpClientManager, McpServerNotConnectedError
     from .mcp.client_bridge import mcp_tools_as_extensions, registered_tool_name
     from .mcp.client_types import (
@@ -172,19 +194,47 @@ if TYPE_CHECKING:
         InMemoryToolResultJournal,
         ToolResultJournal,
     )
+    from .memory.episode_archive import FileEpisodeArchive, InMemoryEpisodeArchive
     from .memory.episode_models import (
+        ClaimJudge,
+        ClaimReview,
+        ClaimVerdict,
         CompactionResult,
         CompactionStatus,
         CompactionStrategy,
+        EpisodeArchive,
         EpisodeCheckpoint,
         EpisodeRecord,
         EpisodeRelevanceScorer,
         EpisodeState,
+        EpisodeSummarizer,
+        GroundedClaim,
+        GroundedDecision,
+        JudgeVerdict,
         PaskCompactionPolicy,
+        QuarantinedSummary,
+        RehydrationResult,
+        SemanticCompactionPolicy,
+        SemanticEpisodeSummary,
+        SemanticSummaryDraft,
+        SemanticSummaryView,
+        SummarizationRequest,
+        SummaryArchive,
+        SummaryJudge,
+        SummaryLifecycle,
+        SummaryRef,
+        SummaryVerificationRecord,
+        SummaryVerificationStatus,
+        VerificationKind,
+        VerificationMethod,
     )
     from .memory.episode_scoring import LexicalEpisodeRelevanceScorer
     from .memory.episode_store import FileEpisodeStore, InMemoryEpisodeStore
     from .memory.episodes import InMemoryEpisodeGraph
+    from .memory.memory_snapshot import (
+        RestoreReport,
+    )
+    from .memory.semantic_compaction import ExtractiveEpisodeSummarizer, SemanticCompactor
     from .observability.audit_log import AuditLogEntry, AuditTranscriptStore
     from .observability.metric_definitions import STANDARD_METRIC_DEFINITIONS
     from .observability.metrics import (
@@ -211,8 +261,10 @@ if TYPE_CHECKING:
         TelemetryAuthority,
         TelemetryContext,
         TelemetryEvent,
+        TelemetryMaintenance,
         TelemetryRunSummary,
         TelemetrySeverity,
+        TelemetryVacuum,
     )
     from .observability.telemetry_store import TelemetryStore
     from .specifications.documents import (
@@ -553,6 +605,23 @@ _EXPORTS: dict[str, str] = {
     "ProcessExitKind": ".tools.supervisor",
     "ProcessSupervisor": ".tools.supervisor",
     "PaskCompactionPolicy": ".memory.episode_models",
+    "EpisodeArchive": ".memory.episode_models",
+    "EpisodeSummarizer": ".memory.episode_models",
+    "ExtractiveEpisodeSummarizer": ".memory.semantic_compaction",
+    "FileEpisodeArchive": ".memory.episode_archive",
+    "GroundedClaim": ".memory.episode_models",
+    "GroundedDecision": ".memory.episode_models",
+    "InMemoryEpisodeArchive": ".memory.episode_archive",
+    "JudgeVerdict": ".memory.episode_models",
+    "RehydrationResult": ".memory.episode_models",
+    "SemanticCompactionPolicy": ".memory.episode_models",
+    "SemanticCompactor": ".memory.semantic_compaction",
+    "SemanticEpisodeSummary": ".memory.episode_models",
+    "SemanticSummaryDraft": ".memory.episode_models",
+    "SemanticSummaryView": ".memory.episode_models",
+    "SummarizationRequest": ".memory.episode_models",
+    "SummaryJudge": ".memory.episode_models",
+    "SummaryVerificationStatus": ".memory.episode_models",
     "ProviderContinuation": ".agent.model",
     "ProviderToolResult": ".agent.model",
     "ProviderToolResultConsumer": ".agent.model",
@@ -754,6 +823,35 @@ _EXPORTS: dict[str, str] = {
     "MAX_ELASTIC_NODES_LIMIT": ".state.elastic",
     "MAX_ELASTIC_REQUESTS_PER_RESULT": ".state.elastic",
     "render_elastic_instructions": ".agent.elastic_context",
+    "CancellationReportingModel": ".agent.model",
+    "ModelCancellationOutcome": ".agent.model",
+    "AsyncJsonHttpTransport": ".agent.openai_compatible",
+    "HttpxAsyncJsonTransport": ".agent.openai_compatible",
+    "ProviderCancelRequest": ".agent.openai_compatible",
+    "RetentionAnchorStatus": ".agent.retention",
+    "AnchorVerdict": ".agent.retention_anchor",
+    "AnchorVerification": ".agent.retention_anchor",
+    "TombstoneAnchor": ".agent.retention_anchor",
+    "export_tombstone_anchor": ".agent.retention",
+    "verify_tombstone_anchor": ".agent.retention",
+    "InventoryItem": ".agent.retention_inventory",
+    "ResourceClass": ".agent.retention_inventory",
+    "RunRootInventory": ".agent.retention_inventory",
+    "inventory_run_root": ".agent.retention_inventory",
+    "McpAuthorityPolicy": ".mcp.authority",
+    "ClaimJudge": ".memory.episode_models",
+    "ClaimReview": ".memory.episode_models",
+    "ClaimVerdict": ".memory.episode_models",
+    "QuarantinedSummary": ".memory.episode_models",
+    "SummaryArchive": ".memory.episode_models",
+    "SummaryLifecycle": ".memory.episode_models",
+    "SummaryRef": ".memory.episode_models",
+    "SummaryVerificationRecord": ".memory.episode_models",
+    "VerificationKind": ".memory.episode_models",
+    "VerificationMethod": ".memory.episode_models",
+    "RestoreReport": ".memory.memory_snapshot",
+    "TelemetryMaintenance": ".observability.telemetry_models",
+    "TelemetryVacuum": ".observability.telemetry_models",
 }
 
 _SUBPACKAGES = frozenset(

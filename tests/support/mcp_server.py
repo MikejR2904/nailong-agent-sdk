@@ -25,7 +25,9 @@ def free_port(host="127.0.0.1"):
 
 
 class Server:
-    def __init__(self, base: Path, host="127.0.0.1", extra_environment=None, tls_files=None):
+    def __init__(
+        self, base: Path, host="127.0.0.1", extra_environment=None, tls_files=None, approver=False
+    ):
         self.run_root = base / "run"
         self.spec_root = base / "specs"
         self.run_root.mkdir()
@@ -35,11 +37,16 @@ class Server:
         self.url = f"{'https' if tls_files else 'http'}://{host}:{self.port}/mcp"
         self.token = secrets.token_urlsafe(32)
         self.auth_headers = {"Authorization": f"Bearer {self.token}"}
+        self.approver_token = secrets.token_urlsafe(32) if approver else None
+        self.approver_headers = (
+            {"Authorization": f"Bearer {self.approver_token}"} if approver else None
+        )
         env = child_environment(
             {
                 "AGENT_RUNTIME_HOST": host,
                 "AGENT_RUNTIME_PORT": str(self.port),
                 "AGENT_RUNTIME_AUTH_TOKEN": self.token,
+                **({"AGENT_RUNTIME_APPROVER_TOKEN": self.approver_token} if approver else {}),
                 "AGENT_RUNTIME_RUN_ROOT": str(self.run_root),
                 "AGENT_SPECIFICATION_ROOT": str(self.spec_root),
                 **_tls_environment(tls_files),
@@ -73,24 +80,28 @@ class Server:
 
     @asynccontextmanager
     async def session(self, headers="authorized"):
-        sent = self.auth_headers if headers == "authorized" else headers
+        named = {"authorized": self.auth_headers, "approver": self.approver_headers}
+        sent = named[headers] if isinstance(headers, str) else headers
         async with create_mcp_http_client(headers=sent) as client:
             async with streamable_http_client(self.url, http_client=client) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     yield session
 
-    async def session_calls(self, calls, timeout=120):
+    async def session_calls(self, calls, timeout=120, headers="authorized"):
         results = []
-        async with self.session() as session:
+        async with self.session(headers) as session:
             for name, arguments in calls:
                 result = await asyncio.wait_for(session.call_tool(name, arguments), timeout)
                 results.append(result)
         return results
 
-    def call(self, name, arguments=None, timeout=120):
-        result = asyncio.run(self.session_calls([(name, arguments or {})], timeout))[0]
+    def call(self, name, arguments=None, timeout=120, headers="authorized"):
+        result = asyncio.run(self.session_calls([(name, arguments or {})], timeout, headers))[0]
         return self.structured(result)
+
+    def as_approver(self, name, arguments=None, timeout=120):
+        return self.call(name, arguments, timeout, headers="approver")
 
     @staticmethod
     def structured(result):

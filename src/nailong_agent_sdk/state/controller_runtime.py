@@ -20,6 +20,7 @@ from ..foundations.hashing import canonical_hash
 from ..observability.metrics import record_metric_value, register_standard_metric_definitions
 from ..observability.telemetry_models import TelemetryActor, TelemetryAuthority, TelemetryContext
 from ..observability.telemetry_store import TelemetryStore
+from ..observability.trace_context import graph_run_span_id, graph_run_trace_id
 from .coordination_records import RunRecord
 from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .graph_models import (
@@ -812,6 +813,8 @@ class ControllerRuntime:
                 run_id=record.run_id or record.controller_id,
                 controller_id=record.controller_id,
                 stage=record.profile.stage,
+                trace_id=graph_run_trace_id(record.run_id) if record.run_id else None,
+                span_id=graph_run_span_id(record.run_id) if record.run_id else None,
             ),
             actor=TelemetryActor(kind="system", identifier="controller-runtime", role="controller"),
             authority=TelemetryAuthority.DETERMINISTIC,

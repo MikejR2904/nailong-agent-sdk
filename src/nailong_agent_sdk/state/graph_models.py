@@ -216,6 +216,7 @@ class GraphNodeExecutionContext(StrictModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    run_id: str | None = None
     dependencies: dict[str, GraphNodeResult] = Field(default_factory=dict)
     shared_state: GraphSharedState
     elastic_capacity: ElasticCapacity | None = None

@@ -79,9 +79,11 @@ def _bind_handler(
     manager: McpClientManager, server_name: str, tool_name: str
 ) -> HarnessToolHandler:
     async def handler(
-        _context: HarnessExecutionContext, arguments: dict[str, Any]
+        context: HarnessExecutionContext, arguments: dict[str, Any]
     ) -> dict[str, Any]:
-        text = await manager.call_tool(server_name, tool_name, arguments)
+        text = await manager.call_tool(
+            server_name, tool_name, arguments, trace_parent=context.trace_parent
+        )
         return {
             "source": f"mcp:{server_name}::{tool_name}",
             "untrusted_content": True,

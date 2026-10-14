@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter
 
@@ -24,6 +24,7 @@ from ..foundations.contracts import (
 )
 from ..foundations.errors import AgentSdkError, TransientProviderError
 from ..foundations.logging import get_logger
+from ..memory.episode_models import SemanticSummaryView
 from ..state.project_state_models import ProjectStateView
 
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
@@ -124,6 +125,7 @@ class ModelContext:
     output_schema: dict[str, Any] | None = None
     compacted_episodes: Sequence[CompactedEpisodeStub] = ()
     trace_parent: str | None = None
+    semantic_summaries: Sequence[SemanticSummaryView] = ()
 
 
 @dataclass(frozen=True)
@@ -151,6 +153,53 @@ class ProviderToolResultConsumer(Protocol):
         continuation: ProviderContinuation,
         results: Sequence[ProviderToolResult],
     ) -> ProviderContinuation: ...
+
+
+TransportCancellation = Literal["connection-closed", "detached", "not-started", "unreported"]
+ProviderCancellation = Literal["confirmed", "requested", "unsupported", "unreported"]
+
+
+@dataclass(frozen=True)
+class ModelCancellationOutcome:
+    """What cancelling an in-flight model request actually did.
+
+    The task is always logically cancelled: its result is discarded and nothing a late response
+    carries can commit. ``transport`` says whether the request itself was aborted
+    (``connection-closed``), kept running on a detached thread until it finishes or times out
+    (``detached``) or never left (``not-started``). ``provider`` says whether the provider
+    acknowledged stopping the work: only a host-supplied provider cancellation can report
+    ``confirmed``; closing a connection is never treated as confirmation, and a provider may
+    keep generating, and billing for, a request nobody is waiting for.
+    """
+
+    transport: TransportCancellation
+    provider: ProviderCancellation
+    request_id: str | None = None
+    detail: str = ""
+
+    def details(self) -> dict[str, Any]:
+        return {
+            "logical": "cancelled",
+            "transport": self.transport,
+            "provider": self.provider,
+            "request_id": self.request_id,
+            "late_response": "discarded",
+            "detail": self.detail,
+        }
+
+
+UNREPORTED_CANCELLATION = ModelCancellationOutcome(
+    transport="unreported",
+    provider="unreported",
+    detail="the model adapter does not report how a cancelled request ended",
+)
+
+
+@runtime_checkable
+class CancellationReportingModel(Protocol):
+    """Optional adapter capability: say how the last cancelled request of a task ended."""
+
+    def cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome | None: ...
 
 
 class AgentModel(Protocol):
@@ -275,6 +324,14 @@ class FailoverAgentModel:
             return await model.next_turn(attempt_context)
 
         return await self._call_with_failover(call_one)
+
+    def cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome | None:
+        for model in self._models:
+            if isinstance(model, CancellationReportingModel):
+                outcome = model.cancellation_outcome(task_id)
+                if outcome is not None:
+                    return outcome
+        return None
 
     def _context_for(self, context: ModelContext, index: int) -> ModelContext:
         if self._bindings is None or index == 0:

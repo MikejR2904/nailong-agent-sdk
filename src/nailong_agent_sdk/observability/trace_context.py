@@ -10,8 +10,9 @@ import secrets
 import uuid
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
 
+from ..foundations.hashing import canonical_hash
 from ..foundations.version import PACKAGE_NAME, package_version
 
 TRACEPARENT_HEADER = "traceparent"
@@ -23,6 +24,7 @@ _ZERO_TRACE_ID = "0" * 32
 _ZERO_SPAN_ID = "0" * 16
 _SAMPLED_FLAG = 0x01
 _SHOWN_CHARS = 64
+_GRAPH_RUN_NAMESPACE = "graph-run"
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,28 @@ def new_span_id() -> str:
         candidate = secrets.token_hex(8)
         if candidate != _ZERO_SPAN_ID:
             return candidate
+
+
+def derive_trace_id(*parts: str) -> str:
+    return _derived_id("trace", 32, parts)
+
+
+def derive_span_id(*parts: str) -> str:
+    return _derived_id("span", 16, parts)
+
+
+def graph_run_trace_id(run_id: str) -> str:
+    return derive_trace_id(_GRAPH_RUN_NAMESPACE, run_id)
+
+
+def graph_run_span_id(run_id: str) -> str:
+    return derive_span_id(_GRAPH_RUN_NAMESPACE, run_id)
+
+
+@lru_cache(maxsize=4_096)
+def _derived_id(kind: str, width: int, parts: tuple[str, ...]) -> str:
+    candidate = canonical_hash([kind, *parts])[:width]
+    return candidate if candidate.strip("0") else "0" * (width - 1) + "1"
 
 
 def is_trace_id(value: object) -> bool:

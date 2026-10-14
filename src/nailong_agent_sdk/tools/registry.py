@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,7 @@ class HarnessExecutionContext:
     search_client: WebSearchClient | None = None
     ask_human: HumanQuestionResponder | None = None
     pdf_image_cache: dict[str, tuple[str, bytes]] | None = None
+    trace_parent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,7 +187,9 @@ class HarnessToolExecutor(ToolExecutor):
             return ToolExecutionResult(status="blocked", error=decision.reason)
 
         try:
-            output = await self._execute_registered(registered, invocation.call.arguments)
+            output = await self._execute_registered(
+                registered, invocation.call.arguments, invocation.trace_parent
+            )
             if isinstance(output, ToolExecutionResult):
                 return output
             return ToolExecutionResult(status="succeeded", output=output)
@@ -204,9 +207,12 @@ class HarnessToolExecutor(ToolExecutor):
             return self._context.approvals.get(approval_id)
         return self._context.approvals.find(self._context.run_id, self._context.node_id, capability)
 
-    async def _execute_registered(self, tool: RegisteredTool, arguments: dict[str, Any]) -> Any:
+    async def _execute_registered(
+        self, tool: RegisteredTool, arguments: dict[str, Any], trace_parent: str | None = None
+    ) -> Any:
         if handler := self._registry.handler_for(tool.name):
-            return await handler(self._context, arguments)
+            context = replace(self._context, trace_parent=trace_parent)
+            return await handler(context, arguments)
 
         if tool.name == "read_spec":
             pointer = _string_argument(arguments, "pointer")

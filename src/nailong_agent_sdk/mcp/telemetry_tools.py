@@ -9,15 +9,17 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from ..agent.retention import RetentionPolicy
+from ..agent.retention_inventory import DEFAULT_MAX_ITEMS, inventory_run_root
 from ..observability.telemetry_models import MetricDefinition, MetricObservation
 from ._shared import McpContext, _validation_errors
+from .authority import McpOperation
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
 
 
 def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
-    @ctx.tool(server, "list_telemetry_runs", exclusive=False)
+    @ctx.tool(server, "list_telemetry_runs", exclusive=False, operation=McpOperation.READ)
     def list_telemetry_runs(limit: int = 100) -> dict[str, Any]:
         """List durable Python runtime telemetry runs without exposing hidden reasoning."""
 
@@ -31,7 +33,7 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "get_telemetry_events", exclusive=False)
+    @ctx.tool(server, "get_telemetry_events", exclusive=False, operation=McpOperation.READ)
     def get_telemetry_events(
         run_id: str,
         after_sequence: int = 0,
@@ -51,7 +53,7 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "get_audit_log", exclusive=False)
+    @ctx.tool(server, "get_audit_log", exclusive=False, operation=McpOperation.READ)
     def get_audit_log(run_id: str, limit: int = 1_000) -> dict[str, Any]:
         """Read bounded, redacted public interaction logs outside model working memory."""
 
@@ -99,7 +101,7 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "list_metric_definitions", exclusive=False)
+    @ctx.tool(server, "list_metric_definitions", exclusive=False, operation=McpOperation.READ)
     def list_metric_definitions() -> dict[str, Any]:
         """List metric formulas and missing-data rules known to the telemetry store."""
 
@@ -122,7 +124,7 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "get_telemetry_metrics", exclusive=False)
+    @ctx.tool(server, "get_telemetry_metrics", exclusive=False, operation=McpOperation.READ)
     def get_telemetry_metrics(run_id: str) -> dict[str, Any]:
         """Return recorded metric observations and their explicit availability states."""
 
@@ -162,6 +164,37 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         )
         report = ctx.retention.prune(policy, dry_run=dry_run)
         return {"ok": True, "report": report.model_dump(mode="json")}
+
+    @ctx.tool(server, "inventory_retention", exclusive=False)
+    def inventory_retention(
+        older_than_seconds: float,
+        keep_most_recent: int = 0,
+        max_runs: int | None = None,
+        include_unfinished: bool = False,
+        max_items: int = DEFAULT_MAX_ITEMS,
+    ) -> dict[str, Any]:
+        """Report every persistent resource class under the run root and what a retention
+        policy would do with it, without changing anything.
+
+        Each item names its owner, what references it, and whether it is `prunable` (the
+        next `prune_runs` pass removes it), `reclaimable` (finished and unreferenced, but no
+        SDK operation removes it yet) or `protected` with the rule that protects it. Class
+        totals cover every item; `items` is cut to `max_items`.
+        """
+
+        try:
+            policy = RetentionPolicy(
+                older_than_seconds=older_than_seconds,
+                keep_most_recent=keep_most_recent,
+                max_runs=max_runs,
+                include_unfinished=include_unfinished,
+            )
+            inventory = inventory_run_root(ctx.run_root, policy, max_items=max_items)
+            return {"ok": True, "inventory": inventory.model_dump(mode="json")}
+        except ValidationError as error:
+            return {"ok": False, "errors": _validation_errors(error)}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
     @ctx.tool(server, "create_telemetry_report", exclusive=False)
     def create_telemetry_report(run_id: str, include_event_hashes: bool = False) -> dict[str, Any]:

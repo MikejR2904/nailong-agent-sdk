@@ -17,6 +17,8 @@ from ..foundations.contracts import AgentDefinition, AgentRunStatus, ScopedAgent
 from ..foundations.hashing import canonical_hash, sha256_hex, strict_canonical_json
 from ..memory.context_projection import ContextProjectionPolicy
 from ..memory.episode_store import InMemoryEpisodeStore
+from ..observability.telemetry_models import TelemetryContext
+from ..observability.trace_context import graph_run_span_id, graph_run_trace_id
 from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
 from ..state.graph_models import (
     GraphNode,
@@ -185,6 +187,7 @@ class GraphAgentExecutor:
                 context_projection_policy=projection_policy,
                 project_state_projection_policy=binding.project_state_projection_policy,
                 episode_store_factory=binding.episode_store_factory,
+                telemetry_context=graph_node_telemetry_context(node, task, binding, context),
             )
             result = await agent.run(task)
         except Exception as error:
@@ -253,6 +256,24 @@ class GraphAgentExecutor:
             return GraphNodeResult(status=GraphNodeStatus.FAILED, reason=mismatch)
         self._bindings[node.node_id] = binding
         return binding
+
+
+def graph_node_telemetry_context(
+    node: GraphNode,
+    task: ScopedAgentTask,
+    binding: GraphAgentBinding,
+    context: GraphNodeExecutionContext,
+) -> TelemetryContext | None:
+    if context.run_id is None:
+        return None
+    return TelemetryContext(
+        run_id=task.id,
+        task_id=task.id,
+        agent_id=binding.definition.identity,
+        node_id=node.node_id,
+        trace_id=graph_run_trace_id(context.run_id),
+        span_id=graph_run_span_id(context.run_id),
+    )
 
 
 def _binding_mismatch(binding: GraphAgentBinding, node: GraphNode) -> str | None:

@@ -27,6 +27,8 @@ from ..agent.runtime import AgentRuntimeServices
 from ..agent.verification import VerificationGateRegistry
 from ..foundations.contracts import AgentDefinition, AgentRunStatus, ScopedAgentTask, StrictModel
 from ..foundations.hashing import canonical_hash
+from ..observability.telemetry_models import TelemetryContext
+from ..observability.trace_context import graph_run_trace_id
 from ..state.graph_models import GraphNode, GraphNodeExecutionContext, GraphNodeResult, NodeExecutor
 from ..tools.tools import ToolExecutor
 from ._utils import canonical_digest, require_optional_module
@@ -109,6 +111,13 @@ class LangGraphSdkNode:
                 verification_gates=self._binding.verification_gates,
                 pre_tool_hooks=self._binding.pre_tool_hooks,
                 post_tool_hooks=self._binding.post_tool_hooks,
+                telemetry_context=TelemetryContext(
+                    run_id=task.id,
+                    task_id=task.id,
+                    agent_id=self._binding.definition.identity,
+                    node_id=envelope.graph_node_id or self._binding.node_name,
+                    trace_id=graph_run_trace_id(envelope.run_id),
+                ),
             )
             result = await agent.run(task)
             result_digest = canonical_hash(

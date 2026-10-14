@@ -28,6 +28,7 @@ from ...foundations.contracts import AgentDefinition, SkillContext
 from ...integrations.jev.architecture import JevArchitectureAdvice, JevArchitectureRouter
 from ...observability.telemetry_models import TelemetryActor, TelemetryAuthority, TelemetryContext
 from ...observability.telemetry_store import TelemetryStore
+from ...observability.trace_context import graph_run_trace_id
 from ...state.controller_runtime import ControllerRuntime
 from ...state.coordination_records import RunRecord
 from ...state.elastic import ElasticNodeRole, ElasticNodeSpec
@@ -795,6 +796,7 @@ class Orchestrator:
                 run_id=record.orchestration_id,
                 controller_id=record.controller_id,
                 stage=record.request.stage,
+                trace_id=graph_run_trace_id(record.graph_run_id) if record.graph_run_id else None,
             ),
             actor=TelemetryActor(
                 kind="system",

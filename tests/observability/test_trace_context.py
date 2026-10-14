@@ -21,8 +21,12 @@ from nailong_agent_sdk.observability.telemetry_models import (
 from nailong_agent_sdk.observability.telemetry_store import TelemetryStore
 from nailong_agent_sdk.observability.trace_context import (
     TraceParent,
+    derive_span_id,
+    derive_trace_id,
     extract_traceparent,
     format_traceparent,
+    graph_run_span_id,
+    graph_run_trace_id,
     inject_traceparent,
     is_span_id,
     is_trace_id,
@@ -45,6 +49,42 @@ def test_generated_ids_have_the_w3c_widths_and_are_unique():
     assert len(traces) == 50 and len(spans) == 50
     assert all(is_trace_id(value) and len(value) == 32 for value in traces)
     assert all(is_span_id(value) and len(value) == 16 for value in spans)
+
+
+def test_derived_ids_are_w3c_shaped_and_a_pure_function_of_their_parts():
+    trace = derive_trace_id("graph-run", "run-1")
+    span = derive_span_id("graph-run", "run-1")
+    assert is_trace_id(trace) and is_span_id(span)
+    assert trace == derive_trace_id("graph-run", "run-1")
+    assert span == derive_span_id("graph-run", "run-1")
+    assert trace != derive_trace_id("graph-run", "run-2")
+    assert trace != derive_trace_id("other", "run-1")
+    assert not trace.startswith(span)
+
+
+def test_derivation_keeps_part_boundaries_and_survives_odd_text():
+    assert derive_trace_id("a", "bc") != derive_trace_id("ab", "c")
+    assert derive_trace_id("a", "b") != derive_trace_id("a\x00b")
+    assert derive_trace_id("a", "b") != derive_trace_id("a b")
+    assert is_trace_id(derive_trace_id("graph-run", "run" + chr(0xD800) + "x"))
+    assert is_trace_id(derive_trace_id("graph-run", "r" + chr(0x65E5) + chr(0x1F600)))
+
+
+def test_a_derived_id_is_never_all_zeros(monkeypatch):
+    trace_context._derived_id.cache_clear()
+    monkeypatch.setattr(trace_context, "canonical_hash", lambda value: "0" * 64)
+    try:
+        assert derive_trace_id("x") == "0" * 31 + "1"
+        assert derive_span_id("x") == "0" * 15 + "1"
+    finally:
+        monkeypatch.undo()
+        trace_context._derived_id.cache_clear()
+
+
+def test_the_graph_run_helpers_name_the_trace_and_span_of_one_run():
+    assert graph_run_trace_id("run-1") == derive_trace_id("graph-run", "run-1")
+    assert graph_run_span_id("run-1") == derive_span_id("graph-run", "run-1")
+    assert graph_run_trace_id("run-1") != graph_run_trace_id("run-2")
 
 
 def test_the_all_zero_value_is_never_generated(monkeypatch):

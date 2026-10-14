@@ -6,15 +6,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
 import yaml
 
-from ..agent.retention import RetentionPolicy, prune_run_root
+from ..agent.retention import (
+    RetentionPolicy,
+    export_tombstone_anchor,
+    prune_run_root,
+    verify_tombstone_anchor,
+)
+from ..agent.retention_inventory import DEFAULT_MAX_ITEMS, inventory_run_root
 from ..foundations.errors import AgentSdkError
+from ..observability.otlp import (
+    SIGNALS,
+    OtlpHttpExporter,
+    OtlpSignal,
+    export_runs,
+    preview_export,
+)
+from ..observability.telemetry_store import TelemetryStore
+from ..observability.trace_context import graph_run_trace_id
+from ..state.run_state_store import RunStateStore
 from .catalog import build_public_api_catalog, write_public_api_catalog
 from .inspect import inspect_run, verify_project_evidence
 from .quality import RuffUnavailableError, check_source_quality
@@ -46,6 +64,11 @@ def main(argv: list[str] | None = None) -> int:
         "verify-evidence": lambda: _verify_evidence(arguments),
         "quality": lambda: _quality(arguments),
         "prune-runs": lambda: _prune_runs(arguments),
+        "inventory": lambda: _inventory(arguments),
+        "anchor-tombstones": lambda: _anchor_tombstones(arguments),
+        "verify-tombstones": lambda: _verify_tombstones(arguments),
+        "vacuum-telemetry": lambda: _vacuum_telemetry(arguments),
+        "export-otlp": lambda: _export_otlp(arguments),
     }
     try:
         result = commands[arguments.command]()
@@ -104,9 +127,90 @@ def _parser() -> argparse.ArgumentParser:
     prune.add_argument("--include-unfinished", action="store_true")
     prune.add_argument("--export-reports", action="store_true")
     prune.add_argument(
+        "--anchor",
+        type=Path,
+        help="Check the tombstone log against this anchor file before pruning and "
+        "refresh it afterwards; keep it outside the run root.",
+    )
+    prune.add_argument(
         "--apply",
         action="store_true",
         help="Delete the runs; without it the command only reports what it would delete.",
+    )
+
+    inventory = subparsers.add_parser(
+        "inventory",
+        help="Report every persistent resource class under a run root and what a policy "
+        "would do with it; reads only.",
+    )
+    inventory.add_argument("run_root", type=Path)
+    inventory.add_argument("--older-than-seconds", type=float, required=True)
+    inventory.add_argument("--keep-most-recent", type=int, default=0)
+    inventory.add_argument("--max-runs", type=int)
+    inventory.add_argument("--include-unfinished", action="store_true")
+    inventory.add_argument("--max-items", type=int, default=DEFAULT_MAX_ITEMS)
+
+    anchor = subparsers.add_parser(
+        "anchor-tombstones",
+        help="Write the tombstone log's length and head hash to a file kept outside the run root.",
+    )
+    anchor.add_argument("run_root", type=Path)
+    anchor.add_argument("destination", type=Path)
+
+    verify = subparsers.add_parser(
+        "verify-tombstones",
+        help="Check the tombstone log against an anchor and report truncation or rewriting.",
+    )
+    verify.add_argument("run_root", type=Path)
+    verify.add_argument("anchor", type=Path)
+
+    vacuum = subparsers.add_parser(
+        "vacuum-telemetry",
+        help="Report the telemetry database's reclaimable space, or with --apply run VACUUM.",
+    )
+    vacuum.add_argument("run_root", type=Path)
+    vacuum.add_argument(
+        "--apply",
+        action="store_true",
+        help="Run VACUUM, which rewrites the database; without it the command only reports.",
+    )
+
+    export = subparsers.add_parser(
+        "export-otlp",
+        help="Send recorded runs to an OTLP/HTTP collector as JSON; reads the run root only.",
+    )
+    export.add_argument("run_root", type=Path)
+    export.add_argument(
+        "--endpoint",
+        help="Collector base URL (default: the OTEL_EXPORTER_OTLP_ENDPOINT variable).",
+    )
+    export.add_argument("--run-id", action="append", default=[], dest="run_ids")
+    export.add_argument(
+        "--graph-run",
+        action="append",
+        default=[],
+        dest="graph_runs",
+        help="Export every run recorded under this graph run's trace, including its nodes.",
+    )
+    export.add_argument("--trace-id", action="append", default=[], dest="trace_ids")
+    export.add_argument(
+        "--signals",
+        default=",".join(SIGNALS),
+        help="Comma-separated subset of traces, logs and metrics.",
+    )
+    export.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="Request header; also read from OTEL_EXPORTER_OTLP_HEADERS (NAME=VALUE,...).",
+    )
+    export.add_argument("--timeout-seconds", type=float, default=10.0)
+    export.add_argument("--gzip", action="store_true")
+    export.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build the requests and report what would be sent without contacting the collector.",
     )
 
     quality = subparsers.add_parser(
@@ -147,7 +251,124 @@ def _prune_runs(arguments: argparse.Namespace) -> object:
         include_unfinished=arguments.include_unfinished,
         export_reports=arguments.export_reports,
     )
-    return prune_run_root(arguments.run_root, policy, dry_run=not arguments.apply)
+    return prune_run_root(
+        arguments.run_root,
+        policy,
+        dry_run=not arguments.apply,
+        anchor_path=arguments.anchor,
+    )
+
+
+def _inventory(arguments: argparse.Namespace) -> object:
+    policy = RetentionPolicy(
+        older_than_seconds=arguments.older_than_seconds,
+        keep_most_recent=arguments.keep_most_recent,
+        max_runs=arguments.max_runs,
+        include_unfinished=arguments.include_unfinished,
+    )
+    return inventory_run_root(arguments.run_root, policy, max_items=arguments.max_items)
+
+
+def _anchor_tombstones(arguments: argparse.Namespace) -> object:
+    return export_tombstone_anchor(arguments.run_root, arguments.destination)
+
+
+def _verify_tombstones(arguments: argparse.Namespace) -> object:
+    return verify_tombstone_anchor(arguments.run_root, arguments.anchor)
+
+
+def _vacuum_telemetry(arguments: argparse.Namespace) -> object:
+    database = arguments.run_root.resolve() / ".agent-telemetry" / "telemetry.sqlite3"
+    if not database.is_file():
+        raise ValueError(
+            f'Run root "{arguments.run_root}" has no telemetry database at "{database}".'
+        )
+    store = TelemetryStore(arguments.run_root, read_only=not arguments.apply)
+    try:
+        return store.vacuum() if arguments.apply else store.maintenance_report()
+    finally:
+        store.close()
+
+
+def _export_otlp(arguments: argparse.Namespace) -> object:
+    signals = _signals(arguments.signals)
+    headers = _headers(os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "").split(","))
+    headers.update(_headers(arguments.header))
+    store = TelemetryStore(arguments.run_root, read_only=True)
+    try:
+        run_ids = list(arguments.run_ids)
+        trace_ids = [
+            *arguments.trace_ids,
+            *(graph_run_trace_id(run) for run in arguments.graph_runs),
+        ]
+        for trace_id in trace_ids:
+            found = store.run_ids_for_trace(trace_id)
+            if not found:
+                raise ValueError(
+                    f"No run in {arguments.run_root} recorded an event under {trace_id}."
+                )
+            run_ids.extend(run for run in found if run not in run_ids)
+        if not run_ids:
+            raise ValueError("Name what to export with --run-id, --graph-run or --trace-id.")
+        dependencies = _graph_dependencies(arguments.run_root, arguments.graph_runs)
+        if arguments.dry_run:
+            return preview_export(store, run_ids, signals=signals, graph_dependencies=dependencies)
+        endpoint = arguments.endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        if not endpoint:
+            raise ValueError("Give --endpoint or set OTEL_EXPORTER_OTLP_ENDPOINT.")
+        exporter = OtlpHttpExporter(
+            endpoint,
+            headers=headers,
+            timeout_seconds=arguments.timeout_seconds,
+            compress=arguments.gzip,
+        )
+        return export_runs(
+            store, run_ids, exporter, signals=signals, graph_dependencies=dependencies
+        )
+    finally:
+        store.close()
+
+
+def _graph_dependencies(
+    run_root: Path, graph_run_ids: list[str]
+) -> dict[str, dict[str, list[str]]]:
+    if not graph_run_ids or not (run_root.resolve() / ".agent-runs").is_dir():
+        return {}
+    store = RunStateStore(run_root)
+    dependencies: dict[str, dict[str, list[str]]] = {}
+    for run_id in graph_run_ids:
+        if not store.exists(run_id):
+            continue
+        graph = store.load(run_id).graph
+        required: dict[str, list[str]] = {
+            node["node_id"]: list(node.get("dependencies", [])) for node in graph.get("nodes", [])
+        }
+        for edge in graph.get("edges", []):
+            if edge.get("enabled", True) and edge["child_node_id"] in required:
+                if edge["parent_node_id"] not in required[edge["child_node_id"]]:
+                    required[edge["child_node_id"]].append(edge["parent_node_id"])
+        dependencies[run_id] = required
+    return dependencies
+
+
+def _signals(value: str) -> list[OtlpSignal]:
+    chosen = [item.strip() for item in value.split(",") if item.strip()]
+    unknown = [item for item in chosen if item not in SIGNALS]
+    if unknown or not chosen:
+        raise ValueError(f"--signals takes a subset of {', '.join(SIGNALS)}; got {value!r}.")
+    return [signal for signal in SIGNALS if signal in chosen]
+
+
+def _headers(items: list[str]) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for item in items:
+        if not item.strip():
+            continue
+        name, separator, value = item.partition("=")
+        if not separator or not name.strip():
+            raise ValueError(f"Header {item!r} must look like NAME=VALUE.")
+        headers[name.strip()] = urllib.parse.unquote(value.strip())
+    return headers
 
 
 def _quality(arguments: argparse.Namespace) -> object:
@@ -158,6 +379,7 @@ def _quality(arguments: argparse.Namespace) -> object:
 
 
 _VERDICT_FIELDS = (
+    "ok",
     "valid",
     "passed",
     "telemetry_chain_valid",

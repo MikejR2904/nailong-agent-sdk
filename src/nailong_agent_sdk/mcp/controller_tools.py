@@ -19,9 +19,15 @@ from ..state.shared_state import (
     SharedSubstrateSnapshot,
 )
 from ._shared import McpContext, _validation_errors
+from .authority import McpOperation, plan_digest
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
+
+
+def _run_hash(ctx: McpContext, controller_id: str) -> str | None:
+    run = ctx.controller_runtime.get_run(controller_id)
+    return None if run is None else run.run_hash
 
 
 def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
@@ -65,17 +71,42 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "approve_controller_plan")
+    @ctx.tool(server, "approve_controller_plan", operation=McpOperation.APPROVAL)
     def approve_controller_plan(
         controller_id: str,
         approved: bool,
         reason: str | None = None,
+        plan_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
     ) -> dict[str, Any]:
-        """Record the designer's explicit plan decision before downward dispatch."""
+        """Record the designer's explicit plan decision before downward dispatch.
+
+        An approver credential must send `plan_hash` (`binding.plan_hash` of
+        `get_controller_state`) and `issued_at_utc` (the instant the approver decided);
+        `approver_label` is the caller's unverified note on who decided and is only
+        recorded."""
 
         try:
-            record = ctx.controller_runtime.approve_plan(controller_id, approved, reason)
-            return {"ok": True, "controller": record.model_dump(mode="json")}
+            with ctx.gate.decide(
+                "approve_controller_plan",
+                subject=f'the plan of controller "{controller_id}"',
+                approved=approved,
+                binding_field="plan_hash",
+                expected=plan_hash,
+                actual=lambda: plan_digest(
+                    ctx.controller_runtime.get_controller(controller_id).plan
+                ),
+                issued_at_utc=issued_at_utc,
+                label=approver_label,
+                reason=reason,
+            ) as receipt:
+                record = ctx.controller_runtime.approve_plan(controller_id, approved, reason)
+            return {
+                "ok": True,
+                "controller": record.model_dump(mode="json"),
+                **receipt.fields(),
+            }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
@@ -145,57 +176,94 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "grant_elastic_capacity")
+    @ctx.tool(server, "grant_elastic_capacity", operation=McpOperation.APPROVAL)
     def grant_elastic_capacity(
         controller_id: str,
         reason: str,
         max_elastic_depth: int | None = None,
         max_elastic_nodes: int | None = None,
+        run_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
     ) -> dict[str, Any]:
-        """Raise a run's elastic caps by a recorded decision and run deferred requests that fit."""
+        """Raise a run's elastic caps by a recorded decision and run deferred requests that fit.
+
+        An approver credential must send `run_hash` (`run.run_hash` of `get_run_state`) and
+        `issued_at_utc` (the instant the approver decided); `approver_label` is the
+        caller's unverified note on who decided and is only recorded."""
 
         try:
-            run = ctx.controller_runtime.grant_elastic_capacity(
-                controller_id,
-                max_elastic_depth=max_elastic_depth,
-                max_elastic_nodes=max_elastic_nodes,
+            with ctx.gate.decide(
+                "grant_elastic_capacity",
+                subject=f'the run of controller "{controller_id}"',
+                approved=True,
+                binding_field="run_hash",
+                expected=run_hash,
+                actual=lambda: _run_hash(ctx, controller_id),
+                issued_at_utc=issued_at_utc,
+                label=approver_label,
                 reason=reason,
-            )
-            return {"ok": True, "run": run.model_dump(mode="json")}
+            ) as receipt:
+                run = ctx.controller_runtime.grant_elastic_capacity(
+                    controller_id,
+                    max_elastic_depth=max_elastic_depth,
+                    max_elastic_nodes=max_elastic_nodes,
+                    reason=reason,
+                )
+            return {"ok": True, "run": run.model_dump(mode="json"), **receipt.fields()}
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "decline_elastic_requests")
+    @ctx.tool(server, "decline_elastic_requests", operation=McpOperation.APPROVAL)
     def decline_elastic_requests(
         controller_id: str,
         parent_node_id: str,
         reason: str,
+        run_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
     ) -> dict[str, Any]:
-        """Discard one node's deferred elastic requests and release the dependents they held."""
+        """Discard one node's deferred elastic requests and release the dependents they held.
+
+        An approver credential must send `run_hash` (`run.run_hash` of `get_run_state`) and
+        `issued_at_utc` (the instant the approver decided); `approver_label` is the
+        caller's unverified note on who decided and is only recorded."""
 
         try:
-            run = ctx.controller_runtime.decline_elastic_requests(
-                controller_id, parent_node_id, reason
-            )
-            return {"ok": True, "run": run.model_dump(mode="json")}
+            with ctx.gate.decide(
+                "decline_elastic_requests",
+                subject=f'the run of controller "{controller_id}"',
+                approved=False,
+                binding_field="run_hash",
+                expected=run_hash,
+                actual=lambda: _run_hash(ctx, controller_id),
+                issued_at_utc=issued_at_utc,
+                label=approver_label,
+                reason=reason,
+            ) as receipt:
+                run = ctx.controller_runtime.decline_elastic_requests(
+                    controller_id, parent_node_id, reason
+                )
+            return {"ok": True, "run": run.model_dump(mode="json"), **receipt.fields()}
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "get_controller_state")
+    @ctx.tool(server, "get_controller_state", operation=McpOperation.READ)
     def get_controller_state(controller_id: str) -> dict[str, Any]:
-        """Return the durable user-visible vertical controller state and event log."""
+        """Return the durable user-visible vertical controller state and event log, with
+        the plan_hash an approver binds a plan decision to."""
 
         try:
+            record = ctx.controller_runtime.get_controller(controller_id)
             return {
                 "ok": True,
-                "controller": ctx.controller_runtime.get_controller(controller_id).model_dump(
-                    mode="json"
-                ),
+                "controller": record.model_dump(mode="json"),
+                "binding": {"plan_hash": plan_digest(record.plan)},
             }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @ctx.tool(server, "get_shared_state")
+    @ctx.tool(server, "get_shared_state", operation=McpOperation.READ)
     def get_shared_state(controller_id: str) -> dict[str, Any]:
         """Return typed lateral discoveries and writes without worker transcripts."""
 

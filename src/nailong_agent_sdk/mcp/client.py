@@ -32,6 +32,7 @@ from mcp.types import (
 from ..foundations.errors import redact_secrets
 from ..foundations.identifiers import require_unique
 from ..foundations.logging import get_logger
+from ..observability.trace_context import TRACEPARENT_HEADER
 from .client_types import (
     McpConnectionState,
     McpConnectionStatus,
@@ -138,6 +139,7 @@ class McpClientManager:
         arguments: dict[str, Any],
         *,
         timeout_seconds: float | None = None,
+        trace_parent: str | None = None,
     ) -> str:
         """Invoke one connected tool and return its content flattened to text."""
 
@@ -145,8 +147,15 @@ class McpClientManager:
         session = self._require_session(server_name)
         action = f'tool call to "{server_name}::{tool_name}"'
         seconds = self._call_timeout(server_name, timeout_seconds)
+        meta = (
+            {TRACEPARENT_HEADER: trace_parent}
+            if trace_parent and self._configs[server_name].propagate_trace_context
+            else None
+        )
         try:
-            result = await session.call_tool(tool_name, arguments, read_timeout_seconds=seconds)
+            result = await session.call_tool(
+                tool_name, arguments, read_timeout_seconds=seconds, meta=meta
+            )
         except Exception as error:
             raise self._session_failure(
                 server_name, action, error, McpToolCallError, seconds

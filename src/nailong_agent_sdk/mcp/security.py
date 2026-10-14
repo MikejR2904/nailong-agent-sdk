@@ -17,6 +17,18 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from .authority import (
+    APPROVER_VARIABLE,
+    DEFAULT_APPROVAL_MAX_AGE_SECONDS,
+    HOST_VARIABLE,
+    MAX_APPROVAL_MAX_AGE_SECONDS,
+    SINGLE_CREDENTIAL_VARIABLE,
+    McpAuthority,
+    McpAuthorityPolicy,
+    McpPrincipal,
+    authenticated_as,
+)
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8001
 MIN_TOKEN_LENGTH = 32
@@ -24,6 +36,7 @@ MAX_DISCARDED_BODY_BYTES = 65_536
 DISCARD_BODY_SECONDS = 1.0
 LOOPBACK_HOST_PATTERNS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
 AUDIT_MAX_OPEN_HANDLES_VARIABLE = "AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES"
+APPROVAL_MAX_AGE_VARIABLE = "AGENT_RUNTIME_APPROVAL_MAX_AGE_SECONDS"
 
 
 class ServerConfigurationError(ValueError):
@@ -40,6 +53,9 @@ class HttpServiceSettings:
     tls_keyfile: str | None = None
     tls_key_password: str | None = field(default=None, repr=False)
     audit_max_open_handles: int | None = None
+    approver_token: str | None = field(default=None, repr=False)
+    allow_host_approvals: bool = False
+    approval_max_age_seconds: float = DEFAULT_APPROVAL_MAX_AGE_SECONDS
 
     @property
     def scheme(self) -> str:
@@ -53,6 +69,27 @@ class HttpServiceSettings:
             "ssl_keyfile": self.tls_keyfile,
             "ssl_keyfile_password": self.tls_key_password,
         }
+
+    def authority_policy(self) -> McpAuthorityPolicy:
+        return McpAuthorityPolicy(
+            approver_configured=self.approver_token is not None,
+            allow_host_approvals=self.allow_host_approvals,
+            require_principal=True,
+            approval_max_age_seconds=self.approval_max_age_seconds,
+        )
+
+    def approval_notice(self) -> str | None:
+        if self.approver_token is not None:
+            return None
+        if self.allow_host_approvals:
+            return (
+                f"{SINGLE_CREDENTIAL_VARIABLE}=1: the host credential also decides "
+                "approvals, so a caller that can run work can approve it."
+            )
+        return (
+            f"approval operations are disabled: set {APPROVER_VARIABLE} to a secret that "
+            f"differs from {HOST_VARIABLE} to enable them."
+        )
 
     def transport_security(self) -> TransportSecuritySettings:
         origins = [f"{self.scheme}://{pattern}" for pattern in self.allowed_hosts]
@@ -77,14 +114,15 @@ def load_http_service_settings(environ: Mapping[str, str]) -> HttpServiceSetting
     if not host:
         raise ServerConfigurationError("AGENT_RUNTIME_HOST must not be empty.")
     port = _parse_port(environ.get("AGENT_RUNTIME_PORT", str(DEFAULT_PORT)))
-    token = environ.get("AGENT_RUNTIME_AUTH_TOKEN", "")
+    token = environ.get(HOST_VARIABLE, "")
     if len(token) < MIN_TOKEN_LENGTH or any(character.isspace() for character in token):
         raise ServerConfigurationError(
-            f"AGENT_RUNTIME_AUTH_TOKEN must be set to a secret of at least {MIN_TOKEN_LENGTH} "
+            f"{HOST_VARIABLE} must be set to a secret of at least {MIN_TOKEN_LENGTH} "
             "characters without whitespace; the runtime serves approval and decision tools "
             "and does not start unauthenticated. Generate one with "
             'python -c "import secrets; print(secrets.token_urlsafe(32))".'
         )
+    approver_token, allow_host_approvals = _parse_approval_authority(environ, token)
     if is_loopback_host(host):
         bracketed = f"[{host}]" if ":" in host else host
         allowed = tuple(dict.fromkeys((*LOOPBACK_HOST_PATTERNS, f"{bracketed}:*")))
@@ -112,7 +150,51 @@ def load_http_service_settings(environ: Mapping[str, str]) -> HttpServiceSetting
         tls_keyfile=key,
         tls_key_password=password,
         audit_max_open_handles=_parse_audit_max_open_handles(environ),
+        approver_token=approver_token,
+        allow_host_approvals=allow_host_approvals,
+        approval_max_age_seconds=_parse_approval_max_age(environ),
     )
+
+
+def _parse_approval_authority(
+    environ: Mapping[str, str], host_token: str
+) -> tuple[str | None, bool]:
+    approver = environ.get(APPROVER_VARIABLE, "")
+    allow_host = environ.get(SINGLE_CREDENTIAL_VARIABLE) == "1"
+    if not approver:
+        return None, allow_host
+    if len(approver) < MIN_TOKEN_LENGTH or any(character.isspace() for character in approver):
+        raise ServerConfigurationError(
+            f"{APPROVER_VARIABLE} must be a secret of at least {MIN_TOKEN_LENGTH} characters "
+            "without whitespace, or unset to disable approval operations."
+        )
+    if hmac.compare_digest(approver.encode("utf-8"), host_token.encode("utf-8")):
+        raise ServerConfigurationError(
+            f"{APPROVER_VARIABLE} must differ from {HOST_VARIABLE}: one secret cannot "
+            "separate the party that runs work from the party that approves it."
+        )
+    if allow_host:
+        raise ServerConfigurationError(
+            f"{SINGLE_CREDENTIAL_VARIABLE}=1 contradicts {APPROVER_VARIABLE}: either the "
+            "approver credential decides approvals or the host credential does, not both."
+        )
+    return approver, False
+
+
+def _parse_approval_max_age(environ: Mapping[str, str]) -> float:
+    raw = environ.get(APPROVAL_MAX_AGE_VARIABLE, "").strip()
+    if not raw:
+        return DEFAULT_APPROVAL_MAX_AGE_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not 0 < value <= MAX_APPROVAL_MAX_AGE_SECONDS:
+        raise ServerConfigurationError(
+            f"{APPROVAL_MAX_AGE_VARIABLE} must be a number of seconds above 0 and at most "
+            f'{MAX_APPROVAL_MAX_AGE_SECONDS:g}, got "{raw}".'
+        )
+    return value
 
 
 def _parse_audit_max_open_handles(environ: Mapping[str, str]) -> int | None:
@@ -202,16 +284,28 @@ def _parse_allowed_hosts(host: str, raw: str) -> tuple[str, ...]:
 
 
 class BearerTokenMiddleware:
-    def __init__(self, app: ASGIApp, token: str) -> None:
+    def __init__(self, app: ASGIApp, token: str, approver_token: str | None = None) -> None:
         self._app = app
-        self._token = token.encode("utf-8")
+        self._host = (token.encode("utf-8"), McpPrincipal.for_secret(McpAuthority.HOST, token))
+        self._approver = (
+            None
+            if approver_token is None
+            else (
+                approver_token.encode("utf-8"),
+                McpPrincipal.for_secret(McpAuthority.APPROVER, approver_token),
+            )
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         kind = scope["type"]
-        if kind == "websocket" and not self._authorized(scope):
+        if kind not in {"http", "websocket"}:
+            await self._app(scope, receive, send)
+            return
+        principal = self._principal(scope)
+        if principal is None and kind == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
-        if kind == "http" and not self._authorized(scope):
+        if principal is None:
             await _discard_request_body(receive)
             response = JSONResponse(
                 {
@@ -219,7 +313,7 @@ class BearerTokenMiddleware:
                     "errors": [
                         {
                             "message": 'missing or invalid bearer token; send "Authorization: '
-                            'Bearer <AGENT_RUNTIME_AUTH_TOKEN>".',
+                            'Bearer <AGENT_RUNTIME_AUTH_TOKEN or AGENT_RUNTIME_APPROVER_TOKEN>".',
                             "type": "Unauthorized",
                         }
                     ],
@@ -229,13 +323,23 @@ class BearerTokenMiddleware:
             )
             await response(scope, receive, send)
             return
-        await self._app(scope, receive, send)
+        with authenticated_as(principal):
+            await self._app(scope, receive, send)
 
-    def _authorized(self, scope: Scope) -> bool:
+    def _principal(self, scope: Scope) -> McpPrincipal | None:
         scheme, _, presented = Headers(scope=scope).get("authorization", "").partition(" ")
         if scheme.lower() != "bearer":
-            return False
-        return hmac.compare_digest(presented.strip().encode("utf-8"), self._token)
+            return None
+        candidate = presented.strip().encode("utf-8")
+        host_match = hmac.compare_digest(candidate, self._host[0])
+        approver_match = self._approver is not None and hmac.compare_digest(
+            candidate, self._approver[0]
+        )
+        if host_match:
+            return self._host[1]
+        if approver_match and self._approver is not None:
+            return self._approver[1]
+        return None
 
 
 async def _discard_request_body(receive: Receive) -> None:

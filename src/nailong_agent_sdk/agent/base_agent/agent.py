@@ -35,6 +35,7 @@ from ...foundations.contracts import (
     validate_task_input,
     validate_tool_arguments,
 )
+from ...foundations.detached import run_detached
 from ...foundations.errors import AgentSdkError, TransientProviderError, redact_hidden_reasoning
 from ...foundations.hashing import canonical_hash, canonical_json, estimate_tokens
 from ...memory.context import assemble_initial_context
@@ -79,7 +80,10 @@ from ...state.project_state_models import (
 from ...state.project_state_store import InMemoryProjectStateStore
 from ...tools.tools import ToolExecutor, ToolInvocationContext
 from ..model import (
+    UNREPORTED_CANCELLATION,
     AgentModel,
+    CancellationReportingModel,
+    ModelCancellationOutcome,
     ModelContext,
     ModelStreamListener,
     ModelTurnResponse,
@@ -138,7 +142,12 @@ class BaseAgent:
         audit_logs: AuditTranscriptStore | None = None,
         profiler: AgentRunProfiler | None = None,
         on_model_stream: ModelStreamListener | None = None,
+        episode_history_limit: int | None = None,
     ) -> None:
+        if episode_history_limit is not None and episode_history_limit < 1:
+            raise ValueError(
+                f"episode_history_limit must be at least 1 when set, got {episode_history_limit}."
+            )
         if definition.memory_scope is MemoryScope.CROSS_SESSION:
             raise AgentSdkError(
                 "CROSS_SESSION_STORE_REQUIRED",
@@ -162,6 +171,8 @@ class BaseAgent:
         self.result_journal = result_journal or InMemoryToolResultJournal()
         self.project_state_store = project_state_store or InMemoryProjectStateStore()
         self._episode_store_factory = episode_store_factory or InMemoryEpisodeStore
+        self._episode_history_limit = episode_history_limit
+        self._active_memory: InMemoryEpisodeStore | None = None
         self._active_project_id: str | None = None
         self._active_project_state: ProjectState | None = None
         self.telemetry = telemetry
@@ -194,6 +205,10 @@ class BaseAgent:
             raise
 
     def _clear_active_run(self) -> None:
+        memory, self._active_memory = self._active_memory, None
+        close = getattr(memory, "close_background", None)
+        if callable(close):
+            close()
         self._active_project_id = None
         self._active_project_state = None
         self._profile_root_span = None
@@ -213,8 +228,9 @@ class BaseAgent:
     ) -> AgentResult:
         validate_task_input(self.definition, task)
         prompt = assemble_initial_context(self.definition, task)
-        episodes = InMemoryEpisodeGraph(self._now)
+        episodes = InMemoryEpisodeGraph(self._now, retained_limit=self._episode_history_limit)
         memory = self._episode_store_factory()
+        self._active_memory = memory
         events: list[AgentLifecycleEvent] = []
         observations: list[ModelObservation] = []
         projection_history: list[ContextProjectionMetadata] = []
@@ -377,13 +393,47 @@ class BaseAgent:
                 attributes={"iteration": iteration},
             )
             try:
-                projection = self.context_projector.project(
+                projection = await self._project_context(
+                    prompt, observations, episodes, memory, protected_episode_ids, task, deadline
+                )
+            except RunCancelled:
+                self.profiler.finish_span(projection_span, ProfileSpanStatus.CANCELLED)
+                return self._terminate(
+                    AgentRunStatus.CANCELLED,
+                    task,
+                    iteration - 1,
+                    "Execution was cancelled while the episode memory was being summarized.",
                     prompt,
-                    observations,
-                    episodes.list(),
-                    memory,
-                    protected_episode_ids,
-                    relevance_query=self._pask_relevance_query(task),
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
+                )
+            except WatchdogExpired:
+                self.profiler.finish_span(projection_span, ProfileSpanStatus.TIMED_OUT)
+                run_deadline_seconds = self.watchdog_policy.run_deadline_seconds
+                failure = AgentFailure(
+                    code="WATCHDOG_RUN_DEADLINE",
+                    message=f"Agent run exceeded its {run_deadline_seconds}s overall run "
+                    f"deadline while the episode memory was being summarized, after "
+                    f"{iteration - 1} completed iteration(s); a summarizer that needs "
+                    "longer than the remaining deadline should be faster or the deadline longer.",
+                    details={
+                        "run_deadline_seconds": run_deadline_seconds,
+                        "completed_iterations": iteration - 1,
+                    },
+                )
+                return self._terminate(
+                    AgentRunStatus.FAILED,
+                    task,
+                    iteration - 1,
+                    failure.message,
+                    prompt,
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
+                    failure=failure,
                 )
             except Exception:
                 self.profiler.finish_span(projection_span, ProfileSpanStatus.FAILED)
@@ -406,7 +456,38 @@ class BaseAgent:
                 omitted_observation_count=projection.metadata.omitted_observation_count,
                 compacted_stub_count=len(projection.compacted_episodes),
                 omitted_compacted_count=projection.metadata.omitted_compacted_count,
+                **(
+                    {
+                        "semantic_summary_count": len(projection.summaries),
+                        "omitted_summary_count": projection.metadata.omitted_summary_count,
+                    }
+                    if projection.summaries or projection.metadata.omitted_summary_count
+                    else {}
+                ),
             )
+            semantic = projection.compaction.dossier.get("semantic_compaction")
+            if isinstance(semantic, dict) and semantic.get("outcomes"):
+                emit(
+                    "semantic-compaction",
+                    iteration,
+                    policy_hash=semantic.get("policy_hash"),
+                    summarizer_id=semantic.get("summarizer_id"),
+                    committed_summary_ids=semantic.get("committed_summary_ids", []),
+                    consolidated_summary_ids=semantic.get("consolidated_summary_ids", []),
+                    released_without_summary=semantic.get("released_without_summary", []),
+                    evicted_episode_ids=semantic.get("evicted_episode_ids", []),
+                    pending_episode_count=len(semantic.get("pending_episode_ids", [])),
+                    groups=[
+                        {
+                            "group_id": outcome.get("group_id"),
+                            "level": outcome.get("level"),
+                            "status": outcome.get("status"),
+                            "input_hash": outcome.get("input_hash"),
+                            "reason": outcome.get("reason"),
+                        }
+                        for outcome in semantic["outcomes"]
+                    ],
+                )
             if self.telemetry is not None:
                 metric_details = {"iteration": iteration, "kind": "sdk-estimate"}
                 record_metric_value(
@@ -638,6 +719,7 @@ class BaseAgent:
                     output_schema=self.definition.output_schema,
                     compacted_episodes=projection.compacted_episodes,
                     trace_parent=self._trace_parent_for(model_span.span_id),
+                    semantic_summaries=projection.summaries,
                 )
                 stream_listener = self._guarded_stream_listener(emit, iteration)
                 if stream_listener is not None and isinstance(self.model, StreamingAgentModel):
@@ -654,7 +736,16 @@ class BaseAgent:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.TIMED_OUT)
                     raise
                 except RunCancelled:
-                    self.profiler.finish_span(model_span, ProfileSpanStatus.CANCELLED)
+                    outcome = self._model_cancellation_outcome(task.id)
+                    self.profiler.finish_span(
+                        model_span,
+                        ProfileSpanStatus.CANCELLED,
+                        attributes={
+                            "nailong.cancellation.transport": outcome.transport,
+                            "nailong.cancellation.provider": outcome.provider,
+                        },
+                    )
+                    emit("model-turn-cancelled", iteration, **outcome.details())
                     raise
                 except Exception:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.FAILED)
@@ -1425,6 +1516,15 @@ class BaseAgent:
 
         effective_call = self._effective_call(call, prior_outcomes)
         if tool.episode_kind is EpisodeKind.ACTION:
+            restored = self._rehydrate_consumed(effective_call, memory)
+            if restored:
+                emit(
+                    "episodes-rehydrated",
+                    iteration,
+                    episode_ids=restored,
+                    tool=call.name,
+                    tool_call_id=call.id,
+                )
             unavailable = self._unavailable_consumed_episodes(effective_call, episodes, memory)
             if unavailable:
                 return self._record_unexecuted_result(
@@ -1572,21 +1672,59 @@ class BaseAgent:
         )
         return outcome
 
+    async def _project_context(
+        self,
+        prompt: Any,
+        observations: Sequence[ModelObservation],
+        episodes: InMemoryEpisodeGraph,
+        memory: InMemoryEpisodeStore,
+        protected_episode_ids: frozenset[str],
+        task: ScopedAgentTask,
+        deadline: float | None,
+    ) -> Any:
+        arguments = (prompt, observations, episodes.list(), memory, protected_episode_ids)
+        query = self._pask_relevance_query(task)
+        if not getattr(memory, "semantic_compaction_enabled", False):
+            return self.context_projector.project(*arguments, relevance_query=query)
+        guard = memory.guard_compaction()
+        try:
+            return await self._await_with_watchdog(
+                run_detached(self.context_projector.project, *arguments, relevance_query=query),
+                None,
+                deadline,
+            )
+        except BaseException:
+            guard.abandon()
+            raise
+
+    def _rehydrate_consumed(self, call: ToolCall, memory: InMemoryEpisodeStore) -> list[str]:
+        budget = self.context_projector.policy.rehydration_token_budget
+        if budget <= 0 or not callable(getattr(memory, "rehydrate", None)):
+            return []
+        wanted = [
+            episode_id
+            for episode_id in call.consumed_episode_ids
+            if (record := memory.get(episode_id)) is not None
+            and record.state is EpisodeState.COMPACTED
+        ]
+        if not wanted:
+            return []
+        return list(self.context_projector.rehydrate(memory, wanted).restored_episode_ids)
+
     @staticmethod
     def _unavailable_consumed_episodes(
         call: ToolCall,
         episodes: InMemoryEpisodeGraph,
         memory: InMemoryEpisodeStore,
     ) -> list[str]:
-        known = {summary.id: summary for summary in episodes.list()}
         problems: list[str] = []
         for episode_id in call.consumed_episode_ids:
-            summary = known.get(episode_id)
-            if summary is None:
+            kind = episodes.kind_of(episode_id)
+            if kind is None:
                 problems.append(f'"{episode_id}" is not an episode of this run')
-            elif summary.kind is not EpisodeKind.EXPLORATORY:
+            elif kind is not EpisodeKind.EXPLORATORY:
                 problems.append(
-                    f'"{episode_id}" is an {summary.kind.value} episode and actions may consume '
+                    f'"{episode_id}" is an {kind.value} episode and actions may consume '
                     "only exploratory episodes"
                 )
             else:
@@ -1607,11 +1745,13 @@ class BaseAgent:
         summary = self._episode_summary_text(call, result)
         payload = {"call": call.model_dump(mode="json"), "result": result.model_dump(mode="json")}
         episode_id: str | None = None
+        memory_episode_id: str | None = None
         if tool.episode_kind.value == "exploratory":
             episode = episodes.add_exploratory(summary, payload)
             memory_episode = memory.open_exploratory(self.definition.identity, content=payload)
             memory.close(memory_episode.id, description=summary)
             episode_id = episode.id
+            memory_episode_id = memory_episode.id
         else:
             episode = episodes.add_action(summary, call.consumed_episode_ids, payload)
             memory.mark_accessed(call.consumed_episode_ids)
@@ -1620,9 +1760,13 @@ class BaseAgent:
             )
             memory.close(memory_episode.id)
             episode_id = episode.id
+            memory_episode_id = memory_episode.id
         projected = self.context_projector.project_tool_result(
             call, result, self._active_journal or self.result_journal
         )
+        attach = getattr(memory, "attach_source_handle", None)
+        if callable(attach) and memory_episode_id is not None:
+            attach(memory_episode_id, projected.handle.handle_id)
         return ToolCallOutcome(
             call=call,
             result=result,
@@ -1757,6 +1901,14 @@ class BaseAgent:
         if scope.expired():
             raise WatchdogExpired(source, operation_timeout_seconds)
         return result
+
+    def _model_cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome:
+        model = self.model
+        if isinstance(model, CancellationReportingModel):
+            outcome = model.cancellation_outcome(task_id)
+            if outcome is not None:
+                return outcome
+        return UNREPORTED_CANCELLATION
 
     def _transient_retry_delay(self, error: TransientProviderError, attempt: int) -> float:
         policy = self.watchdog_policy
@@ -2049,6 +2201,8 @@ class BaseAgent:
             context=prompt,
             project_state=project_state.model_view() if project_state is not None else None,
             episodes=episodes.list(),
+            episodes_total=episodes.total if self._episode_history_limit is not None else None,
+            episodes_omitted=episodes.omitted,
             projection_history=list(projection_history),
             events=list(events),
             profile=profile_dump,

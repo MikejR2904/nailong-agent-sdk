@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+import threading
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import Field
 
-from ..foundations.atomic_io import replace_atomic, unique_temporary_path
+from ..foundations.atomic_io import exclusive_file_lock, replace_atomic, unique_temporary_path
 from ..foundations.contracts import (
     AgentPrompt,
     CompactedEpisodeStub,
@@ -33,7 +35,16 @@ from ..foundations.contracts import (
 )
 from ..foundations.hashing import canonical_hash, canonical_json, estimate_tokens, sha256_hex
 from ..foundations.identifiers import file_safe_name
-from .episode_models import CompactionResult, CompactionStatus
+from ..foundations.run_fence import RunFence
+from .episode_models import (
+    CompactionResult,
+    CompactionStatus,
+    EpisodeState,
+    RehydrationResult,
+    SemanticEpisodeSummary,
+    SemanticSummaryView,
+)
+from .episode_scoring import LexicalEpisodeRelevanceScorer, summary_relevance
 from .episode_store import InMemoryEpisodeStore
 
 _HANDLE_ID = re.compile(r"result-[0-9]{1,12}")
@@ -61,6 +72,8 @@ class ContextProjectionPolicy(StrictModel):
     tool_result_preview_chars: int = Field(default=1_024, ge=32, le=100_000)
     compacted_stub_token_budget: int = Field(default=1_500, ge=0, le=1_000_000)
     compacted_summary_chars: int = Field(default=160, ge=32, le=2_000)
+    semantic_summary_token_budget: int = Field(default=1_200, ge=0, le=1_000_000)
+    rehydration_token_budget: int = Field(default=0, ge=0, le=1_000_000)
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
@@ -123,10 +136,15 @@ class FileToolResultJournal(InMemoryToolResultJournal):
     def __init__(self, run_root: Path, *, read_only: bool = False) -> None:
         super().__init__()
         self._root = run_root.resolve() / ".agent-tool-results"
+        self._fence = RunFence(run_root)
         self._read_only = read_only
         if not read_only:
             self._root.mkdir(parents=True, exist_ok=True)
         self._next_id = _next_handle_number(self._root)
+
+    @property
+    def fence(self) -> RunFence:
+        return self._fence
 
     def _require_writable(self, operation: str) -> None:
         if self._read_only:
@@ -159,6 +177,30 @@ class FileToolResultJournal(InMemoryToolResultJournal):
 
     def for_run(self, run_id: str) -> ToolResultJournal:
         return _RunScopedJournal(self, run_id)
+
+    def record_for_run(
+        self, run_id: str, call: ToolCall, result: ToolExecutionResult
+    ) -> ToolResultHandle:
+        self._fence.wait_until_open(run_id, "record a tool result")
+        with self._run_lock(run_id):
+            self._fence.raise_if_fenced(run_id, "record a tool result")
+            handle = self.record(call, result)
+            self._index_handle(run_id, handle.handle_id)
+        return handle
+
+    def quiesce(self, run_id: str) -> None:
+        self._require_writable("quiesce")
+        with self._run_lock(run_id):
+            return
+
+    @contextmanager
+    def _run_lock(self, run_id: str) -> Iterator[None]:
+        path = self._run_lock_path(run_id)
+        with _run_lock_guard(path), exclusive_file_lock(path, timeout_code="JOURNAL_LOCK_TIMEOUT"):
+            yield
+
+    def _run_lock_path(self, run_id: str) -> Path:
+        return self._root / _RUN_INDEX_DIRECTORY / f"{file_safe_name(run_id)}.lock"
 
     def handles_of(self, run_id: str) -> list[str]:
         index = self._index_path(run_id)
@@ -197,6 +239,10 @@ class FileToolResultJournal(InMemoryToolResultJournal):
         for item in footprint.handles:
             (self._root / f"{item.handle_id}.json").unlink(missing_ok=True)
         self._index_path(run_id).unlink(missing_ok=True)
+        try:
+            self._run_lock_path(run_id).unlink(missing_ok=True)
+        except OSError:
+            pass
         return footprint
 
     def _index_handle(self, run_id: str, handle_id: str) -> None:
@@ -244,6 +290,7 @@ class ContextProjection:
     metadata: ContextProjectionMetadata
     compaction: CompactionResult
     compacted_episodes: tuple[CompactedEpisodeStub, ...] = ()
+    summaries: tuple[SemanticSummaryView, ...] = ()
 
 
 class ContextProjector:
@@ -305,12 +352,27 @@ class ContextProjector:
             )
         ]
         base_tokens = estimate_tokens(prompt) + estimate_tokens(retained_episodes)
+        selected_summaries, omitted_summaries, summary_tokens = _select_summaries(
+            memory,
+            relevance_query,
+            min(
+                self._policy.semantic_summary_token_budget,
+                max(0, self._policy.context_token_budget - base_tokens),
+            ),
+        )
+        base_tokens += summary_tokens
+        covered = {
+            episode_id
+            for summary in selected_summaries
+            for episode_id in summary.source_episode_ids
+        }
         stubs, omitted_stubs, stub_tokens = _compacted_stubs(
             [
                 summary
                 for summary in episode_summaries
-                if (record := memory.get(summary.id)) is not None
-                and record.state.value == "compacted"
+                if summary.id not in covered
+                and (record := memory.get(summary.id)) is not None
+                and record.state is EpisodeState.COMPACTED
             ],
             observations,
             self._policy.compacted_summary_chars,
@@ -340,10 +402,18 @@ class ContextProjector:
                 compacted_episode_ids=compaction.compacted_episode_ids,
                 omitted_observation_count=omitted,
                 omitted_compacted_count=omitted_stubs,
+                semantic_summary_ids=[item.summary_id for item in selected_summaries],
+                omitted_summary_count=omitted_summaries,
             ),
             compaction=compaction,
             compacted_episodes=stubs,
+            summaries=tuple(item.view() for item in selected_summaries),
         )
+
+    def rehydrate(
+        self, memory: InMemoryEpisodeStore, episode_ids: Sequence[str]
+    ) -> RehydrationResult:
+        return memory.rehydrate(episode_ids, token_budget=self._policy.rehydration_token_budget)
 
     def project_tool_result(
         self,
@@ -359,6 +429,50 @@ class ContextProjector:
             preview=preview,
             error=_truncate_text(result.error, self._policy.tool_result_preview_chars),
         )
+
+
+def _select_summaries(
+    memory: InMemoryEpisodeStore, query: str, allowance: int
+) -> tuple[list[SemanticEpisodeSummary], int, int]:
+    active = getattr(memory, "active_summaries", None)
+    candidates: list[SemanticEpisodeSummary] = list(active()) if callable(active) else []
+    if not candidates or allowance <= 0:
+        return [], len(candidates), 0
+    scorer = getattr(memory, "relevance_scorer", None) or LexicalEpisodeRelevanceScorer()
+
+    def sequence(summary: SemanticEpisodeSummary) -> int:
+        suffix = summary.summary_id.rpartition("-")[2]
+        return int(suffix) if suffix.isdigit() else 0
+
+    def fully_live(summary: SemanticEpisodeSummary) -> bool:
+        records = [memory.get(episode_id) for episode_id in summary.source_episode_ids]
+        return all(
+            record is not None and record.state is not EpisodeState.COMPACTED for record in records
+        )
+
+    ranked = sorted(
+        (
+            (summary_relevance(scorer, query, summary), summary)
+            for summary in candidates
+            if not fully_live(summary)
+        ),
+        key=lambda item: (
+            -item[0],
+            not item[1].unresolved_issues,
+            -item[1].level,
+            -sequence(item[1]),
+        ),
+    )
+    selected: list[SemanticEpisodeSummary] = []
+    used = 0
+    for _, summary in ranked:
+        cost = estimate_tokens(summary.view().model_dump(mode="json"))
+        if used + cost > allowance:
+            continue
+        selected.append(summary)
+        used += cost
+    selected.sort(key=sequence)
+    return selected, len(ranked) - len(selected), used
 
 
 def _compacted_stubs(
@@ -433,6 +547,18 @@ def journal_content_hash(journal_root: Path, handle_id: str) -> str:
     return canonical_hash(payload)
 
 
+_RUN_LOCK_REGISTRY: dict[Path, threading.RLock] = {}
+_RUN_LOCK_REGISTRY_GUARD = threading.Lock()
+
+
+@contextmanager
+def _run_lock_guard(path: Path) -> Iterator[None]:
+    with _RUN_LOCK_REGISTRY_GUARD:
+        lock = _RUN_LOCK_REGISTRY.setdefault(path, threading.RLock())
+    with lock:
+        yield
+
+
 def _next_handle_number(root: Path) -> int:
     highest = _read_high_water(root)
     for path in root.glob("result-*.json"):
@@ -456,9 +582,7 @@ class _RunScopedJournal:
         self._run_id = run_id
 
     def record(self, call: ToolCall, result: ToolExecutionResult) -> ToolResultHandle:
-        handle = self._journal.record(call, result)
-        self._journal._index_handle(self._run_id, handle.handle_id)
-        return handle
+        return self._journal.record_for_run(self._run_id, call, result)
 
     def read(self, handle_id: str) -> dict[str, Any]:
         return self._journal.read(handle_id)

@@ -24,6 +24,13 @@ from ..state.controller_runtime import ControllerRuntime
 from ..state.harness_coordinator import HarnessCoordinator
 from ..state.planning import PlanValidator
 from ..state.project_state_store import FileProjectStateStore
+from .authority import (
+    DecisionGate,
+    McpAuthorityPolicy,
+    McpAuthorizationError,
+    McpOperation,
+    authenticated_as,
+)
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
@@ -38,6 +45,10 @@ def _validation_errors(error: ValidationError) -> list[dict[str, Any]]:
         }
         for issue in error.errors()
     ]
+
+
+def _refusal(error: McpAuthorizationError) -> dict[str, Any]:
+    return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
 
 @dataclass
@@ -57,19 +68,33 @@ class McpContext:
     retention: RunRetention
     orchestrators: dict[str, Orchestrator] = field(default_factory=dict)
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    authority: McpAuthorityPolicy = field(default_factory=McpAuthorityPolicy)
+    gate: DecisionGate = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.gate = DecisionGate(self.authority, self.telemetry)
 
     def tool(
-        self, server: MCPServer, name: str, *, exclusive: bool = True
+        self,
+        server: MCPServer,
+        name: str,
+        *,
+        exclusive: bool = True,
+        operation: McpOperation = McpOperation.HOST,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
             return server.tool(name=name, structured_output=True)(
-                self._offloaded(function, name, exclusive)
+                self._offloaded(function, name, exclusive, operation)
             )
 
         return decorate
 
     def _offloaded(
-        self, function: Callable[..., Any], name: str, exclusive: bool
+        self,
+        function: Callable[..., Any],
+        name: str,
+        exclusive: bool,
+        operation: McpOperation,
     ) -> Callable[..., Any]:
         awaitable = inspect.iscoroutinefunction(function)
 
@@ -96,10 +121,22 @@ class McpContext:
 
         @functools.wraps(function)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            if not exclusive:
-                return await run(*args, **kwargs)
-            async with self.state_lock:
-                return await run(*args, **kwargs)
+            try:
+                principal = self.gate.resolve(name)
+            except McpAuthorizationError as error:
+                return _refusal(error)
+            try:
+                self.authority.check(principal, operation, name)
+            except McpAuthorizationError as error:
+                await asyncio.to_thread(
+                    self.gate.refuse_operation, name, operation, principal, error
+                )
+                return _refusal(error)
+            with authenticated_as(principal):
+                if not exclusive:
+                    return await run(*args, **kwargs)
+                async with self.state_lock:
+                    return await run(*args, **kwargs)
 
         setattr(wrapper, "__signature__", inspect.signature(function, eval_str=True))
         return wrapper

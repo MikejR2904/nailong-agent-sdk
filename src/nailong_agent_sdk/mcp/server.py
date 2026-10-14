@@ -27,6 +27,8 @@ from ..state.planning import PlanValidator
 from ..state.project_state_store import FileProjectStateStore
 from ._shared import McpContext
 from .agent_tools import register_agent_tools
+from .arguments import ToolArgumentGuard
+from .authority import McpAuthorityPolicy
 from .controller_tools import register_controller_tools
 from .orchestration_tools import register_orchestration_tools
 from .project_state_tools import register_project_state_tools
@@ -42,10 +44,14 @@ from .telemetry_tools import register_telemetry_tools
 SERVER_NAME = PACKAGE_NAME
 SERVER_VERSION = package_version()
 PROCESS_OPTIONS_ENVIRONMENT_VARIABLE = "AGENT_RUNTIME_ALLOW_PROCESS_OPTIONS"
+RETENTION_ANCHOR_ENVIRONMENT_VARIABLE = "AGENT_RUNTIME_RETENTION_ANCHOR_PATH"
 
 
 def create_mcp_server(
-    run_root: Path | None = None, *, audit_max_open_handles: int | None = None
+    run_root: Path | None = None,
+    *,
+    audit_max_open_handles: int | None = None,
+    authority: McpAuthorityPolicy | None = None,
 ) -> MCPServer:
     """Build the BaseAgent and typed harness MCP surface without a network listener."""
 
@@ -101,7 +107,9 @@ def create_mcp_server(
             telemetry=telemetry,
             audit_logs=audit_logs,
             result_journal=result_journal,
+            anchor_path=_anchor_path(),
         ),
+        authority=authority or McpAuthorityPolicy(),
     )
 
     server = MCPServer(
@@ -120,8 +128,14 @@ def create_mcp_server(
     register_controller_tools(server, ctx)
     register_specification_tools(server, ctx)
     register_telemetry_tools(server, ctx)
+    server.middleware.append(ToolArgumentGuard(server))
 
     return server
+
+
+def _anchor_path() -> Path | None:
+    configured = os.environ.get(RETENTION_ANCHOR_ENVIRONMENT_VARIABLE, "").strip()
+    return Path(configured) if configured else None
 
 
 _default_server: MCPServer | None = None
@@ -154,8 +168,12 @@ def main() -> None:
         raise SystemExit(2) from error
     import uvicorn
 
+    notice = settings.approval_notice()
+    if notice is not None:
+        print(f"nailong-agent-sdk MCP server: {notice}", file=sys.stderr, flush=True)
     app = create_mcp_server(
-        audit_max_open_handles=settings.audit_max_open_handles
+        audit_max_open_handles=settings.audit_max_open_handles,
+        authority=settings.authority_policy(),
     ).streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,
@@ -163,7 +181,9 @@ def main() -> None:
         transport_security=settings.transport_security(),
         host=settings.host,
     )
-    app.add_middleware(BearerTokenMiddleware, token=settings.token)
+    app.add_middleware(
+        BearerTokenMiddleware, token=settings.token, approver_token=settings.approver_token
+    )
     uvicorn.run(
         app,
         host=settings.host,

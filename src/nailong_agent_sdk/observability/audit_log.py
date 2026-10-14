@@ -22,6 +22,7 @@ from ..foundations.errors import AgentSdkError, assert_no_hidden_reasoning, reda
 from ..foundations.hashing import canonical_hash, canonical_json, sha256_hex
 from ..foundations.identifiers import file_safe_name
 from ..foundations.logging import get_logger
+from ..foundations.run_fence import RunFence
 from ..foundations.text import assert_well_formed_text
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import ChainBreak
@@ -85,6 +86,7 @@ class AuditTranscriptStore:
         if max_open_handles < 1:
             raise ValueError("max_open_handles must be at least 1.")
         self._root = root.resolve() / ".agent-audit-logs"
+        self._fence = RunFence(root)
         self._read_only = read_only
         if not read_only:
             self._root.mkdir(parents=True, exist_ok=True)
@@ -100,6 +102,10 @@ class AuditTranscriptStore:
     @property
     def handle_evictions(self) -> int:
         return self._handle_evictions
+
+    @property
+    def fence(self) -> RunFence:
+        return self._fence
 
     def _require_writable(self, operation: str) -> None:
         if self._read_only:
@@ -144,8 +150,10 @@ class AuditTranscriptStore:
         iteration: int | None = None,
     ) -> AuditLogEntry:
         self._require_writable("append")
+        self._fence.wait_until_open(run_id, "append an audit entry")
         with self._lock:
             with self._append_transaction(run_id):
+                self._fence.raise_if_fenced(run_id, "append an audit entry")
                 # Append-mode writes use the true end even after tail inspection.
                 handle = self._handle_for(run_id)
                 handle.seek(0, os.SEEK_END)
@@ -186,6 +194,14 @@ class AuditTranscriptStore:
             if len(entries) >= limit:
                 break
         return entries
+
+    def quiesce(self, run_id: str) -> None:
+        """Wait for an append already inside its transaction to finish."""
+
+        self._require_writable("quiesce")
+        with self._lock:
+            with self._append_transaction(run_id):
+                return
 
     def footprint(self, run_id: str) -> AuditFootprint:
         path = self._jsonl_path(run_id)

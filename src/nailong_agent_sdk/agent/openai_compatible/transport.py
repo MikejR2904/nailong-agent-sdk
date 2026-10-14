@@ -19,7 +19,7 @@ import socket
 import ssl
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -67,6 +67,21 @@ class JsonHttpTransport(Protocol):
     """A blocking JSON transport that a host may replace in tests or deployment."""
 
     def post_json(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]: ...
+
+
+@runtime_checkable
+class AsyncJsonHttpTransport(Protocol):
+    """A non-blocking JSON transport whose request is aborted when the awaiting task is
+    cancelled, which closes the connection to the provider."""
+
+    async def apost_json(
         self,
         url: str,
         *,
@@ -194,40 +209,43 @@ class HttpxJsonTransport:
             response = self._client.post(
                 url, headers=dict(headers), content=body, timeout=timeout_seconds
             )
-            if response.status_code >= 300:
-                raise _http_status_error(
-                    response.status_code,
-                    retry_after_seconds=_parse_retry_after(response.headers.get("Retry-After")),
-                    body=response.text,
-                    secrets=_header_secrets(headers),
-                )
-            decoded = response.json()
-        except httpx.TimeoutException as error:
-            raise TransientProviderError(
-                "OPENAI_COMPATIBLE_TRANSPORT_TIMEOUT",
-                _timeout_message(url, timeout_seconds),
-            ) from error
-        except httpx.TransportError as error:
-            raise TransientProviderError(
-                "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
-                f"OpenAI-compatible provider could not be reached at "
-                f"{_transport_failure_detail(url, error)}.",
-            ) from error
-        except (UnicodeDecodeError, json.JSONDecodeError, httpx.DecodingError) as error:
-            raise AgentSdkError(
-                "OPENAI_COMPATIBLE_RESPONSE_INVALID",
-                "OpenAI-compatible provider returned malformed JSON.",
-            ) from error
-        if not isinstance(decoded, Mapping):
-            raise AgentSdkError(
-                "OPENAI_COMPATIBLE_RESPONSE_INVALID",
-                "OpenAI-compatible provider response must be a JSON object.",
-            )
-        return decoded
+            return _decoded_httpx_response(response, headers)
+        except (httpx.TimeoutException, httpx.TransportError, httpx.DecodingError) as error:
+            raise _httpx_failure(error, url, timeout_seconds) from error
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise _malformed_json() from error
 
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
+
+
+class HttpxAsyncJsonTransport:
+    """Non-streaming JSON transport on httpx's async client.
+
+    Cancelling the awaiting task aborts the request and closes its connection, so a cancelled
+    run stops holding the provider connection open. Whether the provider also stops generating
+    is the provider's behaviour, which the Chat Completions protocol gives no way to confirm.
+    A client is created per request, so the transport is safe across event loops.
+    """
+
+    async def apost_json(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]:
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                response = await client.post(url, headers=dict(headers), content=body)
+            return _decoded_httpx_response(response, headers)
+        except (httpx.TimeoutException, httpx.TransportError, httpx.DecodingError) as error:
+            raise _httpx_failure(error, url, timeout_seconds) from error
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise _malformed_json() from error
 
 
 class HttpxStreamingJsonTransport:
@@ -288,6 +306,45 @@ class HttpxStreamingJsonTransport:
                 "OPENAI_COMPATIBLE_RESPONSE_INVALID",
                 "OpenAI-compatible provider returned a stream that could not be decoded.",
             ) from error
+
+
+def _decoded_httpx_response(
+    response: httpx.Response, headers: Mapping[str, str]
+) -> Mapping[str, Any]:
+    if response.status_code >= 300:
+        raise _http_status_error(
+            response.status_code,
+            retry_after_seconds=_parse_retry_after(response.headers.get("Retry-After")),
+            body=response.text,
+            secrets=_header_secrets(headers),
+        )
+    decoded = response.json()
+    if not isinstance(decoded, Mapping):
+        raise AgentSdkError(
+            "OPENAI_COMPATIBLE_RESPONSE_INVALID",
+            "OpenAI-compatible provider response must be a JSON object.",
+        )
+    return decoded
+
+
+def _httpx_failure(error: Exception, url: str, timeout_seconds: float) -> AgentSdkError:
+    if isinstance(error, httpx.TimeoutException):
+        return TransientProviderError(
+            "OPENAI_COMPATIBLE_TRANSPORT_TIMEOUT", _timeout_message(url, timeout_seconds)
+        )
+    if isinstance(error, httpx.DecodingError):
+        return _malformed_json()
+    return TransientProviderError(
+        "OPENAI_COMPATIBLE_TRANSPORT_ERROR",
+        f"OpenAI-compatible provider could not be reached at "
+        f"{_transport_failure_detail(url, error)}.",
+    )
+
+
+def _malformed_json() -> AgentSdkError:
+    return AgentSdkError(
+        "OPENAI_COMPATIBLE_RESPONSE_INVALID", "OpenAI-compatible provider returned malformed JSON."
+    )
 
 
 def _provider_target(url: str) -> str:

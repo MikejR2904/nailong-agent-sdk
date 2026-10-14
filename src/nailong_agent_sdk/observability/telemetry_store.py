@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 import time
@@ -19,6 +20,7 @@ from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.errors import AgentSdkError, redact_secrets
 from ..foundations.hashing import canonical_hash, canonical_json
 from ..foundations.identifiers import file_safe_name
+from ..foundations.run_fence import RunFence
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import (
     ChainBreak,
@@ -30,14 +32,17 @@ from .telemetry_models import (
     TelemetryContext,
     TelemetryEvent,
     TelemetryFootprint,
+    TelemetryMaintenance,
     TelemetryRunActivity,
     TelemetryRunSummary,
     TelemetrySeverity,
+    TelemetryVacuum,
 )
 
 _EVENT_TIME = "json_extract(event_json, '$.occurred_at_utc')"
 _EVENT_STATUS = "json_extract(event_json, '$.status')"
 _EVENT_TYPE = "json_extract(event_json, '$.event_type')"
+_EVENT_TRACE = "json_extract(event_json, '$.context.trace_id')"
 _LOCK_RETRY_SECONDS = 10.0
 
 
@@ -47,6 +52,7 @@ class TelemetryStore:
     def __init__(self, root: Path, *, read_only: bool = False) -> None:
         self._root = root.resolve() / ".agent-telemetry"
         self._database_path = self._root / "telemetry.sqlite3"
+        self._fence = RunFence(root)
         self._lock = threading.RLock()
         if read_only:
             if not self._database_path.is_file():
@@ -88,6 +94,10 @@ class TelemetryStore:
         return self._root
 
     @property
+    def fence(self) -> RunFence:
+        return self._fence
+
+    @property
     def database_path(self) -> Path:
         return self._database_path
 
@@ -125,8 +135,10 @@ class TelemetryStore:
         passes through no matter how it was constructed.
         """
 
+        self._fence.wait_until_open(event.context.run_id, "append a telemetry event")
         with self._lock, self._connection as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._fence.raise_if_fenced(event.context.run_id, "append a telemetry event")
             previous = connection.execute(
                 "SELECT sequence, integrity_hash FROM events "
                 "WHERE run_id = ? ORDER BY sequence DESC LIMIT 1",
@@ -177,7 +189,10 @@ class TelemetryStore:
             and not observation.unavailable_reason
         ):
             raise ValueError("Unavailable metric observations require an unavailable_reason.")
+        self._fence.wait_until_open(observation.run_id, "record a metric observation")
         with self._lock, self._connection as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._fence.raise_if_fenced(observation.run_id, "record a metric observation")
             connection.execute(
                 """
                 INSERT INTO metric_observations (
@@ -256,6 +271,16 @@ class TelemetryStore:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def run_ids_for_trace(self, trace_id: str) -> list[str]:
+        """Return the runs that recorded at least one event under a trace, ordered by id."""
+
+        with self._lock, self._connection as connection:
+            rows = connection.execute(
+                f"SELECT DISTINCT run_id FROM events WHERE {_EVENT_TRACE} = ? ORDER BY run_id",
+                (trace_id,),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def run_snapshot_sequence(self, run_id: str) -> int:
         """Return the highest persisted sequence for an explicit verification boundary."""
 
@@ -323,6 +348,71 @@ class TelemetryStore:
             )
             for run_id, count, first, last, sequence, terminal in rows
         ]
+
+    def quiesce(self, run_id: str) -> None:
+        """Wait for any append already inside its transaction to commit or roll back."""
+
+        self._require_writable("quiesce")
+        with self._lock, self._connection as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.commit()
+
+    def maintenance_report(self) -> TelemetryMaintenance:
+        with self._lock:
+            page_size = int(self._connection.execute("PRAGMA page_size").fetchone()[0])
+            page_count = int(self._connection.execute("PRAGMA page_count").fetchone()[0])
+            free_pages = int(self._connection.execute("PRAGMA freelist_count").fetchone()[0])
+        wal = self._database_path.with_name(self._database_path.name + "-wal")
+        return TelemetryMaintenance(
+            database_bytes=self._database_path.stat().st_size,
+            wal_bytes=wal.stat().st_size if wal.is_file() else 0,
+            page_size=page_size,
+            page_count=page_count,
+            free_pages=free_pages,
+            reclaimable_bytes=page_size * free_pages,
+        )
+
+    def vacuum(self) -> TelemetryVacuum:
+        self._require_writable("vacuum")
+        fenced = self._fence.fenced_runs()
+        if fenced:
+            names = ", ".join(sorted(holder.run_id for holder in fenced)[:5])
+            raise AgentSdkError(
+                "TELEMETRY_VACUUM_REFUSED",
+                f"A retention prune is in progress or was interrupted for {len(fenced)} run(s) "
+                f"({names}); finish it with an applied prune pass before vacuuming.",
+                {"runs": len(fenced)},
+            )
+        with self._lock:
+            self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = self.maintenance_report()
+        needed = before.database_bytes + before.wal_bytes
+        available = shutil.disk_usage(self._root).free
+        if available < needed:
+            raise AgentSdkError(
+                "TELEMETRY_VACUUM_REFUSED",
+                f"VACUUM rewrites the database and needs about {needed} free bytes beside "
+                f'"{self._database_path}", but only {available} are available.',
+                {"needed": needed, "available": available},
+            )
+        with self._lock:
+            try:
+                self._connection.execute("VACUUM")
+                self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                verdict = str(self._connection.execute("PRAGMA integrity_check").fetchone()[0])
+            except sqlite3.Error as error:
+                raise AgentSdkError(
+                    "TELEMETRY_VACUUM_FAILED",
+                    f'VACUUM of "{self._database_path}" failed: {type(error).__name__}: {error}',
+                    {"path": str(self._database_path)},
+                ) from error
+        after = self.maintenance_report()
+        return TelemetryVacuum(
+            before=before,
+            after=after,
+            integrity_check=verdict,
+            reclaimed_bytes=max(0, before.database_bytes - after.database_bytes),
+        )
 
     def footprint(self, run_id: str) -> TelemetryFootprint:
         with self._lock, self._connection as connection:

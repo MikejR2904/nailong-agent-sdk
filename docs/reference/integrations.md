@@ -15,7 +15,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 | [`integrations/jev/models.py`](#integrationsjevmodelspy---jev-question-answer-request-result-and-receipt-contracts) | 171 | Jev question, answer, request, result and receipt contracts |
 | [`integrations/jev/receipts.py`](#integrationsjevreceiptspy---receipt-sinks-for-jev-evaluations) | 57 | receipt sinks for Jev evaluations |
 | [`integrations/langchain.py`](#integrationslangchainpy---optional-langchain-adapters) | 266 | optional LangChain adapters |
-| [`integrations/langgraph.py`](#integrationslanggraphpy---optional-langgraph-adapters) | 299 | optional LangGraph adapters |
+| [`integrations/langgraph.py`](#integrationslanggraphpy---optional-langgraph-adapters) | 308 | optional LangGraph adapters |
 | [`integrations/receipts.py`](#integrationsreceiptspy---receipt-sinks-for-external-operations) | 65 | receipt sinks for external operations |
 
 ---
@@ -184,7 +184,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 - **class `JevQuestionSpec`** *(pydantic model; bases: StrictModel)* - Host-owned, versioned set of up to 64 questions for one purpose. · *Instantiated by:* `jev/architecture.py::JevArchitectureRouter.advise`, `jev/exploration.py::JevExplorationAdvisor.prioritize`
   - fields: `spec_id`, `version`, `questions`
   - `JevQuestionSpec.question_ids_are_nonempty(questions: dict[str, JevQuestion]) -> dict[str, JevQuestion]` *(validator, classmethod)* - Validator: question ids are non-blank.
-  - `JevQuestionSpec.digest() -> str` *(property)* - Property: content digest of the spec (option labels are not sanitised). · *Called by:* `jev/decision.py::_normalize_jev_response`, `jev/models.py::JevDecisionResult.unavailable`, `observability/telemetry_store.py::TelemetryStore.append`, `specifications/preprocessing.py::SpecificationPreprocessor.process_document` (+6 more)
+  - `JevQuestionSpec.digest() -> str` *(property)* - Property: content digest of the spec (option labels are not sanitised). · *Called by:* `agent/retention_anchor.py::_short`, `foundations/identifiers.py::file_safe_name`, `jev/decision.py::_normalize_jev_response`, `jev/models.py::JevDecisionResult.unavailable` (+25 more)
 - **class `JevDecisionRequest`** *(pydantic model; bases: StrictModel)* - One bounded, redacted evaluation request: purpose, run id, sanitised state, question spec, model, deadline and up to three attempts. · *Instantiated by:* `jev/architecture.py::JevArchitectureRouter.advise`, `jev/exploration.py::JevExplorationAdvisor.prioritize`
   - fields: `schema_version`, `purpose`, `run_id`, `state`, `question_spec`, `model`, `deadline_seconds`, `max_attempts`
   - `JevDecisionRequest.state_is_redacted_json(state: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the state passes the sanitiser, and an unsupported type is reported as a `ValidationError`.
@@ -262,7 +262,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/langgraph.py` - optional LangGraph adapters
 
-*299 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/runtime.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/hashing.py`, `integrations/_utils.py`, `integrations/contracts.py`, `integrations/receipts.py`, `state/graph_models.py`, `tools/tools.py` · used by: `integrations/__init__.py` · re-exported at the package root: 6 name(s)*
+*308 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/runtime.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/hashing.py`, `integrations/_utils.py`, `integrations/contracts.py`, `integrations/receipts.py`, `observability/telemetry_models.py`, `observability/trace_context.py`, `state/graph_models.py`, `tools/tools.py` · used by: `integrations/__init__.py` · re-exported at the package root: 6 name(s)*
 
 **Role in the workflow.** `LangGraphSdkNode` runs a bounded SDK agent as a LangGraph node and returns a compact digest-bearing transition; `LangGraphNodeExecutor` does the reverse, running a compiled LangGraph inside an SDK graph node through a projector and a typed reducer.
 
@@ -273,7 +273,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
   - `LangGraphSdkNodeBinding.binding_digest() -> str` *(property)* - Property: digest of node name, identity, instruction version and binding version. · *Called by:* `integrations/langgraph.py::LangGraphSdkNode.__call__`
 - **class `LangGraphSdkNode`** *(class)* - A callable node that invokes a host-owned SDK agent from a sanitised envelope.
   - `LangGraphSdkNode.__init__(services: AgentRuntimeServices, binding: LangGraphSdkNodeBinding, envelope_factory: Callable[[Mapping[str, Any]], InteropRunEnvelope], *, receipt_...` - Stores the services, binding, envelope factory and receipt sink.
-  - `LangGraphSdkNode.__call__(state: Mapping[str, Any]) -> dict[str, Any]` *(async)* - Builds and validates the envelope, runs the agent, emits a receipt and returns `{agent_sdk_transition: ...}` with the status, remaining budget and digests; on any exception emits a FAILED receipt (`sdk-node-<type>`) and re-raises. Result digests use `canonical_hash`, which does not apply the key sanitiser, so the agent's output keys never cause a spurious failure.
+  - `LangGraphSdkNode.__call__(state: Mapping[str, Any]) -> dict[str, Any]` *(async)* - Builds and validates the envelope, runs the agent, emits a receipt and returns `{agent_sdk_transition: ...}` with the status, remaining budget and digests; on any exception emits a FAILED receipt (`sdk-node-<type>`) and re-raises. Result digests use `canonical_hash`, which does not apply the key sanitiser, so the agent's output keys never cause a spurious failure. The agent runs under the trace derived from the envelope's run id and names the envelope's `graph_node_id` (else the node name) as its node.
   - `LangGraphSdkNode._validate_envelope(envelope: InteropRunEnvelope) -> None` - Requires a positive remaining turn budget and a sanitised projection (outside the receipt-emitting try block). · *Called by:* `integrations/langgraph.py::LangGraphSdkNode.__call__`
   - `LangGraphSdkNode._emit_receipt(envelope: InteropRunEnvelope, status: InteropOperationStatus, *, result_digest: str, duration_ms: float, detail_code: str | None=None) -> None` *(async)* - Builds an interop receipt (with checkpoint ids from the projection) and passes it to the sink. · *Called by:* `integrations/langgraph.py::LangGraphSdkNode.__call__`
 - **class `LangGraphApprovalChallenge`** *(pydantic model; bases: StrictModel)* - Display-safe, resumable approval payload; not a decision.

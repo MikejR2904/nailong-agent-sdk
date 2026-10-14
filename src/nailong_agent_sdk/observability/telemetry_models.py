@@ -195,6 +195,26 @@ class TelemetryFootprint(StrictModel):
     head_hash: str | None = None
 
 
+class TelemetryMaintenance(StrictModel):
+    database_bytes: int = Field(ge=0)
+    wal_bytes: int = Field(ge=0)
+    page_size: int = Field(ge=0)
+    page_count: int = Field(ge=0)
+    free_pages: int = Field(ge=0)
+    reclaimable_bytes: int = Field(ge=0)
+
+
+class TelemetryVacuum(StrictModel):
+    before: TelemetryMaintenance
+    after: TelemetryMaintenance
+    integrity_check: str
+    reclaimed_bytes: int = Field(ge=0)
+
+    @property
+    def clean(self) -> bool:
+        return self.integrity_check == "ok"
+
+
 class ChainBreak(StrictModel):
     sequence: int = Field(ge=1)
     kind: Literal["content-hash-mismatch", "previous-hash-mismatch", "unreadable-entry"]
