@@ -26,6 +26,7 @@ MAX_ALL_OF_MEMBERS = 16
 _MEMBER_REASON_CHARS = 200
 _MEMBER_NAME_CHARS = 64
 _MEMBER_EVIDENCE_CHARS = 100
+_EVIDENCE_KEY = ',"evidence":'
 _AUTHORITY_RANK = {
     TelemetryAuthority.DETERMINISTIC: 0,
     TelemetryAuthority.SYSTEM: 1,
@@ -161,15 +162,23 @@ class AllOfVerificationGate:
             )
         if verifier_id is not None:
             _check_verifier_id(verifier_id)
-        self._members = members
         self.verifier_id = verifier_id or "all-of"
+        for index, member in enumerate(members):
+            problem = _declared_problem(member)
+            if problem is not None:
+                raise AgentSdkError(
+                    "VERIFICATION_GATE_METADATA_INVALID",
+                    f'Member {index} ("{_member_name(member, index)}") of verification gate '
+                    f'"{self.verifier_id}" declares invalid metadata: {problem}',
+                    {"member_index": index, "verification_gate_id": self.verifier_id},
+                )
+        self._members = members
         self.authority: TelemetryAuthority | None = None
         self.stop_at_first_failure = stop_at_first_failure
 
     async def verify(self, context: VerificationContext) -> VerificationDecision:
         outcomes: list[tuple[str, VerificationDecision, TelemetryAuthority | None]] = []
         for index, gate in enumerate(self._members):
-            declared_id = _declared(gate, "verifier_id")
             try:
                 raw = gate.verify(context)
                 if inspect.isawaitable(raw):
@@ -178,11 +187,11 @@ class AllOfVerificationGate:
             except Exception as error:
                 raise AgentSdkError(
                     "VERIFICATION_GATE_MEMBER_FAILED",
-                    f'Member {index} ("{declared_id or f"member-{index}"}") of verification gate '
+                    f'Member {index} ("{_member_name(gate, index)}") of verification gate '
                     f'"{self.verifier_id}" raised {type(error).__name__}: {error}',
                     {"member_index": index, "verification_gate_id": self.verifier_id},
                 ) from error
-            name = str(decision.verifier_id or declared_id or f"member-{index}")
+            name = str(decision.verifier_id or _member_name(gate, index))
             authority = self._member_authority(
                 index, name, decision.authority or _declared(gate, "authority")
             )
@@ -208,20 +217,7 @@ class AllOfVerificationGate:
                 if declared_authorities
                 else None
             ),
-            evidence={
-                "members": [
-                    {
-                        "verifier_id": clip_evidence_text(name, _MEMBER_NAME_CHARS),
-                        "passed": item.passed,
-                        "reason": clip_evidence_text(item.reason or "", _MEMBER_EVIDENCE_CHARS)
-                        or None,
-                        "authority": authority.value if authority else None,
-                    }
-                    for name, item, authority in outcomes
-                ],
-                "evaluated": len(outcomes),
-                "total": len(self._members),
-            },
+            evidence=_composite_evidence(outcomes, len(self._members)),
         )
 
     def _member_authority(self, index: int, name: str, value: Any) -> TelemetryAuthority | None:
@@ -239,9 +235,10 @@ class AllOfVerificationGate:
 
 
 class _NamedGate:
-    def __init__(self, gate: VerificationGate, name: str) -> None:
+    def __init__(self, gate: VerificationGate, registry_id: str) -> None:
         self._gate = gate
-        self.verifier_id = _declared(gate, "verifier_id") or name
+        self.registry_id = registry_id
+        self.verifier_id = _declared(gate, "verifier_id")
         self.authority = _declared(gate, "authority")
 
     def verify(
@@ -266,6 +263,13 @@ class VerificationGateRegistry:
         _validate_gate_id(gate_id)
         if gate_id in self._gates and not replace:
             raise ValueError(f'Verification gate "{gate_id}" is already registered.')
+        problem = _declared_problem(gate)
+        if problem is not None:
+            raise AgentSdkError(
+                "VERIFICATION_GATE_METADATA_INVALID",
+                f'Verification gate "{gate_id}" declares invalid metadata: {problem}',
+                {"verification_gate_id": gate_id},
+            )
         self._gates[gate_id] = gate
 
     def register_callable(
@@ -386,6 +390,64 @@ def clip_evidence_text(text: str, limit: int) -> str:
 
 def _declared(gate: Any, name: str) -> Any:
     return getattr(gate, name, None)
+
+
+def _member_name(gate: Any, index: int) -> str:
+    return str(
+        _declared(gate, "verifier_id") or _declared(gate, "registry_id") or f"member-{index}"
+    )
+
+
+def _declared_problem(gate: Any) -> str | None:
+    identifier = _declared(gate, "verifier_id")
+    if identifier is not None:
+        try:
+            _check_verifier_id(identifier)
+        except ValueError as error:
+            return str(error)
+    authority = _declared(gate, "authority")
+    if authority is not None and not isinstance(authority, TelemetryAuthority):
+        try:
+            TelemetryAuthority(authority)
+        except ValueError:
+            valid = ", ".join(item.value for item in TelemetryAuthority)
+            return f'authority "{authority}" is not one of: {valid}.'
+    return None
+
+
+def _composite_evidence(
+    outcomes: Sequence[tuple[str, VerificationDecision, TelemetryAuthority | None]], total: int
+) -> dict[str, Any]:
+    rows = [
+        {
+            "verifier_id": clip_evidence_text(name, _MEMBER_NAME_CHARS),
+            "passed": item.passed,
+            "reason": clip_evidence_text(item.reason or "", _MEMBER_EVIDENCE_CHARS) or None,
+            "authority": authority.value if authority else None,
+        }
+        for name, item, authority in outcomes
+    ]
+    evidence: dict[str, Any] = {"members": rows, "evaluated": len(outcomes), "total": total}
+    remaining = MAX_EVIDENCE_CHARS - len(_compact_json(evidence))
+    for row, (_name, item, _authority) in zip(rows, outcomes, strict=True):
+        if item.evidence is None:
+            continue
+        encoded = _compact_json(item.evidence)
+        cost = len(_EVIDENCE_KEY) + len(encoded)
+        if cost <= remaining:
+            row["evidence"] = item.evidence
+            remaining -= cost
+            continue
+        omitted = {"omitted_chars": len(encoded)}
+        marker_cost = len(_EVIDENCE_KEY) + len(_compact_json(omitted))
+        if marker_cost <= remaining:
+            row["evidence"] = omitted
+            remaining -= marker_cost
+    return evidence
+
+
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _attributed(

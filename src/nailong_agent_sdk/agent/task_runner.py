@@ -322,6 +322,7 @@ class AgentTaskRunner:
                 result.status.value,
                 {"iterations": result.iterations, "reason": result.reason},
             )
+            await self._services.checkpoint_after_run(task.id, context)
             return result
         finally:
             with self._running_lock:

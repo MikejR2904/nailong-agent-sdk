@@ -71,6 +71,7 @@ if TYPE_CHECKING:
         RunTombstone,
         export_tombstone_anchor,
         prune_run_root,
+        pruned_heads_lookup,
         read_tombstones,
         verify_tombstone_anchor,
     )
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
         RunRootInventory,
         inventory_run_root,
     )
+    from .agent.run_checkpointer import RunHeadCheckpointer
     from .agent.runtime import AgentRuntimeServices
     from .agent.task_runner import (
         AgentTaskRunner,
@@ -255,9 +257,12 @@ if TYPE_CHECKING:
     )
     from .observability.run_checkpoints import (
         CheckpointSigner,
+        CheckpointSink,
         CheckpointVerdict,
         CheckpointVerification,
+        FileCheckpointSink,
         HmacSha256Signer,
+        PrunedHeads,
         RunHeadCheckpoint,
         RunHeadReport,
         TerminalLinkState,
@@ -725,6 +730,11 @@ _EXPORTS: dict[str, str] = {
     "registered_tool_name": ".mcp.client_bridge",
     "specification_retrieval_documents": ".specifications.retrieval",
     "CheckpointSigner": ".observability.run_checkpoints",
+    "CheckpointSink": ".observability.run_checkpoints",
+    "FileCheckpointSink": ".observability.run_checkpoints",
+    "PrunedHeads": ".observability.run_checkpoints",
+    "RunHeadCheckpointer": ".agent.run_checkpointer",
+    "pruned_heads_lookup": ".agent.retention",
     "CheckpointVerdict": ".observability.run_checkpoints",
     "CheckpointVerification": ".observability.run_checkpoints",
     "HmacSha256Signer": ".observability.run_checkpoints",

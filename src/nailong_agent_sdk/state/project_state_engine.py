@@ -44,6 +44,8 @@ from .project_state_models import (
 )
 
 TRANSITION_AUTHORITY: dict[StateTransitionKind, frozenset[StateAuthority]] = {
+    StateTransitionKind.TOOL_OUTCOME: frozenset({StateAuthority.HARNESS}),
+    StateTransitionKind.AGENT_RESULT: frozenset({StateAuthority.HARNESS}),
     StateTransitionKind.HUMAN_DECISION: frozenset({StateAuthority.HUMAN}),
     StateTransitionKind.BLOCKER_CLEARED: frozenset(
         {StateAuthority.CONTROLLER, StateAuthority.HUMAN}
@@ -61,6 +63,8 @@ QUESTION_RESOLUTION_AUTHORITY: dict[QuestionOwner, frozenset[StateAuthority]] = 
     QuestionOwner.CONTROLLER: frozenset({StateAuthority.CONTROLLER, StateAuthority.HUMAN}),
 }
 _TRANSITION_VERBS: dict[StateTransitionKind, str] = {
+    StateTransitionKind.TOOL_OUTCOME: "record a tool outcome",
+    StateTransitionKind.AGENT_RESULT: "record an agent result",
     StateTransitionKind.HUMAN_DECISION: "record a human decision",
     StateTransitionKind.BLOCKER_CLEARED: "clear a blocker",
     StateTransitionKind.WORK_ITEM_UPDATED: "update a work item",
@@ -212,6 +216,7 @@ class ProjectStateReducer:
             return payload[key]
 
         if transition.kind is StateTransitionKind.TOOL_OUTCOME:
+            _require_authority(transition)
             artifact = payload.get("artifact")
             if isinstance(artifact, dict):
                 recorded = ProjectArtifactState.model_validate(
@@ -238,6 +243,7 @@ class ProjectStateReducer:
                 )
 
         elif transition.kind is StateTransitionKind.AGENT_RESULT:
+            _require_authority(transition)
             status = str(required("status"))
             work_items = _upsert(
                 work_items,

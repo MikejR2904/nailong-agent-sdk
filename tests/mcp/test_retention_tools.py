@@ -2,20 +2,8 @@ import json
 
 from nailong_agent_sdk.agent.retention import read_tombstones, tombstone_path
 from nailong_agent_sdk.agent.retention_anchor import read_anchor
-from tests.support.agents import definition, final, task
+from tests.support.mcp_cases import scripted_run
 from tests.support.mcp_server import Server
-
-
-def scripted_run(instance, task_id):
-    result = instance.call(
-        "run_agent_task",
-        {
-            "definition": definition().model_dump(mode="json"),
-            "task": task(task_id).model_dump(mode="json"),
-            "runtime_options": {"scripted_turns": [final()]},
-        },
-    )
-    assert result["ok"] and result["result"]["status"] == "completed", result
 
 
 def test_the_inventory_reports_every_class_and_leaves_the_run_root_untouched(tmp_path):

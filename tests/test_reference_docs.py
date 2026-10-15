@@ -84,3 +84,38 @@ def test_the_reference_index_lists_every_file_and_states_the_right_totals():
         f"covers **{len(source)} files, {classes} classes and {functions:,} functions**" in readme
     )
     assert f"*Coverage: {len(source)} files, {classes} classes and {functions} functions" in readme
+
+
+def test_the_root_page_states_the_real_name_module_and_line_counts():
+    source = (PACKAGE / "__init__.py").read_text("utf-8")
+    tree = ast.parse(source)
+    block = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "TYPE_CHECKING"
+    )
+    modules = sum(isinstance(statement, ast.ImportFrom) for statement in block.body)
+    exports = next(
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "_EXPORTS"
+    )
+    names = len(exports.keys)
+    lines = len(source.splitlines())
+    page = (DOCS / "root.md").read_text("utf-8")
+    index = (DOCS / "README.md").read_text("utf-8")
+    expected = {
+        "public names": f"each of the {names} public names",
+        "deep modules": f"names {modules} deep modules",
+        "line count": f"*{lines} lines",
+        "index row": f"| {lines} | the public API surface",
+    }
+    missing = {
+        label: phrase
+        for label, phrase in expected.items()
+        if phrase not in (index if label == "index row" else page)
+    }
+    assert missing == {}, (
+        f"root.md and the README index disagree with __init__.py ({names} names, {modules} "
+        f"modules, {lines} lines); update these phrases: {missing}"
+    )

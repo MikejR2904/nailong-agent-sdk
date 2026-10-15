@@ -20,6 +20,7 @@ from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import canonical_hash
 from ..memory.context_projection import FileToolResultJournal, JournalFootprint
 from ..observability.audit_log import AuditFootprint, AuditTranscriptStore
+from ..observability.run_checkpoints import PrunedHeads, PrunedLookup
 from ..observability.telemetry_helpers import first_chain_break, utc_now
 from ..observability.telemetry_models import (
     ChainBreak,
@@ -163,6 +164,25 @@ def tombstoned_handles(run_root: Path) -> dict[str, TombstonedHandle]:
 def tombstone_for_run(run_root: Path, run_id: str) -> RunTombstone | None:
     matching = [item for item in read_tombstones(run_root) if item.run_id == run_id]
     return matching[-1] if matching else None
+
+
+def pruned_heads_lookup(run_root: Path) -> PrunedLookup:
+    def lookup(run_id: str) -> list[PrunedHeads]:
+        return [
+            PrunedHeads(
+                run_id=item.run_id,
+                telemetry_sequence=item.telemetry.last_sequence,
+                telemetry_head=item.telemetry.head_hash,
+                audit_sequence=item.audit.entries,
+                audit_head=item.audit.head_hash,
+                pruned_at_utc=item.pruned_at_utc,
+                tombstone_sequence=item.sequence,
+            )
+            for item in read_tombstones(run_root)
+            if item.run_id == run_id
+        ]
+
+    return lookup
 
 
 def build_anchor(run_root: Path, *, now: datetime | None = None) -> TombstoneAnchor:

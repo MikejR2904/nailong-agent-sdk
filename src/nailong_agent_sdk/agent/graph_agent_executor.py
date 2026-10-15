@@ -196,6 +196,10 @@ class GraphAgentExecutor:
                 reason=f"Graph agent invocation raised {type(error).__name__}: {error}",
                 diagnostics=[f"error-type:{type(error).__name__}"],
             )
+        await self._services.checkpoint_after_run(
+            result.task_id,
+            graph_node_telemetry_context(node, task, binding, context),
+        )
         status = _graph_status(result.status)
         queued = buffer.requests if buffer is not None else []
         spawn_requests = queued if status is GraphNodeStatus.COMPLETED else []

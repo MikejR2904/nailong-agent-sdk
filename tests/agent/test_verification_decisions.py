@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from nailong_agent_sdk.agent.verification import (
@@ -131,7 +133,7 @@ def test_a_gate_failure_is_recorded_with_its_gate_and_digest():
     assert details["output_digest"] and details["failure_code"] == result.failure.code
 
 
-def test_invalid_gate_metadata_fails_the_run_naming_the_gate():
+def test_invalid_declared_metadata_is_refused_when_the_gate_is_registered():
     class Blank:
         verifier_id = "  "
 
@@ -139,10 +141,32 @@ def test_invalid_gate_metadata_fails_the_run_naming_the_gate():
             return True
 
     registry = VerificationGateRegistry()
-    registry.register("blank", Blank())
-    result = run_gate(registry, "blank")
+    with pytest.raises(AgentSdkError) as blank:
+        registry.register("blank", Blank())
+    assert blank.value.code == "VERIFICATION_GATE_METADATA_INVALID"
+    assert 'Verification gate "blank" declares invalid metadata' in str(blank.value)
+    assert "verifier_id must be 1 to 128 non-blank characters" in str(blank.value)
+    with pytest.raises(AgentSdkError) as unknown:
+        registry.register("odd", CallableVerificationGate(lambda ctx: True, authority="oracle"))
+    assert 'authority "oracle" is not one of: deterministic' in str(unknown.value)
+    registry.register("fine", CallableVerificationGate(lambda ctx: True, authority="human"))
+    assert registry.resolve("fine") is not None
+
+
+def test_metadata_changed_after_registration_still_fails_the_run_naming_the_gate():
+    class Mutable:
+        verifier_id = "checker"
+
+        def verify(self, ctx):
+            return True
+
+    gate = Mutable()
+    registry = VerificationGateRegistry()
+    registry.register("mutable", gate)
+    gate.verifier_id = "  "
+    result = run_gate(registry, "mutable")
     assert result.failure.code == "VERIFICATION_GATE_METADATA_INVALID"
-    assert 'Verification gate "blank"' in result.reason and "verifier_id" in result.reason
+    assert 'Verification gate "mutable"' in result.reason and "verifier_id" in result.reason
 
 
 def test_decision_fields_are_validated_where_they_are_built():
@@ -311,11 +335,32 @@ def test_composite_evidence_stays_within_the_limit_for_many_verbose_members():
     assert len(strict_canonical_json(decision.evidence)) <= MAX_EVIDENCE_CHARS
 
 
-def test_a_member_declaring_an_unknown_authority_is_named():
-    gate = AllOfVerificationGate(
-        [CallableVerificationGate(lambda ctx: True, verifier_id="odd", authority="oracle")],
-        verifier_id="composite",
+def test_a_member_declaring_an_unknown_authority_is_named_when_the_composite_is_built():
+    ran = []
+
+    def spy(ctx):
+        ran.append("first")
+        return True
+
+    with pytest.raises(AgentSdkError) as raised:
+        AllOfVerificationGate(
+            [
+                CallableVerificationGate(spy, verifier_id="first"),
+                CallableVerificationGate(lambda ctx: True, verifier_id="odd", authority="oracle"),
+            ],
+            verifier_id="composite",
+        )
+    assert raised.value.code == "VERIFICATION_GATE_METADATA_INVALID"
+    assert 'Member 1 ("odd") of verification gate "composite" declares invalid metadata' in str(
+        raised.value
     )
+    assert ran == []
+
+
+def test_a_member_whose_authority_changes_after_the_composite_is_built_is_named_at_run_time():
+    member = CallableVerificationGate(lambda ctx: True, verifier_id="odd", authority="human")
+    gate = AllOfVerificationGate([member], verifier_id="composite")
+    object.__setattr__(member, "authority", "oracle")
     context = VerificationContext(output={}, definition=definition(), task=task())
     with pytest.raises(AgentSdkError) as raised:
         arun(gate.verify(context))
@@ -359,3 +404,77 @@ def test_a_composite_refuses_an_invalid_verifier_id_when_it_is_built():
     registry.register_callable("fine", lambda ctx: True)
     with pytest.raises(ValueError, match="verifier_id must be 1 to 128 non-blank characters"):
         registry.register_all_of("g" * 129, ["fine"])
+
+
+ACCENT = chr(0xE9)
+EMPTY_ROW = len('{"b":""}')
+
+
+def test_evidence_of_exactly_the_limit_is_accepted_and_one_more_character_is_refused():
+    exact = {"b": "x" * (MAX_EVIDENCE_CHARS - EMPTY_ROW)}
+    assert len(strict_canonical_json(exact)) == MAX_EVIDENCE_CHARS
+    assert VerificationDecision(True, evidence=exact).evidence == exact
+    over = {"b": "x" * (MAX_EVIDENCE_CHARS - EMPTY_ROW + 1)}
+    with pytest.raises(ValueError, match=f"is {MAX_EVIDENCE_CHARS + 1} characters of JSON"):
+        VerificationDecision(True, evidence=over)
+
+
+def test_the_limit_counts_the_escaped_form_so_a_non_ascii_character_costs_six():
+    assert len(strict_canonical_json({"b": ACCENT})) - EMPTY_ROW == 6
+    fits = {"b": ACCENT * ((MAX_EVIDENCE_CHARS - EMPTY_ROW) // 6)}
+    assert VerificationDecision(True, evidence=fits).evidence == fits
+    over = {"b": ACCENT * ((MAX_EVIDENCE_CHARS - EMPTY_ROW) // 6 + 1)}
+    with pytest.raises(ValueError, match="the limit is 4096"):
+        VerificationDecision(True, evidence=over)
+
+
+def composite_context():
+    return VerificationContext(output={}, definition=definition(), task=task())
+
+
+def test_a_composite_keeps_each_members_own_evidence():
+    gate = AllOfVerificationGate(
+        [
+            CallableVerificationGate(
+                lambda ctx: VerificationDecision(True, evidence={"return_code": 0}),
+                verifier_id="command:build",
+            ),
+            CallableVerificationGate(
+                lambda ctx: VerificationDecision(
+                    True, evidence={"actual": "ab12", "expected": "ab12"}
+                ),
+                verifier_id="sha256:report",
+            ),
+            CallableVerificationGate(lambda ctx: True, verifier_id="plain"),
+        ]
+    )
+    decision = arun(gate.verify(composite_context()))
+    first, second, third = decision.evidence["members"]
+    assert first["evidence"] == {"return_code": 0}
+    assert second["evidence"] == {"actual": "ab12", "expected": "ab12"}
+    assert "evidence" not in third
+
+
+def test_member_evidence_that_does_not_fit_is_replaced_by_its_size_and_the_rest_still_fits():
+    big = {"blob": "x" * 3_000}
+    small = {"return_code": 0}
+    gate = AllOfVerificationGate(
+        [
+            CallableVerificationGate(
+                lambda ctx: VerificationDecision(True, evidence=big), verifier_id="big-1"
+            ),
+            CallableVerificationGate(
+                lambda ctx: VerificationDecision(True, evidence=big), verifier_id="big-2"
+            ),
+            CallableVerificationGate(
+                lambda ctx: VerificationDecision(True, evidence=small), verifier_id="small"
+            ),
+        ]
+    )
+    decision = arun(gate.verify(composite_context()))
+    first, second, third = decision.evidence["members"]
+    assert first["evidence"] == big
+    encoded = len(json.dumps(big, sort_keys=True, separators=(",", ":")))
+    assert second["evidence"] == {"omitted_chars": encoded}
+    assert third["evidence"] == small
+    assert len(strict_canonical_json(decision.evidence)) <= MAX_EVIDENCE_CHARS

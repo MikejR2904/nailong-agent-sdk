@@ -2209,10 +2209,18 @@ class BaseAgent:
                         "phase_counts": {
                             summary.kind.value: summary.count for summary in profile.summaries
                         },
+                    },
+                    task_id=task.id,
+                    iteration=iterations,
+                )
+                self.audit_logs.append(
+                    telemetry_context.run_id,
+                    "terminal-link",
+                    {
                         "telemetry_head": {
                             "sequence": profile_event.sequence,
                             "integrity_hash": profile_event.integrity_hash,
-                        },
+                        }
                     },
                     task_id=task.id,
                     iteration=iterations,

@@ -136,6 +136,14 @@ def test_every_transition_kind_has_a_row_and_a_probe():
 
 def test_the_restricted_rows_keep_their_refusal_wording():
     expected = {
+        T.TOOL_OUTCOME: (
+            StateAuthority.HUMAN,
+            "Only harness authority may record a tool outcome.",
+        ),
+        T.AGENT_RESULT: (
+            StateAuthority.CONTROLLER,
+            "Only harness authority may record an agent result.",
+        ),
         T.HUMAN_DECISION: (StateAuthority.HARNESS, "Only a human authority may record"),
         T.BLOCKER_CLEARED: (
             StateAuthority.HARNESS,
@@ -208,3 +216,12 @@ def test_the_developer_command_prints_the_same_matrix(capsys):
     assert main(["authority-matrix"]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed == authority_matrix()
+
+
+def test_only_a_question_may_be_opened_by_any_actor_and_the_matrix_says_so():
+    rows = authority_matrix()["state_transitions"]
+    unrestricted = sorted(kind for kind, row in rows.items() if not row["restricted"])
+    assert unrestricted == [T.QUESTION_OPENED.value]
+    assert rows[T.TOOL_OUTCOME.value]["actors"] == ["harness"]
+    assert rows[T.AGENT_RESULT.value]["actors"] == ["harness"]
+    assert rows[T.QUESTION_OPENED.value]["actors"] == ["controller", "harness", "human"]

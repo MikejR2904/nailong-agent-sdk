@@ -17,6 +17,12 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from ..agent.run_checkpointer import RunHeadCheckpointer
+from ..observability.run_checkpoints import (
+    MAX_SIGNER_ID_CHARS,
+    FileCheckpointSink,
+    HmacSha256Signer,
+)
 from .authority import (
     APPROVER_VARIABLE,
     DEFAULT_APPROVAL_MAX_AGE_SECONDS,
@@ -36,6 +42,11 @@ MAX_DISCARDED_BODY_BYTES = 65_536
 DISCARD_BODY_SECONDS = 1.0
 LOOPBACK_HOST_PATTERNS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
 AUDIT_MAX_OPEN_HANDLES_VARIABLE = "AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES"
+AUDIT_MAX_PAYLOAD_CHARS_VARIABLE = "AGENT_RUNTIME_AUDIT_MAX_PAYLOAD_CHARS"
+MIN_AUDIT_PAYLOAD_CHARS = 256
+CHECKPOINT_DIRECTORY_VARIABLE = "AGENT_RUNTIME_CHECKPOINT_DIR"
+CHECKPOINT_KEY_FILE_VARIABLE = "AGENT_RUNTIME_CHECKPOINT_KEY_FILE"
+CHECKPOINT_SIGNER_ID_VARIABLE = "AGENT_RUNTIME_CHECKPOINT_SIGNER_ID"
 APPROVAL_MAX_AGE_VARIABLE = "AGENT_RUNTIME_APPROVAL_MAX_AGE_SECONDS"
 
 
@@ -56,6 +67,10 @@ class HttpServiceSettings:
     approver_token: str | None = field(default=None, repr=False)
     allow_host_approvals: bool = False
     approval_max_age_seconds: float = DEFAULT_APPROVAL_MAX_AGE_SECONDS
+    audit_max_payload_chars: int | None = None
+    checkpoint_directory: str | None = None
+    checkpoint_key_file: str | None = field(default=None, repr=False)
+    checkpoint_signer_id: str = "hmac-sha256"
 
     @property
     def scheme(self) -> str:
@@ -76,6 +91,23 @@ class HttpServiceSettings:
             allow_host_approvals=self.allow_host_approvals,
             require_principal=True,
             approval_max_age_seconds=self.approval_max_age_seconds,
+        )
+
+    def checkpointer(self) -> RunHeadCheckpointer | None:
+        if self.checkpoint_directory is None or self.checkpoint_key_file is None:
+            return None
+        key = Path(self.checkpoint_key_file).read_text(encoding="utf-8").strip()
+        return RunHeadCheckpointer(
+            signer=HmacSha256Signer(key, signer_id=self.checkpoint_signer_id),
+            sink=FileCheckpointSink(Path(self.checkpoint_directory)),
+        )
+
+    def checkpoint_notice(self) -> str | None:
+        if self.checkpoint_directory is None:
+            return None
+        return (
+            f"run-head checkpoints are written to {self.checkpoint_directory}, signed by "
+            f'"{self.checkpoint_signer_id}" when each task run ends.'
         )
 
     def approval_notice(self) -> str | None:
@@ -153,6 +185,8 @@ def load_http_service_settings(environ: Mapping[str, str]) -> HttpServiceSetting
         approver_token=approver_token,
         allow_host_approvals=allow_host_approvals,
         approval_max_age_seconds=_parse_approval_max_age(environ),
+        audit_max_payload_chars=_parse_audit_max_payload_chars(environ),
+        **_parse_checkpoint(environ),
     )
 
 
@@ -210,6 +244,58 @@ def _parse_audit_max_open_handles(environ: Mapping[str, str]) -> int | None:
             f'{AUDIT_MAX_OPEN_HANDLES_VARIABLE} must be a whole number of at least 1, got "{raw}".'
         )
     return value
+
+
+def _parse_audit_max_payload_chars(environ: Mapping[str, str]) -> int | None:
+    raw = environ.get(AUDIT_MAX_PAYLOAD_CHARS_VARIABLE, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < MIN_AUDIT_PAYLOAD_CHARS:
+        raise ServerConfigurationError(
+            f"{AUDIT_MAX_PAYLOAD_CHARS_VARIABLE} must be a whole number of at least "
+            f'{MIN_AUDIT_PAYLOAD_CHARS}, got "{raw}".'
+        )
+    return value
+
+
+def _parse_checkpoint(environ: Mapping[str, str]) -> dict[str, str | None]:
+    directory = environ.get(CHECKPOINT_DIRECTORY_VARIABLE, "").strip()
+    key_file = environ.get(CHECKPOINT_KEY_FILE_VARIABLE, "").strip()
+    signer_id = environ.get(CHECKPOINT_SIGNER_ID_VARIABLE, "").strip() or "hmac-sha256"
+    if not directory and not key_file:
+        return {}
+    if not directory or not key_file:
+        present = CHECKPOINT_DIRECTORY_VARIABLE if directory else CHECKPOINT_KEY_FILE_VARIABLE
+        raise ServerConfigurationError(
+            f"{CHECKPOINT_DIRECTORY_VARIABLE} and {CHECKPOINT_KEY_FILE_VARIABLE} must be set "
+            f"together; only {present} is set."
+        )
+    if len(signer_id) > MAX_SIGNER_ID_CHARS:
+        raise ServerConfigurationError(
+            f"{CHECKPOINT_SIGNER_ID_VARIABLE} must be at most {MAX_SIGNER_ID_CHARS} characters, "
+            f"got {len(signer_id)}."
+        )
+    if not Path(key_file).is_file():
+        raise ServerConfigurationError(
+            f'{CHECKPOINT_KEY_FILE_VARIABLE} "{key_file}" is not a file.'
+        )
+    try:
+        key = Path(key_file).read_text(encoding="utf-8").strip()
+        HmacSha256Signer(key, signer_id=signer_id)
+    except (OSError, ValueError) as error:
+        raise ServerConfigurationError(
+            f'{CHECKPOINT_KEY_FILE_VARIABLE} "{key_file}" cannot be used: '
+            f"{type(error).__name__}: {error}"
+        ) from error
+    return {
+        "checkpoint_directory": directory,
+        "checkpoint_key_file": key_file,
+        "checkpoint_signer_id": signer_id,
+    }
 
 
 def _parse_tls(environ: Mapping[str, str]) -> tuple[str | None, str | None, str | None]:

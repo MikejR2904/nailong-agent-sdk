@@ -19,6 +19,7 @@ from ..agent.retention import (
     RetentionPolicy,
     export_tombstone_anchor,
     prune_run_root,
+    pruned_heads_lookup,
     verify_tombstone_anchor,
 )
 from ..agent.retention_inventory import DEFAULT_MAX_ITEMS, inventory_run_root
@@ -439,7 +440,12 @@ def _checkpoint_run(arguments: argparse.Namespace) -> object:
     audit = AuditTranscriptStore(arguments.run_root, read_only=True)
     try:
         return export_run_head_checkpoint(
-            telemetry, audit, arguments.run_id, signer, arguments.destination
+            telemetry,
+            audit,
+            arguments.run_id,
+            signer,
+            arguments.destination,
+            pruned_lookup=pruned_heads_lookup(arguments.run_root),
         )
     finally:
         telemetry.close()
@@ -454,7 +460,14 @@ def _verify_checkpoints(arguments: argparse.Namespace) -> object:
     telemetry = TelemetryStore(arguments.run_root, read_only=True)
     audit = AuditTranscriptStore(arguments.run_root, read_only=True)
     try:
-        return check_run_heads(telemetry, audit, arguments.run_id, source, signer)
+        return check_run_heads(
+            telemetry,
+            audit,
+            arguments.run_id,
+            source,
+            signer,
+            pruned_lookup=pruned_heads_lookup(arguments.run_root),
+        )
     finally:
         telemetry.close()
         audit.close()

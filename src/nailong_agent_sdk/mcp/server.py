@@ -13,8 +13,10 @@ if TYPE_CHECKING:
     from mcp.server import MCPServer
 
 from ..agent.retention import RunRetention
+from ..agent.run_checkpointer import RunHeadCheckpointer
 from ..agent.runtime import AgentRuntimeServices
 from ..agent.task_runner import AgentTaskRunner
+from ..foundations.errors import AgentSdkError
 from ..foundations.version import PACKAGE_NAME, package_version
 from ..memory.context_projection import FileToolResultJournal
 from ..observability.audit_log import AuditTranscriptStore
@@ -45,7 +47,9 @@ def create_mcp_server(
     run_root: Path | None = None,
     *,
     audit_max_open_handles: int | None = None,
+    audit_max_payload_chars: int | None = None,
     authority: McpAuthorityPolicy | None = None,
+    checkpointer: RunHeadCheckpointer | None = None,
 ) -> MCPServer:
     """Build the BaseAgent and typed harness MCP surface without a network listener."""
 
@@ -54,6 +58,8 @@ def create_mcp_server(
     from mcp.server import MCPServer
 
     resolved_run_root = run_root or Path(os.environ.get("AGENT_RUNTIME_RUN_ROOT", ".agent-runtime"))
+    if checkpointer is not None:
+        checkpointer.require_outside(resolved_run_root.resolve())
     telemetry = TelemetryStore(resolved_run_root)
     register_standard_metric_definitions(telemetry)
     coordinator = HarnessCoordinator(resolved_run_root)
@@ -67,10 +73,12 @@ def create_mcp_server(
     specification_root = Path(
         os.environ.get("AGENT_SPECIFICATION_ROOT", str(resolved_run_root / "specifications"))
     )
-    audit_logs = AuditTranscriptStore(
-        resolved_run_root,
-        **({} if audit_max_open_handles is None else {"max_open_handles": audit_max_open_handles}),
-    )
+    audit_options: dict[str, int] = {}
+    if audit_max_open_handles is not None:
+        audit_options["max_open_handles"] = audit_max_open_handles
+    if audit_max_payload_chars is not None:
+        audit_options["max_payload_chars"] = audit_max_payload_chars
+    audit_logs = AuditTranscriptStore(resolved_run_root, **audit_options)
     result_journal = FileToolResultJournal(resolved_run_root)
     task_runner = AgentTaskRunner(
         AgentRuntimeServices(
@@ -79,6 +87,7 @@ def create_mcp_server(
             project_state_store=project_states,
             telemetry=telemetry,
             audit_logs=audit_logs,
+            checkpointer=checkpointer,
         ),
         allow_process_options=os.environ.get(PROCESS_OPTIONS_ENVIRONMENT_VARIABLE) == "1",
         process_options_hint=(
@@ -160,10 +169,20 @@ def main() -> None:
     notice = settings.approval_notice()
     if notice is not None:
         print(f"nailong-agent-sdk MCP server: {notice}", file=sys.stderr, flush=True)
-    app = create_mcp_server(
-        audit_max_open_handles=settings.audit_max_open_handles,
-        authority=settings.authority_policy(),
-    ).streamable_http_app(
+    checkpoint_notice = settings.checkpoint_notice()
+    if checkpoint_notice is not None:
+        print(f"nailong-agent-sdk MCP server: {checkpoint_notice}", file=sys.stderr, flush=True)
+    try:
+        server = create_mcp_server(
+            audit_max_open_handles=settings.audit_max_open_handles,
+            audit_max_payload_chars=settings.audit_max_payload_chars,
+            authority=settings.authority_policy(),
+            checkpointer=settings.checkpointer(),
+        )
+    except (AgentSdkError, OSError, ValueError) as error:
+        print(f"nailong-agent-sdk MCP server cannot start: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
+    app = server.streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,
         stateless_http=True,

@@ -6,7 +6,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 |---|---:|---|
 | [`developer_tools/__init__.py`](#developer_tools__init__py---public-surface-of-the-developer-utilities) | 42 | public surface of the developer utilities |
 | [`developer_tools/catalog.py`](#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 492 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 505 | the `nailong-agent-sdk-dev` command line |
 | [`developer_tools/inspect.py`](#developer_toolsinspectpy---read-only-run-evidence-inspection) | 211 | read-only run evidence inspection |
 | [`developer_tools/quality.py`](#developer_toolsqualitypy---closed-ruff-quality-check) | 92 | closed Ruff quality check |
 | [`developer_tools/validate.py`](#developer_toolsvalidatepy---contract-file-validation) | 97 | contract-file validation |
@@ -42,7 +42,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/cli.py` - the `nailong-agent-sdk-dev` command line
 
-*492 lines · depends on: `agent/retention.py`, `agent/retention_inventory.py`, `developer_tools/catalog.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py`, `foundations/errors.py`, `mcp/authority_matrix.py`, `observability/audit_log.py`, `observability/otlp.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/run_state_store.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
+*505 lines · depends on: `agent/retention.py`, `agent/retention_inventory.py`, `developer_tools/catalog.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py`, `foundations/errors.py`, `mcp/authority_matrix.py`, `observability/audit_log.py`, `observability/otlp.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/run_state_store.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
 
 **Role in the workflow.** Subcommands `catalog`, `validate`, `inspect-run`, `verify-evidence` and `quality`; each prints its report as JSON. Exit status: 0 success, 1 the artifact was inspected and is invalid, failed or has a broken chain, 2 usage error (argparse), 3 operational error. `prune-runs` is the one command that can change a run root, and only with `--apply`.
 
@@ -65,8 +65,8 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 - `_headers(items: list[str]) -> dict[str, str]` - Parses `NAME=VALUE` items (the `--header` option and the `OTEL_EXPORTER_OTLP_HEADERS` variable, whose values are percent-decoded); an item without `=` or a name raises `ValueError` naming it. · *Called by:* `developer_tools/cli.py::_export_otlp`
 - `_authority_matrix() -> object` - Prints `authority_matrix()` (imported on use, so the other commands do not load the MCP layer). · *Called by:* `developer_tools/cli.py::main`
 - `_checkpoint_signer(arguments: argparse.Namespace) -> HmacSha256Signer` - The `HmacSha256Signer` built from `--key-file` (its stripped text) and `--signer-id`; a key under 32 bytes is refused naming the length, never the key. · *Called by:* `developer_tools/cli.py::_checkpoint_run`, `developer_tools/cli.py::_verify_checkpoints`
-- `_checkpoint_run(arguments: argparse.Namespace) -> object` - Opens the run root read-only and appends a signed checkpoint of the run's heads to the destination directory (`export_run_head_checkpoint`). · *Called by:* `developer_tools/cli.py::main`
-- `_verify_checkpoints(arguments: argparse.Namespace) -> object` - Checks a run against its checkpoint file (or the directory that holds it) and the terminal cross-link; exit status 1 when the report is not `ok`. · *Called by:* `developer_tools/cli.py::main`
+- `_checkpoint_run(arguments: argparse.Namespace) -> object` - Opens the run root read-only and appends a signed checkpoint of the run's heads to the destination directory (`export_run_head_checkpoint`), consulting the run root's tombstones so a run id used again after a prune starts a new series. · *Called by:* `developer_tools/cli.py::main`
+- `_verify_checkpoints(arguments: argparse.Namespace) -> object` - Checks a run against its checkpoint file (or the directory that holds it) and the terminal cross-link, consulting the run root's tombstones (a pruned run is `pruned`); exit status 1 when the report is not `ok`. · *Called by:* `developer_tools/cli.py::main`
 - `_quality(arguments: argparse.Namespace) -> object` - Handler for `quality`. · *Called by:* `developer_tools/cli.py::main`
 - `_exit_status(result: object) -> int` - 1 if any of `valid`, `passed`, `telemetry_chain_valid`, `audit_chain_valid`, `verified` is False on the result, else 0. · *Called by:* `developer_tools/cli.py::main`
 - `_to_json(value: object) -> object` - Converts a pydantic result to JSON-compatible data. · *Called by:* `developer_tools/cli.py::main`

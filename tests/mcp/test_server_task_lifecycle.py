@@ -1,21 +1,10 @@
 import json
 import time
 
-from tests.support.agents import definition, final, task
+from tests.support.agents import definition, task
 from tests.support.chat_provider import chat_provider, final_chat, tool_chat
-from tests.support.mcp_cases import BUILTIN, live_options
+from tests.support.mcp_cases import BUILTIN, live_options, scripted_run
 from tests.support.mcp_server import Server
-
-
-def scripted_run(instance, task_id):
-    return instance.call(
-        "run_agent_task",
-        {
-            "definition": definition().model_dump(mode="json"),
-            "task": task(task_id).model_dump(mode="json"),
-            "runtime_options": {"scripted_turns": [final()]},
-        },
-    )
 
 
 def test_prune_runs_reports_by_default_and_deletes_only_when_told_to(tmp_path):

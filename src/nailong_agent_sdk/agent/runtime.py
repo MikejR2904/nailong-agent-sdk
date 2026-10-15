@@ -10,17 +10,26 @@ and audit stores beneath one declared run root.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from ..foundations.contracts import AgentDefinition
+from ..foundations.errors import AgentSdkError
+from ..foundations.logging import get_logger
 from ..memory.context_projection import ContextProjectionPolicy, FileToolResultJournal
 from ..memory.episode_store import InMemoryEpisodeStore
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.profiler import AgentRunProfiler
-from ..observability.telemetry_models import TelemetryContext
+from ..observability.run_checkpoints import RunHeadCheckpoint
+from ..observability.telemetry_models import (
+    TelemetryActor,
+    TelemetryAuthority,
+    TelemetryContext,
+    TelemetrySeverity,
+)
 from ..observability.telemetry_store import TelemetryStore
 from ..state.project_state_models import ProjectStateProjectionPolicy
 from ..state.project_state_store import FileProjectStateStore
@@ -28,7 +37,11 @@ from ..tools.tools import ToolExecutor
 from .base_agent import AgentWatchdogPolicy, BaseAgent, PostToolHook, PreToolHook
 from .model import AgentModel
 from .retention import RunRetention
+from .run_checkpointer import RunHeadCheckpointer
 from .verification import VerificationGateRegistry
+
+_logger = get_logger("runtime")
+MAX_RECORDED_CHECKPOINT_ERROR_CHARS = 500
 
 
 @dataclass(frozen=True)
@@ -45,20 +58,89 @@ class AgentRuntimeServices:
     project_state_store: FileProjectStateStore
     telemetry: TelemetryStore
     audit_logs: AuditTranscriptStore
+    checkpointer: RunHeadCheckpointer | None = None
 
     @classmethod
-    def open(cls, run_root: Path, *, audit_max_open_handles: int = 32) -> AgentRuntimeServices:
+    def open(
+        cls,
+        run_root: Path,
+        *,
+        audit_max_open_handles: int = 32,
+        audit_max_payload_chars: int | None = None,
+        checkpointer: RunHeadCheckpointer | None = None,
+    ) -> AgentRuntimeServices:
         """Create or reopen SDK-owned durable stores below ``run_root``."""
 
         resolved = run_root.resolve()
+        if checkpointer is not None:
+            checkpointer.require_outside(resolved)
         resolved.mkdir(parents=True, exist_ok=True)
+        payload_limit = (
+            {}
+            if audit_max_payload_chars is None
+            else {"max_payload_chars": audit_max_payload_chars}
+        )
         return cls(
             run_root=resolved,
             result_journal=FileToolResultJournal(resolved),
             project_state_store=FileProjectStateStore(resolved),
             telemetry=TelemetryStore(resolved),
-            audit_logs=AuditTranscriptStore(resolved, max_open_handles=audit_max_open_handles),
+            audit_logs=AuditTranscriptStore(
+                resolved, max_open_handles=audit_max_open_handles, **payload_limit
+            ),
+            checkpointer=checkpointer,
         )
+
+    def checkpoint_run(self, run_id: str) -> RunHeadCheckpoint | None:
+        if self.checkpointer is None:
+            return None
+        return self.checkpointer.export(self.run_root, self.telemetry, self.audit_logs, run_id)
+
+    async def checkpoint_after_run(
+        self, run_id: str, context: TelemetryContext | None = None
+    ) -> RunHeadCheckpoint | None:
+        if self.checkpointer is None:
+            return None
+        try:
+            return await asyncio.to_thread(self.checkpoint_run, run_id)
+        except Exception as error:
+            self._record_checkpoint_failure(run_id, context, error)
+            return None
+
+    def _record_checkpoint_failure(
+        self, run_id: str, context: TelemetryContext | None, error: Exception
+    ) -> None:
+        code = error.code if isinstance(error, AgentSdkError) else None
+        message = str(error)[:MAX_RECORDED_CHECKPOINT_ERROR_CHARS]
+        _logger.warning(
+            'The run-head checkpoint of run "%s" failed: %s: %s',
+            run_id,
+            type(error).__name__,
+            message,
+        )
+        try:
+            self.telemetry.emit(
+                "run.checkpoint-failed",
+                context or TelemetryContext(run_id=run_id, task_id=run_id),
+                actor=TelemetryActor(kind="system", identifier="run-checkpointer", role="runtime"),
+                authority=TelemetryAuthority.SYSTEM,
+                status="failed",
+                severity=TelemetrySeverity.WARNING,
+                payload={
+                    "run_id": run_id,
+                    "error_type": type(error).__name__,
+                    "error_code": code,
+                    "error": message,
+                },
+            )
+        except Exception as recording_error:
+            _logger.warning(
+                'The failed run-head checkpoint of run "%s" could not be recorded in telemetry: '
+                "%s: %s",
+                run_id,
+                type(recording_error).__name__,
+                recording_error,
+            )
 
     def retention(self) -> RunRetention:
         return RunRetention(

@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **146 files, 517 classes and 1,780 functions** (methods and nested closures included).
+covers **147 files, 524 classes and 1,814 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -92,6 +92,70 @@ import of a fresh interpreter, which the test suite checks for all of them.
 9. **Terminate** (`_terminate`, the single exit): record the agent result in project state,
    escalate if the status is not COMPLETED and the definition names a target, seal the profile,
    emit telemetry and audit entries, return `AgentResult`.
+
+### Recipe - accepting an output only when something outside the model agrees
+
+`VerificationGate` is the extension point; the SDK ships no domain oracle. Two checks that need
+no new API, composed so the run is COMPLETED only when both pass (the exit code of a
+host-declared command through `ProcessSupervisor`, and the hash of a file the agent wrote):
+
+```python
+import hashlib
+
+from nailong_agent_sdk import (
+    AllOfVerificationGate,
+    CallableVerificationGate,
+    TelemetryAuthority,
+    VerificationDecision,
+    VerificationGateRegistry,
+)
+
+
+def exit_code(supervisor, template, cwd):
+    async def check(context):
+        record = await supervisor.execute(template, cwd=cwd)
+        return VerificationDecision(
+            record.successful,
+            None if record.successful else f"{template} exited {record.return_code}",
+            verifier_id=f"command:{template}",
+            authority=TelemetryAuthority.TOOL,
+            evidence={"return_code": record.return_code, "duration_ns": record.duration_ns},
+        )
+
+    return CallableVerificationGate(check)
+
+
+def file_hash(path, digest):
+    def check(context):
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        return VerificationDecision(
+            actual == digest,
+            None if actual == digest else f"{path.name} hashes to {actual[:12]}",
+            verifier_id=f"sha256:{path.name}",
+            authority=TelemetryAuthority.DETERMINISTIC,
+            evidence={"expected": digest[:12], "actual": actual[:12]},
+        )
+
+    return CallableVerificationGate(check)
+
+
+registry = VerificationGateRegistry()
+registry.register(
+    "release",
+    AllOfVerificationGate(
+        [exit_code(supervisor, "tests", workspace), file_hash(report, expected)],
+        verifier_id="release-gate",
+    ),
+)
+```
+
+The `verification-completed` event records the composite's `verifier_id`, the member class
+furthest from deterministic (`tool` here) and each member's outcome with its own evidence; a
+rejection reads `<member>: <reason>`, and the run ends FAILED. A member gate that declares an
+unknown `authority` or a blank `verifier_id` is refused when the composite is built, before any
+member runs. The two checks were run against the final tree: with `exit-zero` and the right
+hash the run completed with both members recorded, and with `exit-three` it failed with
+`command:exit-three: exit-three exited 3`.
 
 ## Workflow 2 - what the model sees each turn
 
@@ -249,9 +313,9 @@ specification: that belongs to the interface that calls the agent.
 | Approvals | `.agent-runs/<run>.approvals.json` | atomic replace under a cross-process lock |
 | Controllers | `.agent-controllers/` | event-prefix hash named by the snapshot, one cross-process lock per controller |
 | Orchestrations | `.agent-orchestrations/` | atomic replace under one cross-process lock per record, policy immutability |
-| Run-head checkpoints | outside the run root: `<destination>/<run>.checkpoints.jsonl` | a signature (HMAC-SHA256, or a host signer) over the sequence and head hash of the telemetry and audit chains, appended under a lock and checked by `verify-checkpoints` |
+| Run-head checkpoints | outside the run root, in a `CheckpointSink` (by default one file per run: `<destination>/<run>.checkpoints.jsonl`) | a signature (HMAC-SHA256, or a host signer) over the sequence and head hash of the telemetry and audit chains, appended under a lock, taken by the runtime when a `RunHeadCheckpointer` is configured and checked by `verify-checkpoints` against the run and, for a pruned run, retention's tombstone |
 
-Each chain detects an edit in the middle. The removal of the newest entries, or a rewrite that reseals a chain, is detected only against a record kept outside the run root: the tombstone anchor for the retention log and a signed run-head checkpoint (`export_run_head_checkpoint`, `nailong-agent-sdk-dev checkpoint-run`) for a run. At the end of a run its `agent.profile-completed` event records the audit chain's head and its `profile-completed` audit entry records that event's hash, so one intact store vouches for the other (`verify_terminal_link`).
+Each chain detects an edit in the middle. The removal of the newest entries, or a rewrite that reseals a chain, is detected only against a record kept outside the run root: the tombstone anchor for the retention log and a signed run-head checkpoint (`export_run_head_checkpoint`, `nailong-agent-sdk-dev checkpoint-run`) for a run. At the end of a run its `agent.profile-completed` event records the audit chain's head and a final `terminal-link` audit entry records that event's hash, so one intact store vouches for the other (`verify_terminal_link`); the link is an entry of its own so that a small audit payload bound cannot cut it. A run that retention pruned verifies as `pruned`, not `truncated`, when its tombstone holds the checkpoint's final heads. Nothing is checkpointed unless asked: by `checkpoint-run`, or by the runtime when `AgentRuntimeServices.open(checkpointer=...)` (the MCP service: `AGENT_RUNTIME_CHECKPOINT_DIR` and `AGENT_RUNTIME_CHECKPOINT_KEY_FILE`) names a `RunHeadCheckpointer`.
 
 ## Workflow 8 - calling the agent from a backend (`AgentTaskRunner`)
 
@@ -313,6 +377,9 @@ the run options. Everything else is a parameter too:
 | record who decided an approval or a plan | pass a `DecisionSource` to `AgentTaskRunner.decide_approval`, `ApprovalRegistry.submit`, `ControllerRuntime.approve_plan`, `grant_elastic_capacity`, `decline_elastic_requests` or `Orchestrator.approve`; the MCP decision tools pass the principal |
 | see who may do what | `nailong-agent-sdk-dev authority-matrix` or `authority_matrix()` (`mcp/authority_matrix.py`); the reducer's tables are in `state/project_state_engine.py` and the credential rules in `McpAuthorityPolicy.check` |
 | keep proof outside the run root that a run was not cut short | `observability/run_checkpoints.py` (`export_run_head_checkpoint`, `verify_run_head_checkpoints`), `nailong-agent-sdk-dev checkpoint-run` and `verify-checkpoints` |
+| have the runtime checkpoint every run when it ends | `agent/run_checkpointer.py` (`RunHeadCheckpointer`), `AgentRuntimeServices.open(checkpointer=)`, `AgentRuntimeServices.checkpoint_after_run`; for the MCP service `AGENT_RUNTIME_CHECKPOINT_DIR`, `AGENT_RUNTIME_CHECKPOINT_KEY_FILE` and `AGENT_RUNTIME_CHECKPOINT_SIGNER_ID` in `mcp/security.py` |
+| keep checkpoints in a store other than a directory, or sign with another key scheme | implement `CheckpointSink` or `CheckpointSigner` (`observability/run_checkpoints.py`) |
+| change how much of an audit payload is kept | `AuditTranscriptStore(max_payload_chars=)`, `AgentRuntimeServices.open(audit_max_payload_chars=)`, `AGENT_RUNTIME_AUDIT_MAX_PAYLOAD_CHARS` |
 | add a project-state transition | `state/project_state_models.py` (`StateTransitionKind`), `ProjectStateReducer.apply` in `state/project_state_engine.py` |
 | add a graph node kind or executor | `state/graph_models.py` (`GraphNodeKind`), the executor map passed to `execute_graph` |
 | let agents explore beyond the plan, or change the elastic rules | `state/elastic.py` (requests, limits, admission checks), `StateGraph._apply_spawn_requests` (commit-time handling), `StateGraph._reserve_elastic` (per-wave ledger), `tools/elastic_requests.py` (agent queue), `agent/orchestrator/` (policy ceilings, derived bindings) |
@@ -347,13 +414,13 @@ the run options. Everything else is a parameter too:
 
 | File | Lines | Role |
 |---|---:|---|
-| [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 921 | the public API surface (lazy re-exports) |
+| [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 931 | the public API surface (lazy re-exports) |
 | [`agent/__init__.py`](agent.md#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2448 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2456 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
-| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 294 | runs registered BaseAgent bindings as graph nodes |
+| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 298 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 418 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
 | [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 746 | Chat Completions adapter for the agent model contract |
@@ -364,16 +431,17 @@ the run options. Everything else is a parameter too:
 | [`agent/orchestrator/models.py`](agent.md#agentorchestratormodelspy---user-owned-orchestration-policy-request-and-record-contracts) | 180 | user-owned orchestration policy, request and record contracts |
 | [`agent/orchestrator/orchestrator.py`](agent.md#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 1004 | deterministic composition of policy, plan, controller and graph execution |
 | [`agent/orchestrator/state_store.py`](agent.md#agentorchestratorstate_storepy---atomic-local-persistence-of-orchestration-records-and-policies) | 119 | atomic local persistence of orchestration records and policies |
-| [`agent/retention.py`](agent.md#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 646 | opt-in pruning of finished runs with a hash-chained tombstone for each |
+| [`agent/retention.py`](agent.md#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 666 | opt-in pruning of finished runs with a hash-chained tombstone for each |
 | [`agent/retention_anchor.py`](agent.md#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
 | [`agent/retention_inventory.py`](agent.md#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
-| [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 112 | composition root for the durable stores around an agent |
+| [`agent/run_checkpointer.py`](agent.md#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 71 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
+| [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 194 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](agent.md#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
-| [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 693 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
-| [`agent/verification.py`](agent.md#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 412 | host-registered, bounded output-acceptance gates |
+| [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 694 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
+| [`agent/verification.py`](agent.md#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
 | [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 42 | public surface of the developer utilities |
 | [`developer_tools/catalog.py`](developer_tools.md#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 492 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 505 | the `nailong-agent-sdk-dev` command line |
 | [`developer_tools/inspect.py`](developer_tools.md#developer_toolsinspectpy---read-only-run-evidence-inspection) | 211 | read-only run evidence inspection |
 | [`developer_tools/quality.py`](developer_tools.md#developer_toolsqualitypy---closed-ruff-quality-check) | 92 | closed Ruff quality check |
 | [`developer_tools/validate.py`](developer_tools.md#developer_toolsvalidatepy---contract-file-validation) | 97 | contract-file validation |
@@ -422,8 +490,8 @@ the run options. Everything else is a parameter too:
 | [`mcp/orchestration_tools.py`](mcp.md#mcporchestration_toolspy---mcp-tools-for-plan-validation-graph-runs-and-orchestration-compilation) | 156 | MCP tools for plan validation, graph runs and orchestration compilation |
 | [`mcp/project_state_tools.py`](mcp.md#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 274 | MCP tools for project working memory |
 | [`mcp/run_tools.py`](mcp.md#mcprun_toolspy---mcp-tools-for-graph-run-state-cancellation-approvals-and-resumption) | 107 | MCP tools for graph run state, cancellation, approvals and resumption |
-| [`mcp/security.py`](mcp.md#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 357 | bearer-token authentication and host checks for the HTTP service |
-| [`mcp/server.py`](mcp.md#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 186 | MCP server factory and loopback entry point |
+| [`mcp/security.py`](mcp.md#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 443 | bearer-token authentication and host checks for the HTTP service |
+| [`mcp/server.py`](mcp.md#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 205 | MCP server factory and loopback entry point |
 | [`mcp/specification_tools.py`](mcp.md#mcpspecification_toolspy---mcp-tool-for-specification-parsing) | 40 | MCP tool for specification parsing |
 | [`mcp/telemetry_tools.py`](mcp.md#mcptelemetry_toolspy---mcp-tools-for-telemetry-audit-logs-and-metrics) | 212 | MCP tools for telemetry, audit logs and metrics |
 | [`mcp/tool_groups.py`](mcp.md#mcptool_groupspy---the-ordered-tool-groups-every-mcp-server-registers) | 27 | the ordered tool groups every MCP server registers |
@@ -446,7 +514,7 @@ the run options. Everything else is a parameter too:
 | [`observability/metrics.py`](observability.md#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
 | [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 829 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
 | [`observability/profiler.py`](observability.md#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
-| [`observability/run_checkpoints.py`](observability.md#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 567 | signed checkpoints of a run's chain heads, kept outside the run root |
+| [`observability/run_checkpoints.py`](observability.md#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 864 | signed checkpoints of a run's chain heads, kept outside the run root |
 | [`observability/telemetry_helpers.py`](observability.md#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
 | [`observability/telemetry_models.py`](observability.md#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 239 | telemetry event, context, actor and metric contracts |
 | [`observability/telemetry_store.py`](observability.md#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 768 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
@@ -468,7 +536,7 @@ the run options. Everything else is a parameter too:
 | [`state/orchestration.py`](state.md#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 453 | controller state machine and its crash-safe store |
 | [`state/orchestration_models.py`](state.md#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 110 | controller phase, routing-rule and record contracts |
 | [`state/planning.py`](state.md#stateplanningpy---typed-plan-contracts-and-the-deterministic-plan-validator) | 496 | typed plan contracts and the deterministic plan validator |
-| [`state/project_state_engine.py`](state.md#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 527 | mechanical reducer and token-bounded projector over `ProjectState` |
+| [`state/project_state_engine.py`](state.md#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 533 | mechanical reducer and token-bounded projector over `ProjectState` |
 | [`state/project_state_models.py`](state.md#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 363 | bounded, hash-sealed working-memory contracts |
 | [`state/project_state_store.py`](state.md#stateproject_state_storepy---in-memory-and-file-backed-project-state-stores-with-a-hash-chained-audit-trail) | 252 | in-memory and file-backed project-state stores with a hash-chained audit trail |
 | [`state/run_state_store.py`](state.md#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 435 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
@@ -494,7 +562,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 146 files, 517 classes and 1780 functions (including methods and nested closures), each with a written description.*
+*Coverage: 147 files, 524 classes and 1814 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 
@@ -631,7 +699,7 @@ got before.
 |---|---|
 | Who verified an output | `verification-completed` recorded passed, reason and failure code under a fixed deterministic authority, and `VerificationDecision` was only `(passed, reason)`. A decision may now declare a `verifier_id`, an authority class (`TelemetryAuthority`) and a bounded `evidence` mapping (JSON, at most 4,096 characters, kept as a copy); the event records the gate id, a digest of the candidate output and what the decision declared, and takes the decision's class as its telemetry authority. `AllOfVerificationGate` and `VerificationGateRegistry.register_all_of` compose one to 16 gates (fail-fast unless told otherwise) and record each member's verifier, outcome and class. The Jev advisory gate declares itself model-mediated with its probability and policy. A gate that declares nothing is recorded as before. Tests: `tests/agent/test_verification_decisions.py`, `tests/integrations/test_jev_advisory.py`. |
 | Who decided an approval or a plan | A decision made through the Python API recorded a status and a reason and nothing about who decided it; only the MCP path recorded a principal, in its own stream. `ApprovalRequest` now has `decided_by` and `decision_authority`, and `DecisionSource` is accepted by `AgentTaskRunner.decide_approval`, `HarnessCoordinator.submit_approval`, `ControllerRuntime.approve_plan`, `grant_elastic_capacity` and `decline_elastic_requests`, and `Orchestrator.approve`. The controller event, the orchestration event and the telemetry event (whose authority class becomes the decider's) carry the same fields; a timeout is attributed to `approval-timeout` (system) and an advance approval to `run-options` (deterministic). The MCP tools pass the principal with the human class, and a project-state decision writes it into its transition so `last_action` names it. Without a source the record names no decider. Tests: `tests/tools/test_approval_decision_sources.py`, `tests/state/test_plan_decision_sources.py`, `tests/agent/test_task_approvals.py`, `tests/mcp/test_authority_decision_records.py`. |
-| One authority matrix | Which actor may produce which project-state transition was a set of `if` statements inside the reducer, and the credential rules were spread over `McpAuthorityPolicy` and each tool's registration. The reducer now reads two tables, `TRANSITION_AUTHORITY` and `QUESTION_RESOLUTION_AUTHORITY` (the refusal wording is unchanged), and `authority_matrix()` and `nailong-agent-sdk-dev authority-matrix` export them with what each MCP credential may do under each approval policy (probed from `McpAuthorityPolicy.check`) and the operation class of every registered tool. `TOOL_GROUPS` in `mcp/tool_groups.py` lists the tool groups once, for the server and the matrix. The matrix says plainly that `tool-outcome`, `agent-result` and `question-opened` accept every actor. Tests: `tests/mcp/test_authority_matrix.py` probes the reducer with every actor and compares the tools with a real server's. |
+| One authority matrix | Which actor may produce which project-state transition was a set of `if` statements inside the reducer, and the credential rules were spread over `McpAuthorityPolicy` and each tool's registration. The reducer now reads two tables, `TRANSITION_AUTHORITY` and `QUESTION_RESOLUTION_AUTHORITY` (the refusal wording is unchanged), and `authority_matrix()` and `nailong-agent-sdk-dev authority-matrix` export them with what each MCP credential may do under each approval policy (probed from `McpAuthorityPolicy.check`) and the operation class of every registered tool. `TOOL_GROUPS` in `mcp/tool_groups.py` lists the tool groups once, for the server and the matrix. The matrix says plainly which kinds accept every actor (`tool-outcome` and `agent-result` did until the checklist-validation pass restricted them to the harness; `question-opened` still does). Tests: `tests/mcp/test_authority_matrix.py` probes the reducer with every actor and compares the tools with a real server's. |
 | Signed run heads | The telemetry and audit chains detected an edit in the middle but not the removal of the newest entries, nor a rewrite that resealed the chain; only the tombstone log had an outside anchor. `export_run_head_checkpoint` and `nailong-agent-sdk-dev checkpoint-run` verify both chains, sign their sequence and head hash with a `CheckpointSigner` (`HmacSha256Signer` from the standard library; an asymmetric signer is the host's) and append the record to a file outside the run root, refusing a destination inside it and a run that no longer matches the file. `verify_run_head_checkpoints` reports `matches`, `advanced`, `truncated`, `diverged`, `chain-broken`, `signature-invalid`, `no-checkpoint` or `unreadable`. A run's terminal telemetry event records the audit head and its terminal audit entry the event's hash (`verify_terminal_link`). Tests: `tests/observability/test_run_checkpoints.py`. |
 | Reading one kind of event | A reader that wanted `controller.plan-approved` paged through every event of the run. `TelemetryStore.list_events`, `iter_events` and the MCP `get_telemetry_events` take `event_types` (at most 64 names; a bare string, an empty list and a blank name are refused naming what to pass). The filter reads the stored event JSON, so a forged `event_type` column cannot hide an event. Tests: `tests/observability/test_telemetry_event_filter.py`, `tests/mcp/test_server_tools.py`. |
 
@@ -643,6 +711,38 @@ Examined and left alone:
 | Merkle batching on the write path, anchoring on a public ledger | Not built. Detecting truncation or a rewrite needs only the head hash and count outside the run root, which a checkpoint gives; a Merkle tree adds inclusion proofs, and changing the write path would invalidate every stored chain. A host that wants a ledger implements `CheckpointSigner` and ships the checkpoint file. |
 | Domain-specific verification oracles in the SDK | Not built. `VerificationGate` is the extension point; a formal-property or consensus check is the host's code. |
 | Counterfactual replay as a memory feature | Not built. It needs a resume-from-iteration API, recorded model turns (the audit log keeps them only to 8,192 characters) and a live model; episodic memory exists for context compaction. |
+
+### Resolved by the checklist-validation pass
+
+The work started from a checklist of suggested next steps (traceability, authority,
+verifiability, debuggability, scenario tests, documentation). Each item was checked against
+the code first, by experiment where a claim could be tested: about a third was already done,
+a third rested on a wrong premise or a wrong place, and the rest was built, some of it
+reshaped. Each row names the failure, the change and the tests that fail without it.
+
+| Area | Resolved |
+|---|---|
+| A pruned run read as truncated | A run was checkpointed (`matches`, 8 events, 10 entries), pruned by retention and verified again: `truncated`, although the tombstone holds the same final heads. Checkpointing every run would have raised that false alarm for every pruned run. `pruned_heads_lookup(run_root)` (`agent/retention.py`) turns the tombstone log into `PrunedHeads`, and `verify_run_head_checkpoints(..., pruned_lookup=)`, `check_run_heads` and the developer commands use it. A run that is gone is `pruned` (ok) when a tombstone no older than the newest checkpoint holds that checkpoint's heads, or is longer and says the events between are gone; it is `truncated` when the tombstone is shorter than the checkpoint, `diverged` when it is as long with another head, and `truncated` with the unreadable log named when no tombstone can be read. A run id used again after a prune: the checkpoints a tombstone accounts for belong to the earlier incarnation, the counts only have to grow within one incarnation, the verdict is `no-checkpoint` until the new run is checkpointed and an export starts a new series. `tests/observability/test_run_checkpoint_pruning.py` (11 tests) |
+| Chain verification ran twice | A re-export checked both chains to verify the existing file and again to build the record, and a verification scanned the audit chain three times. One inspection now serves both steps: each chain gets its chain check and one pass that yields its head and the hash at the newest checkpoint's sequence. On a run of 3,000 events and 3,000 entries (development machine, both versions in one process) a re-export took 1,047 ms before and 503 ms after; a first export is unchanged at about 505 ms, because the two chain checks (228 ms telemetry, 134 ms audit) dominate. `test_re_exporting_scans_each_chain_twice_not_five_times` |
+| Checkpoints were taken only by a person | `export_run_head_checkpoint` was called by one developer command and nothing else, so a run nobody checkpointed had no record outside the run root. `RunHeadCheckpointer(signer, sink)` (`agent/run_checkpointer.py`) is now accepted by `AgentRuntimeServices.open(checkpointer=)`, which refuses a sink inside the run root; `AgentTaskRunner.run` checkpoints after `run.completed` or `run.terminated` and `GraphAgentExecutor` after each node agent returns (a graph run's controller and orchestration have no audit chain, so only its node agents are covered). The export runs on a worker thread; a failure is logged and recorded as a `run.checkpoint-failed` event (error type, code and the message cut to 500 characters) and never changes the run's result. Nothing is signed unless a checkpointer is given: there is no default key and no default destination. `CheckpointSink` (`location`, `read_all`, `append`, `is_inside`) is the storage seam and `FileCheckpointSink` ships with the SDK; a time-stamp token is a signer's concern, not a sink's. The MCP service reads `AGENT_RUNTIME_CHECKPOINT_DIR` and `AGENT_RUNTIME_CHECKPOINT_KEY_FILE` (set together; the key, at least 32 bytes, is read from the file and never from an environment value) and `AGENT_RUNTIME_CHECKPOINT_SIGNER_ID`, and exits with status 2 naming the variable when they are inconsistent, the key cannot sign or the sink is inside the run root. `tests/agent/test_run_checkpointer.py` (7 tests), `tests/mcp/test_service_checkpoints.py` (15 tests) |
+| The terminal link depended on the audit payload bound | Running the service with `AGENT_RUNTIME_AUDIT_MAX_PAYLOAD_CHARS=300` showed the link `broken`: the `profile-completed` audit payload, which carried the telemetry head, exceeded the bound and was replaced by a preview. The audit half of the link is now its own small `terminal-link` entry (`{telemetry_head: {sequence, integrity_hash}}`), and `verify_terminal_link` still reads the earlier layout (`telemetry_head` inside `profile-completed`) for runs written before. `tests/mcp/test_service_checkpoints.py`, `tests/observability/test_run_checkpoints.py` (a removed entry is half a link, not an absent one; a run in the earlier layout still verifies) |
+| Gate metadata was validated after the gate ran | A `CallableVerificationGate(verifier_id="  ")` or `authority="oracle"` registered without complaint, and a composite found an invalid member `authority` only while verifying, after earlier members had run. `VerificationGateRegistry.register` and `AllOfVerificationGate.__init__` now check the declared `verifier_id` and `authority` and refuse with `VERIFICATION_GATE_METADATA_INVALID` naming the gate (or the member's index and name); a gate changed after registration still fails at run time, naming it. A composite also kept only each member's verifier, outcome, reason and class, dropping the member's own evidence (a return code, a hash prefix); it now attaches each member's evidence in order while the whole stays within the 4,096-character limit (`{omitted_chars}` for one that does not fit), and a failure reads `<member>: <reason>`. `tests/agent/test_verification_decisions.py` (30 tests) |
+| Tool outcomes and agent results from any actor | The matrix said plainly that `tool-outcome`, `agent-result` and `question-opened` accept every actor. The first two are produced only by the harness (every production producer passes `HARNESS`), so `TRANSITION_AUTHORITY` now restricts them to it; another actor is refused with the reducer's `Only <actors> authority may <action>.` message. `question-opened` stays open: opening a question claims nothing, and resolving one is the restricted act. An experiment with the restriction in place ran the 813 tests of the state, agent, links, integrations and MCP authority subsets and all passed, so no producer used the freedom. `tests/mcp/test_authority_matrix.py` (17 tests) probes the reducer with every actor |
+| The audit payload bound could not be chosen by the service | `AuditTranscriptStore(max_payload_chars=)` existed (default 8,192, at least 256) but `AgentRuntimeServices.open` and the MCP service always used the default. `AgentRuntimeServices.open(audit_max_payload_chars=)`, `create_mcp_server(audit_max_payload_chars=)` and `AGENT_RUNTIME_AUDIT_MAX_PAYLOAD_CHARS` now set it; a value below 256, or one that is not a whole number, is refused naming the variable and the value. What the bound costs is open item 10. `tests/mcp/test_service_checkpoints.py`, `tests/agent/test_run_checkpointer.py` |
+| Behaviour no test pinned | Removing the forwarding of `source` from `Orchestrator.approve` to the controller left 33 tests passing, so an orchestration's plan approval could have lost its decider unnoticed; `tests/agent/test_orchestrator_decision_sources.py` (3 tests) fails without it. The evidence limit is pinned at its boundary (4,096 characters accepted, 4,097 refused). The numbers in `root.md` (public names, deep modules, line count) were not enforced and had drifted; `tests/test_reference_docs.py` now compares them with `__init__.py` |
+| Ledger completeness of a whole scenario | Each store was tested alone; nothing asked whether a complete run left complete ledgers. `tests/support/ledger_checks.py::ledger_summary` takes one run's telemetry and audit and asserts: both chains intact and numbered from 1; every audit entry that names a telemetry event names one that exists, of the matching type; every `agent.*` telemetry event is named by an audit entry (the terminal `profile-completed` event is linked instead); tool requests, completions and results agree; the terminal link is not broken. `tests/links/test_ledger_completeness.py` (4 tests) runs a scripted two-tool task and a three-node orchestrated graph under a checkpointer and requires `matches` and `linked`, then drops one event and reseals the chain, once in telemetry and once in the audit log, and requires the harness (and, for the audit case, the checkpoint and the link) to catch it. `tests/links/test_committed_ledgers.py` (7 tests, one per committed scenario) applies the same checks offline to `example_runs`: 44 telemetry runs (2,743 events) and 33 audit transcripts (3,431 entries) are intact, tool counts agree and every model turn has a turn started; all 33 terminal links report `absent`, because those runs predate the cross-link |
+
+Examined and left alone:
+
+| Item | Decision |
+|---|---|
+| Rotation of checkpoint files | Not built. The file is per run with one record per export, so nothing accumulates within a run and the file count tracks the run count, like telemetry rows. The retention question that mattered was the prune interaction, resolved above. |
+| One registry for the authority rules | Not built; mostly already true. The reducer and the matrix read the same table objects (editing `TRANSITION_AUTHORITY` changes both), and the matrix probes `McpAuthorityPolicy.check`. The capability policy has no static table to share: grants are per-instance caller input. |
+| One enum for `StateAuthority` and `TelemetryAuthority` | Not built. They are different axes: who may mutate state (3 values) and what produced a fact (5). `model-mediated`, `tool` and `system` must never become reducer actors, and a merged enum would allow it. |
+| Reference oracles as SDK API | Not built; the recipe after Workflow 1 shows two in about ten lines each. A JSON-schema oracle duplicates the mandatory and already validated `output_schema`, and a shipped subprocess oracle is an execution surface the host should declare. |
+| A `resume_from` stub | Not built. There is no `NotImplementedError` in `src`; it would be an interface with no behaviour, pointing at the counterfactual replay that is declined above. |
+| An `event_types` filter on episodes | Not applicable. `event_types` is a telemetry concept; episodes have an `EpisodeKind` and a state, and the store lists and gets them. |
+| A scenario test asserting a live model's output | Not built. A live run is not deterministic, and the one live-provider script is scratch outside the repository; a scripted scenario and the committed ledgers carry the invariants. A turn count is an inequality, not an equality: the committed `monopoly_game` ledger has 115 turns started and 112 audit model turns, the three extra being retries by older code that emitted no retry event (current code emits `model-turn-retrying`). |
 
 ### Still open
 
@@ -675,10 +775,10 @@ Examined and left alone:
    type-checked against stubs only, because its dependencies could not be installed offline,
    and its unit and end-to-end tests have not been run.
 4. **[measured] Platform coverage beyond Windows and Ubuntu.** Executed on 2026-10-15 from
-   the final working tree: the full suite on Windows 11 with Python 3.13.1 (1,908 passed, 10
+   the final working tree: the full suite on Windows 11 with Python 3.13.1 (1,965 passed, 10
    skipped: six live Docker sandbox tests, which skip because no daemon answers, and four
    resource-limit tests that apply on POSIX only) and on Ubuntu 24.04 under WSL2 with Python
-   3.12.3 (1,896 passed, 22 skipped: the same six Docker tests and sixteen tests of Windows
+   3.12.3 (1,953 passed, 22 skipped: the same six Docker tests and sixteen tests of Windows
    or case-insensitive filesystem behaviour such as extended-length path spelling, reserved
    device names and NTFS aliases). Ruff check and format check pass on `src` and `tests`.
    Not executed: Windows with Python 3.12 and Ubuntu with Python 3.13 (a 3.12 interpreter
@@ -744,13 +844,35 @@ Examined and left alone:
    and not implemented: the utility of a digest cannot be measured without a model or
    labelled tasks, an action's prerequisites must stay full whatever a digest says, and the
    episode and summary budgets already bound the two representations separately.
-9. **[inspected] Run-head checkpoints are not written for you, and they are only as
-   independent as where they are kept.** `export_run_head_checkpoint` and `checkpoint-run`
-   sign the heads when they are called; no run, service or retention pass calls them, so a
-   run nobody checkpointed has no record outside the run root. A checkpoint file on the same
-   volume as the run root is refused only when it is inside the root, and is no better than
-   the root when the volume is shared. The HMAC key is a shared secret: whoever holds it can
-   sign, so it belongs outside the run root, and an asymmetric signer is the host's to
-   supply through `CheckpointSigner`. Someone who can delete the newest checkpoints leaves an
-   older, shorter one, against which the run verifies as `advanced`. A run written before
-   runs cross-linked their heads reports its terminal link as `absent`, not `broken`.
+9. **[inspected] Run-head checkpoints are taken only when the host configures them, and
+   they are only as independent as where they are kept.** `export_run_head_checkpoint` and
+   `checkpoint-run` sign the heads when they are called, and the runtime does it when a run
+   ends only if `AgentRuntimeServices` was opened with a `RunHeadCheckpointer` (the MCP
+   service: `AGENT_RUNTIME_CHECKPOINT_DIR` and `AGENT_RUNTIME_CHECKPOINT_KEY_FILE`). There is
+   no default key or destination, so a run of a service that was not configured has no record
+   outside the run root. A checkpoint that fails is logged and recorded as
+   `run.checkpoint-failed` and the run still completes, so a host that needs the record has to
+   watch for that event. Only runs with both chains are covered: a graph run's controller and
+   orchestration have no audit transcript, so only its node agents are checkpointed and
+   cross-linked. A sink on the same volume as the run root is refused only when it is inside
+   the root, and is no better than the root when the volume is shared. The HMAC key is a
+   shared secret: whoever holds it can sign, so it belongs outside the run root, and an
+   asymmetric signer is the host's to supply through `CheckpointSigner`. Someone who can
+   delete the newest checkpoints leaves an older, shorter one, against which the run verifies
+   as `advanced`. A run written before runs cross-linked their heads reports its terminal link
+   as `absent`, not `broken`.
+10. **[measured] The audit log keeps a long payload by its hash and a preview.** An entry
+    whose canonical JSON exceeds `max_payload_chars` (default 8,192, at least 256; set through
+    `AuditTranscriptStore`, `AgentRuntimeServices.open(audit_max_payload_chars=)`,
+    `create_mcp_server(audit_max_payload_chars=)` or `AGENT_RUNTIME_AUDIT_MAX_PAYLOAD_CHARS`)
+    is replaced whole by `{truncated, content_hash, original_chars, preview}`: the hash (of
+    the redacted canonical JSON) and the length let a reader confirm a copy kept elsewhere,
+    and the preview is the first `max_payload_chars` characters; nothing else of the payload
+    survives. In the committed `example_runs` ledgers 214 of 3,431 entries (179 tool results,
+    35 model turns) were cut at the default. A tool's full output is also in the tool-result
+    journal, but the audit log is where a model's turn is recorded, which is why a replay from
+    a recorded turn is not offered. A cut entry also loses every other field, among them the
+    `telemetry_event_id` that pairs an entry written for a lifecycle event with its telemetry
+    event; the ledger harness would report such an event as uncited, and none of the committed
+    scenarios has one. A larger bound costs disk and read time: each entry is one JSON line
+    that the chain check reads whole.

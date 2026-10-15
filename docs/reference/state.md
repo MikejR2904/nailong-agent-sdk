@@ -14,7 +14,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 | [`state/orchestration.py`](#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 453 | controller state machine and its crash-safe store |
 | [`state/orchestration_models.py`](#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 110 | controller phase, routing-rule and record contracts |
 | [`state/planning.py`](#stateplanningpy---typed-plan-contracts-and-the-deterministic-plan-validator) | 496 | typed plan contracts and the deterministic plan validator |
-| [`state/project_state_engine.py`](#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 527 | mechanical reducer and token-bounded projector over `ProjectState` |
+| [`state/project_state_engine.py`](#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 533 | mechanical reducer and token-bounded projector over `ProjectState` |
 | [`state/project_state_models.py`](#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 363 | bounded, hash-sealed working-memory contracts |
 | [`state/project_state_store.py`](#stateproject_state_storepy---in-memory-and-file-backed-project-state-stores-with-a-hash-chained-audit-trail) | 252 | in-memory and file-backed project-state stores with a hash-chained audit trail |
 | [`state/run_state_store.py`](#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 435 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
@@ -443,13 +443,13 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/project_state_engine.py` - mechanical reducer and token-bounded projector over `ProjectState`
 
-*527 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `mcp/authority_matrix.py`, `state/project_state_store.py` · re-exported at the package root: 2 name(s)*
+*533 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `mcp/authority_matrix.py`, `state/project_state_store.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` calls `ProjectStateReducer.tool_transition` after every governed tool call and `agent_result_transition` at termination; stores apply them with `apply`. Each turn `ProjectStateProjector.project` selects the part of the state that fits the budget.
 
 **Contents**
 
-- `_require_authority(transition: StateTransition) -> None` - Raises `Only <actors> authority may <action>.` when the transition's actor is not in `TRANSITION_AUTHORITY` for its kind (`a human`, `controller or human`, `controller or harness`). · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
+- `_require_authority(transition: StateTransition) -> None` - Raises `Only <actors> authority may <action>.` when the transition's actor is not in `TRANSITION_AUTHORITY` for its kind (`harness`, `a human`, `controller or human`, `controller or harness`). · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`
 - **class `ProjectStateProjector`** *(class)* - Selects current-state entries under a token budget, never transcript history. · *Instantiated by:* `base_agent/agent.py::BaseAgent.__init__`
   - `ProjectStateProjector.__init__(policy: ProjectStateProjectionPolicy | None=None) -> None` - Stores the policy (default 2,000 tokens).
   - `ProjectStateProjector.policy() -> ProjectStateProjectionPolicy` *(property)* - Property: the policy. · *Called within this file by:* `state/project_state_engine.py::ProjectStateProjector.__init__`
@@ -470,7 +470,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 - `_bounded_value(value: Any, max_chars: int) -> Any` - Returns the value unchanged or a `truncated-state-summary` with a preview of the first N characters. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.apply`, `state/project_state_engine.py::ProjectStateReducer.tool_transition`
 - `_bounded_text(value: str | None, max_chars: int) -> str | None` - Truncates text with a marker. · *Called by:* `state/project_state_engine.py::ProjectStateReducer.tool_transition`
 
-**Algorithms & invariants.** Tool outcomes only ever produce IN_PROGRESS artifacts; COMPLETE is reachable only through an `ARTIFACT_STATUS_UPDATED` transition from the controller or a human. A question or blocker is closed only by a `QUESTION_RESOLVED` or `BLOCKER_CLEARED` transition from the controller or a human, never by a tool outcome or an agent result. Which actor may produce which transition is data: `TRANSITION_AUTHORITY` for the restricted kinds and `QUESTION_RESOLUTION_AUTHORITY` by the question's owner. `apply` reads those tables, and `authority_matrix()` exports them, so the rule and its report cannot differ; `tool-outcome`, `agent-result` and `question-opened` have no row and accept every actor.
+**Algorithms & invariants.** Tool outcomes only ever produce IN_PROGRESS artifacts; COMPLETE is reachable only through an `ARTIFACT_STATUS_UPDATED` transition from the controller or a human. A question or blocker is closed only by a `QUESTION_RESOLVED` or `BLOCKER_CLEARED` transition from the controller or a human, never by a tool outcome or an agent result. Which actor may produce which transition is data: `TRANSITION_AUTHORITY` for the restricted kinds (a tool outcome and an agent result only from the harness) and `QUESTION_RESOLUTION_AUTHORITY` by the question's owner. `apply` reads those tables, and `authority_matrix()` exports them, so the rule and its report cannot differ; `question-opened` is the one kind that accepts every actor, because opening a question claims nothing and closing it is the restricted act.
 
 *Module-level names:* `_CLOSED_WORK_STATUSES`, `TRANSITION_AUTHORITY`, `QUESTION_RESOLUTION_AUTHORITY`, `_TRANSITION_VERBS`
 

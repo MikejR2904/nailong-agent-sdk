@@ -14,6 +14,7 @@ from nailong_agent_sdk.observability.run_checkpoints import (
     CheckpointVerdict,
     HmacSha256Signer,
     RunHeadCheckpoint,
+    TerminalLinkState,
     build_run_head_checkpoint,
     checkpoint_path,
     export_run_head_checkpoint,
@@ -31,6 +32,7 @@ from nailong_agent_sdk.observability.telemetry_store import TelemetryStore
 from tests.support.agents import agent, arun, definition, final, task
 
 RUN_ID = "checkpointed-run"
+nl = chr(10)
 KEY = b"checkpoint-key-0123456789abcdef!"
 SIGNER = HmacSha256Signer(KEY, signer_id="ops-hmac")
 
@@ -320,18 +322,55 @@ def test_the_terminal_events_commit_to_each_others_heads(recorded):
     _, telemetry, audit, _ = recorded
     (event,) = telemetry.list_events(RUN_ID, event_types=["agent.profile-completed"])
     entries = audit.list_entries(RUN_ID)
-    terminal = next(entry for entry in entries if entry.event_type == "profile-completed")
-    before = entries[terminal.sequence - 2]
+    profile = next(entry for entry in entries if entry.event_type == "profile-completed")
+    terminal = next(entry for entry in entries if entry.event_type == "terminal-link")
+    before = entries[profile.sequence - 2]
+    assert terminal.sequence == profile.sequence + 1 == entries[-1].sequence
     assert event.payload["audit_head"] == {
         "entries": before.sequence,
         "head_hash": before.integrity_hash,
     }
-    assert terminal.payload["telemetry_head"] == {
-        "sequence": event.sequence,
-        "integrity_hash": event.integrity_hash,
+    assert terminal.payload == {
+        "telemetry_head": {"sequence": event.sequence, "integrity_hash": event.integrity_hash}
     }
+    assert "telemetry_head" not in profile.payload
     link = verify_terminal_link(telemetry, audit, RUN_ID)
     assert link.linked, link.detail
+    assert f"Audit entry {terminal.sequence} commits to telemetry event {event.sequence}" in (
+        link.detail
+    )
+
+
+def test_a_removed_link_entry_is_reported_as_half_a_link_not_as_absent(recorded):
+    run_root, telemetry, audit, _ = recorded
+    last = audit.footprint(RUN_ID).entries
+    truncate_audit(audit, run_root, last - 1)
+    assert audit.chain_break(RUN_ID) is None
+    link = verify_terminal_link(telemetry, audit, RUN_ID)
+    assert link.state is TerminalLinkState.BROKEN
+    assert "Only one half of the cross-link" in link.detail
+
+
+def test_a_run_from_before_the_link_entry_existed_still_verifies_through_its_old_layout(
+    recorded,
+):
+    run_root, telemetry, audit, _ = recorded
+    (event,) = telemetry.list_events(RUN_ID, event_types=["agent.profile-completed"])
+    entries = audit.list_entries(RUN_ID)
+    rewrite_audit(
+        audit,
+        run_root,
+        entries[-2].sequence,
+        lambda payload: payload.update(
+            {"telemetry_head": {"sequence": event.sequence, "integrity_hash": event.integrity_hash}}
+        ),
+    )
+    path = audit_file(run_root)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines[:-1]]
+    path.write_text(nl.join(kept) + nl, encoding="utf-8")
+    link = verify_terminal_link(telemetry, audit, RUN_ID)
+    assert link.state is TerminalLinkState.LINKED, link.detail
 
 
 def test_a_rewritten_audit_entry_breaks_the_terminal_link_even_with_a_valid_chain(recorded):
