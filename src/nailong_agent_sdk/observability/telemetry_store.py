@@ -75,6 +75,7 @@ class TelemetryStore:
         self._connection = sqlite3.connect(
             self._database_path, timeout=10, isolation_level=None, check_same_thread=False
         )
+        # Write ahead logging (WAL) mode
         _retry_when_locked(lambda: self._connection.execute("PRAGMA journal_mode=WAL"))
         self._connection.execute("PRAGMA foreign_keys=ON")
         _retry_when_locked(self._initialize)
@@ -131,7 +132,7 @@ class TelemetryStore:
         """Append one event atomically after assigning its sequence and hash-chain predecessor.
 
         ``payload``/``links`` are redacted here, at the actual persistence
-        boundary, rather than only in ``emit`` — this is the point every event
+        boundary, rather than only in ``emit`` - this is the point every event
         passes through no matter how it was constructed.
         """
 
