@@ -287,3 +287,17 @@ def test_telemetry_tools(server):
         server.call("register_metric_definition", {"definition": {"metric_id": ""}})["ok"] is False
     )
     assert server.call("record_metric_observation", {"observation": {"nope": 1}})["ok"] is False
+
+
+def test_telemetry_events_can_be_filtered_by_event_type(server):
+    everything = server.call("get_telemetry_events", {"run_id": "mcp-run-1"})
+    kinds = sorted({item["event_type"] for item in everything["events"]})
+    assert len(kinds) > 1
+    filtered = server.call(
+        "get_telemetry_events", {"run_id": "mcp-run-1", "event_types": [kinds[0]]}
+    )
+    assert filtered["ok"] and filtered["events"]
+    assert {item["event_type"] for item in filtered["events"]} == {kinds[0]}
+    assert filtered["integrity_chain_valid"] is True
+    refused = server.call("get_telemetry_events", {"run_id": "mcp-run-1", "event_types": []})
+    assert refused["ok"] is False and "event_types" in refused["errors"][0]["message"]

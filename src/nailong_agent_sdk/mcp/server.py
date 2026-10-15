@@ -26,20 +26,14 @@ from ..state.harness_coordinator import HarnessCoordinator
 from ..state.planning import PlanValidator
 from ..state.project_state_store import FileProjectStateStore
 from ._shared import McpContext
-from .agent_tools import register_agent_tools
 from .arguments import ToolArgumentGuard
 from .authority import McpAuthorityPolicy
-from .controller_tools import register_controller_tools
-from .orchestration_tools import register_orchestration_tools
-from .project_state_tools import register_project_state_tools
-from .run_tools import register_run_tools
 from .security import (
     BearerTokenMiddleware,
     ServerConfigurationError,
     load_http_service_settings,
 )
-from .specification_tools import register_specification_tools
-from .telemetry_tools import register_telemetry_tools
+from .tool_groups import TOOL_GROUPS
 
 SERVER_NAME = PACKAGE_NAME
 SERVER_VERSION = package_version()
@@ -121,13 +115,8 @@ def create_mcp_server(
         ),
     )
 
-    register_agent_tools(server, ctx)
-    register_project_state_tools(server, ctx)
-    register_orchestration_tools(server, ctx)
-    register_run_tools(server, ctx)
-    register_controller_tools(server, ctx)
-    register_specification_tools(server, ctx)
-    register_telemetry_tools(server, ctx)
+    for register in TOOL_GROUPS:
+        register(server, ctx)
     server.middleware.append(ToolArgumentGuard(server))
 
     return server

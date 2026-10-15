@@ -25,6 +25,8 @@ from ..foundations.errors import assert_no_hidden_reasoning
 from ..foundations.text import assert_well_formed_text
 from .trace_context import require_span_id, require_trace_id
 
+MAX_DECIDER_ID_CHARS = 128
+
 
 class TelemetryAuthority(StrEnum):
     DETERMINISTIC = "deterministic"
@@ -57,6 +59,22 @@ class TelemetryActor(StrictModel):
     kind: str = Field(min_length=1)
     identifier: str = Field(min_length=1)
     role: str | None = None
+
+
+class DecisionSource(StrictModel):
+    authority: TelemetryAuthority
+    identifier: str | None = Field(default=None, min_length=1, max_length=MAX_DECIDER_ID_CHARS)
+
+    @field_validator("identifier")
+    @classmethod
+    def identifier_is_well_formed(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return None if value is None else assert_well_formed_text(value, info.field_name)
+
+    def fields(self) -> dict[str, str]:
+        recorded = {"decision_authority": self.authority.value}
+        if self.identifier is not None:
+            recorded["decided_by"] = self.identifier
+        return recorded
 
 
 class TelemetryContext(StrictModel):

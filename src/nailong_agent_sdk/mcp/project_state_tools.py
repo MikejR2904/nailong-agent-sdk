@@ -99,6 +99,7 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
                             "decision_id": decision_id,
                             "content": content,
                             "status": status,
+                            **receipt.source().fields(),
                         },
                         evidence=[
                             StateEvidence(
@@ -154,7 +155,11 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
                         kind=StateTransitionKind.QUESTION_RESOLVED,
                         actor=StateAuthority.HUMAN,
                         action_id=f"question-resolved:{question_id}",
-                        payload={"question_id": question_id, "resolution": resolution},
+                        payload={
+                            "question_id": question_id,
+                            "resolution": resolution,
+                            **receipt.source().fields(),
+                        },
                         evidence=[
                             StateEvidence(
                                 evidence_id=evidence_id,
@@ -209,7 +214,11 @@ def register_project_state_tools(server: MCPServer, ctx: McpContext) -> None:
                         kind=StateTransitionKind.BLOCKER_CLEARED,
                         actor=StateAuthority.HUMAN,
                         action_id=f"blocker-cleared:{blocker_id}",
-                        payload={"blocker_id": blocker_id, "reason": reason},
+                        payload={
+                            "blocker_id": blocker_id,
+                            "reason": reason,
+                            **receipt.source().fields(),
+                        },
                         evidence=[
                             StateEvidence(
                                 evidence_id=evidence_id,

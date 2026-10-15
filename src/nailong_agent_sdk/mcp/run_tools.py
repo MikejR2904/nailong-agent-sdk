@@ -86,7 +86,9 @@ def register_run_tools(server: MCPServer, ctx: McpContext) -> None:
                 label=approver_label,
                 reason=reason,
             ) as receipt:
-                approval = ctx.coordinator.submit_approval(run_id, approval_id, approved, reason)
+                approval = ctx.coordinator.submit_approval(
+                    run_id, approval_id, approved, reason, source=receipt.source()
+                )
             return {
                 "ok": True,
                 "approval": approval.model_dump(mode="json"),

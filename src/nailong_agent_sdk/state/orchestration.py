@@ -24,6 +24,7 @@ from ..foundations.identifiers import (
     validate_identifier,
 )
 from ..foundations.record_locks import RecordLocks
+from ..observability.telemetry_models import DecisionSource
 from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .orchestration_models import (
     ComplexityRouter,
@@ -129,13 +130,26 @@ class ControllerStateMachine:
             return self.record
         raise ValueError("Architecture selection may not lower a deterministic route.")
 
-    def approve_plan(self, approved: bool, reason: str | None = None) -> ControllerRecord:
+    def approve_plan(
+        self,
+        approved: bool,
+        reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
+    ) -> ControllerRecord:
         self._require(ControllerPhase.AWAITING_PLAN_APPROVAL)
         if self.record.plan_validation is None or not self.record.plan_validation.valid:
             raise ValueError("Only a deterministically valid plan can be approved for dispatch.")
         phase = ControllerPhase.DISPATCH_READY if approved else ControllerPhase.PLANNING
         self.record = self.record.model_copy(update={"plan_approved": approved, "phase": phase})
-        self._emit("plan-approval-recorded", {"approved": approved, "reason": reason})
+        self._emit(
+            "plan-approval-recorded",
+            {
+                "approved": approved,
+                "reason": reason,
+                **(source.fields() if source is not None else {}),
+            },
+        )
         return self.record
 
     def begin_dispatch(self) -> ControllerRecord:

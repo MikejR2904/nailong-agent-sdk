@@ -101,7 +101,9 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
                 label=approver_label,
                 reason=reason,
             ) as receipt:
-                record = ctx.controller_runtime.approve_plan(controller_id, approved, reason)
+                record = ctx.controller_runtime.approve_plan(
+                    controller_id, approved, reason, source=receipt.source()
+                )
             return {
                 "ok": True,
                 "controller": record.model_dump(mode="json"),
@@ -209,6 +211,7 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
                     max_elastic_depth=max_elastic_depth,
                     max_elastic_nodes=max_elastic_nodes,
                     reason=reason,
+                    source=receipt.source(),
                 )
             return {"ok": True, "run": run.model_dump(mode="json"), **receipt.fields()}
         except Exception as error:
@@ -242,7 +245,7 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
                 reason=reason,
             ) as receipt:
                 run = ctx.controller_runtime.decline_elastic_requests(
-                    controller_id, parent_node_id, reason
+                    controller_id, parent_node_id, reason, source=receipt.source()
                 )
             return {"ok": True, "run": run.model_dump(mode="json"), **receipt.fields()}
         except Exception as error:

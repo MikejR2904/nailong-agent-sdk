@@ -67,6 +67,7 @@ class McpContext:
     task_runner: AgentTaskRunner
     retention: RunRetention
     orchestrators: dict[str, Orchestrator] = field(default_factory=dict)
+    operations: dict[str, McpOperation] = field(default_factory=dict)
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     authority: McpAuthorityPolicy = field(default_factory=McpAuthorityPolicy)
     gate: DecisionGate = field(init=False)
@@ -83,6 +84,7 @@ class McpContext:
         operation: McpOperation = McpOperation.HOST,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+            self.operations[name] = operation
             return server.tool(name=name, structured_output=True)(
                 self._offloaded(function, name, exclusive, operation)
             )

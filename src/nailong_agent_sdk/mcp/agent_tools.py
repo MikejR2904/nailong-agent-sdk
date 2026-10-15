@@ -160,7 +160,9 @@ def register_agent_tools(server: MCPServer, ctx: McpContext) -> None:
                 label=approver_label,
                 reason=reason,
             ) as receipt:
-                request = ctx.task_runner.decide_approval(task_id, approval_id, approved, reason)
+                request = ctx.task_runner.decide_approval(
+                    task_id, approval_id, approved, reason, source=receipt.source()
+                )
             return {
                 "ok": True,
                 "approval": request.model_dump(mode="json"),

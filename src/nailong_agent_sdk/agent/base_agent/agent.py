@@ -93,7 +93,7 @@ from ..model import (
     ProviderUsage,
     StreamingAgentModel,
 )
-from ..verification import VerificationGateRegistry
+from ..verification import VerificationDecision, VerificationGateRegistry
 from .types import (
     AgentWatchdogPolicy,
     CancellationToken,
@@ -285,7 +285,13 @@ class BaseAgent:
                 telemetry_context.run_id
             )
 
-        def emit(event_type: str, iteration: int, **details: Any) -> None:
+        def emit(
+            event_type: str,
+            iteration: int,
+            *,
+            authority: TelemetryAuthority = TelemetryAuthority.DETERMINISTIC,
+            **details: Any,
+        ) -> None:
             event = AgentLifecycleEvent(
                 type=event_type,
                 task_id=task.id,
@@ -302,7 +308,7 @@ class BaseAgent:
                     actor=TelemetryActor(
                         kind="agent", identifier=self.definition.identity, role="base-agent"
                     ),
-                    authority=TelemetryAuthority.DETERMINISTIC,
+                    authority=authority,
                     status=event_type,
                     severity=TelemetrySeverity.ERROR
                     if event_type in {"terminated", "escalated"}
@@ -1077,6 +1083,8 @@ class BaseAgent:
             emit("output-rejected", iteration, reason=error.message)
             return ModelObservation(kind="agent-error", iteration=iteration, message=error.message)
         if self.definition.verification_gate_id:
+            gate_id = self.definition.verification_gate_id
+            output_digest = canonical_hash(output)
             verification_span = self.profiler.start_span(
                 ProfileSpanKind.VERIFICATION,
                 self.definition.verification_gate_id,
@@ -1133,6 +1141,8 @@ class BaseAgent:
                     passed=False,
                     reason=reason,
                     failure_code=failure.code,
+                    gate_id=gate_id,
+                    output_digest=output_digest,
                 )
                 return self._terminate(
                     AgentRunStatus.FAILED,
@@ -1154,6 +1164,8 @@ class BaseAgent:
                     passed=False,
                     reason=error.message,
                     failure_code=error.code,
+                    gate_id=gate_id,
+                    output_digest=output_digest,
                 )
                 return self._terminate(
                     AgentRunStatus.FAILED,
@@ -1181,6 +1193,8 @@ class BaseAgent:
                     passed=False,
                     reason=failure.message,
                     failure_code=failure.code,
+                    gate_id=gate_id,
+                    output_digest=output_digest,
                 )
                 return self._terminate(
                     AgentRunStatus.FAILED,
@@ -1223,8 +1237,12 @@ class BaseAgent:
             emit(
                 "verification-completed",
                 iteration,
+                authority=decision.authority or TelemetryAuthority.DETERMINISTIC,
                 passed=decision.passed,
                 reason=decision.reason,
+                gate_id=gate_id,
+                output_digest=output_digest,
+                **_verifier_details(decision),
             )
             if not decision.passed:
                 return self._terminate(
@@ -2115,6 +2133,10 @@ class BaseAgent:
                 task_id=task.id,
                 agent_id=self.definition.identity,
             )
+            audit_head = None
+            if self.audit_logs is not None:
+                footprint = self.audit_logs.footprint(telemetry_context.run_id)
+                audit_head = {"entries": footprint.entries, "head_hash": footprint.head_hash}
             profile_event = self.telemetry.emit(
                 "agent.profile-completed",
                 telemetry_context,
@@ -2124,6 +2146,7 @@ class BaseAgent:
                 authority=TelemetryAuthority.DETERMINISTIC,
                 status=status.value,
                 payload={
+                    **({} if audit_head is None else {"audit_head": audit_head}),
                     "integrity_hash": profile.integrity_hash,
                     "trace_id": profile.trace_id,
                     "resource": resource_attributes(),
@@ -2185,6 +2208,10 @@ class BaseAgent:
                         "status": status.value,
                         "phase_counts": {
                             summary.kind.value: summary.count for summary in profile.summaries
+                        },
+                        "telemetry_head": {
+                            "sequence": profile_event.sequence,
+                            "integrity_hash": profile_event.integrity_hash,
                         },
                     },
                     task_id=task.id,
@@ -2345,6 +2372,17 @@ async def _interruptible(operation: Awaitable[Any], cancellation: CancellationTo
     work.cancel()
     await asyncio.gather(work, return_exceptions=True)
     raise RunCancelled
+
+
+def _verifier_details(decision: VerificationDecision) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    if decision.verifier_id is not None:
+        details["verifier_id"] = decision.verifier_id
+    if decision.authority is not None:
+        details["verifier_kind"] = decision.authority.value
+    if decision.evidence is not None:
+        details["evidence"] = dict(decision.evidence)
+    return details
 
 
 def _watchdog_detail(expired: WatchdogExpired, label: str) -> str:

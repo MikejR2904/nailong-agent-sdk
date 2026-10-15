@@ -19,6 +19,7 @@ from ..foundations.atomic_io import (
     unique_temporary_path,
 )
 from ..foundations.contracts import StrictModel
+from ..observability.telemetry_models import DecisionSource, TelemetryAuthority
 
 
 class ApprovalStatus(StrEnum):
@@ -35,6 +36,8 @@ class ApprovalRequest(StrictModel):
     reason: str = Field(min_length=1)
     status: ApprovalStatus = ApprovalStatus.PENDING
     decision_reason: str | None = None
+    decided_by: str | None = None
+    decision_authority: TelemetryAuthority | None = None
 
 
 class _PersistedApprovals(StrictModel):
@@ -73,7 +76,12 @@ class ApprovalRegistry:
             return request
 
     def submit(
-        self, approval_id: str, approved: bool, reason: str | None = None
+        self,
+        approval_id: str,
+        approved: bool,
+        reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
     ) -> ApprovalRequest:
         with self._transaction():
             request = self._requests.get(approval_id)
@@ -88,6 +96,8 @@ class ApprovalRegistry:
                 update={
                     "status": ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED,
                     "decision_reason": reason,
+                    "decided_by": source.identifier if source is not None else None,
+                    "decision_authority": source.authority if source is not None else None,
                 }
             )
             self._requests[approval_id] = updated

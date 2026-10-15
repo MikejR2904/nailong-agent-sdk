@@ -94,6 +94,7 @@ if TYPE_CHECKING:
         TaskRunOptions,
     )
     from .agent.verification import (
+        AllOfVerificationGate,
         CallableVerificationGate,
         VerificationContext,
         VerificationDecision,
@@ -172,6 +173,7 @@ if TYPE_CHECKING:
     from .mcp.authority import (
         McpAuthorityPolicy,
     )
+    from .mcp.authority_matrix import authority_matrix
     from .mcp.client import McpClientManager, McpServerNotConnectedError
     from .mcp.client_bridge import mcp_tools_as_extensions, registered_tool_name
     from .mcp.client_types import (
@@ -251,9 +253,25 @@ if TYPE_CHECKING:
         ProfileSpanKind,
         ProfileSpanStatus,
     )
+    from .observability.run_checkpoints import (
+        CheckpointSigner,
+        CheckpointVerdict,
+        CheckpointVerification,
+        HmacSha256Signer,
+        RunHeadCheckpoint,
+        RunHeadReport,
+        TerminalLinkState,
+        TerminalLinkVerification,
+        check_run_heads,
+        checkpoint_path,
+        export_run_head_checkpoint,
+        verify_run_head_checkpoints,
+        verify_terminal_link,
+    )
     from .observability.telemetry_helpers import metric_observation
     from .observability.telemetry_models import (
         ChainBreak,
+        DecisionSource,
         MetricAvailability,
         MetricDefinition,
         MetricObservation,
@@ -676,6 +694,7 @@ _EXPORTS: dict[str, str] = {
     "TaskSignalUse": ".state.planning",
     "TerminationPolicy": ".foundations.contracts",
     "ChainBreak": ".observability.telemetry_models",
+    "DecisionSource": ".observability.telemetry_models",
     "TelemetryActor": ".observability.telemetry_models",
     "TelemetryAuthority": ".observability.telemetry_models",
     "TelemetryContext": ".observability.telemetry_models",
@@ -700,10 +719,24 @@ _EXPORTS: dict[str, str] = {
     "WorkerAssignment": ".agent.orchestrator",
     "assemble_initial_context": ".memory.context",
     "core_tool_definitions": ".tools.core",
+    "authority_matrix": ".mcp.authority_matrix",
     "create_mcp_server": ".mcp.server",
     "mcp_tools_as_extensions": ".mcp.client_bridge",
     "registered_tool_name": ".mcp.client_bridge",
     "specification_retrieval_documents": ".specifications.retrieval",
+    "CheckpointSigner": ".observability.run_checkpoints",
+    "CheckpointVerdict": ".observability.run_checkpoints",
+    "CheckpointVerification": ".observability.run_checkpoints",
+    "HmacSha256Signer": ".observability.run_checkpoints",
+    "RunHeadCheckpoint": ".observability.run_checkpoints",
+    "RunHeadReport": ".observability.run_checkpoints",
+    "TerminalLinkState": ".observability.run_checkpoints",
+    "TerminalLinkVerification": ".observability.run_checkpoints",
+    "check_run_heads": ".observability.run_checkpoints",
+    "checkpoint_path": ".observability.run_checkpoints",
+    "export_run_head_checkpoint": ".observability.run_checkpoints",
+    "verify_run_head_checkpoints": ".observability.run_checkpoints",
+    "verify_terminal_link": ".observability.run_checkpoints",
     "metric_observation": ".observability.telemetry_helpers",
     "record_metric_unavailable": ".observability.metrics",
     "record_metric_value": ".observability.metrics",
@@ -711,6 +744,7 @@ _EXPORTS: dict[str, str] = {
     "make_provenance_record": ".state.shared_state",
     "WatchdogController": ".tools.supervisor",
     "WatchdogState": ".tools.supervisor",
+    "AllOfVerificationGate": ".agent.verification",
     "CallableVerificationGate": ".agent.verification",
     "VerificationContext": ".agent.verification",
     "VerificationDecision": ".agent.verification",

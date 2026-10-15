@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from nailong_agent_sdk.agent.verification import VerificationContext
+from nailong_agent_sdk.agent.verification import VerificationContext, VerificationDecision
 from nailong_agent_sdk.integrations.contracts import InteropFailureMode, InteropOperationStatus
 from nailong_agent_sdk.integrations.jev.advisory import (
     JevAdvisoryPolicy,
@@ -16,6 +16,7 @@ from nailong_agent_sdk.integrations.jev.exploration import (
     JevExplorationAdvisor,
 )
 from nailong_agent_sdk.integrations.jev.models import JevDecisionResult, JevNoulAnswer
+from nailong_agent_sdk.observability.telemetry_models import TelemetryAuthority
 from tests.support.agents import arun, definition, task
 from tests.support.jev_cases import jev_request
 from tests.support.paths import STUB_ROOT
@@ -105,6 +106,58 @@ def test_advisory_gate_policy_matrix(answers, status, mode, expected):
         gate.verify(VerificationContext(output={}, definition=definition(), task=task()))
     )
     assert decision.passed is expected, decision
+
+
+def advisory_decision(result, mode=InteropFailureMode.ESCALATE, local=None):
+    gate = JevAdvisoryVerificationGate(
+        local or type("G", (), {"verify": staticmethod(lambda c: True)})(),
+        StubEvaluator(result),
+        lambda c: jev_request(),
+        JevAdvisoryPolicy(question_id="verdict", minimum_noul=0.5, on_unavailable=mode),
+    )
+    return arun(gate.verify(VerificationContext(output={}, definition=definition(), task=task())))
+
+
+def test_advisory_decisions_declare_a_model_mediated_verifier_with_evidence():
+    accepted = advisory_decision(jev_result({"verdict": JevNoulAnswer(noul=0.8)}))
+    assert accepted.verifier_id == "jev-advisory"
+    assert accepted.authority is TelemetryAuthority.MODEL_MEDIATED
+    assert accepted.evidence == {
+        "question_id": "verdict",
+        "noul": 0.8,
+        "minimum_noul": 0.5,
+        "policy_version": "jev-advisory-v1",
+    }
+    rejected = advisory_decision(jev_result({"verdict": JevNoulAnswer(noul=0.2)}))
+    assert rejected.passed is False and rejected.evidence["noul"] == 0.2
+
+
+def test_advisory_evidence_names_the_local_verifier_that_accepted():
+    local = type(
+        "G",
+        (),
+        {"verify": staticmethod(lambda c: VerificationDecision(True, verifier_id="schema"))},
+    )()
+    decision = advisory_decision(jev_result({"verdict": JevNoulAnswer(noul=0.9)}), local=local)
+    assert decision.evidence["local_verifier_id"] == "schema"
+
+
+def test_unavailable_advisory_is_a_deterministic_decision_with_the_failure_mode():
+    down = jev_result({}, InteropOperationStatus.UNAVAILABLE, "provider down")
+    decision = advisory_decision(down, InteropFailureMode.FALLBACK_DETERMINISTIC)
+    assert decision.passed is True
+    assert decision.authority is TelemetryAuthority.DETERMINISTIC
+    assert decision.evidence == {
+        "unavailable": "provider down",
+        "on_unavailable": InteropFailureMode.FALLBACK_DETERMINISTIC.value,
+    }
+
+
+def test_a_very_long_unavailable_reason_still_yields_a_decision():
+    reason = "provider traceback " * 1_000
+    decision = advisory_decision(jev_result({}, InteropOperationStatus.UNAVAILABLE, reason))
+    assert decision.passed is False and reason in decision.reason
+    assert len(decision.evidence["unavailable"]) <= 512
 
 
 def test_architecture_router_is_monotonic_and_honors_failure_modes():

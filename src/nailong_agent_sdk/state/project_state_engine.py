@@ -43,6 +43,40 @@ from .project_state_models import (
     make_project_state,
 )
 
+TRANSITION_AUTHORITY: dict[StateTransitionKind, frozenset[StateAuthority]] = {
+    StateTransitionKind.HUMAN_DECISION: frozenset({StateAuthority.HUMAN}),
+    StateTransitionKind.BLOCKER_CLEARED: frozenset(
+        {StateAuthority.CONTROLLER, StateAuthority.HUMAN}
+    ),
+    StateTransitionKind.WORK_ITEM_UPDATED: frozenset(
+        {StateAuthority.CONTROLLER, StateAuthority.HARNESS}
+    ),
+    StateTransitionKind.STAGE_CHANGED: frozenset({StateAuthority.CONTROLLER, StateAuthority.HUMAN}),
+    StateTransitionKind.ARTIFACT_STATUS_UPDATED: frozenset(
+        {StateAuthority.CONTROLLER, StateAuthority.HUMAN}
+    ),
+}
+QUESTION_RESOLUTION_AUTHORITY: dict[QuestionOwner, frozenset[StateAuthority]] = {
+    QuestionOwner.HUMAN: frozenset({StateAuthority.HUMAN}),
+    QuestionOwner.CONTROLLER: frozenset({StateAuthority.CONTROLLER, StateAuthority.HUMAN}),
+}
+_TRANSITION_VERBS: dict[StateTransitionKind, str] = {
+    StateTransitionKind.HUMAN_DECISION: "record a human decision",
+    StateTransitionKind.BLOCKER_CLEARED: "clear a blocker",
+    StateTransitionKind.WORK_ITEM_UPDATED: "update a work item",
+    StateTransitionKind.STAGE_CHANGED: "change project stage",
+    StateTransitionKind.ARTIFACT_STATUS_UPDATED: "change the status of an artifact",
+}
+
+
+def _require_authority(transition: StateTransition) -> None:
+    allowed = TRANSITION_AUTHORITY[transition.kind]
+    if transition.actor in allowed:
+        return
+    names = sorted(item.value for item in allowed)
+    label = "a human" if names == ["human"] else " or ".join(names)
+    raise ValueError(f"Only {label} authority may {_TRANSITION_VERBS[transition.kind]}.")
+
 
 class ProjectStateProjector:
     """Deterministically select current-state entries without transcript replay."""
@@ -223,8 +257,7 @@ class ProjectStateReducer:
             )
 
         elif transition.kind is StateTransitionKind.HUMAN_DECISION:
-            if transition.actor is not StateAuthority.HUMAN:
-                raise ValueError("Only a human authority may record a human decision.")
+            _require_authority(transition)
             decisions = _upsert(
                 decisions,
                 "decision_id",
@@ -258,11 +291,7 @@ class ProjectStateReducer:
                     f'"{current.project_id}" (action "{transition.action_id}"); it may already '
                     "be resolved."
                 )
-            allowed = (
-                {StateAuthority.HUMAN}
-                if question.owner is QuestionOwner.HUMAN
-                else {StateAuthority.CONTROLLER, StateAuthority.HUMAN}
-            )
+            allowed = QUESTION_RESOLUTION_AUTHORITY[question.owner]
             if transition.actor not in allowed:
                 raise ValueError(
                     f'Question "{question_id}" is owned by the {question.owner.value}; only '
@@ -277,8 +306,7 @@ class ProjectStateReducer:
             questions = [item for item in questions if item.question_id != question_id]
 
         elif transition.kind is StateTransitionKind.BLOCKER_CLEARED:
-            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
-                raise ValueError("Only controller or human authority may clear a blocker.")
+            _require_authority(transition)
             blocker_id = str(required("blocker_id"))
             if not any(item.blocker_id == blocker_id for item in blocked):
                 raise ValueError(
@@ -294,8 +322,7 @@ class ProjectStateReducer:
             blocked = [item for item in blocked if item.blocker_id != blocker_id]
 
         elif transition.kind is StateTransitionKind.WORK_ITEM_UPDATED:
-            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HARNESS}:
-                raise ValueError("Only controller or harness authority may update a work item.")
+            _require_authority(transition)
             work_items = _upsert(
                 work_items,
                 "work_item_id",
@@ -308,18 +335,14 @@ class ProjectStateReducer:
             )
 
         elif transition.kind is StateTransitionKind.STAGE_CHANGED:
-            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
-                raise ValueError("Only controller or human authority may change project stage.")
+            _require_authority(transition)
             stage_schema = StageStateSchema.model_validate(required("stage_schema"))
             stage_fields = [
                 StageStateField.model_validate(item) for item in payload.get("stage_fields", [])
             ]
 
         elif transition.kind is StateTransitionKind.ARTIFACT_STATUS_UPDATED:
-            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
-                raise ValueError(
-                    "Only controller or human authority may change the status of an artifact."
-                )
+            _require_authority(transition)
             artifacts = _with_artifact_status(
                 artifacts,
                 str(required("relative_path")),

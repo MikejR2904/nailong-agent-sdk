@@ -93,3 +93,83 @@ class Harness:
 def error_of(result):
     assert result["ok"] is False, result
     return result["errors"][0]
+
+
+def elastic_result():
+    return {
+        "status": "completed",
+        "output": {"v": 1},
+        "spawn_requests": [
+            {
+                "request_id": "a",
+                "scope": "the clock tree",
+                "instructions": "Trace the clock tree.",
+                "reason": "The section is ambiguous.",
+            }
+        ],
+    }
+
+
+def deferred_run(harness, snapshot_id):
+    controller_id = harness.controller(
+        snapshot_id, plan_payload(max_elastic_depth=0, max_elastic_nodes=2)
+    )
+    assert harness.as_approver("approve_controller_plan", harness.decided(controller_id))["ok"]
+    assert harness.as_host("dispatch_controller", {"controller_id": controller_id})["ok"]
+    recorded = harness.as_host(
+        "record_controller_node_result",
+        {"controller_id": controller_id, "node_id": "node:T1", "result": elastic_result()},
+    )
+    assert recorded["ok"], recorded
+    return controller_id, recorded["run"]["run_id"]
+
+
+def orchestration_payloads(snapshot_id):
+    policy = {
+        "policy_id": "authority-policy",
+        "routing_rules": {"multi_agent_min_categories": 3, "multi_agent_min_blast_radius": 3},
+        "skills": [],
+        "models": [
+            {
+                "model_key": "m1",
+                "binding": {"provider": "fake", "model": "fake-1"},
+                "allowed_tiers": ["cheap", "standard", "strong"],
+            }
+        ],
+        "profiles": [
+            {
+                "profile_id": "p1",
+                "stage": "design",
+                "role": "worker",
+                "allowed_model_keys": ["m1"],
+                "max_instances": 8,
+                "capability_grant": {"role": "worker", "capabilities": [], "allowed_paths": []},
+            }
+        ],
+    }
+    request = {
+        "request_id": "req-authority",
+        "stage": "design",
+        "snapshot": {"snapshot_id": snapshot_id, **SNAPSHOT},
+        "gap_metadata": {"blast_radius": 9},
+        "plan": plan_payload(),
+    }
+    return policy, request
+
+
+def tool_classification(run_root):
+    from nailong_agent_sdk.mcp import _shared
+
+    recorded = {}
+    original = _shared.McpContext._offloaded
+
+    def spy(self, function, name, exclusive, operation):
+        recorded[name] = operation
+        return original(self, function, name, exclusive, operation)
+
+    _shared.McpContext._offloaded = spy
+    try:
+        create_mcp_server(run_root)
+    finally:
+        _shared.McpContext._offloaded = original
+    return recorded

@@ -16,6 +16,7 @@ from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Concatenate
 
+from ..observability.telemetry_models import DecisionSource
 from ..tools.approvals import ApprovalRegistry, ApprovalRequest, ApprovalStatus
 from .coordination_records import RunRecord, _hash_run
 from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
@@ -285,8 +286,10 @@ class HarnessCoordinator:
         approval_id: str,
         approved: bool,
         reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
     ) -> ApprovalRequest:
-        return self.approvals(run_id).submit(approval_id, approved, reason)
+        return self.approvals(run_id).submit(approval_id, approved, reason, source=source)
 
     def approvals(self, run_id: str) -> ApprovalRegistry:
         if not self._store.exists(run_id):

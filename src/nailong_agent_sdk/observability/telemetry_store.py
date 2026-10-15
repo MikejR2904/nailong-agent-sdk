@@ -248,27 +248,42 @@ class TelemetryStore:
         limit: int = 250,
         after_sequence: int = 0,
         through_sequence: int | None = None,
+        event_types: Collection[str] | None = None,
     ) -> list[TelemetryEvent]:
         rows = self._event_rows(
-            run_id, limit=limit, after_sequence=after_sequence, through_sequence=through_sequence
+            run_id,
+            limit=limit,
+            after_sequence=after_sequence,
+            through_sequence=through_sequence,
+            event_types=event_types,
         )
         return [TelemetryEvent.parse_stored(row) for row in rows]
 
     def _event_rows(
-        self, run_id: str, *, limit: int, after_sequence: int, through_sequence: int | None
+        self,
+        run_id: str,
+        *,
+        limit: int,
+        after_sequence: int,
+        through_sequence: int | None,
+        event_types: Collection[str] | None = None,
     ) -> list[str]:
         if limit < 1 or limit > 1_000:
             raise ValueError("Telemetry event page size must be between 1 and 1000.")
+        types = _normalized_event_types(event_types)
         if through_sequence is not None and through_sequence < after_sequence:
             return []
+        type_clause = (
+            f" AND {_EVENT_TYPE} IN ({', '.join('?' for _ in types)})" if types is not None else ""
+        )
         with self._lock, self._connection as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT event_json FROM events
-                WHERE run_id = ? AND sequence > ? AND (? IS NULL OR sequence <= ?)
+                WHERE run_id = ? AND sequence > ? AND (? IS NULL OR sequence <= ?){type_clause}
                 ORDER BY sequence ASC LIMIT ?
                 """,
-                (run_id, after_sequence, through_sequence, through_sequence, limit),
+                (run_id, after_sequence, through_sequence, through_sequence, *(types or ()), limit),
             ).fetchall()
         return [str(row[0]) for row in rows]
 
@@ -298,6 +313,7 @@ class TelemetryStore:
         page_size: int = 1_000,
         through_sequence: int | None = None,
         after_sequence: int = 0,
+        event_types: Collection[str] | None = None,
     ) -> Iterator[TelemetryEvent]:
         """Stream a complete ordered run sequence through one fixed sequence boundary."""
 
@@ -309,6 +325,7 @@ class TelemetryStore:
             limit=page_size,
             after_sequence=after_sequence,
             through_sequence=boundary,
+            event_types=event_types,
         ):
             for row in rows:
                 event = TelemetryEvent.parse_stored(row)
@@ -611,6 +628,34 @@ class TelemetryStore:
                 );
                 """
             )
+
+
+MAX_EVENT_TYPE_FILTER = 64
+
+
+def _normalized_event_types(event_types: Collection[str] | None) -> list[str] | None:
+    if event_types is None:
+        return None
+    if isinstance(event_types, str):
+        raise ValueError(
+            "event_types must be a collection of event type names, got the string "
+            f'"{event_types}"; pass ["{event_types}"].'
+        )
+    names = sorted(set(event_types), key=str)
+    if not names:
+        raise ValueError(
+            "event_types must name at least one event type when it is given; pass None to read "
+            "every event."
+        )
+    blank = [name for name in names if not isinstance(name, str) or not name.strip()]
+    if blank:
+        raise ValueError(f"event_types must contain non-blank strings, got {blank!r}.")
+    if len(names) > MAX_EVENT_TYPE_FILTER:
+        raise ValueError(
+            f"event_types names {len(names)} event types; at most {MAX_EVENT_TYPE_FILTER} are "
+            "accepted."
+        )
+    return names
 
 
 def _retry_when_locked[T](operation: Callable[[], T]) -> T:

@@ -16,6 +16,7 @@ from typing import Any
 from ..agent.retention import DECISION_STREAM_ID
 from ..foundations.hashing import canonical_hash, sha256_hex
 from ..observability.telemetry_models import (
+    DecisionSource,
     TelemetryActor,
     TelemetryAuthority,
     TelemetryContext,
@@ -228,6 +229,9 @@ class DecisionReceipt:
     stream: str = DECISION_STREAM_ID
     sequence: int | None = None
     warning: str | None = None
+
+    def source(self) -> DecisionSource:
+        return DecisionSource(authority=TelemetryAuthority.HUMAN, identifier=self.principal_id)
 
     def fields(self) -> dict[str, Any]:
         recorded: dict[str, Any] = {

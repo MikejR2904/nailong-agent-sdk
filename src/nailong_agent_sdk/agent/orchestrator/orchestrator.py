@@ -26,7 +26,12 @@ from typing import Any, Concatenate
 
 from ...foundations.contracts import AgentDefinition, SkillContext
 from ...integrations.jev.architecture import JevArchitectureAdvice, JevArchitectureRouter
-from ...observability.telemetry_models import TelemetryActor, TelemetryAuthority, TelemetryContext
+from ...observability.telemetry_models import (
+    DecisionSource,
+    TelemetryActor,
+    TelemetryAuthority,
+    TelemetryContext,
+)
 from ...observability.telemetry_store import TelemetryStore
 from ...observability.trace_context import graph_run_trace_id
 from ...state.controller_runtime import ControllerRuntime
@@ -281,6 +286,8 @@ class Orchestrator:
         orchestration_id: str,
         approved: bool,
         reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
     ) -> OrchestrationRecord:
         """Forward a typed human plan decision to the underlying controller."""
 
@@ -292,7 +299,9 @@ class Orchestrator:
             raise ValueError("The orchestration is not awaiting a plan decision.")
         if record.controller_id is None:
             raise ValueError("Approval requires a bound controller.")
-        self._controller_runtime.approve_plan(record.controller_id, approved, reason)
+        self._controller_runtime.approve_plan(record.controller_id, approved, reason, source=source)
+        decided_by = source.fields() if source is not None else {}
+        authority = source.authority if source is not None else TelemetryAuthority.DETERMINISTIC
         if approved:
             updated = record.model_copy(update={"status": OrchestrationStatus.APPROVED})
             self._store.save(updated)
@@ -300,7 +309,8 @@ class Orchestrator:
                 updated,
                 "orchestration.plan-decision",
                 "approved",
-                {"controller_id": updated.controller_id, "reason": reason},
+                {"controller_id": updated.controller_id, "reason": reason, **decided_by},
+                authority=authority,
             )
             return updated
         updated = record.model_copy(update={"status": OrchestrationStatus.PREPARED})
@@ -309,7 +319,8 @@ class Orchestrator:
             updated,
             "orchestration.plan-decision",
             "rejected",
-            {"controller_id": updated.controller_id, "reason": reason},
+            {"controller_id": updated.controller_id, "reason": reason, **decided_by},
+            authority=authority,
         )
         return updated
 
@@ -789,6 +800,8 @@ class Orchestrator:
         event_type: str,
         status: str,
         payload: dict[str, Any],
+        *,
+        authority: TelemetryAuthority = TelemetryAuthority.DETERMINISTIC,
     ) -> None:
         self._telemetry.emit(
             event_type,
@@ -803,7 +816,7 @@ class Orchestrator:
                 identifier="agent-sdk-orchestrator",
                 role="orchestrator",
             ),
-            authority=TelemetryAuthority.DETERMINISTIC,
+            authority=authority,
             status=status,
             payload=payload,
         )

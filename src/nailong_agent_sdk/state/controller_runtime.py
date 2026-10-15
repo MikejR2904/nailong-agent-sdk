@@ -18,7 +18,12 @@ from typing import Any, Concatenate
 
 from ..foundations.hashing import canonical_hash
 from ..observability.metrics import record_metric_value, register_standard_metric_definitions
-from ..observability.telemetry_models import TelemetryActor, TelemetryAuthority, TelemetryContext
+from ..observability.telemetry_models import (
+    DecisionSource,
+    TelemetryActor,
+    TelemetryAuthority,
+    TelemetryContext,
+)
 from ..observability.telemetry_store import TelemetryStore
 from ..observability.trace_context import graph_run_span_id, graph_run_trace_id
 from .coordination_records import RunRecord
@@ -182,17 +187,23 @@ class ControllerRuntime:
 
     @_serialized
     def approve_plan(
-        self, controller_id: str, approved: bool, reason: str | None = None
+        self,
+        controller_id: str,
+        approved: bool,
+        reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
     ) -> ControllerRecord:
         machine = self._machine(controller_id)
         with _transaction(machine):
-            record = machine.approve_plan(approved, reason)
+            record = machine.approve_plan(approved, reason, source=source)
             self._controller_store.save(record)
         self._emit(
             record,
             "controller.plan-approved",
             record.phase.value,
-            {"approved": approved, "reason": reason},
+            {"approved": approved, "reason": reason, **_source_fields(source)},
+            authority=_source_authority(source),
         )
         return record
 
@@ -295,6 +306,7 @@ class ControllerRuntime:
         max_elastic_depth: int | None = None,
         max_elastic_nodes: int | None = None,
         reason: str,
+        source: DecisionSource | None = None,
     ) -> RunRecord:
         machine = self._machine(controller_id)
         run_id = self._require_executing_run(machine.record, "Elastic capacity decisions require")
@@ -305,7 +317,13 @@ class ControllerRuntime:
             reason=reason,
         )
         grant = run.graph["capacity_grants"][-1]
-        self._emit(machine.record, "graph.elastic-capacity-granted", "granted", grant)
+        self._emit(
+            machine.record,
+            "graph.elastic-capacity-granted",
+            "granted",
+            {**grant, **_source_fields(source)},
+            authority=_source_authority(source),
+        )
         self._emit_spawn_records(
             machine.record,
             [
@@ -318,7 +336,12 @@ class ControllerRuntime:
 
     @_serialized
     def decline_elastic_requests(
-        self, controller_id: str, parent_node_id: str, reason: str
+        self,
+        controller_id: str,
+        parent_node_id: str,
+        reason: str,
+        *,
+        source: DecisionSource | None = None,
     ) -> RunRecord:
         machine = self._machine(controller_id)
         run_id = self._require_executing_run(machine.record, "Elastic capacity decisions require")
@@ -335,7 +358,9 @@ class ControllerRuntime:
                     if item["parent_node_id"] == parent_node_id and item["status"] == "discarded"
                 ],
                 "reason": reason,
+                **_source_fields(source),
             },
+            authority=_source_authority(source),
         )
         return run
 
@@ -804,6 +829,8 @@ class ControllerRuntime:
         event_type: str,
         status: str,
         payload: dict[str, Any] | None = None,
+        *,
+        authority: TelemetryAuthority = TelemetryAuthority.DETERMINISTIC,
     ) -> None:
         if self._telemetry is None:
             return
@@ -817,7 +844,7 @@ class ControllerRuntime:
                 span_id=graph_run_span_id(record.run_id) if record.run_id else None,
             ),
             actor=TelemetryActor(kind="system", identifier="controller-runtime", role="controller"),
-            authority=TelemetryAuthority.DETERMINISTIC,
+            authority=authority,
             status=status,
             payload=payload or {},
         )
@@ -838,6 +865,14 @@ class ControllerRuntime:
                 "count",
                 source_event_id=event.event_id,
             )
+
+
+def _source_fields(source: DecisionSource | None) -> dict[str, str]:
+    return source.fields() if source is not None else {}
+
+
+def _source_authority(source: DecisionSource | None) -> TelemetryAuthority:
+    return source.authority if source is not None else TelemetryAuthority.DETERMINISTIC
 
 
 @contextmanager

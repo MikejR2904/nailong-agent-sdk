@@ -108,7 +108,9 @@ def register_orchestration_tools(server: MCPServer, ctx: McpContext) -> None:
                 label=approver_label,
                 reason=reason,
             ) as receipt:
-                record = orchestrator.approve(orchestration_id, approved, reason)
+                record = orchestrator.approve(
+                    orchestration_id, approved, reason, source=receipt.source()
+                )
             return {
                 "ok": True,
                 "orchestration": record.model_dump(mode="json"),

@@ -8,7 +8,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 | [`integrations/_utils.py`](#integrations_utilspy---private-sanitiser-digest-and-optional-import-helpers) | 152 | private sanitiser, digest and optional-import helpers |
 | [`integrations/contracts.py`](#integrationscontractspy---framework-neutral-interop-contracts) | 98 | framework-neutral interop contracts |
 | [`integrations/jev/__init__.py`](#integrationsjev__init__py---public-surface-of-the-jev-package) | 61 | public surface of the Jev package |
-| [`integrations/jev/advisory.py`](#integrationsjevadvisorypy---verification-gate-that-adds-a-non-authoritative-jev-signal) | 109 | verification gate that adds a non-authoritative Jev signal |
+| [`integrations/jev/advisory.py`](#integrationsjevadvisorypy---verification-gate-that-adds-a-non-authoritative-jev-signal) | 143 | verification gate that adds a non-authoritative Jev signal |
 | [`integrations/jev/architecture.py`](#integrationsjevarchitecturepy---monotonic-single-to-multi-routing-advice) | 164 | monotonic single-to-multi routing advice |
 | [`integrations/jev/decision.py`](#integrationsjevdecisionpy---optional-typesafe-jev-evaluator) | 297 | optional TypeSafe Jev evaluator |
 | [`integrations/jev/exploration.py`](#integrationsjevexplorationpy---optional-prioritisation-of-an-already-approved-candidate-set) | 149 | optional prioritisation of an already-approved candidate set |
@@ -82,7 +82,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/jev/advisory.py` - verification gate that adds a non-authoritative Jev signal
 
-*109 lines · depends on: `agent/verification.py`, `foundations/contracts.py`, `integrations/contracts.py`, `integrations/jev/models.py` · used by: `integrations/jev/__init__.py` · re-exported at the package root: 2 name(s)*
+*143 lines · depends on: `agent/verification.py`, `foundations/contracts.py`, `integrations/contracts.py`, `integrations/jev/models.py`, `observability/telemetry_models.py` · used by: `integrations/jev/__init__.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** Registered as a verification gate: the deterministic gate runs first and a failure is final; only after it passes is Jev asked, and Jev's answer can lower confidence but never accept a locally failed output.
 
@@ -93,10 +93,11 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 - **class `JevAdvisoryVerificationGate`** *(class)* - Composes a deterministic gate with Jev.
   - `JevAdvisoryVerificationGate.__init__(deterministic_gate: VerificationGate, evaluator: JevDecisionProvider, request_factory: JevRequestFactory, policy: JevAdvisoryPolicy) -> None` - Stores the gate, evaluator, request factory and policy.
   - `JevAdvisoryVerificationGate.verify(context: VerificationContext) -> VerificationReturn` *(async)* - Runs the deterministic gate, returns its failure, otherwise builds a request, evaluates it and applies the policy.
-  - `JevAdvisoryVerificationGate._apply_policy(result: JevDecisionResult) -> VerificationDecision` - Unavailable results follow the failure mode; the named question must be a noul answer; passes when the probability meets the minimum. · *Called by:* `jev/advisory.py::JevAdvisoryVerificationGate.verify`
+  - `JevAdvisoryVerificationGate._apply_policy(result: JevDecisionResult, local: VerificationDecision) -> VerificationDecision` - Unavailable results follow the failure mode; the named question must be a noul answer; passes when the probability meets the minimum. A decision names `jev-advisory` as its verifier, the model-mediated class and evidence (question id, probability, minimum, policy version and the local verifier's id); text in the evidence is cut to 512 characters so a long provider message cannot break the decision. · *Called by:* `jev/advisory.py::JevAdvisoryVerificationGate.verify`
 - `_unavailable_decision(mode: InteropFailureMode, reason: str | None) -> VerificationDecision` - Fallback accepts, escalate rejects with `Escalation required`, reject rejects, each naming the reason. · *Called by:* `jev/advisory.py::JevAdvisoryVerificationGate._apply_policy`
+- `_fallback(passed: bool, reason: str, evidence: dict[str, str]) -> VerificationDecision` - The decision of an unavailable evaluation: `verifier_id` `jev-advisory`, the deterministic class and the failure mode in its evidence. · *Called by:* `jev/advisory.py::_unavailable_decision`, `memory/semantic_compaction.py::SemanticCompactor.__init__`, `memory/semantic_compaction.py::SemanticCompactor._produce`, `memory/semantic_compaction.py::SemanticCompactor.with_archive`
 
-*Module-level names:* `JevRequestFactory`
+*Module-level names:* `JevRequestFactory`, `JEV_ADVISORY_VERIFIER_ID`, `_EVIDENCE_TEXT_CHARS`
 
 ---
 
@@ -184,7 +185,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 - **class `JevQuestionSpec`** *(pydantic model; bases: StrictModel)* - Host-owned, versioned set of up to 64 questions for one purpose. · *Instantiated by:* `jev/architecture.py::JevArchitectureRouter.advise`, `jev/exploration.py::JevExplorationAdvisor.prioritize`
   - fields: `spec_id`, `version`, `questions`
   - `JevQuestionSpec.question_ids_are_nonempty(questions: dict[str, JevQuestion]) -> dict[str, JevQuestion]` *(validator, classmethod)* - Validator: question ids are non-blank.
-  - `JevQuestionSpec.digest() -> str` *(property)* - Property: content digest of the spec (option labels are not sanitised). · *Called by:* `agent/retention_anchor.py::_short`, `foundations/identifiers.py::file_safe_name`, `jev/decision.py::_normalize_jev_response`, `jev/models.py::JevDecisionResult.unavailable` (+25 more)
+  - `JevQuestionSpec.digest() -> str` *(property)* - Property: content digest of the spec (option labels are not sanitised). · *Called by:* `agent/retention_anchor.py::_short`, `foundations/identifiers.py::file_safe_name`, `jev/decision.py::_normalize_jev_response`, `jev/models.py::JevDecisionResult.unavailable` (+26 more)
 - **class `JevDecisionRequest`** *(pydantic model; bases: StrictModel)* - One bounded, redacted evaluation request: purpose, run id, sanitised state, question spec, model, deadline and up to three attempts. · *Instantiated by:* `jev/architecture.py::JevArchitectureRouter.advise`, `jev/exploration.py::JevExplorationAdvisor.prioritize`
   - fields: `schema_version`, `purpose`, `run_id`, `state`, `question_spec`, `model`, `deadline_seconds`, `max_attempts`
   - `JevDecisionRequest.state_is_redacted_json(state: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: the state passes the sanitiser, and an unsupported type is reported as a `ValidationError`.

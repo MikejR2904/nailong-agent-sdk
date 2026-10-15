@@ -1,6 +1,5 @@
 from nailong_agent_sdk.mcp.authority import McpOperation
-from nailong_agent_sdk.mcp.server import create_mcp_server
-from tests.support.mcp_authority import Harness, error_of, plan_payload
+from tests.support.mcp_authority import Harness, error_of, plan_payload, tool_classification
 
 AUTHORITY_ERRORS = {"OperationNotPermitted", "ApprovalsDisabled", "Unauthenticated"}
 
@@ -107,7 +106,7 @@ def test_a_tool_that_is_not_classified_is_closed_to_the_approver(tmp_path):
 
     classified = {
         name
-        for name, operation in _classification(tmp_path).items()
+        for name, operation in tool_classification(tmp_path / "classified").items()
         if operation is not McpOperation.HOST
     }
     assert classified == {
@@ -136,24 +135,6 @@ def test_a_tool_that_is_not_classified_is_closed_to_the_approver(tmp_path):
         "list_metric_definitions",
     }
     assert _shared.McpContext.tool.__kwdefaults__["operation"] is McpOperation.HOST
-
-
-def _classification(tmp_path):
-    from nailong_agent_sdk.mcp import _shared
-
-    recorded = {}
-    original = _shared.McpContext._offloaded
-
-    def spy(self, function, name, exclusive, operation):
-        recorded[name] = operation
-        return original(self, function, name, exclusive, operation)
-
-    _shared.McpContext._offloaded = spy
-    try:
-        create_mcp_server(tmp_path / "classified")
-    finally:
-        _shared.McpContext._offloaded = original
-    return recorded
 
 
 def test_approval_operations_are_disabled_without_an_approver_credential(tmp_path):

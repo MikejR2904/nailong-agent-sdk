@@ -23,12 +23,19 @@ from ..agent.retention import (
 )
 from ..agent.retention_inventory import DEFAULT_MAX_ITEMS, inventory_run_root
 from ..foundations.errors import AgentSdkError
+from ..observability.audit_log import AuditTranscriptStore
 from ..observability.otlp import (
     SIGNALS,
     OtlpHttpExporter,
     OtlpSignal,
     export_runs,
     preview_export,
+)
+from ..observability.run_checkpoints import (
+    HmacSha256Signer,
+    check_run_heads,
+    checkpoint_path,
+    export_run_head_checkpoint,
 )
 from ..observability.telemetry_store import TelemetryStore
 from ..observability.trace_context import graph_run_trace_id
@@ -69,6 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         "verify-tombstones": lambda: _verify_tombstones(arguments),
         "vacuum-telemetry": lambda: _vacuum_telemetry(arguments),
         "export-otlp": lambda: _export_otlp(arguments),
+        "authority-matrix": lambda: _authority_matrix(),
+        "checkpoint-run": lambda: _checkpoint_run(arguments),
+        "verify-checkpoints": lambda: _verify_checkpoints(arguments),
     }
     try:
         result = commands[arguments.command]()
@@ -212,6 +222,47 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Build the requests and report what would be sent without contacting the collector.",
     )
+
+    subparsers.add_parser(
+        "authority-matrix",
+        help="Print who may perform each project-state transition and MCP operation, read "
+        "from the code that enforces it.",
+    )
+
+    run_checkpoint = subparsers.add_parser(
+        "checkpoint-run",
+        help="Sign the head hashes of a run's telemetry and audit chains and append them to a "
+        "file kept outside the run root; reads the run root only.",
+    )
+    run_checkpoint.add_argument("run_root", type=Path)
+    run_checkpoint.add_argument("run_id")
+    run_checkpoint.add_argument(
+        "destination",
+        type=Path,
+        help="Directory outside the run root that holds the run's checkpoint file.",
+    )
+    run_checkpoint.add_argument(
+        "--key-file",
+        type=Path,
+        required=True,
+        help="File whose text is the HMAC key (at least 32 bytes); it is never printed.",
+    )
+    run_checkpoint.add_argument("--signer-id", default="hmac-sha256")
+
+    verify_heads = subparsers.add_parser(
+        "verify-checkpoints",
+        help="Check a run against its signed checkpoints and report truncation or rewriting; "
+        "also checks the cross-link between the run's terminal telemetry event and audit entry.",
+    )
+    verify_heads.add_argument("run_root", type=Path)
+    verify_heads.add_argument("run_id")
+    verify_heads.add_argument(
+        "checkpoint_file",
+        type=Path,
+        help="The run's checkpoint file, or the directory that holds it.",
+    )
+    verify_heads.add_argument("--key-file", type=Path, required=True)
+    verify_heads.add_argument("--signer-id", default="hmac-sha256")
 
     quality = subparsers.add_parser(
         "quality", help="Run the closed Ruff unused-import, lint, and formatting checks."
@@ -369,6 +420,44 @@ def _headers(items: list[str]) -> dict[str, str]:
             raise ValueError(f"Header {item!r} must look like NAME=VALUE.")
         headers[name.strip()] = urllib.parse.unquote(value.strip())
     return headers
+
+
+def _authority_matrix() -> object:
+    from ..mcp.authority_matrix import authority_matrix
+
+    return authority_matrix()
+
+
+def _checkpoint_signer(arguments: argparse.Namespace) -> HmacSha256Signer:
+    key = arguments.key_file.read_text(encoding="utf-8").strip()
+    return HmacSha256Signer(key, signer_id=arguments.signer_id)
+
+
+def _checkpoint_run(arguments: argparse.Namespace) -> object:
+    signer = _checkpoint_signer(arguments)
+    telemetry = TelemetryStore(arguments.run_root, read_only=True)
+    audit = AuditTranscriptStore(arguments.run_root, read_only=True)
+    try:
+        return export_run_head_checkpoint(
+            telemetry, audit, arguments.run_id, signer, arguments.destination
+        )
+    finally:
+        telemetry.close()
+        audit.close()
+
+
+def _verify_checkpoints(arguments: argparse.Namespace) -> object:
+    signer = _checkpoint_signer(arguments)
+    source = arguments.checkpoint_file
+    if source.is_dir():
+        source = checkpoint_path(source, arguments.run_id)
+    telemetry = TelemetryStore(arguments.run_root, read_only=True)
+    audit = AuditTranscriptStore(arguments.run_root, read_only=True)
+    try:
+        return check_run_heads(telemetry, audit, arguments.run_id, source, signer)
+    finally:
+        telemetry.close()
+        audit.close()
 
 
 def _quality(arguments: argparse.Namespace) -> object:

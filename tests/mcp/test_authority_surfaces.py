@@ -3,7 +3,14 @@ import re
 
 from nailong_agent_sdk.mcp import authority
 from nailong_agent_sdk.mcp.authority import authenticated_as
-from tests.support.mcp_authority import DECISIONS, SNAPSHOT, error_of, plan_payload, stamp
+from tests.support.mcp_authority import (
+    DECISIONS,
+    deferred_run,
+    error_of,
+    orchestration_payloads,
+    plan_payload,
+    stamp,
+)
 
 
 def test_project_state_decisions_are_bound_to_the_state_the_approver_saw(harness):
@@ -129,35 +136,6 @@ def test_run_approvals_list_a_hash_and_the_decision_must_match_it(harness):
     assert "already has the decision" in again["message"]
 
 
-def elastic_result():
-    return {
-        "status": "completed",
-        "output": {"v": 1},
-        "spawn_requests": [
-            {
-                "request_id": "a",
-                "scope": "the clock tree",
-                "instructions": "Trace the clock tree.",
-                "reason": "The section is ambiguous.",
-            }
-        ],
-    }
-
-
-def deferred_run(harness, snapshot_id):
-    controller_id = harness.controller(
-        snapshot_id, plan_payload(max_elastic_depth=0, max_elastic_nodes=2)
-    )
-    assert harness.as_approver("approve_controller_plan", harness.decided(controller_id))["ok"]
-    assert harness.as_host("dispatch_controller", {"controller_id": controller_id})["ok"]
-    recorded = harness.as_host(
-        "record_controller_node_result",
-        {"controller_id": controller_id, "node_id": "node:T1", "result": elastic_result()},
-    )
-    assert recorded["ok"], recorded
-    return controller_id, recorded["run"]["run_id"]
-
-
 def test_an_elastic_grant_is_bound_to_the_run_state_the_approver_saw(harness):
     controller_id, run_id = deferred_run(harness, "snap-elastic-bound")
     seen = harness.as_approver("get_run_state", {"run_id": run_id})["run"]["run_hash"]
@@ -204,39 +182,6 @@ def test_declining_elastic_requests_needs_the_approver_and_a_current_run_hash(ha
     )
     replay = error_of(harness.as_approver("decline_elastic_requests", sent))
     assert replay["type"] == "ApprovalStale"
-
-
-def orchestration_payloads(snapshot_id):
-    policy = {
-        "policy_id": "authority-policy",
-        "routing_rules": {"multi_agent_min_categories": 3, "multi_agent_min_blast_radius": 3},
-        "skills": [],
-        "models": [
-            {
-                "model_key": "m1",
-                "binding": {"provider": "fake", "model": "fake-1"},
-                "allowed_tiers": ["cheap", "standard", "strong"],
-            }
-        ],
-        "profiles": [
-            {
-                "profile_id": "p1",
-                "stage": "design",
-                "role": "worker",
-                "allowed_model_keys": ["m1"],
-                "max_instances": 8,
-                "capability_grant": {"role": "worker", "capabilities": [], "allowed_paths": []},
-            }
-        ],
-    }
-    request = {
-        "request_id": "req-authority",
-        "stage": "design",
-        "snapshot": {"snapshot_id": snapshot_id, **SNAPSHOT},
-        "gap_metadata": {"blast_radius": 9},
-        "plan": plan_payload(),
-    }
-    return policy, request
 
 
 def test_an_orchestration_decision_is_bound_to_its_plan_and_needs_the_approver(harness):

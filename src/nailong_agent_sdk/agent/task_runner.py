@@ -26,7 +26,12 @@ from ..foundations.identifiers import file_safe_name, require_unique
 from ..foundations.paths import relative_to_base
 from ..mcp.client_types import McpServerConfig, McpStdioServerConfig
 from ..memory.context_projection import ContextProjectionPolicy
-from ..observability.telemetry_models import TelemetryActor, TelemetryAuthority, TelemetryContext
+from ..observability.telemetry_models import (
+    DecisionSource,
+    TelemetryActor,
+    TelemetryAuthority,
+    TelemetryContext,
+)
 from ..observability.trace_context import new_trace_id, parse_traceparent
 from ..state.planning import ModelTier, PlanTask
 from ..state.project_state_models import ProjectStateProjectionPolicy
@@ -205,7 +210,13 @@ class AgentTaskRunner:
         return self._running_token(task_id).approvals.list(task_id)
 
     def decide_approval(
-        self, task_id: str, approval_id: str, approved: bool, reason: str | None = None
+        self,
+        task_id: str,
+        approval_id: str,
+        approved: bool,
+        reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
     ) -> ApprovalRequest:
         registry = self._running_token(task_id).approvals
         request = registry.get(approval_id)
@@ -213,7 +224,7 @@ class AgentTaskRunner:
             raise TaskOptionError(
                 f'Agent task "{task_id}" has no approval request "{approval_id}".'
             )
-        return registry.submit(approval_id, approved, reason)
+        return registry.submit(approval_id, approved, reason, source=source)
 
     def _running_token(self, task_id: str) -> _RunToken:
         with self._running_lock:
@@ -395,7 +406,7 @@ class AgentTaskRunner:
         for capability in permissions.approved_capabilities:
             reason = "Approved by the caller in the run options."
             request = approvals.request(task.id, task.id, capability, reason)
-            approvals.submit(request.approval_id, True, reason)
+            approvals.submit(request.approval_id, True, reason, source=_RUN_OPTIONS_SOURCE)
             approval_ids[capability] = request.approval_id
         locked = task.locked_interface
         plan_task = PlanTask(
@@ -439,8 +450,8 @@ class AgentTaskRunner:
                 executor,
                 approvals,
                 permissions.approval_timeout_seconds,
-                lambda event_type, status, payload: self._emit(
-                    event_type, telemetry_context, status, payload
+                lambda event_type, status, payload, authority: self._emit(
+                    event_type, telemetry_context, status, payload, authority
                 ),
             )
         return definition.model_copy(update={"tools": tools}), executor
@@ -534,18 +545,29 @@ class AgentTaskRunner:
             bindings=[binding, *binding.fallbacks],
         )
 
-    def _emit(self, event_type: str, context: TelemetryContext, status: str, payload: Any) -> None:
+    def _emit(
+        self,
+        event_type: str,
+        context: TelemetryContext,
+        status: str,
+        payload: Any,
+        authority: TelemetryAuthority = TelemetryAuthority.DETERMINISTIC,
+    ) -> None:
         self._services.telemetry.emit(
             event_type,
             context,
             actor=TelemetryActor(kind="system", identifier="task-runner", role="runtime"),
-            authority=TelemetryAuthority.DETERMINISTIC,
+            authority=authority,
             status=status,
             payload=payload,
         )
 
 
 _APPROVAL_POLL_SECONDS = 0.05
+_RUN_OPTIONS_SOURCE = DecisionSource(
+    authority=TelemetryAuthority.DETERMINISTIC, identifier="run-options"
+)
+_EXPIRY_SOURCE = DecisionSource(authority=TelemetryAuthority.SYSTEM, identifier="approval-timeout")
 
 
 class _ApprovalWaitingExecutor(ToolExecutor):
@@ -554,7 +576,7 @@ class _ApprovalWaitingExecutor(ToolExecutor):
         inner: ToolExecutor,
         approvals: ApprovalRegistry,
         timeout_seconds: float,
-        record: Callable[[str, str, dict[str, Any]], None],
+        record: Callable[[str, str, dict[str, Any], TelemetryAuthority], None],
     ) -> None:
         self._inner = inner
         self._approvals = approvals
@@ -581,6 +603,7 @@ class _ApprovalWaitingExecutor(ToolExecutor):
                 "tool_call_id": invocation.call.id,
                 "timeout_seconds": self._timeout_seconds,
             },
+            TelemetryAuthority.DETERMINISTIC,
         )
         request = await self._decision(approval_id)
         if request.status is ApprovalStatus.PENDING:
@@ -611,7 +634,9 @@ class _ApprovalWaitingExecutor(ToolExecutor):
 
     def _expire(self, request: ApprovalRequest) -> ApprovalRequest:
         try:
-            return self._approvals.submit(request.approval_id, False, self._expiry_reason)
+            return self._approvals.submit(
+                request.approval_id, False, self._expiry_reason, source=_EXPIRY_SOURCE
+            )
         except ValueError:
             return self._approvals.get(request.approval_id) or request
 
@@ -637,7 +662,12 @@ class _ApprovalWaitingExecutor(ToolExecutor):
                 "approval_id": request.approval_id,
                 "capability": request.capability,
                 "decision_reason": request.decision_reason,
+                "decided_by": request.decided_by,
+                "decision_authority": (
+                    request.decision_authority.value if request.decision_authority else None
+                ),
             },
+            request.decision_authority or TelemetryAuthority.DETERMINISTIC,
         )
 
 

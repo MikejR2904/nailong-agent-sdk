@@ -38,11 +38,14 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         run_id: str,
         after_sequence: int = 0,
         limit: int = 250,
+        event_types: list[str] | None = None,
     ) -> dict[str, Any]:
         """Read an ordered, integrity-linked page of runtime telemetry events."""
 
         try:
-            events = ctx.telemetry.list_events(run_id, after_sequence=after_sequence, limit=limit)
+            events = ctx.telemetry.list_events(
+                run_id, after_sequence=after_sequence, limit=limit, event_types=event_types
+            )
             failure = ctx.telemetry.chain_break(run_id)
             return {
                 "ok": True,

@@ -5,7 +5,7 @@ Status: `foundations/` is audited. Next: **Stage 1 - `observability/`**.
 ## How the order was chosen
 
 Reading goes bottom-up so that every file you open only uses code you have already read.
-The order comes from the real import graph (runtime imports, 143 files, no circular imports at
+The order comes from the real import graph (runtime imports, 146 files, no circular imports at
 file level; the only circles are between folders and they are explained just below).
 
 ```
@@ -30,19 +30,19 @@ Estimate: about 300 lines/hour of careful reading plus 25% for notes and probes.
 | Stage | Folder | Files | Lines | Tests (functions) | Hours |
 |---|---|---:|---:|---:|---:|
 | 0 | `foundations/` | 19 | 2,352 | 97 | done (18 files) |
-| 1 | `observability/` + `foundations/run_fence.py` | 11 | 3,518 | 125 | 14.7 |
+| 1 | `observability/` + `foundations/run_fence.py` | 12 | 4,149 | 155 | 17.3 |
 | 2 | `memory/` | 13 | 5,491 | 119 | 23 |
 | 3 | `specifications/` | 7 | 1,591 | 40 | 6.5 |
 | 4 | `tools/` safety core | 3 | 426 | (in 170) | 2 |
-| 5 | `state/` | 15 | 6,166 | 242 | 26 |
-| 6 | `tools/` execution | 17 | 3,745 | 170 | 15.5 |
-| 7 | `agent/` | 23 | 9,196 | 337 | 38 |
-| 8 | `integrations/` | 13 | 1,997 | 22 | 8.5 |
-| 9 | `mcp/` | 16 | 3,327 | 148 | 14 |
-| 10 | `developer_tools/`, root, packaging, CI, docs | 7 + config | 1,816 | 29 | 7.5 |
+| 5 | `state/` | 15 | 6,256 | 245 | 26.1 |
+| 6 | `tools/` execution | 17 | 3,757 | 180 | 15.7 |
+| 7 | `agent/` | 23 | 9,522 | 365 | 39.7 |
+| 8 | `integrations/` | 13 | 2,040 | 26 | 8.5 |
+| 9 | `mcp/` | 18 | 3,488 | 164 | 14.5 |
+| 10 | `developer_tools/`, root, packaging, CI, docs | 7 + config | 1,985 | 29 | 8.3 |
 | 11 | cross-cutting passes | - | - | - | 9 |
 
-About 165 hours in total, roughly seven weeks at five focused hours a day.
+About 170 hours in total, roughly seven weeks at five focused hours a day.
 
 ## Routine for every file
 
@@ -80,12 +80,13 @@ Run: `.venv/Scripts/python.exe -m pytest tests/observability tests/developer_too
 
 - [ ] `trace_context.py` (181) - W3C trace/span ids, `traceparent`, derived graph-run ids, the process resource;
   read first, `telemetry_models.py` and `profiler.py` import it
-- [ ] `telemetry_models.py` (221) - event, context, actor, metric contracts, maintenance reports
+- [ ] `telemetry_models.py` (239) - event, context, actor, metric contracts, maintenance reports
 - [ ] `telemetry_helpers.py` (99) - `first_chain_break`, the one chain verifier
 - [ ] `foundations/run_fence.py` (139) - the per-run write fence retention raises; read before
   the two stores that honour it
 - [ ] `audit_log.py` (463)
-- [ ] `telemetry_store.py` (722) - includes `maintenance_report` and `vacuum`
+- [ ] `telemetry_store.py` (768) - includes `maintenance_report`, `vacuum` and the `event_types` read filter
+- [ ] `run_checkpoints.py` (567) - signed run-head checkpoints kept outside the run root, and the terminal cross-link; read after both stores
 - [ ] `otlp.py` (829) - read-side OTLP/HTTP JSON export; read after the store, it only reads the ledger
 - [ ] `metric_definitions.py` (400) - mostly a declarative table; skim, check ids and formulas once
 - [ ] `metrics.py` (131)
@@ -105,6 +106,8 @@ Verify:
   fenced or without free space for the rewrite, checkpoints the WAL and reports
   `integrity_check`; `maintenance_report` writes nothing.
 - Profiler `integrity_hash` is a single digest, not a chain.
+- Run-head checkpoints: both chains are verified before their heads are signed; the telemetry head comes from the event JSON, not the denormalized column; a destination inside the run root is refused; an existing file is verified first so a run cannot be re-checkpointed into agreement; `truncated` (fewer than recorded), `diverged` (a different hash at the recorded position, which a resealed chain still gives) and `advanced` (grew) are three different findings. `BaseAgent._terminate` writes `audit_head` into `agent.profile-completed` and `telemetry_head` into the `profile-completed` audit entry; an older run has neither and reports the link as `absent`, not `broken`.
+- `event_types` filters on `json_extract(event_json, '$.event_type')`, so a forged column cannot hide an event; at most 64 names; a bare string and an empty list are refused.
 - OTLP export: nothing runs on the write path; ids are hex strings (not base64), 64-bit values are
   decimal strings and enums are integers; retries follow 429/502/503/504 only; a redirect is
   refused; credentials in headers are scrubbed from errors; a graph run is exported as one
@@ -205,8 +208,8 @@ backends fail with an install hint; image bytes are loaded only through the veri
 
 Run: `.venv/Scripts/python.exe -m pytest tests/tools/test_core_tools_policy.py tests/tools/test_core_tools_files.py tests/tools/test_core_tools_drafts.py tests/tools/test_core_tools_commands.py -q`
 
-- [ ] `tools/tools.py` (72) - executor protocol, in-memory executor
-- [ ] `tools/approvals.py` (178)
+- [ ] `tools/tools.py` (73) - executor protocol, in-memory executor
+- [ ] `tools/approvals.py` (188)
 - [ ] `tools/policy.py` (176)
 
 Verify: policy order is sensitive path, role grant, path scope, side effect, approval; default is
@@ -220,24 +223,24 @@ multi-process tests are the slow ones)
 5a. Data and rules
 - [ ] `shared_state.py` (240)
 - [ ] `elastic.py` (353)
-- [ ] `graph_models.py` (227)
+- [ ] `graph_models.py` (228)
 - [ ] `orchestration_models.py` (110)
 - [ ] `coordination_records.py` (42)
 - [ ] `planning.py` (496) - plan validation, proofs, cycle detection
 - [ ] `project_state_models.py` (363) - `state_hash`, event hash chain
-- [ ] `project_state_engine.py` (504) - reducer authority rules, projector budgets
+- [ ] `project_state_engine.py` (527) - reducer authority rules, projector budgets
 
 5b. Stores
 - [ ] `project_state_store.py` (252)
 - [ ] `run_state_store.py` (435) - snapshot + history sidecar, prefix replay, fingerprint conflicts
-- [ ] `orchestration.py` (439) - controller state machine and its store
+- [ ] `orchestration.py` (453) - controller state machine and its store
 
 5c. Engines
-- [ ] `graph.py` (1,463) - three sittings (see "Splitting the big files")
-- [ ] `harness_coordinator.py` (366)
-- [ ] `controller_runtime.py` (873) - note the write order across stores and `reconcile`
+- [ ] `graph.py` (1,471) - three sittings (see "Splitting the big files")
+- [ ] `harness_coordinator.py` (372)
+- [ ] `controller_runtime.py` (911) - note the write order across stores and `reconcile`
 
-Verify: every validator names the field; who may set which authority in the reducer; record
+Verify: every validator names the field; who may set which authority in the reducer (the tables `TRANSITION_AUTHORITY` and `QUESTION_RESOLUTION_AUTHORITY`; `tool-outcome`, `agent-result` and `question-opened` accept every actor); a `DecisionSource` reaches the controller event and the telemetry event's authority class; record
 locks held across read-modify-write and never across an await; a failed save leaves no cached
 state ahead of disk; elastic accounting (joins counted, ceilings, reservations); crash recovery
 (`recover_interrupted`) only replays what is declared safe.
@@ -254,9 +257,9 @@ Run: `.venv/Scripts/python.exe -m pytest tests/tools -q` (about 2 minutes, Docke
 - [ ] `supervisor.py` (491)
 - [ ] `sandbox_models.py` (59), `sandbox.py` (322)
 - [ ] `task_models.py` (43), `tasks.py` (258)
-- [ ] `worktree_models.py` (20), `worktrees.py` (181)
+- [ ] `worktree_models.py` (20), `worktrees.py` (187)
 - [ ] `delegation.py` (128)
-- [ ] `registry.py` (327) - the dispatch chain and the approval flow
+- [ ] `registry.py` (333) - the dispatch chain and the approval flow
 - [ ] `elastic_requests.py` (160)
 
 Verify: no path escapes the run root (symlinks, extended-length Windows spellings, `.agent-*`);
@@ -269,20 +272,20 @@ groups, timeouts and output caps; secrets never reach logs or telemetry.
 Run: `.venv/Scripts/python.exe -m pytest tests/agent -q` (a few minutes)
 
 - [ ] `model.py` (418) - model contract, streaming events, failover, cancellation outcome
-- [ ] `verification.py` (187)
+- [ ] `verification.py` (412) - decisions may declare a verifier id, an authority class and bounded evidence; `AllOfVerificationGate` and `register_all_of`
 - [ ] `openai_compatible/transport.py` (537) - redirects refused, secret scrubbing, error
   classes, the blocking and the async transport
 - [ ] `openai_compatible/chat.py` (746) - includes the provider-cancel hook and the
   cancellation outcome
 - [ ] `openai_compatible/embeddings.py` (68), `vision.py` (163)
 - [ ] `base_agent/types.py` (99)
-- [ ] `base_agent/agent.py` (2,410) - five sittings (see below)
+- [ ] `base_agent/agent.py` (2,448) - five sittings (see below)
 - [ ] `runtime.py` (112)
 - [ ] `elastic_context.py` (105)
 - [ ] `graph_agent_executor.py` (294)
 - [ ] `orchestrator/models.py` (180), `state_store.py` (119)
-- [ ] `orchestrator/orchestrator.py` (991)
-- [ ] `task_runner.py` (663) - options validation, approval wait, workspace, default transport
+- [ ] `orchestrator/orchestrator.py` (1,004)
+- [ ] `task_runner.py` (693) - options validation, approval wait, workspace, default transport
 - [ ] `retention.py` (646) - tombstones, the fence and prune order, crash resume, anchor wrappers
 - [ ] `retention_anchor.py` (179) - anchors of the tombstone head; read after `retention.py`
 - [ ] `retention_inventory.py` (980) - read-only inventory of every resource class
@@ -292,6 +295,8 @@ Verify: model output is untrusted at every step; the loop guards (deadline, canc
 context deadlock) fire before a model call; tool calls only run when declared; project state is
 updated before the run is reported terminal; cancellation interrupts the awaited operation and
 the terminate path is the only exit.
+
+Verification: a gate that declares nothing is recorded as before; the declared class is the host's claim, not something the SDK verifies; evidence is JSON, at most 4,096 characters, no NaN or infinity, and a composite's member evidence is cut so it always fits; a member that raises is named by index and verifier; `verification-completed` carries the gate id and the digest of the output on every path, including the failures.
 
 Pruning: a run is fenced before it is examined; every writer re-checks the fence inside its
 own critical section; an interrupted prune keeps the fence until an applied pass finishes
@@ -305,9 +310,9 @@ Run: `.venv/Scripts/python.exe -m pytest tests/integrations -q`
 
 - [ ] `_utils.py` (152), `contracts.py` (98), `receipts.py` (65)
 - [ ] `jev/models.py` (171), `jev/receipts.py` (57)
-- [ ] `jev/decision.py` (297), `jev/advisory.py` (109)
+- [ ] `jev/decision.py` (297), `jev/advisory.py` (143)
 - [ ] `jev/architecture.py` (164), `jev/exploration.py` (149)
-- [ ] `langchain.py` (266), `langgraph.py` (299)
+- [ ] `langchain.py` (266), `langgraph.py` (308)
 
 Verify: sanitiser covers keys and string values; envelope validation; the router refuses
 `escalate`; a missing optional dependency raises an install hint, not an `ImportError` traceback;
@@ -317,16 +322,17 @@ result digests use `canonical_hash`.
 
 Run: `.venv/Scripts/python.exe -m pytest tests/mcp -q` (spawns real servers; a few minutes)
 
-- [ ] `authority.py` (441) - principals, operation classes, digests and the decision gate;
+- [ ] `authority.py` (445) - principals, operation classes, digests and the decision gate;
   read before the files that use it
 - [ ] `security.py` (357) - tokens, hosts, origins, TLS, refused-request body handling
 - [ ] `arguments.py` (116) - the argument guard and the Python-only capability table
 - [ ] `client_types.py` (90), `client.py` (550), `client_bridge.py` (94)
-- [ ] `_shared.py` (154) - tool offloading, `state_lock`, operation classes
-- [ ] `server.py` (197)
-- [ ] Tool groups: `run_tools.py` (105), `specification_tools.py` (40), `orchestration_tools.py` (154),
-  `project_state_tools.py` (265), `controller_tools.py` (337), `agent_tools.py` (215),
-  `telemetry_tools.py` (209)
+- [ ] `_shared.py` (156) - tool offloading, `state_lock`, operation classes
+- [ ] `server.py` (186)
+- [ ] `tool_groups.py` (27), `authority_matrix.py` (118) - the groups registered once; the reducer tables, the credential policies and the tool classes in one export
+- [ ] Tool groups: `run_tools.py` (107), `specification_tools.py` (40), `orchestration_tools.py` (156),
+  `project_state_tools.py` (274), `controller_tools.py` (340), `agent_tools.py` (217),
+  `telemetry_tools.py` (212)
 
 Verify: constant-time token comparison, nothing runs before authentication; each tool is a thin
 wrapper that returns the `{ok, ...}` envelope; no tool lets a caller widen authority; the client
@@ -334,11 +340,12 @@ owns each connection in one task and closes it there; external tool output is ma
 The credential, never the caller, decides the principal and with it the operation class; a
 decision carries the digest it reviewed and its issue time, and its `authorized` event is
 written before the operation; an argument a tool does not define is refused by name.
+A decision tool passes `receipt.source()` to the operation, so the approval request, the controller and elastic events, the orchestration event and the project-state action name the principal; `authority_matrix()` is read from the code that enforces each rule.
 
 ## Stage 10 - developer tools, root, packaging
 
-- [ ] `developer_tools/` (887): `inspect.py`, `cli.py`, `catalog.py`, `quality.py`, `validate.py`
-- [ ] `__init__.py` (887): `_EXPORTS` matches the `TYPE_CHECKING` block
+- [ ] `developer_tools/` (1,022): `inspect.py`, `cli.py` (now also `authority-matrix`, `checkpoint-run` and `verify-checkpoints`), `catalog.py`, `quality.py`, `validate.py`
+- [ ] `__init__.py` (921): `_EXPORTS` matches the `TYPE_CHECKING` block
 - [ ] `pyproject.toml`, `.github/workflows/ci.yml`
 - [ ] `docs/reference/README.md`: each behavioural claim is true; "Still open" is still open
 

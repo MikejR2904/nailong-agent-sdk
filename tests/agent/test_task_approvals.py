@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from nailong_agent_sdk.agent.runtime import AgentRuntimeServices
 from nailong_agent_sdk.agent.task_runner import AgentTaskRunner, TaskOptionError, TaskRunOptions
 from nailong_agent_sdk.foundations.contracts import AgentRunStatus
+from nailong_agent_sdk.observability.telemetry_models import DecisionSource, TelemetryAuthority
 from nailong_agent_sdk.tools.approvals import ApprovalStatus
 from nailong_agent_sdk.tools.core import core_tool_definitions
 from tests.support.agents import arun, definition, task
@@ -246,3 +247,82 @@ def test_a_watchdog_shorter_than_the_approval_wait_is_refused_up_front():
             "tool_call_timeout_seconds": 5,
         }
     )
+
+
+def events_of(services, event_type):
+    return [e for e in services.telemetry.iter_events("t1") if e.event_type == event_type]
+
+
+class SnoopingTransport(ScriptedChatTransport):
+    def __init__(self, bodies, snoop):
+        super().__init__(bodies)
+        self._snoop = snoop
+
+    def post_json(self, url, *, headers, payload, timeout_seconds):
+        self._snoop(len(self.requests))
+        return super().post_json(
+            url, headers=headers, payload=payload, timeout_seconds=timeout_seconds
+        )
+
+
+def test_a_decision_records_who_made_it_and_in_what_capacity(tmp_path):
+    subject, services = runner(tmp_path, [CALL, final_chat()])
+    source = DecisionSource(authority=TelemetryAuthority.HUMAN, identifier="reviewer-7")
+    result, _, decided = drive(
+        subject,
+        options(),
+        lambda request: subject.decide_approval(
+            "t1", request.approval_id, True, "reviewed", source=source
+        ),
+    )
+    assert result.status is AgentRunStatus.COMPLETED
+    assert decided.decided_by == "reviewer-7"
+    assert decided.decision_authority is TelemetryAuthority.HUMAN
+    (event,) = events_of(services, "approval.decided")
+    assert event.authority is TelemetryAuthority.HUMAN
+    assert event.payload["decided_by"] == "reviewer-7"
+    assert event.payload["decision_authority"] == "human"
+    (requested,) = events_of(services, "approval.requested")
+    assert requested.authority is TelemetryAuthority.DETERMINISTIC
+
+
+def test_a_decision_made_without_a_source_records_no_decider(tmp_path):
+    subject, services = runner(tmp_path, [CALL, final_chat()])
+    result, _, decided = drive(
+        subject,
+        options(),
+        lambda request: subject.decide_approval("t1", request.approval_id, True),
+    )
+    assert result.status is AgentRunStatus.COMPLETED
+    assert decided.decided_by is None and decided.decision_authority is None
+    (event,) = events_of(services, "approval.decided")
+    assert event.authority is TelemetryAuthority.DETERMINISTIC
+    assert event.payload["decided_by"] is None and event.payload["decision_authority"] is None
+
+
+def test_an_approval_that_expires_is_attributed_to_the_timeout(tmp_path):
+    subject, services = runner(tmp_path, [CALL, final_chat()])
+    result = arun(subject.run(WRITE, task(), options(approval_timeout_seconds=0.4)))
+    assert result.status is AgentRunStatus.BLOCKED
+    (event,) = events_of(services, "approval.decided")
+    assert event.status == "timed-out"
+    assert event.authority is TelemetryAuthority.SYSTEM
+    assert event.payload["decided_by"] == "approval-timeout"
+    assert event.payload["decision_authority"] == "system"
+
+
+def test_a_capability_approved_in_the_run_options_is_attributed_to_them(tmp_path):
+    seen = []
+    services = AgentRuntimeServices.open(tmp_path / "service")
+
+    def snoop(call_index):
+        if call_index == 1:
+            seen.extend(subject.approvals("t1"))
+
+    subject = AgentTaskRunner(services, transport=SnoopingTransport([CALL, final_chat()], snoop))
+    result = arun(subject.run(WRITE, task(), options(approved_capabilities=["draft.write"])))
+    assert result.status is AgentRunStatus.COMPLETED
+    (request,) = seen
+    assert request.status is ApprovalStatus.APPROVED
+    assert request.decided_by == "run-options"
+    assert request.decision_authority is TelemetryAuthority.DETERMINISTIC
