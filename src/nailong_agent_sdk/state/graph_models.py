@@ -83,6 +83,14 @@ TERMINAL_STATUSES = {
     GraphNodeStatus.BLOCKED,
     GraphNodeStatus.CANCELLED,
 }
+FAILURE_CODE_DIAGNOSTIC_PREFIX = "failure-code:"
+AGENT_RUN_DIAGNOSTIC_PREFIX = "agent-run:"
+ROOT_CAUSE_DIAGNOSTIC_PREFIX = "root-cause:"
+ROOT_CAUSES_OMITTED_PREFIX = "root-causes-omitted:"
+
+
+def diagnostic_values(diagnostics: list[str], prefix: str) -> list[str]:
+    return [item[len(prefix) :] for item in diagnostics if item.startswith(prefix)]
 
 
 class GraphNode(StrictModel):
@@ -166,6 +174,25 @@ class GraphNodeResult(StrictModel):
                 f"spawn_requests are only allowed on a completed result, got {self.status.value}"
             )
         return self
+
+    @property
+    def failure_code(self) -> str | None:
+        codes = diagnostic_values(self.diagnostics, FAILURE_CODE_DIAGNOSTIC_PREFIX)
+        return codes[0] if codes else None
+
+    @property
+    def agent_run_id(self) -> str | None:
+        runs = diagnostic_values(self.diagnostics, AGENT_RUN_DIAGNOSTIC_PREFIX)
+        return runs[0] if runs else None
+
+    @property
+    def root_causes(self) -> tuple[str, ...]:
+        return tuple(diagnostic_values(self.diagnostics, ROOT_CAUSE_DIAGNOSTIC_PREFIX))
+
+    @property
+    def root_causes_omitted(self) -> int:
+        counts = diagnostic_values(self.diagnostics, ROOT_CAUSES_OMITTED_PREFIX)
+        return int(counts[0]) if counts and counts[0].isdigit() else 0
 
 
 class GraphEvent(StrictModel):

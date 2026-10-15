@@ -42,6 +42,7 @@ from ..observability.telemetry_store import TelemetryStore
 from ..observability.trace_context import graph_run_trace_id
 from ..state.run_state_store import RunStateStore
 from .catalog import build_public_api_catalog, write_public_api_catalog
+from .diagnose import diagnose_run
 from .inspect import inspect_run, verify_project_evidence
 from .quality import RuffUnavailableError, check_source_quality
 from .validate import supported_contract_types, validate_contract_file
@@ -69,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         "catalog": lambda: _catalog(arguments),
         "validate": lambda: _validate(arguments),
         "inspect-run": lambda: _inspect_run(arguments),
+        "diagnose-run": lambda: _diagnose_run(arguments),
         "verify-evidence": lambda: _verify_evidence(arguments),
         "quality": lambda: _quality(arguments),
         "prune-runs": lambda: _prune_runs(arguments),
@@ -119,6 +121,13 @@ def _parser() -> argparse.ArgumentParser:
     inspect = subparsers.add_parser("inspect-run", help="Verify and summarize a durable run.")
     inspect.add_argument("run_root", type=Path)
     inspect.add_argument("run_id")
+
+    diagnose = subparsers.add_parser(
+        "diagnose-run",
+        help="Report where a run first went wrong, what ended it and what it blocked; reads only.",
+    )
+    diagnose.add_argument("run_root", type=Path)
+    diagnose.add_argument("run_id")
 
     evidence = subparsers.add_parser(
         "verify-evidence",
@@ -289,6 +298,10 @@ def _validate(arguments: argparse.Namespace) -> object:
 
 def _inspect_run(arguments: argparse.Namespace) -> object:
     return inspect_run(arguments.run_root, arguments.run_id)
+
+
+def _diagnose_run(arguments: argparse.Namespace) -> object:
+    return diagnose_run(arguments.run_root, arguments.run_id)
 
 
 def _verify_evidence(arguments: argparse.Namespace) -> object:

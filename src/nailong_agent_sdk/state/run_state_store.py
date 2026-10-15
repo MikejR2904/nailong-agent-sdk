@@ -49,9 +49,11 @@ class RunStateStore:
     to the previous complete generation. Older full snapshots remain readable.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, read_only: bool = False) -> None:
         self._root = root.resolve() / ".agent-runs"
-        self._root.mkdir(parents=True, exist_ok=True)
+        self._read_only = read_only
+        if not read_only:
+            self._root.mkdir(parents=True, exist_ok=True)
         self._claims = self._root / ".claims"
         self._locks = RecordLocks(self._root / ".locks", timeout_code="RUN_LOCK_TIMEOUT")
         self._seen: dict[str, Fingerprint] = {}
@@ -60,12 +62,14 @@ class RunStateStore:
         self._persisted: dict[str, _PersistedHistoryCounts] = {}
 
     def reserve_run_id(self, *, start: int = 1) -> tuple[str, int]:
+        self._require_writable("reserve_run_id")
         return reserve_sequential_identifier(self._claims, "run", self.exists, start=start)
 
     def locked(self, run_id: str) -> AbstractContextManager[None]:
         return self._locks.hold(validate_identifier(run_id, "Run id"))
 
     def save(self, record: RunRecord) -> None:
+        self._require_writable("save")
         with self.locked(record.run_id):
             self._require_unchanged(record.run_id)
             self._save_locked(record)
@@ -124,6 +128,12 @@ class RunStateStore:
         record = snapshot.model_copy(update={"graph": graph})
         _verify_run_record(record)
         return record
+
+    def _require_writable(self, operation: str) -> None:
+        if self._read_only:
+            raise RuntimeError(
+                f'Run store at "{self._root}" was opened read-only; "{operation}" is not available.'
+            )
 
     def exists(self, run_id: str) -> bool:
         return is_valid_identifier(run_id) and self._record_path(run_id).is_file()

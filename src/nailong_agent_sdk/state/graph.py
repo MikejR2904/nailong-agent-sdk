@@ -43,6 +43,9 @@ from .elastic import (
     validate_elastic_caps,
 )
 from .graph_models import (
+    FAILURE_CODE_DIAGNOSTIC_PREFIX,
+    ROOT_CAUSE_DIAGNOSTIC_PREFIX,
+    ROOT_CAUSES_OMITTED_PREFIX,
     TERMINAL_STATUSES,
     GraphEdge,
     GraphEdgeKind,
@@ -69,6 +72,7 @@ from .shared_state import (
 
 DEFAULT_MAX_PARALLELISM = 32
 DEPENDENCY_BLOCK_DIAGNOSTIC = "blocked-by-dependency"
+MAX_ROOT_CAUSE_DIAGNOSTICS = 8
 HELD_JOIN_DIAGNOSTIC = "elastic-capacity-decision-required"
 DECLINED_JOIN_DIAGNOSTIC = "elastic-requests-declined"
 _SOFT_PROCEED_STATUSES = frozenset({GraphNodeStatus.COMPLETED, GraphNodeStatus.FAILED})
@@ -130,6 +134,7 @@ class StateGraph:
         self._status = {node_id: GraphNodeStatus.PENDING for node_id in self._nodes}
         self._results: dict[str, GraphNodeResult] = {}
         self._events: list[GraphEvent] = []
+        self._roots_stale = False
         self._dumped_items: dict[int, tuple[BaseModel, dict[str, Any]]] = {}
         self._dumped_shared_state: tuple[GraphSharedState, dict[str, Any]] | None = None
         self._validate_graph()
@@ -163,9 +168,11 @@ class StateGraph:
         return self._status[node_id]
 
     def result(self, node_id: str) -> GraphNodeResult | None:
+        self._settle_root_causes()
         return self._results.get(node_id)
 
     def snapshot(self) -> dict[str, Any]:
+        self._settle_root_causes()
         previous = self._dumped_items
         current: dict[int, tuple[BaseModel, dict[str, Any]]] = {}
 
@@ -248,6 +255,7 @@ class StateGraph:
                 f"Graph snapshot nodes {missing} have a terminal status but no recorded result."
             )
         graph._events = [GraphEvent.model_validate(event) for event in payload.get("events", [])]
+        graph._roots_stale = True
         graph._rebuild_routing_index()
         return graph
 
@@ -276,6 +284,18 @@ class StateGraph:
         for node in wave:
             self.mark_started(node.node_id)
         return wave
+
+    def root_causes(self, node_id: str) -> tuple[str, ...]:
+        if node_id not in self._status:
+            raise ValueError(f'Node "{node_id}" is not in the graph.')
+        if not self._is_blocked_by_dependency(node_id):
+            return ()
+        return tuple(sorted(self._roots_of(node_id, {})))
+
+    def blocked_descendants(self, node_id: str) -> tuple[str, ...]:
+        if node_id not in self._status:
+            raise ValueError(f'Node "{node_id}" is not in the graph.')
+        return tuple(self._dependency_blocked_descendants([node_id]))
 
     def blocked_nodes(self) -> list[str]:
         return [
@@ -459,6 +479,7 @@ class StateGraph:
             for node, result in zip(wave, wave_results, strict=True):
                 self.mark_terminal(node.node_id, result)
 
+        self._settle_root_causes()
         return dict(self._results)
 
     async def execute_node(
@@ -476,6 +497,7 @@ class StateGraph:
             result = GraphNodeResult(
                 status=GraphNodeStatus.FAILED,
                 reason=f'No executor is registered for node kind "{node.kind.value}".',
+                diagnostics=[f"{FAILURE_CODE_DIAGNOSTIC_PREFIX}GRAPH_NODE_EXECUTOR_MISSING"],
             )
         else:
             try:
@@ -488,6 +510,10 @@ class StateGraph:
                     status=GraphNodeStatus.FAILED,
                     reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
                     f"{type(error).__name__}: {error}",
+                    diagnostics=[
+                        f"{FAILURE_CODE_DIAGNOSTIC_PREFIX}GRAPH_NODE_EXECUTOR_RAISED",
+                        f"error-type:{type(error).__name__}",
+                    ],
                 )
         if result.status is not GraphNodeStatus.COMPLETED or not result.spawn_requests:
             self._release_elastic(node.node_id)
@@ -1357,6 +1383,76 @@ class StateGraph:
             )
         self._elastic_nodes = children + joins
 
+    def _blocking_dependencies(self, node_id: str) -> list[str]:
+        hard, soft = self._split_dependencies(node_id)
+        return sorted(
+            [item for item in hard if self._status[item] in _HARD_BLOCKING_STATUSES]
+            + [item for item in soft if self._status[item] in _SOFT_BLOCKING_STATUSES]
+        )
+
+    def _is_blocked_by_dependency(self, node_id: str) -> bool:
+        return self._status[node_id] is GraphNodeStatus.BLOCKED and self._is_dependency_blocked(
+            node_id
+        )
+
+    def _roots_of(self, node_id: str, memo: dict[str, set[str]]) -> set[str]:
+        stack = [(node_id, False)]
+        while stack:
+            current, expanded = stack.pop()
+            if current in memo:
+                continue
+            blockers = self._blocking_dependencies(current)
+            if not expanded:
+                stack.append((current, True))
+                stack.extend(
+                    (blocker, False)
+                    for blocker in blockers
+                    if blocker not in memo and self._is_blocked_by_dependency(blocker)
+                )
+                continue
+            held = [blocker for blocker in blockers if self._is_blocked_by_dependency(blocker)]
+            if len(blockers) == 1 and held:
+                memo[current] = memo[held[0]]
+                continue
+            roots = {blocker for blocker in blockers if blocker not in held}
+            for blocker in held:
+                roots |= memo[blocker]
+            memo[current] = roots
+        return memo[node_id]
+
+    def _settle_root_causes(self) -> None:
+        if self._roots_stale:
+            self._refresh_root_causes()
+
+    def _refresh_root_causes(self) -> None:
+        self._roots_stale = False
+        memo: dict[str, set[str]] = {}
+        rendered: dict[int, list[str]] = {}
+        for node_id in sorted(self._nodes):
+            if not self._is_blocked_by_dependency(node_id):
+                continue
+            found = self._roots_of(node_id, memo)
+            wanted = rendered.get(id(found))
+            if wanted is None:
+                roots = sorted(found)
+                wanted = [
+                    f"{ROOT_CAUSE_DIAGNOSTIC_PREFIX}{root}"
+                    for root in roots[:MAX_ROOT_CAUSE_DIAGNOSTICS]
+                ]
+                if len(roots) > MAX_ROOT_CAUSE_DIAGNOSTICS:
+                    wanted.append(
+                        f"{ROOT_CAUSES_OMITTED_PREFIX}{len(roots) - MAX_ROOT_CAUSE_DIAGNOSTICS}"
+                    )
+                rendered[id(found)] = wanted
+            result = self._results[node_id]
+            kept = [
+                item
+                for item in result.diagnostics
+                if not item.startswith((ROOT_CAUSE_DIAGNOSTIC_PREFIX, ROOT_CAUSES_OMITTED_PREFIX))
+            ]
+            if result.diagnostics != [*kept, *wanted]:
+                self._results[node_id] = result.model_copy(update={"diagnostics": [*kept, *wanted]})
+
     def _is_dependency_blocked(self, node_id: str) -> bool:
         result = self._results.get(node_id)
         if result is None:
@@ -1454,6 +1550,11 @@ class StateGraph:
         status: GraphNodeStatus,
         reason: str | None = None,
     ) -> None:
+        if (
+            status in _HARD_BLOCKING_STATUSES
+            or self._status.get(node_id) in _HARD_BLOCKING_STATUSES
+        ):
+            self._roots_stale = True
         self._status[node_id] = status
         self._events.append(
             GraphEvent(

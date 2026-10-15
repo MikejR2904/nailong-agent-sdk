@@ -155,9 +155,12 @@ class HarnessToolExecutor(ToolExecutor):
     ) -> ToolExecutionResult:
         registered = self._registry.resolve(tool.name)
         if registered is None:
-            return ToolExecutionResult(
-                status="failed", error=f'No harness tool named "{tool.name}" exists.'
+            failure = AgentFailure(
+                code="HARNESS_TOOL_UNKNOWN",
+                message=f'No harness tool named "{tool.name}" exists.',
+                details={"tool": tool.name},
             )
+            return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
         requested_paths = self._requested_paths(tool.name, invocation.call.arguments)
         approval = self._approval_for(registered.capability)
         decision = self._context.policy.evaluate(
@@ -183,8 +186,25 @@ class HarnessToolExecutor(ToolExecutor):
                         "capability": registered.capability,
                     },
                     error=decision.reason,
+                    failure=AgentFailure(
+                        code="TOOL_APPROVAL_REQUIRED",
+                        message=decision.reason,
+                        details={
+                            "tool": tool.name,
+                            "capability": registered.capability,
+                            "approval_id": request.approval_id,
+                        },
+                    ),
                 )
-            return ToolExecutionResult(status="blocked", error=decision.reason)
+            return ToolExecutionResult(
+                status="blocked",
+                error=decision.reason,
+                failure=AgentFailure(
+                    code="TOOL_DENIED_BY_POLICY",
+                    message=decision.reason,
+                    details={"tool": tool.name, "capability": registered.capability},
+                ),
+            )
 
         try:
             output = await self._execute_registered(

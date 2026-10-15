@@ -112,6 +112,8 @@ _STATE_SUMMARY_HEADROOM_CHARS = 512
 _CANCELLATION_POLL_SECONDS = 0.05
 _PROFILE_EVENT_SPAN_LIMIT = 512
 _SPAN_ATTRIBUTE_TEXT_CHARS = 256
+_OUTCOME_ERROR_CHARS = 300
+_DECLARED_TOOLS_LISTED = 20
 
 
 class BaseAgent:
@@ -656,50 +658,77 @@ class BaseAgent:
                             details=metric_details,
                         )
             if projection.compaction.status is CompactionStatus.CONTEXT_DEADLOCK:
+                failure = AgentFailure(
+                    code="CONTEXT_DEADLOCK",
+                    message="CONTEXT_DEADLOCK: no closed, dependency-free episode can be "
+                    "compacted within the configured episode budget.",
+                    details={
+                        "episode_token_budget": projection.metadata.episode_token_budget,
+                        "estimated_tokens": projection.metadata.estimated_tokens,
+                    },
+                )
                 return self._terminate(
                     AgentRunStatus.BLOCKED,
                     task,
                     iteration - 1,
-                    "CONTEXT_DEADLOCK: no closed, dependency-free episode can be compacted "
-                    "within the configured episode budget.",
+                    failure.message,
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
+                    failure=failure,
                 )
             emit("turn-started", iteration)
             try:
                 project_state = self._active_project_state or project_state
                 project_state_view = self.project_state_projector.project(project_state)
                 if project_state_view.over_budget:
+                    failure = AgentFailure(
+                        code="PROJECT_STATE_BUDGET_EXCEEDED",
+                        message="PROJECT_STATE_BUDGET_EXCEEDED: mandatory current-state fields "
+                        "exceed the configured state token budget.",
+                        details={
+                            "estimated_tokens": project_state_view.estimated_tokens,
+                            "token_budget": project_state_view.token_budget,
+                        },
+                    )
                     return self._terminate(
                         AgentRunStatus.BLOCKED,
                         task,
                         iteration - 1,
-                        "PROJECT_STATE_BUDGET_EXCEEDED: mandatory current-state fields exceed "
-                        "the configured state token budget.",
+                        failure.message,
                         prompt,
                         episodes,
                         events,
                         emit,
                         projection_history,
+                        failure=failure,
                     )
                 model_context_tokens = self._estimate_model_context_tokens(
                     prompt, project_state_view
                 )
                 if model_context_tokens > projection.metadata.context_token_budget:
+                    failure = AgentFailure(
+                        code="CONTEXT_BUDGET_EXCEEDED",
+                        message="CONTEXT_BUDGET_EXCEEDED: immutable prompt plus bounded project "
+                        "state exceed the configured context token budget.",
+                        details={
+                            "estimated_tokens": model_context_tokens,
+                            "context_token_budget": projection.metadata.context_token_budget,
+                        },
+                    )
                     return self._terminate(
                         AgentRunStatus.BLOCKED,
                         task,
                         iteration - 1,
-                        "CONTEXT_BUDGET_EXCEEDED: immutable prompt plus bounded project state "
-                        "exceed the configured context token budget.",
+                        failure.message,
                         prompt,
                         episodes,
                         events,
                         emit,
                         projection_history,
+                        failure=failure,
                     )
                 model_span = self.profiler.start_span(
                     ProfileSpanKind.MODEL_TURN,
@@ -900,6 +929,7 @@ class BaseAgent:
                     events,
                     emit,
                     projection_history,
+                    failure=AgentFailure(code="MODEL_REPORTED_BLOCKED", message=turn.reason),
                 )
             if turn.type == "final":
                 accepted = await self._accept_final_turn(
@@ -1023,18 +1053,24 @@ class BaseAgent:
                     ],
                 )
 
+        failure = AgentFailure(
+            code="MAX_ITERATIONS_REACHED",
+            message="Maximum iteration limit "
+            f"({self.definition.termination_policy.max_iterations}) "
+            "reached without accepted output.",
+            details={"max_iterations": self.definition.termination_policy.max_iterations},
+        )
         return self._terminate(
             AgentRunStatus.FAILED,
             task,
             self.definition.termination_policy.max_iterations,
-            "Maximum iteration limit "
-            f"({self.definition.termination_policy.max_iterations}) "
-            "reached without accepted output.",
+            failure.message,
             prompt,
             episodes,
             events,
             emit,
             projection_history,
+            failure=failure,
         )
 
     def _normalize_model_response(
@@ -1080,7 +1116,7 @@ class BaseAgent:
         try:
             validate_candidate_output(self.definition, output)
         except AgentSdkError as error:
-            emit("output-rejected", iteration, reason=error.message)
+            emit("output-rejected", iteration, reason=error.message, failure_code=error.code)
             return ModelObservation(kind="agent-error", iteration=iteration, message=error.message)
         if self.definition.verification_gate_id:
             gate_id = self.definition.verification_gate_id
@@ -1234,6 +1270,17 @@ class BaseAgent:
                 ProfileSpanStatus.COMPLETED if decision.passed else ProfileSpanStatus.FAILED,
                 attributes={"passed": decision.passed},
             )
+            rejection = None
+            if not decision.passed:
+                rejection = AgentFailure(
+                    code="VERIFICATION_GATE_REJECTED",
+                    message=decision.reason or "Deterministic verification gate rejected output.",
+                    details={
+                        "verification_gate_id": gate_id,
+                        "verifier_id": decision.verifier_id,
+                        "output_digest": output_digest,
+                    },
+                )
             emit(
                 "verification-completed",
                 iteration,
@@ -1242,19 +1289,20 @@ class BaseAgent:
                 reason=decision.reason,
                 gate_id=gate_id,
                 output_digest=output_digest,
-                **_verifier_details(decision),
+                **_verifier_details(decision, rejection),
             )
-            if not decision.passed:
+            if rejection is not None:
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration,
-                    decision.reason or "Deterministic verification gate rejected output.",
+                    rejection.message,
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
+                    failure=rejection,
                 )
         return self._terminate(
             AgentRunStatus.COMPLETED,
@@ -1286,6 +1334,7 @@ class BaseAgent:
         outcomes: dict[str, ToolCallOutcome] = {}
         ordered_ids = [call.id for call in batch.calls]
         blocked_reason: str | None = None
+        blocked_failure: AgentFailure | None = None
 
         while pending:
             ready = [
@@ -1295,15 +1344,21 @@ class BaseAgent:
                 and all(dependency in outcomes for dependency in call.depends_on_call_ids)
             ]
             if not ready:
+                failure = AgentFailure(
+                    code="TOOL_BATCH_DEPENDENCIES_UNRESOLVED",
+                    message="Tool batch scheduler reached an unresolved dependency state.",
+                    details={"pending_call_ids": sorted(pending)},
+                )
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration,
-                    "Tool batch scheduler reached an unresolved dependency state.",
+                    failure.message,
                     prompt,
                     episodes,
                     events,
                     emit,
+                    failure=failure,
                 )
 
             dependency_blocked = [
@@ -1382,8 +1437,9 @@ class BaseAgent:
                 )
                 if terminal is not None:
                     return terminal
-                if item.result.status == "blocked":
-                    blocked_reason = blocked_reason or item.result.error
+                if item.result.status == "blocked" and not blocked_reason:
+                    blocked_reason = item.result.error
+                    blocked_failure = item.result.failure
                 if item.terminal_status is not None:
                     return self._terminate(
                         item.terminal_status,
@@ -1419,10 +1475,7 @@ class BaseAgent:
         emit(
             "tool-batch-completed",
             iteration,
-            outcomes=[
-                {"tool_call_id": item.call.id, "tool": item.call.name, "status": item.result.status}
-                for item in ordered_outcomes
-            ],
+            outcomes=[_batch_outcome(item) for item in ordered_outcomes],
         )
         if blocked_reason is not None:
             return self._terminate(
@@ -1434,6 +1487,7 @@ class BaseAgent:
                 episodes,
                 events,
                 emit,
+                failure=blocked_failure,
             )
         return ToolBatchExecution(
             observations=tuple(item.observation for item in ordered_outcomes),
@@ -1500,22 +1554,32 @@ class BaseAgent:
     ) -> ToolCallOutcome:
         tool = self._tool_definition(call)
         if tool is None:
+            failure = AgentFailure(
+                code="TOOL_NOT_DECLARED",
+                message=f'Tool "{call.name}" is not declared for this agent.',
+                details={
+                    "tool": call.name,
+                    "tool_call_id": call.id,
+                    "declared_tools": sorted(item.name for item in self.definition.tools)[
+                        :_DECLARED_TOOLS_LISTED
+                    ],
+                },
+            )
             return self._record_unexecuted_result(
                 call,
-                ToolExecutionResult(
-                    status="failed",
-                    error=f'Tool "{call.name}" is not declared for this agent.',
-                ),
+                ToolExecutionResult(status="failed", error=failure.message, failure=failure),
                 iteration,
                 terminal_status=AgentRunStatus.FAILED,
             )
         if self.tool_executor is None:
+            failure = AgentFailure(
+                code="TOOL_EXECUTOR_MISSING",
+                message=f'No tool executor is configured for declared tool "{call.name}".',
+                details={"tool": call.name, "tool_call_id": call.id},
+            )
             return self._record_unexecuted_result(
                 call,
-                ToolExecutionResult(
-                    status="failed",
-                    error=f'No tool executor is configured for declared tool "{call.name}".',
-                ),
+                ToolExecutionResult(status="failed", error=failure.message, failure=failure),
                 iteration,
                 terminal_status=AgentRunStatus.FAILED,
             )
@@ -1569,9 +1633,15 @@ class BaseAgent:
                     hook(context), self.watchdog_policy.tool_call_timeout_seconds, deadline
                 )
                 if decision and not decision.allowed:
+                    denial = decision.reason or f'Tool "{call.name}" was denied by policy.'
                     result = ToolExecutionResult(
                         status="blocked",
-                        error=decision.reason or f'Tool "{call.name}" was denied by policy.',
+                        error=denial,
+                        failure=AgentFailure(
+                            code="TOOL_DENIED_BY_HOOK",
+                            message=denial,
+                            details={"tool": call.name, "tool_call_id": call.id},
+                        ),
                     )
                     return self._record_unexecuted_result(
                         call,
@@ -2382,7 +2452,9 @@ async def _interruptible(operation: Awaitable[Any], cancellation: CancellationTo
     raise RunCancelled
 
 
-def _verifier_details(decision: VerificationDecision) -> dict[str, Any]:
+def _verifier_details(
+    decision: VerificationDecision, rejection: AgentFailure | None = None
+) -> dict[str, Any]:
     details: dict[str, Any] = {}
     if decision.verifier_id is not None:
         details["verifier_id"] = decision.verifier_id
@@ -2390,7 +2462,27 @@ def _verifier_details(decision: VerificationDecision) -> dict[str, Any]:
         details["verifier_kind"] = decision.authority.value
     if decision.evidence is not None:
         details["evidence"] = dict(decision.evidence)
+    if rejection is not None:
+        details["failure_code"] = rejection.code
     return details
+
+
+def _batch_outcome(item: ToolCallOutcome) -> dict[str, Any]:
+    outcome: dict[str, Any] = {
+        "tool_call_id": item.call.id,
+        "tool": item.call.name,
+        "status": item.result.status,
+    }
+    if item.result.status != "succeeded":
+        failure = item.result.failure
+        outcome["failure_code"] = failure.code if failure is not None else None
+        error = item.result.error
+        outcome["error"] = (
+            error
+            if error is None or len(error) <= _OUTCOME_ERROR_CHARS
+            else f"{error[: _OUTCOME_ERROR_CHARS - 3]}..."
+        )
+    return outcome
 
 
 def _watchdog_detail(expired: WatchdogExpired, label: str) -> str:

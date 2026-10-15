@@ -5,7 +5,7 @@ Status: `foundations/` is audited. Next: **Stage 1 - `observability/`**.
 ## How the order was chosen
 
 Reading goes bottom-up so that every file you open only uses code you have already read.
-The order comes from the real import graph (runtime imports, 147 files, no circular imports at
+The order comes from the real import graph (runtime imports, 148 files, no circular imports at
 file level; the only circles are between folders and they are explained just below).
 
 ```
@@ -34,12 +34,12 @@ Estimate: about 300 lines/hour of careful reading plus 25% for notes and probes.
 | 2 | `memory/` | 13 | 5,491 | 119 | 23 |
 | 3 | `specifications/` | 7 | 1,591 | 40 | 6.5 |
 | 4 | `tools/` safety core | 3 | 426 | (in 170) | 2 |
-| 5 | `state/` | 15 | 6,262 | 245 | 26.1 |
-| 6 | `tools/` execution | 17 | 3,757 | 180 | 15.7 |
-| 7 | `agent/` | 24 | 9,770 | 380 | 40.7 |
+| 5 | `state/` | 15 | 6,400 | 262 | 26.7 |
+| 6 | `tools/` execution | 17 | 3,777 | 184 | 15.7 |
+| 7 | `agent/` | 24 | 9,884 | 404 | 41.2 |
 | 8 | `integrations/` | 13 | 2,040 | 26 | 8.5 |
 | 9 | `mcp/` | 18 | 3,593 | 176 | 15.0 |
-| 10 | `developer_tools/`, root, packaging, CI, docs | 7 + config | 1,966 | 29 | 8.2 |
+| 10 | `developer_tools/`, root, packaging, CI, docs | 8 + config | 2,675 | 56 | 11.1 |
 | 11 | cross-cutting passes | - | - | - | 9 |
 
 About 175 hours in total, roughly seven weeks at five focused hours a day.
@@ -223,7 +223,7 @@ multi-process tests are the slow ones)
 5a. Data and rules
 - [ ] `shared_state.py` (240)
 - [ ] `elastic.py` (353)
-- [ ] `graph_models.py` (228)
+- [ ] `graph_models.py` (255)
 - [ ] `orchestration_models.py` (110)
 - [ ] `coordination_records.py` (42)
 - [ ] `planning.py` (496) - plan validation, proofs, cycle detection
@@ -232,18 +232,21 @@ multi-process tests are the slow ones)
 
 5b. Stores
 - [ ] `project_state_store.py` (252)
-- [ ] `run_state_store.py` (435) - snapshot + history sidecar, prefix replay, fingerprint conflicts
+- [ ] `run_state_store.py` (445) - snapshot + history sidecar, prefix replay, fingerprint conflicts
 - [ ] `orchestration.py` (453) - controller state machine and its store
 
 5c. Engines
-- [ ] `graph.py` (1,471) - three sittings (see "Splitting the big files")
+- [ ] `graph.py` (1,572) - three sittings (see "Splitting the big files")
 - [ ] `harness_coordinator.py` (372)
 - [ ] `controller_runtime.py` (911) - note the write order across stores and `reconcile`
 
 Verify: every validator names the field; who may set which authority in the reducer (the tables `TRANSITION_AUTHORITY` and `QUESTION_RESOLUTION_AUTHORITY`; `tool-outcome` and `agent-result` only the harness, `question-opened` every actor); a `DecisionSource` reaches the controller event and the telemetry event's authority class; record
 locks held across read-modify-write and never across an await; a failed save leaves no cached
 state ahead of disk; elastic accounting (joins counted, ceilings, reservations); crash recovery
-(`recover_interrupted`) only replays what is declared safe.
+(`recover_interrupted`) only replays what is declared safe. Root causes: a dependency-blocked
+node's `root-cause:` set equals a walk over the current statuses (`root_causes`), is settled
+on read and not on every result, and is complete for a node blocked before its other parents
+failed; `RunStateStore(read_only=True)` creates and writes nothing.
 
 ## Stage 6 - `tools/` execution
 
@@ -259,7 +262,7 @@ Run: `.venv/Scripts/python.exe -m pytest tests/tools -q` (about 2 minutes, Docke
 - [ ] `task_models.py` (43), `tasks.py` (258)
 - [ ] `worktree_models.py` (20), `worktrees.py` (187)
 - [ ] `delegation.py` (128)
-- [ ] `registry.py` (333) - the dispatch chain and the approval flow
+- [ ] `registry.py` (353) - the dispatch chain and the approval flow
 - [ ] `elastic_requests.py` (160)
 
 Verify: no path escapes the run root (symlinks, extended-length Windows spellings, `.agent-*`);
@@ -279,11 +282,11 @@ Run: `.venv/Scripts/python.exe -m pytest tests/agent -q` (a few minutes)
   cancellation outcome
 - [ ] `openai_compatible/embeddings.py` (68), `vision.py` (163)
 - [ ] `base_agent/types.py` (99)
-- [ ] `base_agent/agent.py` (2,456) - five sittings (see below)
+- [ ] `base_agent/agent.py` (2,548) - five sittings (see below)
 - [ ] `runtime.py` (194) - the services; the opt-in checkpointer, `checkpoint_after_run` (worker thread; a failure is recorded, never raised) and the audit payload bound
 - [ ] `run_checkpointer.py` (71) - the signer and sink a runtime uses; `require_outside`, `export` and `check` bind the tombstone lookup of the run root
 - [ ] `elastic_context.py` (105)
-- [ ] `graph_agent_executor.py` (298)
+- [ ] `graph_agent_executor.py` (320)
 - [ ] `orchestrator/models.py` (180), `state_store.py` (119)
 - [ ] `orchestrator/orchestrator.py` (1,004)
 - [ ] `task_runner.py` (694) - options validation, approval wait, workspace, default transport
@@ -292,7 +295,9 @@ Run: `.venv/Scripts/python.exe -m pytest tests/agent -q` (a few minutes)
 - [ ] `retention_inventory.py` (980) - read-only inventory of every resource class
 - [ ] `task_files.py` (213)
 
-Verify: model output is untrusted at every step; the loop guards (deadline, cancellation,
+Verify: every FAILED or BLOCKED exit carries a typed `AgentFailure` that the `terminated`
+event repeats (a cancelled run has its status alone) and `tool-batch-completed` carries each
+non-succeeded outcome's code and a bounded message; model output is untrusted at every step; the loop guards (deadline, cancellation,
 context deadlock) fire before a model call; tool calls only run when declared; project state is
 updated before the run is reported terminal; cancellation interrupts the awaited operation and
 the terminate path is the only exit.
@@ -345,7 +350,7 @@ A decision tool passes `receipt.source()` to the operation, so the approval requ
 
 ## Stage 10 - developer tools, root, packaging
 
-- [ ] `developer_tools/` (1,035): `inspect.py`, `cli.py` (now also `authority-matrix`, `checkpoint-run` and `verify-checkpoints`, both reading retention's tombstones), `catalog.py`, `quality.py`, `validate.py`
+- [ ] `developer_tools/` (1,744): `inspect.py`, `diagnose.py` (read-only: findings from known event types, the verdict, graph roots and what they blocked), `cli.py` (now also `authority-matrix`, `checkpoint-run`, `verify-checkpoints` and `diagnose-run`), `catalog.py`, `quality.py`, `validate.py`
 - [ ] `__init__.py` (931): `_EXPORTS` matches the `TYPE_CHECKING` block
 - [ ] `pyproject.toml`, `.github/workflows/ci.yml`
 - [ ] `docs/reference/README.md`: each behavioural claim is true; "Still open" is still open

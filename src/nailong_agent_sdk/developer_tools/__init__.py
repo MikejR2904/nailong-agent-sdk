@@ -8,6 +8,14 @@ from .catalog import (
     build_public_api_catalog,
     write_public_api_catalog,
 )
+from .diagnose import (
+    DiagnosisFinding,
+    GraphDiagnosis,
+    GraphRootFailure,
+    IntegrityDiagnosis,
+    RunDiagnosis,
+    diagnose_run,
+)
 from .inspect import (
     EvidenceMismatch,
     EvidenceVerification,
@@ -24,16 +32,22 @@ from .validate import (
 )
 
 __all__ = [
+    "DiagnosisFinding",
     "EvidenceMismatch",
     "EvidenceVerification",
+    "GraphDiagnosis",
+    "GraphRootFailure",
+    "IntegrityDiagnosis",
     "PublicApiCatalog",
     "PublicApiSymbol",
     "QualityCheckReport",
+    "RunDiagnosis",
     "RunInspection",
     "ValidationIssue",
     "ValidationReport",
     "build_public_api_catalog",
     "check_source_quality",
+    "diagnose_run",
     "inspect_run",
     "supported_contract_types",
     "validate_contract_file",

@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **147 files, 524 classes and 1,814 functions** (methods and nested closures included).
+covers **148 files, 530 classes and 1,860 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -77,7 +77,8 @@ import of a fresh interpreter, which the test suite checks for all of them.
    event (and `semantic-compaction` when a pass ran) and the context metrics.
 5. **Three guards** end the run BLOCKED before any model call: `CONTEXT_DEADLOCK` (nothing can
    be compacted), `PROJECT_STATE_BUDGET_EXCEEDED` (the mandatory state exceeds its 2,000-token
-   view) and `CONTEXT_BUDGET_EXCEEDED` (prompt plus state exceed the context budget).
+   view) and `CONTEXT_BUDGET_EXCEEDED` (prompt plus state exceed the context budget); each is
+   a typed failure carrying its numbers, as is every other FAILED or BLOCKED exit.
 6. **Call the model** under the per-turn watchdog (streaming if a listener is set and the
    adapter supports it). A transient provider error (429, 5xx, connection) is retried: it
    becomes an `agent-error` observation, the run waits with exponential backoff (honouring
@@ -209,8 +210,9 @@ compacted episode) restores originals from the archive within a token budget.
 
 ## Workflow 3 - how a tool call is governed
 
-`BaseAgent._execute_tool_call` rejects an undeclared tool and a missing executor (each ends the
-run FAILED); arguments that violate the declared JSON schema, or an action that consumes
+`BaseAgent._execute_tool_call` rejects an undeclared tool (`TOOL_NOT_DECLARED`) and a missing
+executor (`TOOL_EXECUTOR_MISSING`), each ending the run FAILED; arguments that violate the
+declared JSON schema, or an action that consumes
 episodes that are unavailable, come back to the model as a failed result so it can correct
 them. It then runs pre-tool hooks (a denial ends BLOCKED), the host's `ToolExecutor` and
 post-tool hooks, all under the tool watchdog. With the SDK's `HarnessToolExecutor`
@@ -220,7 +222,9 @@ containment and any typed approval (a pending approval returns a `blocked` resul
 decided, `resume_run` re-opens the node); the handler then runs a core tool (`tools/core`), a
 supervised process (`tools/supervisor.py`) or a sandbox backend. The result is stored in the
 journal, becomes an episode and an observation with a handle, is reduced into project state,
-and is written to the audit log and telemetry.
+and is written to the audit log and telemetry. `tool-batch-completed` lists every outcome and,
+for one that did not succeed, its failure code and a message of at most 300 characters, so the
+reason a call never ran (bad arguments, a denial) is in the ledger.
 
 ## Workflow 4 - several agents (`Orchestrator`)
 
@@ -317,6 +321,11 @@ specification: that belongs to the interface that calls the agent.
 
 Each chain detects an edit in the middle. The removal of the newest entries, or a rewrite that reseals a chain, is detected only against a record kept outside the run root: the tombstone anchor for the retention log and a signed run-head checkpoint (`export_run_head_checkpoint`, `nailong-agent-sdk-dev checkpoint-run`) for a run. At the end of a run its `agent.profile-completed` event records the audit chain's head and a final `terminal-link` audit entry records that event's hash, so one intact store vouches for the other (`verify_terminal_link`); the link is an entry of its own so that a small audit payload bound cannot cut it. A run that retention pruned verifies as `pruned`, not `truncated`, when its tombstone holds the checkpoint's final heads. Nothing is checkpointed unless asked: by `checkpoint-run`, or by the runtime when `AgentRuntimeServices.open(checkpointer=...)` (the MCP service: `AGENT_RUNTIME_CHECKPOINT_DIR` and `AGENT_RUNTIME_CHECKPOINT_KEY_FILE`) names a `RunHeadCheckpointer`.
 
+Verifying the chains says whether the evidence can be trusted, not what the run did.
+`nailong-agent-sdk-dev diagnose-run <root> <run-id>` (`diagnose_run`) reads the same ledgers and,
+for a graph run, its record, and reports the terminal finding, the first problem and the first
+error, and the failing nodes with the nodes each one held up; it writes nothing.
+
 ## Workflow 8 - calling the agent from a backend (`AgentTaskRunner`)
 
 A backend sends three things to MCP `run_agent_task` (or `AgentTaskRunner.run`): an
@@ -389,7 +398,9 @@ the run options. Everything else is a parameter too:
 | support a new specification format | `specifications/documents.py` (`DocumentFormat`) and `SpecificationPreprocessor._parse` |
 | keep a run root from growing | `agent/retention.py` (`RunRetention.prune` with a `RetentionPolicy`), MCP `prune_runs`, `nailong-agent-sdk-dev prune-runs <root> --older-than-seconds N [--apply]` |
 | fetch what a task wrote, or answer its approvals while it runs | `agent/task_files.py`, `AgentTaskRunner.workspace_for`, `approvals` and `decide_approval`; MCP `list_task_files`, `read_task_file`, `list_task_approvals`, `decide_task_approval` |
-| debug a run | MCP `get_telemetry_events` / `get_audit_log` / `render_audit_transcript`, `nailong-agent-sdk-dev inspect-run <root> <run-id>`, or `nailong-agent-sdk-dev verify-evidence <root> <project-id>` |
+| debug a run | `nailong-agent-sdk-dev diagnose-run <root> <run-id or graph-run-id>` for where it first went wrong and what that held up; MCP `get_telemetry_events` / `get_audit_log` / `render_audit_transcript`, `nailong-agent-sdk-dev inspect-run <root> <run-id>` for the raw ledgers, or `nailong-agent-sdk-dev verify-evidence <root> <project-id>` |
+| give a failure a typed code | the `AgentFailure(code=...)` at the exit in `agent/base_agent/agent.py` (a tool result carries it in `ToolExecutionResult.failure`); a graph node result carries it as a `failure-code:` diagnostic (`state/graph_models.py`) |
+| change what a diagnosis reports | `developer_tools/diagnose.py` (`_EXTRACTORS` for the event types that become findings, `_graph_diagnosis` for roots and what they blocked) |
 
 ## Glossary
 
@@ -417,10 +428,10 @@ the run options. Everything else is a parameter too:
 | [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 931 | the public API surface (lazy re-exports) |
 | [`agent/__init__.py`](agent.md#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2456 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2548 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
-| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 298 | runs registered BaseAgent bindings as graph nodes |
+| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 320 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 418 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
 | [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 746 | Chat Completions adapter for the agent model contract |
@@ -439,9 +450,10 @@ the run options. Everything else is a parameter too:
 | [`agent/task_files.py`](agent.md#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
 | [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 694 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](agent.md#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
-| [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 42 | public surface of the developer utilities |
+| [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 56 | public surface of the developer utilities |
 | [`developer_tools/catalog.py`](developer_tools.md#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 505 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 518 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/diagnose.py`](developer_tools.md#developer_toolsdiagnosepy---where-a-run-first-went-wrong-what-ended-it-and-what-it-held-up) | 682 | where a run first went wrong, what ended it and what it held up |
 | [`developer_tools/inspect.py`](developer_tools.md#developer_toolsinspectpy---read-only-run-evidence-inspection) | 211 | read-only run evidence inspection |
 | [`developer_tools/quality.py`](developer_tools.md#developer_toolsqualitypy---closed-ruff-quality-check) | 92 | closed Ruff quality check |
 | [`developer_tools/validate.py`](developer_tools.md#developer_toolsvalidatepy---contract-file-validation) | 97 | contract-file validation |
@@ -530,8 +542,8 @@ the run options. Everything else is a parameter too:
 | [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 911 | durable facade over the controller, the graph run, project state and telemetry |
 | [`state/coordination_records.py`](state.md#statecoordination_recordspy---durable-run-record-and-its-integrity-hash) | 42 | durable run record and its integrity hash |
 | [`state/elastic.py`](state.md#stateelasticpy---typed-elastic-node-requests-specs-spawn-records-and-the-admission-checks) | 353 | typed elastic-node requests, specs, spawn records and the admission checks |
-| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1471 | deterministic wave scheduler and authoritative typed run state |
-| [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 228 | typed node, edge, event and shared-state contracts for the run graph |
+| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1572 | deterministic wave scheduler and authoritative typed run state |
+| [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 255 | typed node, edge, event and shared-state contracts for the run graph |
 | [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 372 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
 | [`state/orchestration.py`](state.md#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 453 | controller state machine and its crash-safe store |
 | [`state/orchestration_models.py`](state.md#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 110 | controller phase, routing-rule and record contracts |
@@ -539,7 +551,7 @@ the run options. Everything else is a parameter too:
 | [`state/project_state_engine.py`](state.md#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 533 | mechanical reducer and token-bounded projector over `ProjectState` |
 | [`state/project_state_models.py`](state.md#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 363 | bounded, hash-sealed working-memory contracts |
 | [`state/project_state_store.py`](state.md#stateproject_state_storepy---in-memory-and-file-backed-project-state-stores-with-a-hash-chained-audit-trail) | 252 | in-memory and file-backed project-state stores with a hash-chained audit trail |
-| [`state/run_state_store.py`](state.md#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 435 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
+| [`state/run_state_store.py`](state.md#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 445 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
 | [`state/shared_state.py`](state.md#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 240 | typed lateral-state payloads, exact routing references and provenance records |
 | [`tools/__init__.py`](tools.md#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
 | [`tools/approvals.py`](tools.md#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 188 | typed approval gates for state-changing actions |
@@ -552,7 +564,7 @@ the run options. Everything else is a parameter too:
 | [`tools/delegation.py`](tools.md#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 176 | deny-by-default capability policy |
-| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 333 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 353 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](tools.md#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
@@ -562,7 +574,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 147 files, 524 classes and 1814 functions (including methods and nested closures), each with a written description.*
+*Coverage: 148 files, 530 classes and 1860 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 
@@ -744,6 +756,30 @@ Examined and left alone:
 | An `event_types` filter on episodes | Not applicable. `event_types` is a telemetry concept; episodes have an `EpisodeKind` and a state, and the store lists and gets them. |
 | A scenario test asserting a live model's output | Not built. A live run is not deterministic, and the one live-provider script is scratch outside the repository; a scripted scenario and the committed ledgers carry the invariants. A turn count is an inequality, not an equality: the committed `monopoly_game` ledger has 115 turns started and 112 audit model turns, the three extra being retries by older code that emitted no retry event (current code emits `model-turn-retrying`). |
 
+### Resolved by the failure-diagnosis pass
+
+The question was whether the SDK stops an error before it moves on and can say where a run
+first went wrong. It does the first at most boundaries; the second had to be assembled by
+hand. Each row names what was found, by running a failing agent run and a failing four-node
+chain, and what changed.
+
+| Area | Resolved |
+|---|---|
+| Terminal failures without a code | Five FAILED exits and several BLOCKED ones ended a run with free text only: `failure` was None and the `terminated` event's `failure_code` null. The FAILED ones were an undeclared tool, a missing executor, a verification rejection, the iteration limit and an unresolved tool batch; the BLOCKED ones the three context guards, a model turn that reports itself blocked and a hook or policy denial. Each now carries an `AgentFailure` whose code the `terminated` event repeats: `TOOL_NOT_DECLARED` (tool, call, declared tools), `TOOL_EXECUTOR_MISSING`, `VERIFICATION_GATE_REJECTED` (gate id, verifier id, output digest; `verification-completed` repeats the code), `MAX_ITERATIONS_REACHED`, `TOOL_BATCH_DEPENDENCIES_UNRESOLVED`, `CONTEXT_DEADLOCK`, `PROJECT_STATE_BUDGET_EXCEEDED` and `CONTEXT_BUDGET_EXCEEDED` (each with its numbers), `MODEL_REPORTED_BLOCKED`, `TOOL_DENIED_BY_HOOK` and, from the harness executor, `TOOL_APPROVAL_REQUIRED` (names the approval to decide), `TOOL_DENIED_BY_POLICY` and `HARNESS_TOOL_UNKNOWN`. A cancelled run keeps its status as its only code. Messages and `reason` text are unchanged. `tests/agent/test_failure_codes.py` (18 tests), `tests/tools/test_harness_failure_codes.py` (4 tests) |
+| The reason a tool call never ran was not recorded | A call whose arguments violated the tool's schema never reached the executor, so it had no `tool-requested`, `tool-completed` or audit `tool-result`: the ledger held `status: failed` in `tool-batch-completed` and nothing else, and the path (`$.path: 7 is not of type 'string'`) lived only in the model's observation. Every non-succeeded outcome of that event now carries `failure_code` and `error` (cut to 300 characters); succeeded outcomes are unchanged, and `output-rejected` carries the schema code. The same tests |
+| A blocked node named only its parent | In A to B to C to D with A failed, D read `Dependency "C" did not complete.` and the root was found by walking the event log. A dependency-blocked result now carries `root-cause:<node>` for every node that stopped the graph for its own reason (failed, cancelled or blocked by its own result), at most eight listed with `root-causes-omitted:<n>`, and `StateGraph.root_causes` and `blocked_descendants` answer from the current statuses. A node blocked before its other parents had failed first held only one root, so the set is settled lazily on read (`result`, `snapshot`, the end of `execute`) and shared between nodes with one blocker: refreshing on every result took 1.7 s for 300 failing roots feeding one join, settling on read takes 0.1 s; a chain of 1,500 nodes failing at the first costs 41 ms against 27 ms. A saved run holds the complete set. `tests/state/test_graph_root_cause.py` (14 tests) |
+| Node results did not say which agent or which code | `GraphAgentExecutor` adds `agent-run:<task id>` and, for a failed or blocked agent, `failure-code:<code>`; its own failures carry `GRAPH_BINDING_MISSING`, `GRAPH_ELASTIC_BINDING_FACTORY_MISSING`, `GRAPH_ELASTIC_BINDING_FACTORY_FAILED`, `GRAPH_BINDING_MISMATCH` and `GRAPH_AGENT_INVOCATION_FAILED`, and `StateGraph.execute_node` `GRAPH_NODE_EXECUTOR_MISSING` and `GRAPH_NODE_EXECUTOR_RAISED`. `GraphNodeResult.failure_code`, `agent_run_id` and `root_causes` read them back. `tests/agent/test_graph_executor_diagnostics.py` (6 tests) |
+| Nothing answered where a run first went wrong | `diagnose_run(run_root, run_id)` and `nailong-agent-sdk-dev diagnose-run <root> <id>` take a telemetry run id or a graph run id and report the verdict and `ok`, the `terminal` finding, the `first_problem` and `first_error` (up to 50 findings in sequence order, each with code, message, iteration and subject), whether both chains and the terminal link verify, and for a graph the roots ordered by when they stopped, each with its code, reason, the nodes it held up and the terminal finding of the agent run behind it. It exits 1 when `ok` is false and 3 for an unknown id or an unreadable root. It reads only: `RunStateStore(read_only=True)` creates no directory and the only files a read adds are SQLite's `-wal` and `-shm`. `tests/developer_tools/test_diagnose.py` (17 tests), `tests/developer_tools/test_diagnose_graph.py` (10 tests), `tests/state/test_run_store_read_only.py` (3 tests) |
+
+Examined and left alone:
+
+| Item | Decision |
+|---|---|
+| A typed code for a cancelled run | Not added. The status is the code, and what was interrupted is in `reason`. |
+| An MCP `diagnose_run` tool | Not added. The TypeScript client enumerates the 55 registered tools, and a remote operator already has `get_telemetry_events` with `event_types`; the function and the command cover a local run root. |
+| Failing a join when a fan-in parent failed | Not changed; see "Still open" item 11. |
+| Automatic semantic checks of an output | Not built. A well-formed but wrong output is the host's verification gate (item 8). |
+
 ### Still open
 
 1. **[inspected] Retention covers telemetry, audit transcripts and tool-result journals of
@@ -774,11 +810,11 @@ Examined and left alone:
    (`mcp` 2.2.0, marked provisional upstream). The TypeScript backend's changes were
    type-checked against stubs only, because its dependencies could not be installed offline,
    and its unit and end-to-end tests have not been run.
-4. **[measured] Platform coverage beyond Windows and Ubuntu.** Executed on 2026-10-15 from
-   the final working tree: the full suite on Windows 11 with Python 3.13.1 (1,965 passed, 10
+4. **[measured] Platform coverage beyond Windows and Ubuntu.** Executed on 2026-10-16 from
+   the final working tree: the full suite on Windows 11 with Python 3.13.1 (2,037 passed, 10
    skipped: six live Docker sandbox tests, which skip because no daemon answers, and four
    resource-limit tests that apply on POSIX only) and on Ubuntu 24.04 under WSL2 with Python
-   3.12.3 (1,953 passed, 22 skipped: the same six Docker tests and sixteen tests of Windows
+   3.12.3 (2,025 passed, 22 skipped: the same six Docker tests and sixteen tests of Windows
    or case-insensitive filesystem behaviour such as extended-length path spelling, reserved
    device names and NTFS aliases). Ruff check and format check pass on `src` and `tests`.
    Not executed: Windows with Python 3.12 and Ubuntu with Python 3.13 (a 3.12 interpreter
@@ -876,3 +912,17 @@ Examined and left alone:
     event; the ledger harness would report such an event as uncited, and none of the committed
     scenarios has one. A larger bound costs disk and read time: each entry is one JSON line
     that the chain check reads whole.
+11. **[inspected] A failed fan-in parent still lets its join run.** A fan-in edge is meant to
+    settle on partial results, so a FAILED parent is allowed to proceed while a BLOCKED or
+    CANCELLED one holds the join. The join receives the failed parent's result (status,
+    reason, `failure-code:`) in its execution context and has to notice it. The SDK does not
+    run `ProvenanceContractGate` at that boundary; the host calls `verify_provenance_contract`
+    (MCP or `ControllerRuntime`). A diagnosis lists the failed parent as a root with nothing
+    below it, because nothing was blocked.
+12. **[inspected] A diagnosis is only as complete as what was recorded.** Findings come from
+    the event types `_EXTRACTORS` knows, so a new event type is invisible until an extractor
+    exists; the reason a tool call never ran is recorded only for runs written after
+    `tool-batch-completed` carried it (an older run has the status alone) and is cut to 300
+    characters; a root's agent run is drilled into only while that run's telemetry is in the
+    same run root; and the id must be a telemetry run id or a graph run id, not a controller
+    or orchestration id.

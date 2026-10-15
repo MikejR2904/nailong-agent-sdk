@@ -260,7 +260,10 @@ def test_a_binding_that_raises_while_the_task_is_built_fails_the_node_naming_the
         assert result.reason == (
             "Graph agent invocation raised ValueError: the task adapter has no input"
         )
-        assert result.diagnostics == ["error-type:ValueError"]
+        assert result.diagnostics == [
+            "failure-code:GRAPH_AGENT_INVOCATION_FAILED",
+            "error-type:ValueError",
+        ]
         assert result.spawn_requests == []
     finally:
         close(services)

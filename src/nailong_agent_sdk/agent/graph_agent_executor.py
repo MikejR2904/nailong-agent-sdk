@@ -21,6 +21,8 @@ from ..observability.telemetry_models import TelemetryContext
 from ..observability.trace_context import graph_run_span_id, graph_run_trace_id
 from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
 from ..state.graph_models import (
+    AGENT_RUN_DIAGNOSTIC_PREFIX,
+    FAILURE_CODE_DIAGNOSTIC_PREFIX,
     GraphNode,
     GraphNodeExecutionContext,
     GraphNodeKind,
@@ -194,7 +196,10 @@ class GraphAgentExecutor:
             return GraphNodeResult(
                 status=GraphNodeStatus.FAILED,
                 reason=f"Graph agent invocation raised {type(error).__name__}: {error}",
-                diagnostics=[f"error-type:{type(error).__name__}"],
+                diagnostics=[
+                    f"{FAILURE_CODE_DIAGNOSTIC_PREFIX}GRAPH_AGENT_INVOCATION_FAILED",
+                    f"error-type:{type(error).__name__}",
+                ],
             )
         await self._services.checkpoint_after_run(
             result.task_id,
@@ -219,7 +224,10 @@ class GraphAgentExecutor:
             f"agent-status:{result.status.value}",
             f"agent-iterations:{result.iterations}",
             f"binding-hash:{binding.binding_hash}",
+            f"{AGENT_RUN_DIAGNOSTIC_PREFIX}{result.task_id}",
         ]
+        if result.failure is not None:
+            diagnostics.append(f"{FAILURE_CODE_DIAGNOSTIC_PREFIX}{result.failure.code}")
         if spawn_requests:
             payload["elastic_request_ids"] = [request.request_id for request in spawn_requests]
             diagnostics.append(f"elastic-requests:{len(spawn_requests)}")
@@ -239,12 +247,19 @@ class GraphAgentExecutor:
     ) -> GraphAgentBinding | GraphNodeResult:
         reason = f'No GraphAgentBinding is registered for node "{node.node_id}".'
         if node.kind is not GraphNodeKind.ELASTIC:
-            return GraphNodeResult(status=GraphNodeStatus.FAILED, reason=reason)
+            return GraphNodeResult(
+                status=GraphNodeStatus.FAILED,
+                reason=reason,
+                diagnostics=[f"{FAILURE_CODE_DIAGNOSTIC_PREFIX}GRAPH_BINDING_MISSING"],
+            )
         if self._elastic_binding_factory is None:
             return GraphNodeResult(
                 status=GraphNodeStatus.FAILED,
                 reason=f"{reason} Elastic nodes are created while the run executes, so pass "
                 "elastic_binding_factory to GraphAgentExecutor to build their bindings.",
+                diagnostics=[
+                    f"{FAILURE_CODE_DIAGNOSTIC_PREFIX}GRAPH_ELASTIC_BINDING_FACTORY_MISSING"
+                ],
             )
         try:
             binding = self._elastic_binding_factory(node, context)
@@ -253,11 +268,18 @@ class GraphAgentExecutor:
                 status=GraphNodeStatus.FAILED,
                 reason=f"Elastic binding factory raised {type(error).__name__} for node "
                 f'"{node.node_id}": {error}',
-                diagnostics=[f"error-type:{type(error).__name__}"],
+                diagnostics=[
+                    f"{FAILURE_CODE_DIAGNOSTIC_PREFIX}GRAPH_ELASTIC_BINDING_FACTORY_FAILED",
+                    f"error-type:{type(error).__name__}",
+                ],
             )
         mismatch = _binding_mismatch(binding, node)
         if mismatch is not None:
-            return GraphNodeResult(status=GraphNodeStatus.FAILED, reason=mismatch)
+            return GraphNodeResult(
+                status=GraphNodeStatus.FAILED,
+                reason=mismatch,
+                diagnostics=[f"{FAILURE_CODE_DIAGNOSTIC_PREFIX}GRAPH_BINDING_MISMATCH"],
+            )
         self._bindings[node.node_id] = binding
         return binding
 
