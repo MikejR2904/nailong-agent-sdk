@@ -1,11 +1,10 @@
 import json
 
 from nailong_agent_sdk.developer_tools.diagnose import diagnose_run
-from nailong_agent_sdk.state.graph_models import GraphNodeResult
 from nailong_agent_sdk.state.harness_coordinator import HarnessCoordinator
 from tests.support.agents import tool_call
 from tests.support.developer_tool_runs import cli
-from tests.support.diagnosis_runs import SQLITE_SIDE_FILES, fingerprints
+from tests.support.diagnosis_runs import SQLITE_SIDE_FILES, executing, fingerprints, run_chain
 from tests.support.orchestration import (
     close_all,
     independent_plan,
@@ -14,30 +13,7 @@ from tests.support.orchestration import (
     make_request,
     pipeline,
 )
-from tests.support.plans import AGENT, B, F, arun, chain_plan, run_ok
-
-
-def executing(failing=(), blocking=()):
-    async def execute(node, context):
-        suffix = node.node_id.removeprefix("node:")
-        if suffix in failing:
-            return GraphNodeResult(
-                status=F,
-                reason=f"{suffix} raised ValueError: bad input",
-                diagnostics=["failure-code:HARNESS_TOOL_EXECUTION_FAILED"],
-            )
-        if suffix in blocking:
-            return GraphNodeResult(status=B, reason=f"{suffix} needs an approval")
-        return await run_ok(node, context)
-
-    return execute
-
-
-def run_chain(tmp_path, count, **outcomes):
-    coordinator = HarnessCoordinator(tmp_path)
-    started = coordinator.start_run(chain_plan(count))
-    arun(coordinator.execute_run(started.run_id, {AGENT: executing(**outcomes)}))
-    return coordinator, started.run_id
+from tests.support.plans import AGENT, arun, chain_plan
 
 
 def test_a_failed_node_is_the_root_and_names_everything_it_held_up(tmp_path):

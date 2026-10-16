@@ -151,9 +151,11 @@ class CoreToolDispatcher:
     def __init__(self, services: CoreToolServices) -> None:
         self._services = services
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
+    async def execute(
+        self, name: str, arguments: dict[str, Any], *, writer: dict[str, Any] | None = None
+    ) -> ToolExecutionResult:
         try:
-            output = await self._dispatch(name, arguments)
+            output = await self._dispatch(name, arguments, writer)
         except Exception as error:
             failure = AgentFailure(
                 code="CORE_TOOL_EXECUTION_FAILED",
@@ -163,7 +165,9 @@ class CoreToolDispatcher:
             return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
         return ToolExecutionResult(status="succeeded", output=output)
 
-    async def _dispatch(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def _dispatch(
+        self, name: str, arguments: dict[str, Any], writer: dict[str, Any] | None = None
+    ) -> Any:
         if name == "read_file":
             relative_path = _required_text(arguments, "path")
             path = self._read_path(relative_path)
@@ -179,9 +183,9 @@ class CoreToolDispatcher:
         if name == "grep":
             return await self._grep(arguments)
         if name == "write_draft":
-            return self._write_draft(arguments)
+            return self._write_draft(arguments, writer)
         if name == "edit_draft":
-            return self._edit_draft(arguments)
+            return self._edit_draft(arguments, writer)
         if name == "diff_declared_artifacts":
             return self._diff(arguments)
         if name == "read_artifact":
@@ -207,8 +211,11 @@ class CoreToolDispatcher:
             max_chars = _bounded_int(arguments.get("max_chars", 200), "max_chars", 20, 2_000)
             return {"text": text[:max_chars], "truncated": len(text) > max_chars}
         if name == "notebook_edit":
-            return self._notebook_edit(arguments)
+            return self._notebook_edit(arguments, writer)
         raise ValueError(f'No core tool implementation exists for "{name}".')
+
+    def _manifest(self, writer: dict[str, Any] | None) -> dict[str, Any]:
+        return {**(self._services.write_manifest or {}), **(writer or {})}
 
     def _path(self, relative_path: str) -> Path:
         candidate = Path(relative_path)
@@ -305,13 +312,15 @@ class CoreToolDispatcher:
             documents.append((relative, text))
         return documents, scan_truncated
 
-    def _write_draft(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _write_draft(
+        self, arguments: dict[str, Any], writer: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         path = _required_text(arguments, "path")
         self._require_declared(path, "Draft")
         record = self._services.artifacts.write_text(
             path,
             _text_argument(arguments, "content"),
-            manifest=self._services.write_manifest,
+            manifest=self._manifest(writer),
         )
         return record.model_dump(mode="json")
 
@@ -322,7 +331,9 @@ class CoreToolDispatcher:
                 f"output paths: {list(self._services.declared_output_paths)}."
             )
 
-    def _edit_draft(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _edit_draft(
+        self, arguments: dict[str, Any], writer: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         path = _required_text(arguments, "path")
         self._require_declared(path, "Draft")
         target = self._path(path)
@@ -344,7 +355,7 @@ class CoreToolDispatcher:
         record = self._services.artifacts.write_text(
             path,
             updated,
-            manifest=self._services.write_manifest,
+            manifest=self._manifest(writer),
         )
         return {
             "replacements": count if replace_all else 1,
@@ -441,7 +452,9 @@ class CoreToolDispatcher:
         answer = await self._services.ask_human(question)
         return {"answer": answer, "answered": answer is not None}
 
-    def _notebook_edit(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _notebook_edit(
+        self, arguments: dict[str, Any], writer: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         path = _required_text(arguments, "path")
         self._require_declared(path, "Notebook")
         # A sparse index materializes every preceding cell, so bound it even when
@@ -465,7 +478,7 @@ class CoreToolDispatcher:
         record = self._services.artifacts.write_text(
             path,
             json.dumps(document, indent=2),
-            manifest=self._services.write_manifest,
+            manifest=self._manifest(writer),
         )
         return {"cell_index": cell_index, "artifact": record.model_dump(mode="json")}
 

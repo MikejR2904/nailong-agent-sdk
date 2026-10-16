@@ -24,6 +24,7 @@ from ..agent.retention import (
 )
 from ..agent.retention_inventory import DEFAULT_MAX_ITEMS, inventory_run_root
 from ..foundations.errors import AgentSdkError
+from ..foundations.suffix_search import SuffixStrategy
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.otlp import (
     SIGNALS,
@@ -41,6 +42,8 @@ from ..observability.run_checkpoints import (
 from ..observability.telemetry_store import TelemetryStore
 from ..observability.trace_context import graph_run_trace_id
 from ..state.run_state_store import RunStateStore
+from .attribute_defect import attribute_defect, content_check
+from .attribute_failure import attribute_failure
 from .catalog import build_public_api_catalog, write_public_api_catalog
 from .diagnose import diagnose_run
 from .inspect import inspect_run, verify_project_evidence
@@ -71,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         "validate": lambda: _validate(arguments),
         "inspect-run": lambda: _inspect_run(arguments),
         "diagnose-run": lambda: _diagnose_run(arguments),
+        "attribute-failure": lambda: _attribute_failure(arguments),
+        "attribute-defect": lambda: _attribute_defect(arguments),
         "verify-evidence": lambda: _verify_evidence(arguments),
         "quality": lambda: _quality(arguments),
         "prune-runs": lambda: _prune_runs(arguments),
@@ -128,6 +133,39 @@ def _parser() -> argparse.ArgumentParser:
     )
     diagnose.add_argument("run_root", type=Path)
     diagnose.add_argument("run_id")
+
+    failure = subparsers.add_parser(
+        "attribute-failure",
+        help="Rank the nodes that stopped a run by responsibility, show what repairing each would "
+        "release and name the model turn behind it; reads only.",
+    )
+    failure.add_argument("run_root", type=Path)
+    failure.add_argument("run_id")
+    failure.add_argument(
+        "--node",
+        help="Explain why this dependency-blocked node is blocked instead of listing the first "
+        "blocked nodes.",
+    )
+
+    defect = subparsers.add_parser(
+        "attribute-defect",
+        help="Find which write of an artifact introduced a defect and which agent made it; "
+        "reads only.",
+    )
+    defect.add_argument("run_root", type=Path)
+    defect.add_argument("relative_path")
+    test = defect.add_mutually_exclusive_group(required=True)
+    test.add_argument("--contains", help="The artifact is defective when it contains this text.")
+    test.add_argument("--lacks", help="The artifact is defective when it lacks this text.")
+    test.add_argument("--matches", help="The artifact is defective when this regex matches.")
+    test.add_argument("--sha256", help="The artifact is defective when it has this SHA-256.")
+    defect.add_argument(
+        "--strategy",
+        choices=[item.value for item in SuffixStrategy],
+        default=SuffixStrategy.GALLOP.value,
+        help="gallop probes O(log d) versions and assumes the defect persists to the newest "
+        "version; scan probes every version back to the first clean one.",
+    )
 
     evidence = subparsers.add_parser(
         "verify-evidence",
@@ -302,6 +340,26 @@ def _inspect_run(arguments: argparse.Namespace) -> object:
 
 def _diagnose_run(arguments: argparse.Namespace) -> object:
     return diagnose_run(arguments.run_root, arguments.run_id)
+
+
+def _attribute_failure(arguments: argparse.Namespace) -> object:
+    return attribute_failure(arguments.run_root, arguments.run_id, node_id=arguments.node)
+
+
+def _attribute_defect(arguments: argparse.Namespace) -> object:
+    is_defective, description = content_check(
+        contains=arguments.contains,
+        lacks=arguments.lacks,
+        matches=arguments.matches,
+        sha256=arguments.sha256,
+    )
+    return attribute_defect(
+        arguments.run_root,
+        arguments.relative_path,
+        is_defective,
+        strategy=arguments.strategy,
+        check=description,
+    )
 
 
 def _verify_evidence(arguments: argparse.Namespace) -> object:

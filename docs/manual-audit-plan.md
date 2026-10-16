@@ -5,7 +5,7 @@ Status: `foundations/` is audited. Next: **Stage 1 - `observability/`**.
 ## How the order was chosen
 
 Reading goes bottom-up so that every file you open only uses code you have already read.
-The order comes from the real import graph (runtime imports, 148 files, no circular imports at
+The order comes from the real import graph (runtime imports, 152 files, no circular imports at
 file level; the only circles are between folders and they are explained just below).
 
 ```
@@ -34,15 +34,15 @@ Estimate: about 300 lines/hour of careful reading plus 25% for notes and probes.
 | 2 | `memory/` | 13 | 5,491 | 119 | 23 |
 | 3 | `specifications/` | 7 | 1,591 | 40 | 6.5 |
 | 4 | `tools/` safety core | 3 | 426 | (in 170) | 2 |
-| 5 | `state/` | 15 | 6,400 | 262 | 26.7 |
-| 6 | `tools/` execution | 17 | 3,777 | 184 | 15.7 |
-| 7 | `agent/` | 24 | 9,884 | 404 | 41.2 |
+| 5 | `state/` | 15 | 6,475 | 277 | 27.0 |
+| 6 | `tools/` execution | 17 | 4,055 | 195 | 16.9 |
+| 7 | `agent/` | 24 | 9,895 | 404 | 41.2 |
 | 8 | `integrations/` | 13 | 2,040 | 26 | 8.5 |
 | 9 | `mcp/` | 18 | 3,593 | 176 | 15.0 |
-| 10 | `developer_tools/`, root, packaging, CI, docs | 8 + config | 2,675 | 56 | 11.1 |
+| 10 | `developer_tools/`, root, packaging, CI, docs | 12 + config | 3,852 | 100 | 16.1 |
 | 11 | cross-cutting passes | - | - | - | 9 |
 
-About 175 hours in total, roughly seven weeks at five focused hours a day.
+About 185 hours in total, roughly seven weeks at five focused hours a day.
 
 ## Routine for every file
 
@@ -72,7 +72,8 @@ if it is interrupted half-way, and which test would fail if the guarantee broke.
 ## Stage 0 - `foundations/` (done)
 
 - [x] `foundations/` (18 files; `run_fence.py`, added afterwards, is read in Stage 1 with the
-  stores that honour it)
+  stores that honour it, and `suffix_search.py`, added later still, in Stage 10 with the
+  module that uses it)
 
 ## Stage 1 - `observability/` (the evidence layer; depends only on foundations)
 
@@ -236,7 +237,7 @@ multi-process tests are the slow ones)
 - [ ] `orchestration.py` (453) - controller state machine and its store
 
 5c. Engines
-- [ ] `graph.py` (1,572) - three sittings (see "Splitting the big files")
+- [ ] `graph.py` (1,647) - three sittings (see "Splitting the big files")
 - [ ] `harness_coordinator.py` (372)
 - [ ] `controller_runtime.py` (911) - note the write order across stores and `reconcile`
 
@@ -252,9 +253,9 @@ failed; `RunStateStore(read_only=True)` creates and writes nothing.
 
 Run: `.venv/Scripts/python.exe -m pytest tests/tools -q` (about 2 minutes, Docker tests skip)
 
-- [ ] `artifacts.py` (265)
+- [ ] `artifacts.py` (516) - the store-wide write log (one lock, the write sequence, the tail cache), the read-only mode and the adoption of a store written before the log
 - [ ] `core/helpers.py` (581) - HTTP fetch, SSRF checks, PDF, regex helpers
-- [ ] `core/services.py` (488) - path containment, read scope, sensitive paths, caches
+- [ ] `core/services.py` (501) - path containment, read scope, sensitive paths, caches
 - [ ] `core/definitions.py` (356)
 - [ ] `core/regex_worker.py` (38)
 - [ ] `supervisor.py` (491)
@@ -262,7 +263,7 @@ Run: `.venv/Scripts/python.exe -m pytest tests/tools -q` (about 2 minutes, Docke
 - [ ] `task_models.py` (43), `tasks.py` (258)
 - [ ] `worktree_models.py` (20), `worktrees.py` (187)
 - [ ] `delegation.py` (128)
-- [ ] `registry.py` (353) - the dispatch chain and the approval flow
+- [ ] `registry.py` (367) - the dispatch chain and the approval flow
 - [ ] `elastic_requests.py` (160)
 
 Verify: no path escapes the run root (symlinks, extended-length Windows spellings, `.agent-*`);
@@ -282,7 +283,7 @@ Run: `.venv/Scripts/python.exe -m pytest tests/agent -q` (a few minutes)
   cancellation outcome
 - [ ] `openai_compatible/embeddings.py` (68), `vision.py` (163)
 - [ ] `base_agent/types.py` (99)
-- [ ] `base_agent/agent.py` (2,548) - five sittings (see below)
+- [ ] `base_agent/agent.py` (2,559) - five sittings (see below)
 - [ ] `runtime.py` (194) - the services; the opt-in checkpointer, `checkpoint_after_run` (worker thread; a failure is recorded, never raised) and the audit payload bound
 - [ ] `run_checkpointer.py` (71) - the signer and sink a runtime uses; `require_outside`, `export` and `check` bind the tombstone lookup of the run root
 - [ ] `elastic_context.py` (105)
@@ -350,7 +351,8 @@ A decision tool passes `receipt.source()` to the operation, so the approval requ
 
 ## Stage 10 - developer tools, root, packaging
 
-- [ ] `developer_tools/` (1,744): `inspect.py`, `diagnose.py` (read-only: findings from known event types, the verdict, graph roots and what they blocked), `cli.py` (now also `authority-matrix`, `checkpoint-run`, `verify-checkpoints` and `diagnose-run`), `catalog.py`, `quality.py`, `validate.py`
+- [ ] `developer_tools/` (2,840): `inspect.py`, `diagnose.py` (read-only: findings from known event types, the verdict, graph roots and exactly what they held up; `open_ledgers` and `diagnose_open` share one pass), `decision_links.py` (a lookup from a finding to the audit `model-turn` entry, with a closed table of the codes that name a decision), `attribute_failure.py` (responsibility and repair over `StateGraph.root_cause_sets`), `attribute_defect.py` (the write history searched with a caller's check), `cli.py` (now also `authority-matrix`, `checkpoint-run`, `verify-checkpoints`, `diagnose-run`, `attribute-failure` and `attribute-defect`), `catalog.py`, `quality.py`, `validate.py`
+- [ ] `foundations/suffix_search.py` (81) - the gallop and scan search that `attribute_defect.py` uses; read it before that module
 - [ ] `__init__.py` (931): `_EXPORTS` matches the `TYPE_CHECKING` block
 - [ ] `pyproject.toml`, `.github/workflows/ci.yml`
 - [ ] `docs/reference/README.md`: each behavioural claim is true; "Still open" is still open

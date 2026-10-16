@@ -14,7 +14,17 @@ def test_write_draft_declared_only_and_roundtrip(tmp_path):
     record = first.output
     assert (ctx.run_root / "out" / "draft.md").read_text("utf-8") == "héllo\n文件\n"
     assert record["artifact_id"].startswith("sha256:")
-    assert record["manifest"] == {"run_id": "run-1", "node_id": "node-1", "task_id": "T1"}
+    assert record["manifest"] == {
+        "run_id": "run-1",
+        "node_id": "node-1",
+        "task_id": "T1",
+        "agent_identity": "a",
+        "agent_run_id": "T1",
+        "role": "worker",
+        "tool": "write_draft",
+        "tool_call_id": "c1",
+        "iteration": 1,
+    }
     second = run(call(executor, "write_draft", path="out/draft.md", content="héllo\n文件\n"))
     assert second.output["artifact_id"] == record["artifact_id"]
     assert second.output["occurrence_id"] != record["occurrence_id"]

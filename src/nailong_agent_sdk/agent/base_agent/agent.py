@@ -1439,7 +1439,7 @@ class BaseAgent:
                     return terminal
                 if item.result.status == "blocked" and not blocked_reason:
                     blocked_reason = item.result.error
-                    blocked_failure = item.result.failure
+                    blocked_failure = _naming_call(item.result.failure, item.call)
                 if item.terminal_status is not None:
                     return self._terminate(
                         item.terminal_status,
@@ -1450,7 +1450,7 @@ class BaseAgent:
                         episodes,
                         events,
                         emit,
-                        failure=item.result.failure,
+                        failure=_naming_call(item.result.failure, item.call),
                     )
 
             if blocked_reason is not None:
@@ -2166,6 +2166,7 @@ class BaseAgent:
             status=status.value,
             reason=reason,
             failure_code=failure.code if failure is not None else None,
+            failure_details=failure.details if failure is not None and failure.details else None,
         )
         if escalation:
             emit("escalated", iterations, target=escalation.target, reason=escalation.reason)
@@ -2465,6 +2466,16 @@ def _verifier_details(
     if rejection is not None:
         details["failure_code"] = rejection.code
     return details
+
+
+def _naming_call(failure: AgentFailure | None, call: ToolCall) -> AgentFailure | None:
+    if failure is None:
+        return None
+    return AgentFailure(
+        code=failure.code,
+        message=failure.message,
+        details={"tool": call.name, "tool_call_id": call.id, **failure.details},
+    )
 
 
 def _batch_outcome(item: ToolCallOutcome) -> dict[str, Any]:

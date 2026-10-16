@@ -322,7 +322,11 @@ def test_a_blocked_call_ends_the_batch_with_its_own_code_and_a_bounded_event_mes
     )
     result = arun(subject.run(task()))
     assert_typed(result, "TOOL_APPROVAL_REQUIRED", BLOCKED)
-    assert result.failure.details == {"approval_id": "approval-7"}
+    assert result.failure.details == {
+        "tool": "echo",
+        "tool_call_id": "gated",
+        "approval_id": "approval-7",
+    }
     assert result.reason == long_reason
     done = next(e for e in result.events if e.type == "tool-batch-completed")
     gated = next(item for item in done.details["outcomes"] if item["tool_call_id"] == "gated")

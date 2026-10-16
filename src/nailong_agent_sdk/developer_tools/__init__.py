@@ -2,12 +2,28 @@
 
 """Modular, read-only developer utilities for the Agent SDK."""
 
+from .attribute_defect import (
+    DefectAttribution,
+    DefectWriter,
+    VersionVerdict,
+    attribute_defect,
+    content_check,
+)
+from .attribute_failure import (
+    BlockedAttribution,
+    FailureAttribution,
+    GraphAttribution,
+    RootAttribution,
+    attribute_failure,
+    attribute_graph,
+)
 from .catalog import (
     PublicApiCatalog,
     PublicApiSymbol,
     build_public_api_catalog,
     write_public_api_catalog,
 )
+from .decision_links import DecisionRef
 from .diagnose import (
     DiagnosisFinding,
     GraphDiagnosis,
@@ -32,21 +48,33 @@ from .validate import (
 )
 
 __all__ = [
+    "BlockedAttribution",
+    "DecisionRef",
+    "DefectAttribution",
+    "DefectWriter",
     "DiagnosisFinding",
     "EvidenceMismatch",
     "EvidenceVerification",
+    "FailureAttribution",
+    "GraphAttribution",
     "GraphDiagnosis",
     "GraphRootFailure",
     "IntegrityDiagnosis",
     "PublicApiCatalog",
     "PublicApiSymbol",
     "QualityCheckReport",
+    "RootAttribution",
     "RunDiagnosis",
     "RunInspection",
     "ValidationIssue",
     "ValidationReport",
+    "VersionVerdict",
+    "attribute_defect",
+    "attribute_failure",
+    "attribute_graph",
     "build_public_api_catalog",
     "check_source_quality",
+    "content_check",
     "diagnose_run",
     "inspect_run",
     "supported_contract_types",

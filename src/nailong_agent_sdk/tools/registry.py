@@ -208,7 +208,17 @@ class HarnessToolExecutor(ToolExecutor):
 
         try:
             output = await self._execute_registered(
-                registered, invocation.call.arguments, invocation.trace_parent
+                registered,
+                invocation.call.arguments,
+                invocation.trace_parent,
+                {
+                    "agent_identity": invocation.agent_identity,
+                    "agent_run_id": invocation.task.id,
+                    "role": self._context.role,
+                    "tool": tool.name,
+                    "tool_call_id": invocation.call.id,
+                    "iteration": invocation.iteration,
+                },
             )
             if isinstance(output, ToolExecutionResult):
                 return output
@@ -228,7 +238,11 @@ class HarnessToolExecutor(ToolExecutor):
         return self._context.approvals.find(self._context.run_id, self._context.node_id, capability)
 
     async def _execute_registered(
-        self, tool: RegisteredTool, arguments: dict[str, Any], trace_parent: str | None = None
+        self,
+        tool: RegisteredTool,
+        arguments: dict[str, Any],
+        trace_parent: str | None = None,
+        writer: dict[str, Any] | None = None,
     ) -> Any:
         if handler := self._registry.handler_for(tool.name):
             context = replace(self._context, trace_parent=trace_parent)
@@ -278,7 +292,7 @@ class HarnessToolExecutor(ToolExecutor):
             "brief",
             "ask_human_question",
         }:
-            return await self._core.execute(tool.name, arguments)
+            return await self._core.execute(tool.name, arguments, writer=writer)
 
         if tool.name in {"read_artifact", "grep_artifact"}:
             artifact_id = _string_argument(arguments, "artifact_id")

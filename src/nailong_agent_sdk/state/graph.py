@@ -290,12 +290,63 @@ class StateGraph:
             raise ValueError(f'Node "{node_id}" is not in the graph.')
         if not self._is_blocked_by_dependency(node_id):
             return ()
-        return tuple(sorted(self._roots_of(node_id, {})))
+        return tuple(sorted(self._roots_of(node_id, {}, self._incoming_edges())))
 
     def blocked_descendants(self, node_id: str) -> tuple[str, ...]:
         if node_id not in self._status:
             raise ValueError(f'Node "{node_id}" is not in the graph.')
         return tuple(self._dependency_blocked_descendants([node_id]))
+
+    def failure_roots(self) -> tuple[str, ...]:
+        return tuple(
+            node_id
+            for node_id in sorted(self._nodes)
+            if self._status[node_id] in {GraphNodeStatus.FAILED, GraphNodeStatus.CANCELLED}
+            or (
+                self._status[node_id] is GraphNodeStatus.BLOCKED
+                and not self._is_dependency_blocked(node_id)
+            )
+        )
+
+    def root_cause_sets(self) -> dict[str, frozenset[str]]:
+        memo: dict[str, set[str]] = {}
+        shared: dict[int, frozenset[str]] = {}
+        sets: dict[str, frozenset[str]] = {}
+        incoming = self._incoming_edges()
+        for node_id in sorted(self._nodes):
+            if not self._is_blocked_by_dependency(node_id):
+                continue
+            found = self._roots_of(node_id, memo, incoming)
+            frozen = shared.get(id(found))
+            if frozen is None:
+                frozen = shared[id(found)] = frozenset(found)
+            sets[node_id] = frozen
+        return sets
+
+    def released_by(self, repaired: Iterable[str]) -> tuple[str, ...]:
+        chosen = set(repaired)
+        unknown = sorted(chosen - set(self._status))
+        if unknown:
+            raise ValueError(f"Nodes {unknown} are not in the graph.")
+        return tuple(
+            node_id
+            for node_id, roots in self.root_cause_sets().items()
+            if roots and roots <= chosen
+        )
+
+    def blocking_path(self, node_id: str) -> tuple[str, ...]:
+        if node_id not in self._status:
+            raise ValueError(f'Node "{node_id}" is not in the graph.')
+        path = [node_id]
+        current = node_id
+        incoming = self._incoming_edges()
+        while self._is_blocked_by_dependency(current):
+            blockers = self._blocking_dependencies(current, incoming)
+            if not blockers:
+                break
+            current = blockers[0]
+            path.append(current)
+        return tuple(reversed(path))
 
     def blocked_nodes(self) -> list[str]:
         return [
@@ -1285,14 +1336,18 @@ class StateGraph:
         )
 
     def _validate_graph(self) -> None:
+        known = set(self._nodes)
         for node_id in self._nodes:
-            unknown = set(self._nodes[node_id].dependencies) - set(self._nodes)
+            unknown = set(self._nodes[node_id].dependencies) - known
             if unknown:
                 raise ValueError(f'Node "{node_id}" has unknown dependencies: {sorted(unknown)}')
         for edge in self._edges:
             if edge.parent_node_id not in self._nodes or edge.child_node_id not in self._nodes:
                 raise ValueError("Every graph edge must reference known nodes.")
-        dependencies = {node_id: self._dependencies_for(node_id) for node_id in self._nodes}
+        incoming = self._incoming_edges()
+        dependencies = {
+            node_id: self._dependencies_for(node_id, incoming) for node_id in self._nodes
+        }
         self._assert_acyclic(dependencies)
 
     def _validate_elastic(self) -> None:
@@ -1383,8 +1438,10 @@ class StateGraph:
             )
         self._elastic_nodes = children + joins
 
-    def _blocking_dependencies(self, node_id: str) -> list[str]:
-        hard, soft = self._split_dependencies(node_id)
+    def _blocking_dependencies(
+        self, node_id: str, incoming: Mapping[str, list[GraphEdge]] | None = None
+    ) -> list[str]:
+        hard, soft = self._split_dependencies(node_id, incoming)
         return sorted(
             [item for item in hard if self._status[item] in _HARD_BLOCKING_STATUSES]
             + [item for item in soft if self._status[item] in _SOFT_BLOCKING_STATUSES]
@@ -1395,13 +1452,18 @@ class StateGraph:
             node_id
         )
 
-    def _roots_of(self, node_id: str, memo: dict[str, set[str]]) -> set[str]:
+    def _roots_of(
+        self,
+        node_id: str,
+        memo: dict[str, set[str]],
+        incoming: Mapping[str, list[GraphEdge]] | None = None,
+    ) -> set[str]:
         stack = [(node_id, False)]
         while stack:
             current, expanded = stack.pop()
             if current in memo:
                 continue
-            blockers = self._blocking_dependencies(current)
+            blockers = self._blocking_dependencies(current, incoming)
             if not expanded:
                 stack.append((current, True))
                 stack.extend(
@@ -1428,10 +1490,11 @@ class StateGraph:
         self._roots_stale = False
         memo: dict[str, set[str]] = {}
         rendered: dict[int, list[str]] = {}
+        incoming = self._incoming_edges()
         for node_id in sorted(self._nodes):
             if not self._is_blocked_by_dependency(node_id):
                 continue
-            found = self._roots_of(node_id, memo)
+            found = self._roots_of(node_id, memo, incoming)
             wanted = rendered.get(id(found))
             if wanted is None:
                 roots = sorted(found)
@@ -1463,8 +1526,9 @@ class StateGraph:
 
     def _dependency_blocked_descendants(self, roots: Iterable[str]) -> list[str]:
         children: dict[str, list[str]] = {}
+        incoming = self._incoming_edges()
         for node_id in self._nodes:
-            for dependency in self._dependencies_for(node_id):
+            for dependency in self._dependencies_for(node_id, incoming):
                 children.setdefault(dependency, []).append(node_id)
         reached: set[str] = set()
         stack = list(roots)
@@ -1477,10 +1541,19 @@ class StateGraph:
             node_id for node_id in reached if self._status[node_id] is GraphNodeStatus.BLOCKED
         )
 
-    def _split_dependencies(self, node_id: str) -> tuple[set[str], set[str]]:
+    def _incoming_edges(self) -> dict[str, list[GraphEdge]]:
+        incoming: dict[str, list[GraphEdge]] = {}
+        for edge in self._edges:
+            if edge.enabled:
+                incoming.setdefault(edge.child_node_id, []).append(edge)
+        return incoming
+
+    def _split_dependencies(
+        self, node_id: str, incoming: Mapping[str, list[GraphEdge]] | None = None
+    ) -> tuple[set[str], set[str]]:
         hard = set(self._nodes[node_id].dependencies)
         soft: set[str] = set()
-        for edge in self._edges:
+        for edge in self._edges if incoming is None else incoming.get(node_id, ()):
             if edge.child_node_id != node_id or not edge.enabled:
                 continue
             if edge.kind is GraphEdgeKind.FAN_IN:
@@ -1489,8 +1562,10 @@ class StateGraph:
                 hard.add(edge.parent_node_id)
         return hard, soft - hard
 
-    def _dependencies_for(self, node_id: str) -> set[str]:
-        hard, soft = self._split_dependencies(node_id)
+    def _dependencies_for(
+        self, node_id: str, incoming: Mapping[str, list[GraphEdge]] | None = None
+    ) -> set[str]:
+        hard, soft = self._split_dependencies(node_id, incoming)
         return hard | soft
 
     def _refresh_runnable(self) -> None:

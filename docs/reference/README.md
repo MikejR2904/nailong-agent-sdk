@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **148 files, 530 classes and 1,860 functions** (methods and nested closures included).
+covers **152 files, 544 classes and 1,930 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -47,7 +47,8 @@ state            foundations, observability, tools              plan validator, 
 agent            all of the above and integrations              BaseAgent, models, orchestrator
 integrations     foundations, observability, tools, state, agent    Jev, LangChain, LangGraph
 mcp              everything except integrations                 MCP server and client
-developer_tools  foundations, observability, specifications, state    catalogue, validate, inspect
+developer_tools  foundations, observability, specifications, memory, tools, state, agent
+                                                    catalogue, validate, inspect, diagnose, attribute
 ```
 
 Two import cycles exist: `tools` with `state` (`tools/registry.py` imports `state/planning.py`;
@@ -326,6 +327,18 @@ Verifying the chains says whether the evidence can be trusted, not what the run 
 for a graph run, its record, and reports the terminal finding, the first problem and the first
 error, and the failing nodes with the nodes each one held up; it writes nothing.
 
+`nailong-agent-sdk-dev attribute-failure <root> <run-id>` (`attribute_failure`) goes one step
+further. For a graph run it ranks the nodes that stopped it by how much of the stoppage each
+explains (`responsibility`) and says what repairing each one alone would release
+(`released_alone`) and what else it needs (`also_requires`); `--node <id>` explains why one
+blocked node is blocked. For an agent run, and for the agent behind each of the ten most
+responsible roots, it names the model turn in the audit transcript that issued the failing
+call, produced the rejected output or reported itself blocked, and says plainly when the
+failure came from a limit or the environment and no single decision caused it.
+`nailong-agent-sdk-dev attribute-defect <dir> <path> --contains TEXT` (`attribute_defect`)
+answers the file-level question: which write of an artifact introduced a defect, and which
+agent, node, run, tool call and iteration made it. Both read only.
+
 ## Workflow 8 - calling the agent from a backend (`AgentTaskRunner`)
 
 A backend sends three things to MCP `run_agent_task` (or `AgentTaskRunner.run`): an
@@ -400,7 +413,11 @@ the run options. Everything else is a parameter too:
 | fetch what a task wrote, or answer its approvals while it runs | `agent/task_files.py`, `AgentTaskRunner.workspace_for`, `approvals` and `decide_approval`; MCP `list_task_files`, `read_task_file`, `list_task_approvals`, `decide_task_approval` |
 | debug a run | `nailong-agent-sdk-dev diagnose-run <root> <run-id or graph-run-id>` for where it first went wrong and what that held up; MCP `get_telemetry_events` / `get_audit_log` / `render_audit_transcript`, `nailong-agent-sdk-dev inspect-run <root> <run-id>` for the raw ledgers, or `nailong-agent-sdk-dev verify-evidence <root> <project-id>` |
 | give a failure a typed code | the `AgentFailure(code=...)` at the exit in `agent/base_agent/agent.py` (a tool result carries it in `ToolExecutionResult.failure`); a graph node result carries it as a `failure-code:` diagnostic (`state/graph_models.py`) |
-| change what a diagnosis reports | `developer_tools/diagnose.py` (`_EXTRACTORS` for the event types that become findings, `_graph_diagnosis` for roots and what they blocked) |
+| change what a diagnosis reports | `developer_tools/diagnose.py` (`_EXTRACTORS` for the event types that become findings, `diagnose_graph` for roots and what they held up) |
+| change how responsibility or a repair is computed | `developer_tools/attribute_failure.py` (`_tally`, `attribute_graph`) over the relation in `state/graph.py` (`root_cause_sets`, `released_by`, `blocking_path`) |
+| change which failures are tied to a model decision | `developer_tools/decision_links.py` (`_CALL_CODES`, `_OUTPUT_CODES`, `_BLOCKED_CODES`, `_decision`) |
+| find who wrote a defect into a file | `nailong-agent-sdk-dev attribute-defect <dir> <path> --contains TEXT`, or `attribute_defect` with your own check; the history behind it is `ArtifactStore.history` |
+| change what a write records about its writer | `tools/registry.py` (`HarnessToolExecutor.execute` builds the writer fields) and `tools/core/services.py` (`CoreToolDispatcher._manifest`) |
 
 ## Glossary
 
@@ -428,7 +445,7 @@ the run options. Everything else is a parameter too:
 | [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 931 | the public API surface (lazy re-exports) |
 | [`agent/__init__.py`](agent.md#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2548 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2559 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
 | [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 320 | runs registered BaseAgent bindings as graph nodes |
@@ -450,10 +467,13 @@ the run options. Everything else is a parameter too:
 | [`agent/task_files.py`](agent.md#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
 | [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 694 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](agent.md#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
-| [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 56 | public surface of the developer utilities |
+| [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 84 | public surface of the developer utilities |
+| [`developer_tools/attribute_defect.py`](developer_tools.md#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 283 | which write of an artifact introduced a defect, and which agent made it |
+| [`developer_tools/attribute_failure.py`](developer_tools.md#developer_toolsattribute_failurepy---which-failure-and-which-model-decision-stopped-a-run) | 390 | which failure, and which model decision, stopped a run |
 | [`developer_tools/catalog.py`](developer_tools.md#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 518 | the `nailong-agent-sdk-dev` command line |
-| [`developer_tools/diagnose.py`](developer_tools.md#developer_toolsdiagnosepy---where-a-run-first-went-wrong-what-ended-it-and-what-it-held-up) | 682 | where a run first went wrong, what ended it and what it held up |
+| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 576 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/decision_links.py`](developer_tools.md#developer_toolsdecision_linkspy---which-model-turn-a-failing-finding-traces-back-to) | 308 | which model turn a failing finding traces back to |
+| [`developer_tools/diagnose.py`](developer_tools.md#developer_toolsdiagnosepy---where-a-run-first-went-wrong-what-ended-it-and-what-it-held-up) | 711 | where a run first went wrong, what ended it and what it held up |
 | [`developer_tools/inspect.py`](developer_tools.md#developer_toolsinspectpy---read-only-run-evidence-inspection) | 211 | read-only run evidence inspection |
 | [`developer_tools/quality.py`](developer_tools.md#developer_toolsqualitypy---closed-ruff-quality-check) | 92 | closed Ruff quality check |
 | [`developer_tools/validate.py`](developer_tools.md#developer_toolsvalidatepy---contract-file-validation) | 97 | contract-file validation |
@@ -474,6 +494,7 @@ the run options. Everything else is a parameter too:
 | [`foundations/paths.py`](foundations.md#foundationspathspy---comparison-of-windows-extended-length-path-spellings-as-one-location) | 40 | comparison of Windows extended-length path spellings as one location |
 | [`foundations/record_locks.py`](foundations.md#foundationsrecord_lockspy---per-record-cross-process-locks-re-entrant-for-the-holding-thread) | 62 | per-record cross-process locks, re-entrant for the holding thread |
 | [`foundations/run_fence.py`](foundations.md#foundationsrun_fencepy---per-run-write-fence-that-retention-raises-before-it-deletes-a-runs-records) | 139 | per-run write fence that retention raises before it deletes a run's records |
+| [`foundations/suffix_search.py`](foundations.md#foundationssuffix_searchpy---where-a-defect-began-in-an-ordered-history-in-olog-d-probes) | 81 | where a defect began in an ordered history, in O(log d) probes |
 | [`foundations/text.py`](foundations.md#foundationstextpy---newline-only-line-splitting-and-utf-8-well-formedness-for-durable-text) | 50 | newline-only line splitting and UTF-8 well-formedness for durable text |
 | [`foundations/version.py`](foundations.md#foundationsversionpy---the-installed-package-name-and-version-and-the-identity-strings-derived-from-them) | 23 | the installed package name and version, and the identity strings derived from them |
 | [`integrations/__init__.py`](integrations.md#integrations__init__py---public-surface-of-the-integrations-package) | 109 | public surface of the integrations package |
@@ -542,7 +563,7 @@ the run options. Everything else is a parameter too:
 | [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 911 | durable facade over the controller, the graph run, project state and telemetry |
 | [`state/coordination_records.py`](state.md#statecoordination_recordspy---durable-run-record-and-its-integrity-hash) | 42 | durable run record and its integrity hash |
 | [`state/elastic.py`](state.md#stateelasticpy---typed-elastic-node-requests-specs-spawn-records-and-the-admission-checks) | 353 | typed elastic-node requests, specs, spawn records and the admission checks |
-| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1572 | deterministic wave scheduler and authoritative typed run state |
+| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1647 | deterministic wave scheduler and authoritative typed run state |
 | [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 255 | typed node, edge, event and shared-state contracts for the run graph |
 | [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 372 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
 | [`state/orchestration.py`](state.md#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 453 | controller state machine and its crash-safe store |
@@ -555,16 +576,16 @@ the run options. Everything else is a parameter too:
 | [`state/shared_state.py`](state.md#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 240 | typed lateral-state payloads, exact routing references and provenance records |
 | [`tools/__init__.py`](tools.md#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
 | [`tools/approvals.py`](tools.md#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 188 | typed approval gates for state-changing actions |
-| [`tools/artifacts.py`](tools.md#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution) | 265 | content-addressed artifact store with immutable write attribution |
+| [`tools/artifacts.py`](tools.md#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 516 | content-addressed artifact store with immutable write attribution and a per-path write history |
 | [`tools/core/__init__.py`](tools.md#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
 | [`tools/core/definitions.py`](tools.md#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 356 | typed declarations of the governed core tool set |
 | [`tools/core/helpers.py`](tools.md#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 581 | private validation, HTTP and isolated-regex helpers behind the core tools |
 | [`tools/core/regex_worker.py`](tools.md#toolscoreregex_workerpy---standalone-regex-worker-run-in-an-isolated-interpreter) | 38 | standalone regex worker run in an isolated interpreter |
-| [`tools/core/services.py`](tools.md#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 488 | portable governed tools: dispatcher, services and web search |
+| [`tools/core/services.py`](tools.md#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 501 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](tools.md#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 176 | deny-by-default capability policy |
-| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 353 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 367 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](tools.md#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
@@ -574,7 +595,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 148 files, 530 classes and 1860 functions (including methods and nested closures), each with a written description.*
+*Coverage: 152 files, 544 classes and 1930 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 
@@ -780,6 +801,36 @@ Examined and left alone:
 | Failing a join when a fan-in parent failed | Not changed; see "Still open" item 11. |
 | Automatic semantic checks of an output | Not built. A well-formed but wrong output is the host's verification gate (item 8). |
 
+### Resolved by the attribution pass
+
+The diagnosis says where a run first went wrong. Two questions were left: which of several
+failures is responsible for a run stopping, and which agent wrote a defect into a file. Neither
+is statistical causal inference. The first is exact structural attribution over the declared
+dependency graph, plus a lookup of the model turn behind a failure; the second is a search of a
+recorded write history with a check the caller supplies. Each row names what was found, by
+building both and measuring them, and what changed.
+
+| Area | Resolved |
+|---|---|
+| Which failure is responsible | `attribute_graph(graph)` and `nailong-agent-sdk-dev attribute-failure <root> <id> [--node ID]` rank the nodes that stopped a graph run by `responsibility`: 1 for stopping, plus 1/k for every node held up by k independent failures. That is the Shapley value of repairing the node, and equals the Chockler-Halpern degree of responsibility for a node that is blocked if any one of its causes fails. They also give `released_alone` (what runs if only this node is repaired: an exact intervention, `StateGraph.released_by`), `also_requires`, and for a blocked node its independent causes and a path. The responsibilities add up to the number of roots plus the number of blocked nodes. `released_by` was checked against actually re-executing 120 random graphs (hard and fan-in edges, failed, blocked and cancelled nodes) with the repaired nodes completed, and `responsibility` against the Shapley value computed by enumerating every coalition on 120 more. `tests/state/test_graph_interventions.py` (182 tests), `tests/state/test_graph_responsibility.py` (487, one of them a scaling guard: 2,000 nodes attributed and diagnosed in under a second), `tests/developer_tools/test_attribute_failure_graph.py` (13) |
+| A diagnosis listed nodes a root did not hold up | `StateGraph.blocked_descendants` follows every edge, so a failed fan-in parent, which does not block, was listed as holding up a node that was blocked for another reason, and the diagnosis summed the lists, counting a node once per root that held it. The property test found the first and the summing sentence the second. `diagnose_graph` now lists a root's nodes from `root_cause_sets()` and reports `blocked_downstream`, the number of distinct blocked nodes. |
+| The diagnosis was quadratic on large graphs | It recomputed each blocked node's causes separately, and graph validation rebuilt the set of node ids once per node and scanned every edge once per node. For 5,000 nodes with 4,700 blocked the diagnosis took 50 s; it now takes 0.19 s, loading the graph 0.17 s (was 0.65 s). For 2,000 nodes with 3,600 explicit edges the root-cause sets took 477 ms and take 12 ms, the attribution 515 ms and 29 ms. One walk shared by every node, a hoisted set and an incoming-edge index built once per read. |
+| Which model decision a failure traces to | `link_decisions` pairs a finding with the audit `model-turn` entry of its iteration: the turn that issued the failing call (the one call of a batch when the finding names it), that produced the rejected output or that reported itself blocked. A failure that comes from a limit, the provider, the context budget, a gate that could not decide or the environment is returned `unlinked` with the reason. A call that ended the run before its batch completed (an undeclared tool in a batch of three) had no outcome in the ledger, so the `terminated` event now carries the failure's bounded `failure_details` (`tool`, `tool_call_id`) and the terminal finding names the tool and call. `tests/developer_tools/test_attribute_failure_agents.py` (16 tests) |
+| A write did not say which agent made it | The manifest of a `write_draft`, `edit_draft` or `notebook_edit` held the run, node, task and role. `HarnessToolExecutor` now adds the agent identity, agent run id, tool, call id and iteration, and the occurrence record gains a store-wide `write_sequence`. `tests/tools/test_core_tools_drafts.py` pins the full manifest |
+| A file had no ordered history | `ArtifactStore.history(path)` returns the versions of one path in order, each with its writer; `paths()` lists the paths with writes and `read_bytes(sha256)` returns a hash-checked blob. They read one append-only log, `.agent-artifacts/history/writes.jsonl`, written under one store lock. Per-path history files measured four to six times slower per write, so the log is global: it adds about 0.6 to 0.8 ms to a write of about 3 ms on a quiet Windows machine, and about 2 ms while file operations there are slow for minutes at a time (the old store's 3 ms became 9 ms, the new one's 3.7 ms became 11 ms), with a process-wide tail cache because re-opening a just-written file costs about 12 ms where Windows Defender is active. A store opened `read_only` creates nothing, and a store that predates the log is adopted on its first write and read in the meantime from its occurrence records. `tests/tools/test_artifact_history.py` (11 tests) |
+| Which write introduced a defect | `attribute_defect(dir, path, check)` and `attribute-defect <dir> <path> (--contains \| --lacks \| --matches \| --sha256) [--strategy gallop\|scan]` find the first defective version of the unbroken defective suffix and its writer, the last clean version and the later writers. `find_suffix_start` probes the newest version, steps back 1, 2, 4, ... and bisects, memoised by content hash: for a defect 50 versions deep it makes 12 evaluations at 100, 1,000 and 3,000 versions where scanning makes 51 (the 3,000-version history is read in 22 ms, 7 microseconds a version, which is then the whole cost for a cheap check; a check that runs a test suite is what the evaluations save). `tests/foundations/test_suffix_search.py` (48 tests), `tests/developer_tools/test_attribute_defect.py` (15), `tests/links/test_defect_attribution_agents.py` (3: three agents writing one file through the real runner) |
+
+Examined and left alone:
+
+| Item | Decision |
+|---|---|
+| Statistical causal estimation (causal discovery, effect sizes over many runs) | Not built. One run has one outcome, and over the declared graph the structural answer is exact; an estimate needs a population of comparable runs the SDK does not keep and returns a probability instead of a record. |
+| Replaying a run with a different model decision, or ablating one | Not built. The audit entry of a turn is bounded and can be cut (item 2), the model is not deterministic and tools have side effects; `released_by` answers the structural question without running anything. |
+| Tracking what a node read into what it wrote | Not built. A write names its writer, not the artifacts the writer read, so a defect derived from an earlier defective artifact is attributed to the agent that wrote the derived file. |
+| A decision graph inside one agent run | Not built. A turn records what the model did and what it saw, never its reasoning (hidden reasoning is stripped by design); `consumed_episode_ids` and `depends_on_call_ids` are declared links and are in the audit turn. |
+| MCP `attribute_failure` and `attribute_defect` tools | Not added, for the reason `diagnose_run` was not: the TypeScript client enumerates the 55 registered tools, and the functions and commands cover a local run root. |
+| `fsync` of the write log | Not added. The blob and occurrence files are not synced either; item 15 states what a crash can lose. |
+
 ### Still open
 
 1. **[inspected] Retention covers telemetry, audit transcripts and tool-result journals of
@@ -810,11 +861,11 @@ Examined and left alone:
    (`mcp` 2.2.0, marked provisional upstream). The TypeScript backend's changes were
    type-checked against stubs only, because its dependencies could not be installed offline,
    and its unit and end-to-end tests have not been run.
-4. **[measured] Platform coverage beyond Windows and Ubuntu.** Executed on 2026-10-16 from
-   the final working tree: the full suite on Windows 11 with Python 3.13.1 (2,037 passed, 10
+4. **[measured] Platform coverage beyond Windows and Ubuntu.** Executed on 2026-10-17 from
+   the final working tree: the full suite on Windows 11 with Python 3.13.1 (2,812 passed, 10
    skipped: six live Docker sandbox tests, which skip because no daemon answers, and four
    resource-limit tests that apply on POSIX only) and on Ubuntu 24.04 under WSL2 with Python
-   3.12.3 (2,025 passed, 22 skipped: the same six Docker tests and sixteen tests of Windows
+   3.12.3 (2,800 passed, 22 skipped: the same six Docker tests and sixteen tests of Windows
    or case-insensitive filesystem behaviour such as extended-length path spelling, reserved
    device names and NTFS aliases). Ruff check and format check pass on `src` and `tests`.
    Not executed: Windows with Python 3.12 and Ubuntu with Python 3.13 (a 3.12 interpreter
@@ -926,3 +977,33 @@ Examined and left alone:
     characters; a root's agent run is drilled into only while that run's telemetry is in the
     same run root; and the id must be a telemetry run id or a graph run id, not a controller
     or orchestration id.
+13. **[inspected] Attribution is structural, over declared dependencies only.** Responsibility
+    and repair follow the scheduler's rules: hard dependencies are an AND and a failed fan-in
+    parent does not block. A node that read an artifact another node wrote without declaring a
+    dependency, or a join that ignored its failed fan-in parent (item 11), is invisible to
+    them. They do not weigh how likely a repair is to work or what it costs, they say nothing
+    about why a model chose an action, and nothing replays a run with a different decision.
+14. **[inspected] A decision link is a lookup, and only as complete as the ledger.** It needs
+    the `model-turn` entry of that iteration in the audit transcript of the same run root; an
+    entry cut at the audit payload cap (item 2) still names the call when the finding does but
+    not its arguments. A terminal tool failure names its call only in runs written after the
+    `terminated` event carried `failure_details`; older runs give `issued-the-batch` with every
+    call as a candidate. The table of failure codes that name a decision is closed: a new code
+    is `unlinked` until someone classifies it. A graph run links its ten most responsible
+    roots, and only while their telemetry is in the same run root.
+15. **[inspected] Artifact attribution covers writes made through `ArtifactStore`, and
+    `gallop` assumes the defect persists.** A file changed by anything else (a shell command,
+    an editor) has no version. The write log is appended without `fsync`: an operating-system
+    crash can drop its last lines, after which `history` omits those writes although their
+    occurrence files exist. A store written before the log is read from its occurrence records
+    ordered by time, the order of the clock rather than of the lock. On Windows two paths that
+    differ only in case are one path. `gallop` can report an older introduction when a defect
+    was fixed and introduced again (`--strategy scan` reports the newest), and the answer is
+    only as good as the caller's check. The command needs the directory that holds
+    `.agent-artifacts`, which for a task service is a workspace and not the run root.
+16. **[measured] The scheduler still scans every edge per pending node.**
+    `_refresh_runnable` and `_block_unreachable_nodes` call `_split_dependencies`, which reads
+    the whole edge list, once per node: a graph of 2,000 nodes with 3,600 explicit edges took
+    11 s to execute where reading its root causes now takes 12 ms. Validation, root causes and
+    attribution index the incoming edges once; the scheduler's own loops are unchanged, so a
+    graph with many explicit edges pays for them on every wave.

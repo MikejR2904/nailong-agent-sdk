@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -87,6 +88,7 @@ class GraphDiagnosis(StrictModel):
     status_counts: dict[str, int] = Field(default_factory=dict)
     roots: list[GraphRootFailure] = Field(default_factory=list)
     roots_omitted: int = Field(default=0, ge=0)
+    blocked_downstream: int = Field(default=0, ge=0)
     unfinished: dict[str, str] = Field(default_factory=dict)
     unfinished_omitted: int = Field(default=0, ge=0)
     blocked_without_root: list[str] = Field(default_factory=list)
@@ -108,9 +110,27 @@ class RunDiagnosis(StrictModel):
     graph_record_error: str | None = None
 
 
-def diagnose_run(run_root: Path, run_id: str) -> RunDiagnosis:
-    """Report where a run first went wrong without writing anything under the run root."""
+@dataclass(frozen=True)
+class OpenLedgers:
+    """The read-only stores of one run root, opened once and shared by what reads them."""
 
+    run_root: Path
+    telemetry: TelemetryStore | None
+    audit: AuditTranscriptStore | None
+    runs: RunStateStore | None
+
+
+@dataclass(frozen=True)
+class Diagnosed:
+    """A diagnosis together with the unbounded scan and graph it was drawn from."""
+
+    diagnosis: RunDiagnosis
+    scan: RunScan
+    graph: StateGraph | None
+
+
+@contextmanager
+def open_ledgers(run_root: Path, run_id: str) -> Iterator[OpenLedgers]:
     if not run_root.is_dir():
         raise ValueError(f'Run root "{run_root}" does not exist or is not a directory.')
     resolved = run_root.resolve()
@@ -125,7 +145,7 @@ def diagnose_run(run_root: Path, run_id: str) -> RunDiagnosis:
     telemetry = TelemetryStore(resolved, read_only=True) if database.is_file() else None
     audit = AuditTranscriptStore(resolved, read_only=True) if telemetry is not None else None
     try:
-        return _diagnose(resolved, run_id, telemetry, audit, runs if has_record else None)
+        yield OpenLedgers(resolved, telemetry, audit, runs if has_record else None)
     finally:
         if telemetry is not None:
             telemetry.close()
@@ -133,25 +153,32 @@ def diagnose_run(run_root: Path, run_id: str) -> RunDiagnosis:
             audit.close()
 
 
-def _diagnose(
-    run_root: Path,
-    run_id: str,
-    telemetry: TelemetryStore | None,
-    audit: AuditTranscriptStore | None,
-    runs: RunStateStore | None,
-) -> RunDiagnosis:
+def diagnose_run(run_root: Path, run_id: str) -> RunDiagnosis:
+    """Report where a run first went wrong without writing anything under the run root."""
+
+    with open_ledgers(run_root, run_id) as ledgers:
+        return diagnose_open(ledgers, run_id).diagnosis
+
+
+def diagnose_open(ledgers: OpenLedgers, run_id: str) -> Diagnosed:
+    run_root, telemetry, audit, runs = (
+        ledgers.run_root,
+        ledgers.telemetry,
+        ledgers.audit,
+        ledgers.runs,
+    )
     events = list(telemetry.iter_events(run_id)) if telemetry is not None else []
     graph, record_error = _load_graph(runs, run_id)
     if not events and graph is None and record_error is None:
         raise ValueError(_unknown_run_message(run_root, run_id))
-    scan = _scan(events)
+    scan = scan_events(events)
     findings, terminal = scan.findings, scan.terminal
     integrity = (
         _integrity(telemetry, audit, run_id, len(events))
         if telemetry is not None and audit is not None and events
         else None
     )
-    graph_diagnosis = _graph_diagnosis(run_id, graph, telemetry) if graph is not None else None
+    graph_diagnosis = diagnose_graph(run_id, graph, telemetry) if graph is not None else None
     verdict = (
         _graph_verdict(graph_diagnosis)
         if graph_diagnosis is not None
@@ -170,7 +197,7 @@ def _diagnose(
         integrity,
         record_error,
     )
-    return RunDiagnosis(
+    diagnosis = RunDiagnosis(
         run_id=run_id,
         verdict=verdict,
         ok=ok,
@@ -184,6 +211,7 @@ def _diagnose(
         graph=graph_diagnosis,
         graph_record_error=record_error,
     )
+    return Diagnosed(diagnosis, scan, graph)
 
 
 def _unknown_run_message(run_root: Path, run_id: str) -> str:
@@ -233,13 +261,15 @@ def _integrity(
 
 
 @dataclass(frozen=True)
-class _Scan:
+class RunScan:
+    """The findings of one run's telemetry events, the one that ended it and its final status."""
+
     findings: list[DiagnosisFinding]
     terminal: DiagnosisFinding | None
     status: str | None
 
 
-def _scan(events: list[TelemetryEvent]) -> _Scan:
+def scan_events(events: list[TelemetryEvent]) -> RunScan:
     findings: list[DiagnosisFinding] = []
     agent_terminal: DiagnosisFinding | None = None
     run_terminal: DiagnosisFinding | None = None
@@ -261,7 +291,7 @@ def _scan(events: list[TelemetryEvent]) -> _Scan:
                 run_terminal = finding
     if agent_terminal is not None and run_terminal is not None:
         findings = [item for item in findings if item is not run_terminal]
-    return _Scan(findings, agent_terminal or run_terminal, agent_status or run_status)
+    return RunScan(findings, agent_terminal or run_terminal, agent_status or run_status)
 
 
 def _details(event: TelemetryEvent) -> dict[str, Any]:
@@ -290,6 +320,9 @@ def _terminated(event: TelemetryEvent) -> list[DiagnosisFinding]:
     status = str(details.get("status", "unknown"))
     if status == "completed":
         return []
+    failure = details.get("failure_details")
+    named = failure if isinstance(failure, dict) else {}
+    call_id = _code(named.get("tool_call_id"))
     return [
         DiagnosisFinding(
             sequence=event.sequence,
@@ -298,8 +331,10 @@ def _terminated(event: TelemetryEvent) -> list[DiagnosisFinding]:
             severity="warning" if status == "cancelled" else "error",
             code=_code(details.get("failure_code")),
             message=_text(details.get("reason"), f"The run ended {status}."),
+            subject=_code(named.get("tool")),
             status=status,
             terminal=True,
+            details={"tool_call_id": call_id} if call_id else {},
         )
     ]
 
@@ -522,38 +557,33 @@ def _agent_verdict(status: str | None) -> Verdict:
     return {"blocked": "blocked", "cancelled": "cancelled"}.get(status, "failed")
 
 
-def _graph_diagnosis(
-    run_id: str, graph: StateGraph, telemetry: TelemetryStore | None
+def diagnose_graph(
+    run_id: str, graph: StateGraph, telemetry: TelemetryStore | None = None
 ) -> GraphDiagnosis:
+    """Name the nodes that stopped a graph and exactly the nodes each one held up."""
+
     nodes = sorted(graph.nodes)
     statuses = {node_id: graph.status(node_id) for node_id in nodes}
     last_event: dict[tuple[str, str], int] = {}
     for event in graph.events:
         last_event[(event.node_id, event.status.value)] = event.sequence
-    own_blocks = set(graph.blocked_nodes())
-    root_ids = [
-        node_id
-        for node_id in nodes
-        if statuses[node_id] in {GraphNodeStatus.FAILED, GraphNodeStatus.CANCELLED}
-        or node_id in own_blocks
-    ]
+    root_ids = list(graph.failure_roots())
     root_ids.sort(
         key=lambda node_id: (
             last_event.get((node_id, statuses[node_id].value), 0),
             node_id,
         )
     )
+    held: dict[str, list[str]] = {}
+    blocked = graph.root_cause_sets()
+    for node_id, caused_by in blocked.items():
+        for root in caused_by:
+            held.setdefault(root, []).append(node_id)
     roots = [
-        _root_failure(node_id, graph, statuses[node_id], last_event, telemetry)
+        _root_failure(node_id, graph, statuses[node_id], last_event, telemetry, held)
         for node_id in root_ids[:MAX_ROOT_FAILURES]
     ]
-    unattributed = [
-        node_id
-        for node_id in nodes
-        if statuses[node_id] is GraphNodeStatus.BLOCKED
-        and node_id not in own_blocks
-        and not graph.root_causes(node_id)
-    ]
+    unattributed = [node_id for node_id, caused_by in blocked.items() if not caused_by]
     unfinished = {
         node_id: status.value
         for node_id, status in statuses.items()
@@ -566,6 +596,7 @@ def _graph_diagnosis(
         status_counts=dict(sorted(Counter(item.value for item in statuses.values()).items())),
         roots=roots,
         roots_omitted=max(0, len(root_ids) - MAX_ROOT_FAILURES),
+        blocked_downstream=len(blocked),
         unfinished=listed,
         unfinished_omitted=len(unfinished) - len(listed),
         blocked_without_root=unattributed,
@@ -578,13 +609,14 @@ def _root_failure(
     status: GraphNodeStatus,
     last_event: dict[tuple[str, str], int],
     telemetry: TelemetryStore | None,
+    held: dict[str, list[str]],
 ) -> GraphRootFailure:
     result = graph.result(node_id)
-    descendants = list(graph.blocked_descendants(node_id))
+    descendants = held.get(node_id, [])
     agent_run_id = result.agent_run_id if result is not None else None
     terminal = first_problem = None
     if agent_run_id is not None and telemetry is not None:
-        scan = _scan(list(telemetry.iter_events(agent_run_id)))
+        scan = scan_events(list(telemetry.iter_events(agent_run_id)))
         terminal = scan.terminal
         first_problem = scan.findings[0] if scan.findings else None
     return GraphRootFailure(
@@ -666,9 +698,6 @@ def _graph_sentence(run_id: str, verdict: Verdict, graph: GraphDiagnosis) -> str
     if not graph.roots:
         return f'Graph run "{run_id}" {verdict}: {graph.node_count} nodes, {graph.status_counts}.'
     first = graph.roots[0]
-    blocked = sum(
-        len(root.blocked_descendants) + root.blocked_descendants_omitted for root in graph.roots
-    )
     code = f" ({first.failure_code})" if first.failure_code else ""
     reason = f": {first.reason}" if first.reason else ""
     more = (
@@ -678,5 +707,5 @@ def _graph_sentence(run_id: str, verdict: Verdict, graph: GraphDiagnosis) -> str
     )
     return (
         f'Graph run "{run_id}" {verdict}: node "{first.node_id}" {first.status}{code}{reason}'
-        f"{more}; {blocked} node(s) blocked downstream."
+        f"{more}; {graph.blocked_downstream} node(s) blocked downstream."
     )

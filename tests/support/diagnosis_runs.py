@@ -4,7 +4,10 @@ import sqlite3
 
 from nailong_agent_sdk.observability.audit_log import AuditTranscriptStore
 from nailong_agent_sdk.observability.telemetry_store import TelemetryStore
+from nailong_agent_sdk.state.graph_models import GraphNodeResult
+from nailong_agent_sdk.state.harness_coordinator import HarnessCoordinator
 from tests.support.agents import agent, arun, task
+from tests.support.plans import AGENT, B, F, chain_plan, run_ok
 
 SQLITE_SIDE_FILES = {
     ".agent-telemetry/telemetry.sqlite3-wal",
@@ -46,3 +49,26 @@ def fingerprints(root):
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def executing(failing=(), blocking=()):
+    async def execute(node, context):
+        suffix = node.node_id.removeprefix("node:")
+        if suffix in failing:
+            return GraphNodeResult(
+                status=F,
+                reason=f"{suffix} raised ValueError: bad input",
+                diagnostics=["failure-code:HARNESS_TOOL_EXECUTION_FAILED"],
+            )
+        if suffix in blocking:
+            return GraphNodeResult(status=B, reason=f"{suffix} needs an approval")
+        return await run_ok(node, context)
+
+    return execute
+
+
+def run_chain(tmp_path, count, **outcomes):
+    coordinator = HarnessCoordinator(tmp_path)
+    started = coordinator.start_run(chain_plan(count))
+    arun(coordinator.execute_run(started.run_id, {AGENT: executing(**outcomes)}))
+    return coordinator, started.run_id

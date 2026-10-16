@@ -328,13 +328,18 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    F["Run ends FAILED or BLOCKED"] --> C["Typed failure code at the exit<br/>AgentFailure(code=...)"]
+    F["Run ends FAILED or BLOCKED"] --> C["Typed failure code at the exit<br/>AgentFailure(code=...), and the failing<br/>tool call in failure_details"]
     C --> L["Ledgers: telemetry events + audit entries"]
     L --> D["diagnose_run<br/>(developer_tools/diagnose.py, read-only)"]
     D --> D1["terminal finding"]
     D --> D2["first problem / first error"]
     D --> D3["graph runs: root-cause nodes<br/>and the nodes each one held up"]
     D1 & D2 & D3 --> REP["Report names exact field,<br/>status or exception"]
+    L --> A["attribute_failure<br/>(developer_tools/attribute_failure.py, read-only)"]
+    A --> A1["graph runs: responsibility per root<br/>(Shapley value of repairing it) and the<br/>nodes released by repairing it alone"]
+    A --> A2["decision_links.py: the model turn that<br/>issued the failing call, produced the<br/>rejected output or reported itself blocked"]
+    W["ArtifactStore write log<br/>(agent, run, tool, call per write)"] --> X["attribute_defect<br/>gallop + bisect over versions"]
+    X --> X1["first defective version<br/>and the agent that wrote it"]
 ```
 
 ---
@@ -355,7 +360,7 @@ flowchart LR
         N1["Typed episode DAG with enforced<br/>exploratory/action dependency rule"]
         N2["Compaction as an exact<br/>precedence-constrained knapsack<br/>with an optimality certificate"]
         N3["Summaries as derived,<br/>verified, provenance-carrying objects<br/>archive-before-release, reversible"]
-        N4["Evidence layer designed for diagnosis:<br/>cross-linked hash chains,<br/>signed run-head checkpoints,<br/>typed failure codes, diagnose-run"]
+        N4["Evidence layer designed for diagnosis:<br/>cross-linked hash chains,<br/>signed run-head checkpoints,<br/>typed failure codes, diagnose-run,<br/>structural attribution of failures<br/>and of defects to agents"]
         N5["Bounded agent-initiated graph growth<br/>(elastic nodes) with commit-time admission"]
     end
 
