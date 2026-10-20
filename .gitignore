@@ -19,7 +19,8 @@ dist/
 *.egg-info/
 
 .claude/
-benchmarks/
+benchmarks/*
+!benchmarks/trust/
 examples/
 scripts/
 .env
