@@ -33,6 +33,14 @@ PYTHON_ONLY_CAPABILITIES: Mapping[str, str] = {
         "a cancellation token is an object in the host process; call cancel_agent_task with the "
         "task id instead"
     ),
+    "approved_by": (
+        "who approved a capability in advance is a claim the host process makes about its own "
+        "decision; an MCP caller cannot name an approver, and a decision made while a task waits "
+        "goes through decide_task_approval with an approver credential"
+    ),
+    "approval_reason": (
+        "the reason kept with an advance approval is written by the host process that makes it"
+    ),
     "tool_executor": "a tool executor is an object in the host process",
     "transport": "a transport is an object in the host process",
     "streaming_transport": "a transport is an object in the host process",

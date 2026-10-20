@@ -12,10 +12,12 @@ from typing import Any
 from ..agent.retention import TombstonedHandle, tombstone_for_run, tombstoned_handles
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
+from ..foundations.identifiers import file_safe_name
 from ..memory.context_projection import journal_content_hash
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.telemetry_store import TelemetryStore
 from ..state.project_state_store import FileProjectStateStore
+from ..tools.artifacts import ArtifactStore, HistoryCheck
 
 TOOL_RESULT_EVIDENCE_KIND = "tool-result-handle"
 
@@ -29,6 +31,8 @@ class RunInspection(StrictModel):
     audit_chain_valid: bool
     telemetry_chain_failure: dict[str, Any] | None = None
     audit_chain_failure: dict[str, Any] | None = None
+    artifact_history_valid: bool | None = None
+    artifact_history_failure: str | None = None
     event_count: int
     metric_count: int
     event_types: dict[str, int]
@@ -155,6 +159,7 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
         telemetry_failure = telemetry.chain_break(run_id)
         audit_failure = audit.chain_break(run_id)
         audit_entry_count = audit.entry_count(run_id)
+        history = _artifact_history(run_root, run_id)
     finally:
         telemetry.close()
     telemetry_chain_valid = telemetry_failure is None
@@ -166,6 +171,7 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
         "metric_count": len(metrics),
         "telemetry_chain_valid": telemetry_chain_valid,
         "audit_chain_valid": audit_chain_valid,
+        "artifact_history_valid": None if history is None else history.ok,
         "event_types": _sorted(event_types),
         "statuses": _sorted(statuses),
         "metric_availability": metric_availability,
@@ -179,6 +185,8 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
         if telemetry_failure
         else None,
         audit_chain_failure=audit_failure.model_dump(mode="json") if audit_failure else None,
+        artifact_history_valid=None if history is None else history.ok,
+        artifact_history_failure=None if history is None or history.ok else history.reason,
         event_count=len(event_hashes),
         metric_count=len(metrics),
         event_types=_sorted(event_types),
@@ -187,6 +195,13 @@ def inspect_run(run_root: Path, run_id: str) -> RunInspection:
         audit_entry_count=audit_entry_count,
         report=report,
     )
+
+
+def _artifact_history(run_root: Path, run_id: str) -> HistoryCheck | None:
+    workspace = run_root.resolve() / "workspaces" / file_safe_name(run_id)
+    if not (workspace / ".agent-artifacts").is_dir():
+        return None
+    return ArtifactStore(workspace, read_only=True).verify_history()
 
 
 def _unknown_run_message(run_root: Path, run_id: str) -> str:

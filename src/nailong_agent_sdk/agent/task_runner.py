@@ -244,9 +244,12 @@ class AgentTaskRunner:
         pre_tool_hooks: Sequence[PreToolHook] = (),
         post_tool_hooks: Sequence[PostToolHook] = (),
         cancellation: CancellationToken | None = None,
+        approved_by: DecisionSource | None = None,
+        approval_reason: str | None = None,
     ) -> AgentResult:
         options = options or TaskRunOptions()
         self._require_process_options_allowed(options)
+        self._require_preapprovals_for(options, approved_by, approval_reason)
         live = model is not None or options.is_live
         token = _RunToken(cancellation)
         with self._running_lock:
@@ -265,7 +268,15 @@ class AgentTaskRunner:
                 span_id=caller.parent_span_id if caller else None,
             )
             run_definition, executor = self._prepare_tools(
-                definition, task, options, manager, token, context, live=live
+                definition,
+                task,
+                options,
+                manager,
+                token,
+                context,
+                live=live,
+                approved_by=approved_by,
+                approval_reason=approval_reason,
             )
             agent_model = model or self._model_for(run_definition, options)
             permissions = options.permissions
@@ -282,6 +293,7 @@ class AgentTaskRunner:
                     "mcp_servers": [server.name for server in options.mcp_servers],
                 },
             )
+            self._record_preapprovals(token, task.id, context)
             agent = self._services.create_agent(
                 run_definition,
                 agent_model,
@@ -330,6 +342,36 @@ class AgentTaskRunner:
             if manager is not None:
                 await manager.close()
 
+    @staticmethod
+    def _require_preapprovals_for(
+        options: TaskRunOptions, approved_by: DecisionSource | None, approval_reason: str | None
+    ) -> None:
+        named = [
+            name
+            for name, value in (("approved_by", approved_by), ("approval_reason", approval_reason))
+            if value is not None
+        ]
+        approved = options.permissions.approved_capabilities if options.permissions else []
+        if named and not approved:
+            raise TaskOptionError(
+                f"{' and '.join(named)} describe who approved permissions.approved_capabilities "
+                "in advance, but that list is empty; list the capabilities approved in advance "
+                "or leave them out."
+            )
+
+    def _record_preapprovals(
+        self, token: _RunToken, task_id: str, context: TelemetryContext
+    ) -> None:
+        for request in token.approvals.list(task_id):
+            if request.status is ApprovalStatus.APPROVED:
+                self._emit(
+                    "approval.decided",
+                    context,
+                    request.status.value,
+                    _decision_payload(request),
+                    request.decision_authority or TelemetryAuthority.DETERMINISTIC,
+                )
+
     def _require_process_options_allowed(self, options: TaskRunOptions) -> None:
         if self._allow_process_options:
             return
@@ -376,6 +418,8 @@ class AgentTaskRunner:
         telemetry_context: TelemetryContext,
         *,
         live: bool,
+        approved_by: DecisionSource | None = None,
+        approval_reason: str | None = None,
     ) -> tuple[AgentDefinition, ToolExecutor]:
         if options.permissions is None and not live:
             return definition, InMemoryTaskToolExecutor()
@@ -404,10 +448,12 @@ class AgentTaskRunner:
         workspace = self._workspace(task.id, options.workspace)
         approvals = token.approvals
         approval_ids: dict[str, str] = {}
+        reason = approval_reason or _RUN_OPTIONS_REASON
         for capability in permissions.approved_capabilities:
-            reason = "Approved by the caller in the run options."
             request = approvals.request(task.id, task.id, capability, reason)
-            approvals.submit(request.approval_id, True, reason, source=_RUN_OPTIONS_SOURCE)
+            approvals.submit(
+                request.approval_id, True, reason, source=approved_by or _RUN_OPTIONS_SOURCE
+            )
             approval_ids[capability] = request.approval_id
         locked = task.locked_interface
         plan_task = PlanTask(
@@ -568,7 +614,20 @@ _APPROVAL_POLL_SECONDS = 0.05
 _RUN_OPTIONS_SOURCE = DecisionSource(
     authority=TelemetryAuthority.DETERMINISTIC, identifier="run-options"
 )
+_RUN_OPTIONS_REASON = "Approved by the caller in the run options."
 _EXPIRY_SOURCE = DecisionSource(authority=TelemetryAuthority.SYSTEM, identifier="approval-timeout")
+
+
+def _decision_payload(request: ApprovalRequest) -> dict[str, Any]:
+    return {
+        "approval_id": request.approval_id,
+        "capability": request.capability,
+        "decision_reason": request.decision_reason,
+        "decided_by": request.decided_by,
+        "decision_authority": (
+            request.decision_authority.value if request.decision_authority else None
+        ),
+    }
 
 
 class _ApprovalWaitingExecutor(ToolExecutor):
@@ -659,15 +718,7 @@ class _ApprovalWaitingExecutor(ToolExecutor):
         self._record(
             "approval.decided",
             status,
-            {
-                "approval_id": request.approval_id,
-                "capability": request.capability,
-                "decision_reason": request.decision_reason,
-                "decided_by": request.decided_by,
-                "decision_authority": (
-                    request.decision_authority.value if request.decision_authority else None
-                ),
-            },
+            _decision_payload(request),
             request.decision_authority or TelemetryAuthority.DETERMINISTIC,
         )
 

@@ -17,6 +17,12 @@ from .attribute_failure import (
     attribute_failure,
     attribute_graph,
 )
+from .attribute_result import (
+    DefectiveResult,
+    ResultAttribution,
+    attribute_result_defect,
+    result_check,
+)
 from .catalog import (
     PublicApiCatalog,
     PublicApiSymbol,
@@ -52,6 +58,7 @@ __all__ = [
     "DecisionRef",
     "DefectAttribution",
     "DefectWriter",
+    "DefectiveResult",
     "DiagnosisFinding",
     "EvidenceMismatch",
     "EvidenceVerification",
@@ -63,6 +70,7 @@ __all__ = [
     "PublicApiCatalog",
     "PublicApiSymbol",
     "QualityCheckReport",
+    "ResultAttribution",
     "RootAttribution",
     "RunDiagnosis",
     "RunInspection",
@@ -72,11 +80,13 @@ __all__ = [
     "attribute_defect",
     "attribute_failure",
     "attribute_graph",
+    "attribute_result_defect",
     "build_public_api_catalog",
     "check_source_quality",
     "content_check",
     "diagnose_run",
     "inspect_run",
+    "result_check",
     "supported_contract_types",
     "validate_contract_file",
     "verify_project_evidence",

@@ -163,3 +163,22 @@ def test_hostile_scripted_output_does_not_break_the_server(server):
     )
     assert status == 200 and b"Circular reference" not in raw, raw[:400]
     assert server.call("list_metric_definitions")["ok"] is True
+
+
+def test_a_remote_caller_cannot_claim_a_human_approver_for_what_it_approves_in_advance(server):
+    permissions = {
+        "capabilities": ["filesystem.read"],
+        "approved_capabilities": ["filesystem.read"],
+        "approved_by": {"authority": "human", "identifier": "reviewer-7"},
+    }
+    with chat_provider([final_chat()]) as (base_url, requests):
+        refused = server.call(
+            "run_agent_task",
+            {
+                "definition": definition(tools=[BUILTIN["read_file"]]).model_dump(mode="json"),
+                "task": task("mcp-preapproved").model_dump(mode="json"),
+                "runtime_options": live_options(base_url, permissions=permissions),
+            },
+        )
+    assert refused["ok"] is False and "approved_by" in json.dumps(refused["errors"])
+    assert requests == []

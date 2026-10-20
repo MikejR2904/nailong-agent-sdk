@@ -55,6 +55,17 @@ def test_a_python_only_capability_inside_runtime_options_is_refused_naming_the_o
     assert '"verification_gates"' in message and "no serializable form" in message
 
 
+def test_an_advance_approver_among_the_runtime_options_is_refused_by_name_with_its_reason(service):
+    sent = {
+        "definition": definition().model_dump(mode="json"),
+        "task": task("boundary-3").model_dump(mode="json"),
+        "runtime_options": {"approved_by": "reviewer-7"},
+    }
+    message = refusal(service.call("run_agent_task", sent))
+    assert '"approved_by" is a Python-only capability of AgentTaskRunner.run' in message
+    assert "an MCP caller cannot name an approver" in message
+
+
 def test_an_argument_nobody_defined_is_refused_without_a_capability_claim(service):
     message = refusal(service.call("validate_plan", {"plan": PLAN, "surprise": 1}))
     assert message == 'Tool "validate_plan" does not accept "surprise". It accepts: plan.'
@@ -91,6 +102,8 @@ def test_every_python_only_parameter_of_the_runner_has_a_documented_reason():
         "pre_tool_hooks",
         "post_tool_hooks",
         "cancellation",
+        "approved_by",
+        "approval_reason",
     }
     assert python_only <= set(PYTHON_ONLY_CAPABILITIES)
 

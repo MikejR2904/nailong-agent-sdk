@@ -18,6 +18,7 @@ from pydantic import Field
 
 from ..foundations.atomic_io import exclusive_file_lock, replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
+from ..foundations.hashing import canonical_hash
 from ..foundations.paths import relative_to_base
 from ..foundations.text import split_lines
 
@@ -29,7 +30,7 @@ _INDEX_MARKER = ".indexed"
 _WRITE_LOG = "writes.jsonl"
 _WRITE_LOCK = ".write.lock"
 MAX_LISTED_PATHS = 200
-_TAILS: dict[str, tuple[int, int]] = {}
+_TAILS: dict[str, tuple[int, int, str | None]] = {}
 
 
 class ArtifactRecord(StrictModel):
@@ -71,6 +72,17 @@ class ArtifactVersion(StrictModel):
     kind: str = Field(min_length=1)
     manifest: dict[str, Any] = Field(default_factory=dict)
     written_at_utc: str
+
+
+class HistoryCheck(StrictModel):
+    """Whether the write log is intact, each record chained to the one before it."""
+
+    ok: bool
+    records: int = Field(ge=0)
+    chained: int = Field(ge=0)
+    head: str | None = None
+    broken_at: int | None = Field(default=None, ge=1)
+    reason: str | None = None
 
 
 class ArtifactStore:
@@ -194,6 +206,9 @@ class ArtifactStore:
             if self._history_key_for(item.relative_path) == key
         ]
 
+    def verify_history(self) -> HistoryCheck:
+        return _check_log(self._write_log)
+
     def paths(self, *, limit: int = MAX_LISTED_PATHS) -> list[str]:
         spelled: dict[str, str] = {}
         if self._indexed():
@@ -256,7 +271,8 @@ class ArtifactStore:
         with exclusive_file_lock(
             self._history_root / _WRITE_LOCK, timeout_code="ARTIFACT_HISTORY_LOCK_TIMEOUT"
         ):
-            write_sequence = self._next_write_sequence()
+            last_sequence, previous_hash = self._tail_state()
+            write_sequence = last_sequence + 1
             occurrence_id = f"occ-{uuid.uuid4().hex}"
             written_at = datetime.now(UTC).isoformat()
             occurrence = ArtifactWriteOccurrence(
@@ -291,20 +307,27 @@ class ArtifactStore:
                 self._occurrence_root / f"{occurrence_id}.json",
                 occurrence.model_dump_json(indent=2).encode("utf-8"),
             )
-            _append_line(self._write_log, _log_line(occurrence, self._history_key(target)))
-            _TAILS[str(self._write_log)] = (self._write_log.stat().st_size, write_sequence)
+            line, integrity_hash = _log_line(occurrence, self._history_key(target), previous_hash)
+            _append_line(self._write_log, line)
+            _TAILS[str(self._write_log)] = (
+                self._write_log.stat().st_size,
+                write_sequence,
+                integrity_hash,
+            )
         return record
 
-    def _next_write_sequence(self) -> int:
+    def _tail_state(self) -> tuple[int, str | None]:
         try:
             size = self._write_log.stat().st_size
         except FileNotFoundError:
-            return 1
+            return 0, None
         known = _TAILS.get(str(self._write_log))
         if known is not None and known[0] == size:
-            return known[1] + 1
+            return known[1], known[2]
         tail = _repair_and_read_tail(self._write_log)
-        return 1 if tail is None else int(tail["write_sequence"]) + 1
+        if tail is None:
+            return 0, None
+        return int(tail["write_sequence"]), tail.get("integrity_hash")
 
     def _indexed(self) -> bool:
         return (self._history_root / _INDEX_MARKER).is_file()
@@ -320,10 +343,12 @@ class ArtifactStore:
                 return
             self._write_log.unlink(missing_ok=True)
             _TAILS.pop(str(self._write_log), None)
+            previous_hash: str | None = None
             for item in self._legacy_occurrences():
-                _append_line(
-                    self._write_log, _log_line(item, self._history_key_for(item.relative_path))
+                line, previous_hash = _log_line(
+                    item, self._history_key_for(item.relative_path), previous_hash
                 )
+                _append_line(self._write_log, line)
             marker.write_text("1", encoding="utf-8")
 
     def _legacy_occurrences(self) -> list[ArtifactWriteOccurrence]:
@@ -413,23 +438,27 @@ def _version_of(item: ArtifactWriteOccurrence, sequence: int) -> ArtifactVersion
     )
 
 
-def _log_line(item: ArtifactWriteOccurrence, key: str) -> str:
-    return json.dumps(
-        {
-            "write_sequence": item.write_sequence,
-            "path_key": key,
-            "occurrence_id": item.occurrence_id,
-            "artifact_id": item.artifact_id,
-            "relative_path": item.relative_path,
-            "sha256": item.sha256,
-            "size_bytes": item.size_bytes,
-            "kind": item.kind,
-            "manifest": item.manifest,
-            "written_at_utc": item.written_at_utc,
-        },
-        separators=(",", ":"),
-        ensure_ascii=False,
+def _log_line(
+    item: ArtifactWriteOccurrence, key: str, previous_hash: str | None
+) -> tuple[str, str]:
+    body = {
+        "write_sequence": item.write_sequence,
+        "path_key": key,
+        "occurrence_id": item.occurrence_id,
+        "artifact_id": item.artifact_id,
+        "relative_path": item.relative_path,
+        "sha256": item.sha256,
+        "size_bytes": item.size_bytes,
+        "kind": item.kind,
+        "manifest": item.manifest,
+        "written_at_utc": item.written_at_utc,
+        "previous_hash": previous_hash,
+    }
+    integrity_hash = canonical_hash(body)
+    line = json.dumps(
+        {**body, "integrity_hash": integrity_hash}, separators=(",", ":"), ensure_ascii=False
     )
+    return line, integrity_hash
 
 
 def _complete_lines(path: Path) -> list[str]:
@@ -469,9 +498,63 @@ def _versions_in_log(path: Path, key: str) -> list[ArtifactVersion]:
             ) from error
         if record.get("path_key") != key:
             continue
-        record.pop("path_key")
+        for name in ("path_key", "previous_hash", "integrity_hash"):
+            record.pop(name, None)
         versions.append(ArtifactVersion(sequence=len(versions) + 1, **record))
     return versions
+
+
+def _check_log(path: Path) -> HistoryCheck:
+    records = chained = previous_sequence = 0
+    previous_hash: str | None = None
+    for number, line in enumerate(_complete_lines(path), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError as error:
+            problem: str | None = f"is not a write record: {type(error).__name__}: {error}"
+        else:
+            problem = _record_problem(record, previous_sequence, previous_hash, chained)
+        if problem is not None:
+            return HistoryCheck(
+                ok=False,
+                records=records,
+                chained=chained,
+                head=previous_hash,
+                broken_at=number,
+                reason=f'Line {number} of the artifact write log "{path.name}" {problem}.',
+            )
+        records += 1
+        previous_sequence = record["write_sequence"]
+        if record.get("integrity_hash") is not None:
+            chained += 1
+            previous_hash = record["integrity_hash"]
+    return HistoryCheck(ok=True, records=records, chained=chained, head=previous_hash)
+
+
+def _record_problem(
+    record: Any, previous_sequence: int, previous_hash: str | None, chained: int
+) -> str | None:
+    if not isinstance(record, dict):
+        return "is not a write record: a JSON object was expected"
+    sequence = record.get("write_sequence")
+    if sequence != previous_sequence + 1:
+        return f"has write_sequence {sequence} after {previous_sequence}"
+    stored = record.get("integrity_hash")
+    if stored is None:
+        if chained:
+            return "has no integrity_hash although the records before it are chained"
+        return None
+    if record.get("previous_hash") != previous_hash:
+        return (
+            f"has previous_hash {record.get('previous_hash')!r}, not the hash of the record "
+            f"before it ({previous_hash!r})"
+        )
+    body = {name: value for name, value in record.items() if name != "integrity_hash"}
+    if canonical_hash(body) != stored:
+        return "has an integrity_hash that does not match its content"
+    return None
 
 
 def _append_line(path: Path, line: str) -> None:

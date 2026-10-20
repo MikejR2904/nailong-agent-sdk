@@ -93,6 +93,29 @@ def unlinked_note(note: str) -> DecisionRef:
     return DecisionRef(relation="unlinked", note=note)
 
 
+def link_call(
+    audit: AuditTranscriptStore | None,
+    run_id: str,
+    tool_call_id: str,
+    tool: str | None = None,
+) -> DecisionRef:
+    """Tie one tool call to the model turn that issued it, reading the audit ledger once."""
+
+    iteration, problem = _requesting_iteration(audit, run_id, tool_call_id)
+    if iteration is None:
+        return unlinked_note(problem)
+    finding = DiagnosisFinding(
+        sequence=1,
+        event_type=_TOOL_OUTCOMES_EVENT,
+        iteration=iteration,
+        severity="error",
+        message=f'Tool call "{tool_call_id}" returned a result the caller rejected.',
+        subject=tool,
+        details={"tool_call_id": tool_call_id},
+    )
+    return link_decisions(audit, run_id, [finding], [])[0]
+
+
 def decision_sentence(decision: DecisionRef) -> str:
     """Say in one sentence which model turn a reference names and how it is tied."""
 
@@ -132,6 +155,30 @@ def _relation(finding: DiagnosisFinding) -> DecisionRelation | None:
     if finding.code in _BLOCKED_CODES:
         return "reported-itself-blocked"
     return None
+
+
+def _requesting_iteration(
+    audit: AuditTranscriptStore | None, run_id: str, tool_call_id: str
+) -> tuple[int | None, str]:
+    if audit is None:
+        return None, "The run root has no audit ledger."
+    try:
+        with closing(audit.iter_entries(run_id)) as entries:
+            for entry in entries:
+                if entry.event_type != "tool-requested":
+                    continue
+                details = entry.payload.get("details")
+                if not isinstance(details, dict) or details.get("tool_call_id") != tool_call_id:
+                    continue
+                if entry.iteration is None:
+                    return None, (
+                        f'The audit entry {entry.sequence} that requested call "{tool_call_id}" '
+                        "records no iteration."
+                    )
+                return entry.iteration, ""
+    except (AgentSdkError, ValueError, OSError) as error:
+        return None, f"The audit ledger could not be read: {type(error).__name__}: {error}"
+    return None, f'The audit ledger holds no tool-requested entry for call "{tool_call_id}".'
 
 
 def _model_turns(

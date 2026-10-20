@@ -44,6 +44,7 @@ from ..observability.trace_context import graph_run_trace_id
 from ..state.run_state_store import RunStateStore
 from .attribute_defect import attribute_defect, content_check
 from .attribute_failure import attribute_failure
+from .attribute_result import attribute_result_defect, result_check
 from .catalog import build_public_api_catalog, write_public_api_catalog
 from .diagnose import diagnose_run
 from .inspect import inspect_run, verify_project_evidence
@@ -76,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         "diagnose-run": lambda: _diagnose_run(arguments),
         "attribute-failure": lambda: _attribute_failure(arguments),
         "attribute-defect": lambda: _attribute_defect(arguments),
+        "attribute-result": lambda: _attribute_result(arguments),
         "verify-evidence": lambda: _verify_evidence(arguments),
         "quality": lambda: _quality(arguments),
         "prune-runs": lambda: _prune_runs(arguments),
@@ -166,6 +168,19 @@ def _parser() -> argparse.ArgumentParser:
         help="gallop probes O(log d) versions and assumes the defect persists to the newest "
         "version; scan probes every version back to the first clean one.",
     )
+
+    outcome = subparsers.add_parser(
+        "attribute-result",
+        help="Find the first tool result of an agent run that a text check rejects and the model "
+        "turn that asked for it; reads only.",
+    )
+    outcome.add_argument("run_root", type=Path)
+    outcome.add_argument("run_id")
+    rejected = outcome.add_mutually_exclusive_group(required=True)
+    rejected.add_argument("--contains", help="A result is defective when its JSON has this text.")
+    rejected.add_argument("--lacks", help="A result is defective when its JSON lacks this text.")
+    rejected.add_argument("--matches", help="A result is defective when this regex matches it.")
+    outcome.add_argument("--tool", help="Check only the results of this tool.")
 
     evidence = subparsers.add_parser(
         "verify-evidence",
@@ -358,6 +373,19 @@ def _attribute_defect(arguments: argparse.Namespace) -> object:
         arguments.relative_path,
         is_defective,
         strategy=arguments.strategy,
+        check=description,
+    )
+
+
+def _attribute_result(arguments: argparse.Namespace) -> object:
+    is_defective, description = result_check(
+        contains=arguments.contains, lacks=arguments.lacks, matches=arguments.matches
+    )
+    return attribute_result_defect(
+        arguments.run_root,
+        arguments.run_id,
+        is_defective,
+        tool=arguments.tool,
         check=description,
     )
 
@@ -557,6 +585,7 @@ _VERDICT_FIELDS = (
     "passed",
     "telemetry_chain_valid",
     "audit_chain_valid",
+    "artifact_history_valid",
     "verified",
     "clean",
 )

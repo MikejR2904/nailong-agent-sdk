@@ -73,7 +73,11 @@ def test_a_task_scenario_leaves_two_complete_ledgers_and_exactly_its_artifacts(t
         summary = ledger_summary(services.telemetry, services.audit_logs, "scenario-1")
         assert (summary.turns_started, summary.model_turns) == (3, 3)
         assert (summary.tool_requests, summary.tool_completions, summary.tool_results) == (2, 2, 2)
-        assert summary.other_events == {"run.created": 1, "run.completed": 1}
+        assert summary.other_events == {
+            "run.created": 1,
+            "approval.decided": 1,
+            "run.completed": 1,
+        }
         assert summary.terminal_link is TerminalLinkState.LINKED
         workspace = services.run_root / "workspaces" / "scenario-1"
         written = sorted(
