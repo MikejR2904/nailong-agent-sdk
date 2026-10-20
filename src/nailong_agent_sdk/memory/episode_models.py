@@ -39,6 +39,7 @@ class CompactionStrategy(StrEnum):
     GREEDY_BASELINE = "greedy-baseline"
     PASK = "provenance-aware-submodular-knapsack"
     EXACT_PCKP = "exact-precedence-constrained-knapsack"
+    LEARNED_PCKP = "learned-ranking-precedence-constrained-knapsack"
 
 
 class EpisodeRecord(StrictModel):
@@ -107,8 +108,14 @@ class PaskCompactionPolicy(StrictModel):
         )
         if static_weight + self.diversity_weight <= 0:
             raise ValueError("At least one PASK utility weight must be positive.")
-        if self.strategy is CompactionStrategy.EXACT_PCKP and static_weight <= 0:
-            raise ValueError("EXACT_PCKP requires a positive additive utility weight.")
+        if (
+            self.strategy in (CompactionStrategy.EXACT_PCKP, CompactionStrategy.LEARNED_PCKP)
+            and static_weight <= 0
+        ):
+            raise ValueError(
+                f"{self.strategy.name} requires a positive additive utility weight "
+                "(the static weights are also its documented fallback)."
+            )
         return self
 
 

@@ -1,0 +1,161 @@
+# Copyright (c) 2026 David Michael Indraputra
+
+"""Opt-in learned utility coefficients for dependency-closed episode retention.
+
+The predictor supplies only the additive objective coefficients. Budget, mandatory retention,
+prerequisite closure and the optimality certificate stay with the exact PCKP solver.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+from pydantic import Field
+
+from ..foundations.contracts import StrictModel
+from ..foundations.errors import AgentSdkError
+from .utility_features import FEATURE_SCHEMA_VERSION, RetentionContext, extract_features
+from .utility_models import RankingModel, load_utility_model
+
+
+class PredictorIdentity(StrictModel):
+    predictor_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    feature_schema_version: str = Field(min_length=1)
+    artifact_digest: str = Field(min_length=1)
+
+
+class QuantizationPolicy(StrictModel):
+    """Maps real-valued utilities to PCKP's non-negative integers: ``clip(round(scale * u))``."""
+
+    scale: int = Field(default=1_000_000, ge=1)
+    ceiling: float = Field(default=1_000.0, gt=0, allow_inf_nan=False)
+
+
+class EpisodeUtilityPredictor(Protocol):
+    @property
+    def identity(self) -> PredictorIdentity: ...
+
+    def predict(self, context: RetentionContext) -> Mapping[str, float]: ...
+
+
+class LearnedUtilityPredictor:
+    """Scores live episodes with a trained, immutable ranking model."""
+
+    def __init__(
+        self,
+        model: RankingModel,
+        *,
+        predictor_id: str,
+        version: str,
+        artifact_digest: str,
+        disabled_groups: Sequence[str] = (),
+    ) -> None:
+        self._model = model
+        self._disabled_groups = tuple(disabled_groups)
+        self._identity = PredictorIdentity(
+            predictor_id=predictor_id,
+            version=version,
+            feature_schema_version=FEATURE_SCHEMA_VERSION,
+            artifact_digest=artifact_digest,
+        )
+
+    @classmethod
+    def from_artifact(
+        cls, path: Path, *, predictor_id: str, version: str
+    ) -> LearnedUtilityPredictor:
+        loaded = load_utility_model(path)
+        return cls(
+            loaded.model,
+            predictor_id=predictor_id,
+            version=version,
+            artifact_digest=loaded.digest,
+            disabled_groups=tuple(loaded.training.get("disabled_feature_groups", ())),
+        )
+
+    @property
+    def identity(self) -> PredictorIdentity:
+        return self._identity
+
+    def predict(self, context: RetentionContext) -> Mapping[str, float]:
+        features = extract_features(context, self._disabled_groups)
+        return {episode_id: self._model.score(vector) for episode_id, vector in features.items()}
+
+
+@dataclass(frozen=True)
+class LearnedCoefficients:
+    identity: PredictorIdentity
+    raw: dict[str, float]
+    quantized: dict[str, int]
+    clipped_below: list[str]
+    clipped_above: list[str]
+    policy: QuantizationPolicy
+
+
+def quantize_utilities(
+    raw: Mapping[str, float], policy: QuantizationPolicy
+) -> tuple[dict[str, int], list[str], list[str]]:
+    quantized: dict[str, int] = {}
+    below: list[str] = []
+    above: list[str] = []
+    for episode_id in sorted(raw):
+        value = raw[episode_id]
+        if value < 0:
+            below.append(episode_id)
+            value = 0.0
+        elif value > policy.ceiling:
+            above.append(episode_id)
+            value = policy.ceiling
+        quantized[episode_id] = round(value * policy.scale)
+    return quantized, below, above
+
+
+def resolve_learned_coefficients(
+    predictor: EpisodeUtilityPredictor,
+    context: RetentionContext,
+    policy: QuantizationPolicy,
+) -> LearnedCoefficients:
+    """Predict, validate and quantize; every failure names the predictor and the episode."""
+
+    identity = predictor.identity
+    try:
+        predicted = dict(predictor.predict(context))
+    except AgentSdkError:
+        raise
+    except Exception as error:
+        raise AgentSdkError(
+            "UTILITY_PREDICTOR_FAILED",
+            f'Predictor "{identity.predictor_id}" version {identity.version} raised '
+            f"{type(error).__name__}: {error}",
+            {"predictor_id": identity.predictor_id},
+        ) from error
+    live = {record.id for record in context.records}
+    missing = sorted(live - set(predicted))
+    if missing:
+        raise AgentSdkError(
+            "UTILITY_PREDICTION_INCOMPLETE",
+            f'Predictor "{identity.predictor_id}" returned no utility for live episodes '
+            f"{missing[:5]}{' ...' if len(missing) > 5 else ''}.",
+            {"predictor_id": identity.predictor_id, "missing_count": len(missing)},
+        )
+    raw: dict[str, float] = {}
+    for episode_id in sorted(live):
+        value = predicted[episode_id]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+        ):
+            raise AgentSdkError(
+                "UTILITY_PREDICTION_NONFINITE",
+                f'Predictor "{identity.predictor_id}" returned {value!r} for episode '
+                f'"{episode_id}"; utilities must be finite numbers.',
+                {"predictor_id": identity.predictor_id, "episode_id": episode_id},
+            )
+        raw[episode_id] = float(value)
+    quantized, below, above = quantize_utilities(raw, policy)
+    return LearnedCoefficients(identity, raw, quantized, below, above, policy)

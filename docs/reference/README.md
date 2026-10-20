@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **153 files, 548 classes and 1,944 functions** (methods and nested closures included).
+covers **157 files, 561 classes and 1,999 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -543,10 +543,14 @@ the run options. Everything else is a parameter too:
 | [`memory/episode_scoring.py`](memory.md#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 77 | deterministic lexical relevance and cost helpers for retention |
 | [`memory/episode_store.py`](memory.md#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 1872 | episode lifecycle and the three deterministic compaction strategies |
 | [`memory/episodes.py`](memory.md#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 97 | task-scoped episode graph of one-line summaries |
+| [`memory/learned_retention.py`](memory.md#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 161 | opt-in learned utility coefficients for dependency-closed retention |
 | [`memory/memory_snapshot.py`](memory.md#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
 | [`memory/semantic_compaction.py`](memory.md#memorysemantic_compactionpy---dependency-aware-summarization-verification-and-safe-commit-of-compacted-episodes) | 1133 | dependency-aware summarization, verification and safe commit of compacted episodes |
 | [`memory/summarization_scheduler.py`](memory.md#memorysummarization_schedulerpy---bounded-background-queue-for-summarization-work-that-never-blocks-its-caller) | 190 | bounded background queue for summarization work that never blocks its caller |
 | [`memory/summary_ledger.py`](memory.md#memorysummary_ledgerpy---the-summaries-of-one-episode-store-and-where-each-one-lives) | 192 | the summaries of one episode store and where each one lives |
+| [`memory/utility_features.py`](memory.md#memoryutility_featurespy---selection-time-features-for-learned-episode-utility) | 131 | selection-time features for learned episode utility |
+| [`memory/utility_models.py`](memory.md#memoryutility_modelspy---additive-linear-and-mlp-utility-models-with-digest-checked-artifacts) | 293 | additive linear and MLP utility models with digest-checked artifacts |
+| [`memory/utility_training.py`](memory.md#memoryutility_trainingpy---pairwise-logistic-ranking-loss-derivatives-and-explicit-trainers) | 339 | pairwise logistic ranking loss, derivatives and explicit trainers |
 | [`observability/__init__.py`](observability.md#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
 | [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 463 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/metric_definitions.py`](observability.md#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 400 | the SDK's standard metric catalogue |
@@ -601,7 +605,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 153 files, 548 classes and 1944 functions (including methods and nested closures), each with a written description.*
+*Coverage: 157 files, 561 classes and 1999 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 

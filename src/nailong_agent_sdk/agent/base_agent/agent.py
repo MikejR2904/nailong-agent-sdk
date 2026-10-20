@@ -593,7 +593,8 @@ class BaseAgent:
                     )
             if (
                 self.telemetry is not None
-                and projection.compaction.strategy is CompactionStrategy.EXACT_PCKP
+                and projection.compaction.strategy
+                in (CompactionStrategy.EXACT_PCKP, CompactionStrategy.LEARNED_PCKP)
                 and isinstance(projection.compaction.dossier.get("solver"), dict)
             ):
                 dossier = projection.compaction.dossier

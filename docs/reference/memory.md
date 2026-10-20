@@ -13,10 +13,14 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 | [`memory/episode_scoring.py`](#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 77 | deterministic lexical relevance and cost helpers for retention |
 | [`memory/episode_store.py`](#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 1872 | episode lifecycle and the three deterministic compaction strategies |
 | [`memory/episodes.py`](#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 97 | task-scoped episode graph of one-line summaries |
+| [`memory/learned_retention.py`](#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 161 | opt-in learned utility coefficients for dependency-closed retention |
 | [`memory/memory_snapshot.py`](#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
 | [`memory/semantic_compaction.py`](#memorysemantic_compactionpy---dependency-aware-summarization-verification-and-safe-commit-of-compacted-episodes) | 1133 | dependency-aware summarization, verification and safe commit of compacted episodes |
 | [`memory/summarization_scheduler.py`](#memorysummarization_schedulerpy---bounded-background-queue-for-summarization-work-that-never-blocks-its-caller) | 190 | bounded background queue for summarization work that never blocks its caller |
 | [`memory/summary_ledger.py`](#memorysummary_ledgerpy---the-summaries-of-one-episode-store-and-where-each-one-lives) | 192 | the summaries of one episode store and where each one lives |
+| [`memory/utility_features.py`](#memoryutility_featurespy---selection-time-features-for-learned-episode-utility) | 131 | selection-time features for learned episode utility |
+| [`memory/utility_models.py`](#memoryutility_modelspy---additive-linear-and-mlp-utility-models-with-digest-checked-artifacts) | 293 | additive linear and MLP utility models with digest-checked artifacts |
+| [`memory/utility_training.py`](#memoryutility_trainingpy---pairwise-logistic-ranking-loss-derivatives-and-explicit-trainers) | 339 | pairwise logistic ranking loss, derivatives and explicit trainers |
 
 ---
 
@@ -323,6 +327,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
   - `InMemoryEpisodeStore._ensure_active(guard: CompactionGuard | None) -> None` *(staticmethod)* - Raises `EPISODE_COMPACTION_ABANDONED` when the guard was abandoned: the run is over, and nothing was changed after the abandonment. · *Called by:* `memory/episode_store.py::InMemoryEpisodeStore._consolidate`, `memory/episode_store.py::InMemoryEpisodeStore._semantic_pass`, `memory/episode_store.py::InMemoryEpisodeStore.compact`
   - `InMemoryEpisodeStore.compaction_policy() -> PaskCompactionPolicy` *(property)* - Property: the default `PaskCompactionPolicy`. · *Called by:* `memory/episode_store.py::FileEpisodeStore.__init__`, `memory/episode_store.py::InMemoryEpisodeStore.__init__`
   - `InMemoryEpisodeStore.relevance_scorer() -> EpisodeRelevanceScorer` *(property)* - Property: the relevance scorer, which the projector also uses to rank summaries. · *Called by:* `memory/episode_store.py::FileEpisodeStore.__init__`, `memory/episode_store.py::InMemoryEpisodeStore.__init__`
+  - `InMemoryEpisodeStore.utility_predictor() -> EpisodeUtilityPredictor | None` *(property)* - Property: the opt-in learned-utility predictor, or `None` (the default), in which case `LEARNED_PCKP` falls back to static PCKP with a recorded diagnostic. · *Called by:* no other module
   - `InMemoryEpisodeStore.semantic_compaction_enabled() -> bool` *(property)* - Property: whether a `SemanticCompactor` was given. · *Called by:* `memory/episode_store.py::FileEpisodeStore.persist`
   - `InMemoryEpisodeStore.archive() -> EpisodeArchive | None` *(property)* - Property: the episode archive, or None without semantic compaction. · *Called within this file by:* `memory/episode_store.py::InMemoryEpisodeStore.__init__`, `memory/episode_store.py::InMemoryEpisodeStore._consolidate`, `memory/episode_store.py::InMemoryEpisodeStore._rehydration_plan`, `memory/episode_store.py::InMemoryEpisodeStore._semantic_pass` (+1 more)
   - `InMemoryEpisodeStore.summaries() -> list[SemanticEpisodeSummary]` - The summaries held in memory, including superseded ones that are not yet archived, in id order; an archived summary is read with `load_summary`. · *Called by:* `base_agent/agent.py::BaseAgent._run`, `base_agent/agent.py::BaseAgent._terminate`, `memory/context_projection.py::_compacted_stubs`, `memory/episode_store.py::FileEpisodeStore.persist` (+3 more)
@@ -351,6 +356,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
   - `InMemoryEpisodeStore.verify_checkpoint(checkpoint: EpisodeCheckpoint) -> bool` - True if the current structure and hash equal a given checkpoint. · *No in-package callers (public API, entry point, or protocol hook).*
   - `InMemoryEpisodeStore._compact_greedy(token_budget: int, active_episode_id: str | None, protected_episode_ids: set[str], before: int) -> CompactionResult` - Baseline: repeatedly tombstone the next eligible closed leaf (actions first, then substrate-backed, then others) until under budget, reporting protected-over-budget or deadlock if nothing is eligible. · *Called by:* `memory/episode_store.py::InMemoryEpisodeStore._compact_selection`
   - `InMemoryEpisodeStore._compact_exact_pckp(token_budget: int, *, active_episode_id: str | None, protected_episode_ids: set[str], relevance_query: str, policy: PaskCompactionPolicy, before: ...` - Default: computes the mandatory closure (protected, active and open episodes plus prerequisites), scores each episode with an additive static utility, solves the dependency-closed knapsack exactly, and compacts everything not selected, recording the solver certificate in the dossier. · *Called by:* `memory/episode_store.py::InMemoryEpisodeStore._compact_selection`
+- `InMemoryEpisodeStore._compact_learned_pckp(token_budget: int, *, active_episode_id: str | None, protected_episode_ids: set[str], relevance_query: str, policy: PaskCompactionPolicy, before: int) -> CompactionResult` - Builds the retention context, asks the predictor for coefficients, validates and quantises them, and solves through `_compact_exact_pckp` so mandatory retention, closure and the solver certificate are unchanged. A missing or failing predictor yields the static solution with a `learned_ranking` fallback record naming the error code and message; success records the predictor identity, digests, raw and quantised utilities, clipped ids and solver status. · *Called within this file by:* `memory/episode_store.py::InMemoryEpisodeStore._compact_selection`
   - `InMemoryEpisodeStore._compact_pask(token_budget: int, *, active_episode_id: str | None, protected_episode_ids: set[str], relevance_query: str, policy: PaskCompactionPolicy, before: ...` - PASK: starts from the mandatory closure and greedily adds the dependency closure with the best marginal utility-to-cost until nothing fits, then compacts the rest; diversity (new terms covered) makes the objective non-additive. · *Called by:* `memory/episode_store.py::InMemoryEpisodeStore._compact_selection`
   - `InMemoryEpisodeStore._static_utility(episode_id: str, relevance_query: str, policy: PaskCompactionPolicy, live_ids: set[str], max_dependents: int, max_access_count: int, max_access_se...` - Weighted sum of relevance, dependency centrality, provenance, recency and frequency for one episode (no diversity, so it is additive). · *Called by:* `memory/episode_store.py::InMemoryEpisodeStore._compact_exact_pckp`
   - `InMemoryEpisodeStore._utility(episode_id: str, additions: set[str], covered_terms: set[str], relevance_query: str, policy: PaskCompactionPolicy, marginal_cost: int, live_ids: s...` - Marginal utility of a PASK candidate including the diversity term (share of its terms not yet covered). · *Called within this file by:* `memory/episode_store.py::InMemoryEpisodeStore._compact_pask`
@@ -428,6 +434,32 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
   - `InMemoryEpisodeGraph.omitted() -> int` *(property)* - Property: how many summaries `retained_limit` has dropped from `list()`. · *Called by:* `base_agent/agent.py::BaseAgent._terminate`, `agent/verification.py::_composite_evidence`, `memory/context_projection.py::ContextProjector.project`, `memory/context_projection.py::_compacted_stubs` (+2 more)
   - `InMemoryEpisodeGraph.kind_of(episode_id: str) -> EpisodeKind | None` - The kind of an episode, including one whose summary was dropped; None for an unknown id. · *Called by:* `base_agent/agent.py::BaseAgent._unavailable_consumed_episodes`
   - `InMemoryEpisodeGraph._add(kind: EpisodeKind, summary: str, dependency_ids: list[str]) -> EpisodeSummary` - Rejects an empty summary, assigns `episode-N` and a timestamp, and stores the summary. · *Called by:* `memory/episodes.py::InMemoryEpisodeGraph.add_action`, `memory/episodes.py::InMemoryEpisodeGraph.add_exploratory`
+---
+
+### `memory/learned_retention.py` - opt-in learned utility coefficients for dependency-closed retention
+
+*161 lines · depends on: see imports · used by: `memory/episode_store.py` · not re-exported at the package root*
+
+**Role in the workflow.** Defines the predictor interface the episode store accepts, the immutable trained-model predictor, the integer quantisation that maps learned real utilities onto PCKP's non-negative integers, and the validation that turns every predictor failure into a coded error the store converts into a documented static fallback.
+
+**Contents**
+
+- **class `PredictorIdentity`** *(class)* - Predictor id, version, feature-schema version and model-artifact digest recorded with every decision.
+- **class `QuantizationPolicy`** *(class)* - `clip(round(scale * u), 0, scale * ceiling)`; defaults `scale=1_000_000` (the static path's scale) and `ceiling=1000`.
+- **class `EpisodeUtilityPredictor`** *(class)* - Protocol: an `identity` and `predict(context) -> {episode_id: utility}`.
+  - `EpisodeUtilityPredictor.identity() -> PredictorIdentity` *(property)* - The predictor's identity record.
+  - `EpisodeUtilityPredictor.predict(self, context: RetentionContext) -> Mapping[str, float]` - Returns one finite utility per live episode.
+- **class `LearnedUtilityPredictor`** *(class)* - Scores episodes with a loaded ranking model; it never trains or mutates the model.
+  - `LearnedUtilityPredictor.__init__(self, model: RankingModel, *, predictor_id: str, version: str, artifact_digest: str, disabled_groups: Sequence[str]=()) -> None` - Wraps a model with its identity and any ablated feature groups.
+  - `LearnedUtilityPredictor.from_artifact(cls, path: Path, *, predictor_id: str, version: str) -> LearnedUtilityPredictor` - Loads and validates an artifact, taking the ablated groups from its training metadata.
+  - `LearnedUtilityPredictor.identity() -> PredictorIdentity` *(property)* - The predictor's identity record.
+  - `LearnedUtilityPredictor.predict(self, context: RetentionContext) -> Mapping[str, float]` - Extracts features and scores every live episode.
+- **class `LearnedCoefficients`** *(class)* - Raw and quantised utilities, the ids clipped at either end, and the policy used.
+- `quantize_utilities(raw: Mapping[str, float], policy: QuantizationPolicy) -> tuple[dict[str, int], list[str], list[str]]` - Clips negatives to 0 and values above the ceiling, then rounds; returns the integers and the clipped ids.
+- `resolve_learned_coefficients(predictor: EpisodeUtilityPredictor, context: RetentionContext, policy: QuantizationPolicy) -> LearnedCoefficients` - Runs the predictor and validates it: wraps unexpected exceptions as `UTILITY_PREDICTOR_FAILED`, rejects missing episodes (`UTILITY_PREDICTION_INCOMPLETE`) and non-finite or non-numeric values (`UTILITY_PREDICTION_NONFINITE`), each naming predictor and episode.
+
+**Algorithms & invariants.** The predictor only supplies objective coefficients; budget, mandatory retention, dependency closure and the optimality certificate remain the PCKP solver's. Clipping negatives to zero changes the objective when a negative-utility prerequisite is needed by a positive item; the clipped ids are reported so the error is auditable.
+
 ---
 
 ### `memory/memory_snapshot.py` - one-file, generation-numbered snapshots of episodic memory and their validation
@@ -587,5 +619,94 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 **Algorithms & invariants.** A superseded summary is archived when its parent commits, and ceilings (`max_active_summaries`, `max_active_summary_tokens`) first trigger consolidation and then archive the oldest unpinned top-level summaries. A summary that covers a live episode is pinned and never archived by a ceiling.
 
+---
 
+### `memory/utility_features.py` - selection-time features for learned episode utility
 
+*131 lines · depends on: see imports · used by: `memory/episode_store.py` · not re-exported at the package root*
+
+**Role in the workflow.** Turns the live episode graph, its token costs, the task relevance and the budget into one fixed-order feature vector per episode (schema `episode-utility-features-v1`). Only state present when the compaction is requested is read, so a later episode can never change an earlier episode's features. Feature groups (task, graph, provenance, dynamics, outcome) can be masked for ablations.
+
+**Contents**
+
+- **class `RetentionContext`** *(class)* - Frozen input of a predictor: the live records, their token costs, the store scorer's relevance per episode, the task text and the token budget.
+- `masked_feature_names(disabled_groups: Sequence[str]) -> frozenset[str]` - Resolves group names to feature names and raises, naming the unknown group, when a group is not in the schema.
+- `extract_features(context: RetentionContext, disabled_groups: Sequence[str]=()) -> dict[str, tuple[float, ...]]` - One schema-ordered vector per live episode: bias, lexical relevance, hashed-embedding cosine, dependent/prerequisite/closure-cost/own-cost shares, provenance flags, recency, frequency and failed-result; masked groups are zeroed.
+- `_result_failed(record: EpisodeRecord) -> bool` - True when the episode's recorded tool result has a status other than `succeeded`.
+- `_live_count(identifiers: Sequence[str], records: Mapping[str, EpisodeRecord]) -> int` - How many of the identifiers are live episodes.
+- `_closure(episode_id: str, records: Mapping[str, EpisodeRecord]) -> set[str]` - Prerequisite closure of one episode, restricted to live episodes.
+- `_ratio(value: float, maximum: float) -> float` - `value / maximum`, or 0 when the maximum is 0.
+- `_unit(value: float) -> float` - Clamps a value into [0, 1].
+- `_hashed_embedding(terms: set[str]) -> list[float]` - Deterministic, dependency-free local embedding: each term is hashed with BLAKE2b to one of 64 signed buckets and the vector is L2-normalised.
+- `_cosine(left: Sequence[float], right: Sequence[float]) -> float` - Dot product of two already-normalised vectors.
+
+**Algorithms & invariants.** No external service or model download is involved; the embedding is a signed feature-hashing of the lexical terms the existing scorer already extracts. Features never read compacted episodes.
+
+---
+
+### `memory/utility_models.py` - additive linear and MLP utility models with digest-checked artifacts
+
+*293 lines · depends on: see imports · used by: `memory/episode_store.py` · not re-exported at the package root*
+
+**Role in the workflow.** Defines the two additive utility models (`u = theta . h` and a one-hidden-layer tanh MLP) behind one interface (`score`, `accumulate_gradient`, flat `parameters`), and the JSON artifact that stores a trained model with its feature schema and a SHA-256 content digest. Loading verifies the digest, the artifact version, the feature schema and finiteness, and raises a coded error naming the cause.
+
+**Contents**
+
+- **class `LinearRankingModel`** *(class)* - `u_i = theta . h_i`; a flat weight vector, so the pairwise logistic objective is convex in it.
+  - `LinearRankingModel.__init__(self, weights: list[float]) -> None` - Stores the weights; raises on an empty vector.
+  - `LinearRankingModel.feature_dim() -> int` *(property)* - Number of inputs.
+  - `LinearRankingModel.parameters() -> list[float]` *(property)* - Copy of the weight vector.
+  - `LinearRankingModel.with_parameters(self, parameters: list[float]) -> LinearRankingModel` - A new model with the given weights.
+  - `LinearRankingModel.architecture(self) -> dict[str, Any]` - `{feature_dim}` for the artifact.
+  - `LinearRankingModel.score(self, features: tuple[float, ...]) -> float` - Dot product of weights and features.
+  - `LinearRankingModel.accumulate_gradient(self, features: tuple[float, ...], coefficient: float, out: list[float]) -> None` - Adds `coefficient * features` to `out`, the gradient of the score scaled by a coefficient.
+- **class `MlpRankingModel`** *(class)* - `u = w2 . tanh(W1 h + b1) + b2` with all parameters in one flat list; not convex, so no global-convergence claim is made.
+  - `MlpRankingModel.__init__(self, feature_dim: int, hidden_units: int, parameters: list[float]) -> None` - Validates the parameter count against the architecture.
+  - `MlpRankingModel.initialize(cls, feature_dim: int, hidden_units: int, seed: int) -> MlpRankingModel` - Seed-reproducible uniform initialisation scaled by 1/sqrt(fan-in).
+  - `MlpRankingModel.feature_dim() -> int` *(property)* - Number of inputs.
+  - `MlpRankingModel.parameters() -> list[float]` *(property)* - Copy of the flat parameter list.
+  - `MlpRankingModel.with_parameters(self, parameters: list[float]) -> MlpRankingModel` - A new model with the same architecture and the given parameters.
+  - `MlpRankingModel.architecture(self) -> dict[str, Any]` - `{feature_dim, hidden_units}` for the artifact.
+  - `MlpRankingModel._hidden_activations(self, features: tuple[float, ...]) -> list[float]` - The tanh hidden layer for one feature vector.
+  - `MlpRankingModel.score(self, features: tuple[float, ...]) -> float` - The scalar output for one feature vector.
+  - `MlpRankingModel.accumulate_gradient(self, features: tuple[float, ...], coefficient: float, out: list[float]) -> None` - Back-propagates one item: adds `coefficient` times the score gradient to `out`.
+- **class `LoadedUtilityModel`** *(class)* - A loaded model with its training metadata, digest and feature-schema version.
+- `model_to_artifact(model: RankingModel, training: dict[str, Any]) -> dict[str, Any]` - Builds the artifact dict and its content digest; refuses non-finite parameters.
+- `model_from_artifact(artifact: dict[str, Any], *, source: str='artifact') -> LoadedUtilityModel` - Validates digest, version, schema, parameter types, finiteness and architecture, raising `UTILITY_MODEL_ARTIFACT_CORRUPT`, `_INCOMPATIBLE` or `UTILITY_MODEL_FEATURE_SCHEMA_MISMATCH` with the offending value.
+- `save_utility_model(path: Path, model: RankingModel, training: dict[str, Any]) -> str` - Writes the artifact atomically and returns its digest; failures raise `UTILITY_MODEL_ARTIFACT_WRITE_FAILED`.
+- `load_utility_model(path: Path) -> LoadedUtilityModel` - Reads and validates an artifact; missing, unreadable, non-JSON and non-object files each raise a distinct code naming the path.
+- `require_finite(values: list[float], label: str) -> None` - Raises `UTILITY_MODEL_NONFINITE` naming the first non-finite value and its index.
+
+**Algorithms & invariants.** The artifact digest covers every field except itself, including the training metadata, so any edit is detected. Models are immutable: `with_parameters` returns a new instance.
+
+---
+
+### `memory/utility_training.py` - pairwise logistic ranking loss, derivatives and explicit trainers
+
+*339 lines · depends on: see imports · used by: `memory/episode_store.py` · not re-exported at the package root*
+
+**Role in the workflow.** Implements `L = sum_p w_p log(1 + exp(-(U(S+) - U(S-)) / tau)) + lambda ||theta||^2` over preference pairs, its analytic gradient and (for the linear model) Hessian, and the only two trainers: damped Newton with Armijo backtracking for the linear model and full-batch Adam with validation early stopping for the MLP. Nothing in the SDK calls `train_ranking_model`; training is always an explicit act.
+
+**Contents**
+
+- **class `RankingPair`** *(class)* - One preference between two item-index tuples with a confidence weight.
+- **class `RankingDataset`** *(class)* - Unique item feature vectors plus the pairs that index into them.
+- **class `RankingTrainingConfig`** *(class)* - Explicit `tau`, `l2`, seed, iteration, learning-rate, hidden-size and patience settings; rejects non-positive or non-finite `tau` and negative or non-finite `l2`.
+- **class `TrainingReport`** *(class)* - Iterations, final loss, gradient norm, train and validation pair accuracy and whether training converged.
+- `build_ranking_dataset(features: Mapping[str, Mapping[str, tuple[float, ...]]], preferences: Sequence[tuple[str, Sequence[str], Sequence[str], float]]) -> RankingDataset` - Builds a dataset from `(snapshot, S+, S-, weight)` preferences, cancelling items common to both sides (exact for an additive model) and rejecting unknown snapshots, episodes and non-positive weights.
+- `softplus(value: float) -> float` - Numerically stable `log(1 + exp(x))`.
+- `sigmoid(value: float) -> float` - Numerically stable logistic function.
+- `pair_margins(model: RankingModel, dataset: RankingDataset) -> list[float]` - `U(S+) - U(S-)` for every pair, scoring each item once.
+- `ranking_loss(model: RankingModel, dataset: RankingDataset, *, tau: float, l2: float) -> float` - The regularised weighted pairwise logistic loss.
+- `ranking_gradient(model: RankingModel, dataset: RankingDataset, *, tau: float, l2: float) -> list[float]` - Analytic gradient, accumulated once per unique item through the model's `accumulate_gradient`.
+- `linear_ranking_hessian(model: LinearRankingModel, dataset: RankingDataset, *, tau: float, l2: float) -> list[list[float]]` - Analytic Hessian `sum w sigma(m) sigma(-m)/tau^2 d d^T + 2 lambda I` of the linear objective.
+- `pairwise_accuracy(model: RankingModel, dataset: RankingDataset) -> float` - Fraction of pairs ordered correctly, ties counting one half; NaN for an empty dataset.
+- `train_ranking_model(train: RankingDataset, config: RankingTrainingConfig, *, feature_dim: int, validation: RankingDataset | None=None) -> tuple[RankingModel, TrainingReport]` - Trains the configured model; raises when there are no pairs.
+- `_train_linear(train: RankingDataset, config: RankingTrainingConfig, feature_dim: int, validation: RankingDataset | None) -> tuple[RankingModel, TrainingReport]` - Newton iterations with Armijo backtracking from zero weights.
+- `_train_mlp(train: RankingDataset, config: RankingTrainingConfig, feature_dim: int, validation: RankingDataset | None) -> tuple[RankingModel, TrainingReport]` - Seed-initialised Adam with early stopping on validation (else training) loss; returns the best parameters seen.
+- `_selection_loss(model: RankingModel, train: RankingDataset, validation: RankingDataset | None, config: RankingTrainingConfig) -> float` - Loss on the validation set when it has pairs, otherwise on the training set.
+- `_report(model: RankingModel, train: RankingDataset, validation: RankingDataset | None, loss: float, gradient: list[float], iterations: int, converged: bool) -> TrainingReport` - Assembles a `TrainingReport`.
+- `_feature_difference(dataset: RankingDataset, pair: RankingPair, dimension: int) -> list[float]` - `sum_{S+} h - sum_{S-} h` for one pair.
+- `_solve_positive_definite(matrix: list[list[float]], rhs: list[float], l2: float) -> list[float]` - Cholesky solve; raises `UTILITY_TRAINING_NOT_STRONGLY_CONVEX` naming the pivot and `l2` when the Hessian is not positive definite.
+
+**Algorithms & invariants.** With `l2 > 0` the linear objective is `2*l2`-strongly convex, so the minimiser is unique and Newton converges. With `l2 = 0` the Hessian can be singular and the error says so. MLP training is deterministic for a fixed seed but carries no global-optimality claim.

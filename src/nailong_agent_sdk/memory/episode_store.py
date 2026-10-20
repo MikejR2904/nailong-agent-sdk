@@ -58,6 +58,12 @@ from .episode_scoring import (
     _episode_tokens,
     _provenance_weight,
 )
+from .learned_retention import (
+    EpisodeUtilityPredictor,
+    LearnedCoefficients,
+    QuantizationPolicy,
+    resolve_learned_coefficients,
+)
 from .memory_snapshot import (
     EpisodeMemorySnapshot,
     RestoreReport,
@@ -72,6 +78,7 @@ from .semantic_compaction import (
 )
 from .summarization_scheduler import SummarizationScheduler
 from .summary_ledger import SummaryLedger
+from .utility_features import RetentionContext
 
 SNAPSHOT_DIRECTORY = "snapshots"
 SNAPSHOT_PREFIX = "snapshot-"
@@ -109,7 +116,11 @@ class InMemoryEpisodeStore:
         compaction_policy: PaskCompactionPolicy | None = None,
         relevance_scorer: EpisodeRelevanceScorer | None = None,
         semantic: SemanticCompactor | None = None,
+        utility_predictor: EpisodeUtilityPredictor | None = None,
+        utility_quantization: QuantizationPolicy | None = None,
     ) -> None:
+        self._utility_predictor = utility_predictor
+        self._utility_quantization = utility_quantization or QuantizationPolicy()
         self._records: dict[str, EpisodeRecord] = {}
         self._next_id = 1
         self._next_access_sequence = 1
@@ -164,6 +175,10 @@ class InMemoryEpisodeStore:
     @property
     def relevance_scorer(self) -> EpisodeRelevanceScorer:
         return self._relevance_scorer
+
+    @property
+    def utility_predictor(self) -> EpisodeUtilityPredictor | None:
+        return self._utility_predictor
 
     @property
     def semantic_compaction_enabled(self) -> bool:
@@ -369,6 +384,15 @@ class InMemoryEpisodeStore:
             )
         if effective_policy.strategy is CompactionStrategy.GREEDY_BASELINE:
             return self._compact_greedy(token_budget, active_episode_id, protected, before)
+        if effective_policy.strategy is CompactionStrategy.LEARNED_PCKP:
+            return self._compact_learned_pckp(
+                token_budget,
+                active_episode_id=active_episode_id,
+                protected_episode_ids=protected,
+                relevance_query=relevance_query,
+                policy=effective_policy,
+                before=before,
+            )
         if effective_policy.strategy is CompactionStrategy.EXACT_PCKP:
             return self._compact_exact_pckp(
                 token_budget,
@@ -559,6 +583,7 @@ class InMemoryEpisodeStore:
         relevance_query: str,
         policy: PaskCompactionPolicy,
         before: int,
+        learned: LearnedCoefficients | None = None,
     ) -> CompactionResult:
         """Solve additive dependency-closed retention exactly for live episodes.
 
@@ -603,7 +628,11 @@ class InMemoryEpisodeStore:
                 PckpItem(
                     item_id=episode_id,
                     token_cost=_episode_tokens(self._require(episode_id)),
-                    utility=round(utilities[episode_id].utility * 1_000_000),
+                    utility=(
+                        learned.quantized[episode_id]
+                        if learned is not None
+                        else round(utilities[episode_id].utility * 1_000_000)
+                    ),
                     prerequisites=self._require(episode_id).depends_on,
                     mandatory=episode_id in mandatory,
                 )
@@ -663,6 +692,114 @@ class InMemoryEpisodeStore:
                     else "feasible best-effort selection with explicit bound"
                 ),
             },
+        )
+
+    def _compact_learned_pckp(
+        self,
+        token_budget: int,
+        *,
+        active_episode_id: str | None,
+        protected_episode_ids: set[str],
+        relevance_query: str,
+        policy: PaskCompactionPolicy,
+        before: int,
+    ) -> CompactionResult:
+        """Solve PCKP with learned coefficients; fall back to static utilities on any failure."""
+
+        predictor = self._utility_predictor
+        failure: dict[str, Any] | None = None
+        learned: LearnedCoefficients | None = None
+        if predictor is None:
+            failure = {
+                "error_code": "UTILITY_PREDICTOR_MISSING",
+                "error": "Strategy LEARNED_PCKP was requested but the store has no "
+                "utility_predictor.",
+            }
+        else:
+            live = [
+                record
+                for record in self._records.values()
+                if record.state is not EpisodeState.COMPACTED
+            ]
+            context = RetentionContext(
+                records=tuple(sorted(live, key=lambda record: record.id)),
+                token_costs={record.id: _episode_tokens(record) for record in live},
+                relevance={
+                    record.id: _clamp_score(self._relevance_scorer.score(relevance_query, record))
+                    for record in live
+                },
+                query=relevance_query,
+                token_budget=token_budget,
+            )
+            try:
+                learned = resolve_learned_coefficients(
+                    predictor, context, self._utility_quantization
+                )
+            except AgentSdkError as error:
+                failure = {"error_code": error.code, "error": error.message}
+        if learned is None or failure is not None:
+            result = self._compact_exact_pckp(
+                token_budget,
+                active_episode_id=active_episode_id,
+                protected_episode_ids=protected_episode_ids,
+                relevance_query=relevance_query,
+                policy=policy,
+                before=before,
+            )
+            identity = predictor.identity.model_dump(mode="json") if predictor else None
+            return result.model_copy(
+                update={
+                    "dossier": {
+                        **result.dossier,
+                        "learned_ranking": {
+                            "status": "fallback-static-pckp",
+                            "requested_strategy": CompactionStrategy.LEARNED_PCKP.value,
+                            "predictor": identity,
+                            **(failure or {}),
+                        },
+                    }
+                }
+            )
+        result = self._compact_exact_pckp(
+            token_budget,
+            active_episode_id=active_episode_id,
+            protected_episode_ids=protected_episode_ids,
+            relevance_query=relevance_query,
+            policy=policy,
+            before=before,
+            learned=learned,
+        )
+        solver = result.dossier.get("solver", {})
+        return result.model_copy(
+            update={
+                "strategy": CompactionStrategy.LEARNED_PCKP,
+                "dossier": {
+                    **result.dossier,
+                    "strategy": CompactionStrategy.LEARNED_PCKP.value,
+                    "objective": "additive learned ranking utility under dependency-closed PCKP",
+                    "learned_ranking": {
+                        "status": "applied",
+                        "predictor": learned.identity.model_dump(mode="json"),
+                        "feature_schema_version": learned.identity.feature_schema_version,
+                        "artifact_digest": learned.identity.artifact_digest,
+                        "task_digest": result.dossier.get("relevance_query_hash"),
+                        "predicted_utilities": learned.raw,
+                        "quantized_utilities": learned.quantized,
+                        "quantization": learned.policy.model_dump(mode="json"),
+                        "clipped_below_zero": learned.clipped_below,
+                        "clipped_above_ceiling": learned.clipped_above,
+                        "selected_episode_ids": result.dossier.get("retained_episode_ids", []),
+                        "solver_status": solver.get("status"),
+                        "optimality_gap": solver.get("optimality_gap"),
+                        "token_budget": token_budget,
+                        "selected_token_cost": solver.get("token_cost"),
+                        "guarantee_scope": (
+                            "optimal for the quantized learned objective only; makes no claim "
+                            "about downstream task performance"
+                        ),
+                    },
+                },
+            }
         )
 
     def _compact_pask(
@@ -1728,6 +1865,8 @@ class FileEpisodeStore(InMemoryEpisodeStore):
         relevance_scorer: EpisodeRelevanceScorer | None = None,
         semantic: SemanticCompactor | None = None,
         retain_generations: int = 3,
+        utility_predictor: EpisodeUtilityPredictor | None = None,
+        utility_quantization: QuantizationPolicy | None = None,
     ) -> None:
         if retain_generations < 1:
             raise ValueError("retain_generations must be at least 1.")
@@ -1739,6 +1878,8 @@ class FileEpisodeStore(InMemoryEpisodeStore):
             compaction_policy=compaction_policy,
             relevance_scorer=relevance_scorer,
             semantic=semantic,
+            utility_predictor=utility_predictor,
+            utility_quantization=utility_quantization,
         )
         self._state_path = self._memory_root / "episodes.json"
         self._checkpoint_path = self._memory_root / "checkpoint.json"
