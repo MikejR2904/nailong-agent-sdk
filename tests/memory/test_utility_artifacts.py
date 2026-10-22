@@ -64,23 +64,18 @@ def test_digest_is_a_function_of_content_only():
     )
 
 
-def test_missing_artifact_names_the_path(tmp_path):
+def test_unreadable_artifacts_raise_distinct_coded_errors(tmp_path):
     with pytest.raises(AgentSdkError) as raised:
         load_utility_model(tmp_path / "absent.json")
     assert raised.value.code == "UTILITY_MODEL_ARTIFACT_MISSING"
     assert "absent.json" in raised.value.message
-
-
-def test_truncated_and_non_object_artifacts_are_corrupt(tmp_path):
     path = tmp_path / "m.json"
     save_utility_model(path, LinearRankingModel([0.0] * N), {})
     path.write_text(path.read_text()[:40])
     with pytest.raises(AgentSdkError) as raised:
         load_utility_model(path)
-    assert (
-        raised.value.code == "UTILITY_MODEL_ARTIFACT_CORRUPT"
-        and "not valid JSON" in raised.value.message
-    )
+    assert raised.value.code == "UTILITY_MODEL_ARTIFACT_CORRUPT"
+    assert "not valid JSON" in raised.value.message
     path.write_text("[1, 2]")
     with pytest.raises(AgentSdkError, match="JSON list"):
         load_utility_model(path)

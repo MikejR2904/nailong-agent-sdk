@@ -32,6 +32,20 @@ certificate. A neural network never decides retention.
 | `memory/episode_models.py` | `CompactionStrategy.LEARNED_PCKP`; the policy validator requires a positive static weight for it because the static weights are also the fallback. |
 | `benchmarks/dfl/dfl_bench` | Instances, executors, candidates, preferences, splits, methods, experiment, report. Outside `src/`: the SDK carries no benchmark logic. |
 
+## 3.2a Supporting APIs added for production use and for measured evaluation
+
+* `FixedUtilityPredictor(utilities, predictor_id=..., version=...)` serves coefficients computed outside
+  the SDK (an offline model, a rule engine, an experiment arm). It performs no inference, validates its
+  table, exposes a `prediction_count`, and its artifact digest is the hash of the canonical table. It
+  replaced the hand-written predictor test doubles: every predictor in the tests is now a real one
+  (this class, or `LearnedUtilityPredictor` over a real model, which fails genuinely when its input
+  width is wrong or its coefficients are non-finite).
+* `InMemoryEpisodeStore.retain_only(ids, ...)` applies an externally chosen retention set through the
+  same leaves-first tombstoning as `compact`, after checking that it names only live episodes, keeps
+  every protected, active or open episode and its prerequisites, and keeps each retained episode's
+  prerequisites. It is how a candidate set (or a decision made elsewhere) reaches the real context
+  projector, and it returns a `CompactionResult` with strategy `EXPLICIT`.
+
 ## 3.3 Using it
 
 ```python
@@ -87,6 +101,19 @@ bad parameters, inconsistent architecture), `_INCOMPATIBLE` (artifact version),
 Mandatory-infeasible budgets are not a predictor failure: they keep the existing
 `PROTECTED_OVER_BUDGET` / `CONTEXT_DEADLOCK` outcome with the solver's `infeasible-mandatory` certificate.
 `BEST_EFFORT` is preserved and reported (`solver_status` in the learned record).
+
+## 3.5a Scale: when the certificate says best-effort
+
+The learned path inherits the solver's behaviour. Measured on general DAGs (`results/perf/scale.md`,
+default `exact_max_branch_nodes = 50,000`): up to about 48 episodes every solve was `optimal` (median
+0.4 s at 48); at about 96 and 160 episodes every solve was `best-effort` with a relative bound up to
+0.36 (96) and 0.52 (160) for varied learned coefficients, and took 2-5 s. Rooted forests use an exact tree
+DP and are unaffected. Consequences for use:
+
+* Check `learned_ranking.solver_status`; `best-effort` means the selection is feasible and the certificate
+  gives a bound, but the Theorem 2 `optimal` form does not apply (the `n/s + g/s` form does).
+* Raise `PaskCompactionPolicy.exact_max_branch_nodes` to trade time for proof, or accept the bound.
+* Latency of the predictor itself is about 0.6-0.9 ms at 12 episodes, small against the solve at scale.
 
 ## 3.6 Leakage and data-integrity design (training side)
 

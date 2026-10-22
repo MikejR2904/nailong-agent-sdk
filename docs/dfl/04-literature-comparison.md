@@ -1,9 +1,14 @@
 # 4. Comparison with related work
 
-**Verification status.** The only source checked during this work is the abstract of Mandi et al.
-(ICML 2022, <https://proceedings.mlr.press/v162/mandi22a.html>). Every other reference below was
-written from memory and has *not* been re-verified; check titles, venues and claims before citing.
-Statements about what a work does are limited to its widely known core idea.
+**Verification status (searched 2026-10-21).** Title, authors, venue and core idea were confirmed against
+publisher, proceedings or arXiv pages for: Mandi et al. ICML 2022 (abstract), Wilder et al. AAAI 2019,
+Elmachtoub and Grigas, Management Science 68(1) 2022, Mulamba et al. IJCAI 2021, Mandi et al. JAIR 2024
+(the volume number differs between sources, 80 vs 81; check before citing), Berthet et al. NeurIPS 2020,
+Christiano et al. NeurIPS 2017, Packer et al. 2023 (arXiv 2310.08560), Park et al. 2023 (arXiv 2304.03442),
+Chhikara et al. 2025 (Mem0, arXiv 2504.19413) and Shinn et al. NeurIPS 2023.
+**Not verified** (written from memory; search returned nothing usable): Vlastelica et al. ICLR 2020,
+Amos and Kolter ICML 2017, Wang et al. (Voyager), Xu et al. (A-MEM), Bradley and Terry 1952,
+Burges et al. 2005. Verify these before citing. Statements about a work are limited to its core idea.
 
 ## 4.1 Decision-focused learning
 
@@ -30,9 +35,9 @@ learned objective is only as good as the comparisons and as the additivity assum
 | Work | Retention / retrieval policy | Relation |
 |---|---|---|
 | MemGPT (Packer et al. 2023) | Virtual context management with paging decided by the model | Retention decided by an LLM. Here, retention is a verified optimisation with a certificate. |
-| Generative Agents (Park et al. 2023) | Retrieval scores = recency + importance + relevance, with hand-set weights | The static utility here has the same shape (hand-set weights over relevance, recency, centrality, provenance, frequency). The new work learns those coefficients from outcomes and adds graph/outcome features. |
+| Generative Agents (Park et al. 2023) | Retrieval combines recency (exponential decay), an LLM-rated importance and embedding-cosine relevance | The static utility here has the same shape (a hand-set weighted sum of relevance, recency, centrality, provenance and frequency). The new work learns coefficients from outcomes and adds graph and outcome features. I did not verify how the original weights its three terms. |
 | Reflexion (Shinn et al. 2023); Voyager (Wang et al. 2023) | Episodic reflections / skill libraries kept for later tasks | They choose *what to write*; this work chooses *what to keep under a token budget with dependencies*. |
-| Mem0, A-MEM (2025) | Structured, updatable long-term memory stores | Storage designs; none, to my knowledge, couples retention to an exact constrained optimiser with provenance closure. This is a claim from memory and should be checked. |
+| Mem0 (2025); A-MEM (unverified) | Mem0 extracts, consolidates and retrieves salient conversation facts | Storage designs; none, to my knowledge, couples retention to an exact constrained optimiser with provenance closure. This is a claim from memory and should be checked. |
 
 ## 4.4 Constrained knapsack
 

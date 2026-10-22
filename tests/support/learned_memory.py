@@ -1,45 +1,29 @@
 import random
 
 from nailong_agent_sdk.memory.episode_store import InMemoryEpisodeStore
-from nailong_agent_sdk.memory.learned_retention import PredictorIdentity
-from nailong_agent_sdk.memory.utility_features import FEATURE_NAMES, RetentionContext
-
-IDENTITY = PredictorIdentity(
-    predictor_id="stub",
-    version="1",
-    feature_schema_version="episode-utility-features-v1",
-    artifact_digest="0" * 64,
+from nailong_agent_sdk.memory.learned_retention import (
+    FixedUtilityPredictor,
+    LearnedUtilityPredictor,
 )
+from nailong_agent_sdk.memory.utility_features import FEATURE_NAMES
+from nailong_agent_sdk.memory.utility_models import LinearRankingModel
 
 
-class MappingPredictor:
-    def __init__(self, values=None, default=1.0, identity=IDENTITY):
-        self.values = values or {}
-        self.default = default
-        self._identity = identity
-        self.calls = 0
-
-    @property
-    def identity(self):
-        return self._identity
-
-    def predict(self, context: RetentionContext):
-        self.calls += 1
-        return {r.id: self.values.get(r.id, self.default) for r in context.records}
+def episode_ids(count: int) -> list[str]:
+    return [f"episode-{n}" for n in range(1, count + 1)]
 
 
-class RaisingPredictor(MappingPredictor):
-    def predict(self, context):
-        raise RuntimeError("model exploded")
+def fixed_predictor(values: dict[str, float] | None = None, *, ids=(), default: float = 1.0):
+    table = {episode_id: default for episode_id in ids}
+    table.update(values or {})
+    return FixedUtilityPredictor(table, predictor_id="fixed-table", version="1")
 
 
-class ConstantFeaturePredictor(MappingPredictor):
-    def __init__(self, value):
-        super().__init__()
-        self.value = value
-
-    def predict(self, context):
-        return {r.id: self.value for r in context.records}
+def mismatched_model_predictor():
+    model = LinearRankingModel([0.5] * (len(FEATURE_NAMES) - 1))
+    return LearnedUtilityPredictor(
+        model, predictor_id="mismatched-width", version="1", artifact_digest="e" * 64
+    )
 
 
 def build_store(rng: random.Random, n_exploratory: int, n_action: int, *, size=400, **kwargs):
@@ -63,7 +47,3 @@ def build_store(rng: random.Random, n_exploratory: int, n_action: int, *, size=4
         store.close(record.id)
         actions.append(record.id)
     return store, explore, actions
-
-
-def feature_count():
-    return len(FEATURE_NAMES)

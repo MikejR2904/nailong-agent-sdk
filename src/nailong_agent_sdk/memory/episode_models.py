@@ -40,6 +40,7 @@ class CompactionStrategy(StrEnum):
     PASK = "provenance-aware-submodular-knapsack"
     EXACT_PCKP = "exact-precedence-constrained-knapsack"
     LEARNED_PCKP = "learned-ranking-precedence-constrained-knapsack"
+    EXPLICIT = "explicit-retention"
 
 
 class EpisodeRecord(StrictModel):

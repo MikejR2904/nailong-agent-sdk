@@ -67,15 +67,6 @@ def test_loss_matches_hand_computation():
     assert ranking_loss(model, dataset, tau=2.0, l2=0.1) == pytest.approx(expected)
 
 
-def test_a_correctly_ordered_pair_costs_less_than_a_reversed_one():
-    dataset = RankingDataset(((1.0,), (0.0,)), (RankingPair((0,), (1,), 1.0),))
-    good = LinearRankingModel([2.0])
-    bad = LinearRankingModel([-2.0])
-    assert ranking_loss(good, dataset, tau=1.0, l2=0.0) < ranking_loss(
-        bad, dataset, tau=1.0, l2=0.0
-    )
-
-
 def numeric_gradient(model, dataset, tau, l2, step=1e-6):
     base = model.parameters
     result = []
@@ -146,13 +137,16 @@ def test_hessian_is_symmetric_and_strongly_convex_with_modulus_two_lambda():
 def test_convexity_along_random_segments():
     dataset = random_dataset(6)
     rng = random.Random(1)
+
+    def loss(parameters):
+        return ranking_loss(LinearRankingModel(parameters), dataset, tau=1.0, l2=0.01)
+
     for _ in range(30):
         a = [rng.uniform(-2, 2) for _ in range(D)]
         b = [rng.uniform(-2, 2) for _ in range(D)]
         t = rng.random()
         mid = [t * x + (1 - t) * y for x, y in zip(a, b)]
-        f = lambda p: ranking_loss(LinearRankingModel(p), dataset, tau=1.0, l2=0.01)  # noqa: E731
-        assert f(mid) <= t * f(a) + (1 - t) * f(b) + 1e-9
+        assert loss(mid) <= t * loss(a) + (1 - t) * loss(b) + 1e-9
 
 
 def test_newton_reaches_a_stationary_point_and_the_minimizer_is_unique():

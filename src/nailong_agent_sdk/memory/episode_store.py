@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -70,6 +70,7 @@ from .memory_snapshot import (
     SnapshotRejection,
     snapshot_problems,
 )
+from .retention_outcomes import RetentionDecision, build_decision
 from .semantic_compaction import (
     SemanticCompactor,
     SemanticPassReport,
@@ -118,7 +119,9 @@ class InMemoryEpisodeStore:
         semantic: SemanticCompactor | None = None,
         utility_predictor: EpisodeUtilityPredictor | None = None,
         utility_quantization: QuantizationPolicy | None = None,
+        retention_observer: Callable[[RetentionDecision], None] | None = None,
     ) -> None:
+        self._retention_observer = retention_observer
         self._utility_predictor = utility_predictor
         self._utility_quantization = utility_quantization or QuantizationPolicy()
         self._records: dict[str, EpisodeRecord] = {}
@@ -339,12 +342,120 @@ class InMemoryEpisodeStore:
 
         guard = self._guard
         self._ensure_active(guard)
+        observer = self._retention_observer
+        context = (
+            self._retention_context(token_budget, relevance_query) if observer is not None else None
+        )
         result = self._compact_selection(
             token_budget,
             active_episode_id=active_episode_id,
             protected_episode_ids=protected_episode_ids,
             relevance_query=relevance_query,
             policy=policy,
+        )
+        if observer is not None and context is not None:
+            decision = build_decision(context, result)
+            if decision is not None:
+                try:
+                    observer(decision)
+                except Exception as error:
+                    raise AgentSdkError(
+                        "RETENTION_OBSERVER_FAILED",
+                        f"The retention observer raised {type(error).__name__}: {error}. The "
+                        f"compaction itself was applied ({len(result.compacted_episode_ids)} "
+                        "episodes compacted).",
+                    ) from error
+        if self._semantic is None:
+            return result
+        report = self._semantic_pass(guard)
+        return result.model_copy(
+            update={
+                "dossier": {**result.dossier, "semantic_compaction": report.model_dump(mode="json")}
+            }
+        )
+
+    def _retention_context(self, token_budget: int, relevance_query: str) -> RetentionContext:
+        live = [
+            record
+            for record in self._records.values()
+            if record.state is not EpisodeState.COMPACTED
+        ]
+        return RetentionContext(
+            records=tuple(sorted(live, key=lambda record: record.id)),
+            token_costs={record.id: _episode_tokens(record) for record in live},
+            relevance={
+                record.id: _clamp_score(self._relevance_scorer.score(relevance_query, record))
+                for record in live
+            },
+            query=relevance_query,
+            token_budget=token_budget,
+        )
+
+    def retain_only(
+        self,
+        retained_episode_ids: Iterable[str],
+        *,
+        active_episode_id: str | None = None,
+        protected_episode_ids: Iterable[str] = (),
+    ) -> CompactionResult:
+        """Apply an externally chosen retention set through the same tombstoning path."""
+
+        guard = self._guard
+        self._ensure_active(guard)
+        retained = set(retained_episode_ids)
+        protected = set(protected_episode_ids)
+        named = retained | protected
+        if active_episode_id is not None:
+            named.add(active_episode_id)
+        unknown = sorted(named - set(self._records))
+        if unknown:
+            raise ValueError(f"retain_only names unknown episodes {unknown}.")
+        live_ids = {
+            record.id
+            for record in self._records.values()
+            if record.state is not EpisodeState.COMPACTED
+        }
+        already_compacted = sorted(retained - live_ids)
+        if already_compacted:
+            raise ValueError(
+                f"retain_only cannot retain episodes that are already compacted: "
+                f"{already_compacted}."
+            )
+        mandatory = set(protected)
+        if active_episode_id is not None:
+            mandatory.add(active_episode_id)
+        mandatory.update(
+            record.id
+            for record in self._records.values()
+            if record.id in live_ids and record.state is EpisodeState.OPEN
+        )
+        mandatory = self._dependency_closure(mandatory, live_ids)
+        dropped = sorted(mandatory - retained)
+        if dropped:
+            raise ValueError(
+                f"retain_only would drop mandatory episodes {dropped} "
+                "(protected, active, open, or required by one of them)."
+            )
+        for episode_id in sorted(retained):
+            missing = [d for d in self._require(episode_id).depends_on if d not in retained]
+            if missing:
+                raise ValueError(
+                    f'retain_only retains episode "{episode_id}" without its prerequisites '
+                    f"{missing}."
+                )
+        before = self.estimate_tokens()
+        compacted = self._compact_unretained(live_ids - retained)
+        result = CompactionResult(
+            status=CompactionStatus.COMPACTED if compacted else CompactionStatus.WITHIN_BUDGET,
+            before_tokens=before,
+            after_tokens=self.estimate_tokens(),
+            compacted_episode_ids=compacted,
+            strategy=CompactionStrategy.EXPLICIT,
+            dossier={
+                "strategy": CompactionStrategy.EXPLICIT.value,
+                "mandatory_episode_ids": sorted(mandatory),
+                "retained_episode_ids": sorted(retained),
+            },
         )
         if self._semantic is None:
             return result
@@ -716,21 +827,7 @@ class InMemoryEpisodeStore:
                 "utility_predictor.",
             }
         else:
-            live = [
-                record
-                for record in self._records.values()
-                if record.state is not EpisodeState.COMPACTED
-            ]
-            context = RetentionContext(
-                records=tuple(sorted(live, key=lambda record: record.id)),
-                token_costs={record.id: _episode_tokens(record) for record in live},
-                relevance={
-                    record.id: _clamp_score(self._relevance_scorer.score(relevance_query, record))
-                    for record in live
-                },
-                query=relevance_query,
-                token_budget=token_budget,
-            )
+            context = self._retention_context(token_budget, relevance_query)
             try:
                 learned = resolve_learned_coefficients(
                     predictor, context, self._utility_quantization
@@ -1867,6 +1964,7 @@ class FileEpisodeStore(InMemoryEpisodeStore):
         retain_generations: int = 3,
         utility_predictor: EpisodeUtilityPredictor | None = None,
         utility_quantization: QuantizationPolicy | None = None,
+        retention_observer: Callable[[RetentionDecision], None] | None = None,
     ) -> None:
         if retain_generations < 1:
             raise ValueError("retain_generations must be at least 1.")
@@ -1880,6 +1978,7 @@ class FileEpisodeStore(InMemoryEpisodeStore):
             semantic=semantic,
             utility_predictor=utility_predictor,
             utility_quantization=utility_quantization,
+            retention_observer=retention_observer,
         )
         self._state_path = self._memory_root / "episodes.json"
         self._checkpoint_path = self._memory_root / "checkpoint.json"

@@ -18,6 +18,7 @@ from pydantic import Field
 
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
+from ..foundations.hashing import sha256_hex, strict_canonical_json
 from .utility_features import FEATURE_SCHEMA_VERSION, RetentionContext, extract_features
 from .utility_models import RankingModel, load_utility_model
 
@@ -30,10 +31,17 @@ class PredictorIdentity(StrictModel):
 
 
 class QuantizationPolicy(StrictModel):
-    """Maps real-valued utilities to PCKP's non-negative integers: ``clip(round(scale * u))``."""
+    """Maps utilities to PCKP integers: ``max(floor, round(scale * clip(u, 0, ceiling)))``.
+
+    ``floor`` defaults to 0 (clipped episodes are worth nothing and the solver prefers the cheaper
+    of equal-utility selections, so a model that rates many episodes at or below zero leaves
+    budget unspent). A positive ``floor`` makes every live episode worth at least that many
+    quantized units, which breaks such ties toward using the budget.
+    """
 
     scale: int = Field(default=1_000_000, ge=1)
     ceiling: float = Field(default=1_000.0, gt=0, allow_inf_nan=False)
+    floor: int = Field(default=0, ge=0)
 
 
 class EpisodeUtilityPredictor(Protocol):
@@ -86,6 +94,43 @@ class LearnedUtilityPredictor:
         return {episode_id: self._model.score(vector) for episode_id, vector in features.items()}
 
 
+class FixedUtilityPredictor:
+    """Serves per-episode utilities computed outside the SDK; it performs no inference."""
+
+    def __init__(self, utilities: Mapping[str, float], *, predictor_id: str, version: str) -> None:
+        table: dict[str, float] = {}
+        for episode_id, value in utilities.items():
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ValueError(
+                    f'Fixed utility for episode "{episode_id}" is {value!r}; expected a number.'
+                )
+            table[str(episode_id)] = float(value)
+        self._table = table
+        self._predictions = 0
+        self._identity = PredictorIdentity(
+            predictor_id=predictor_id,
+            version=version,
+            feature_schema_version="fixed-utility-table-v1",
+            artifact_digest=sha256_hex(strict_canonical_json(dict(sorted(table.items())))),
+        )
+
+    @property
+    def identity(self) -> PredictorIdentity:
+        return self._identity
+
+    @property
+    def prediction_count(self) -> int:
+        return self._predictions
+
+    def predict(self, context: RetentionContext) -> Mapping[str, float]:
+        self._predictions += 1
+        return {
+            record.id: self._table[record.id]
+            for record in context.records
+            if record.id in self._table
+        }
+
+
 @dataclass(frozen=True)
 class LearnedCoefficients:
     identity: PredictorIdentity
@@ -110,7 +155,7 @@ def quantize_utilities(
         elif value > policy.ceiling:
             above.append(episode_id)
             value = policy.ceiling
-        quantized[episode_id] = round(value * policy.scale)
+        quantized[episode_id] = max(policy.floor, round(value * policy.scale))
     return quantized, below, above
 
 
