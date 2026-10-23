@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nailong_agent_sdk.foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem
-from nailong_agent_sdk.memory.episode_models import CompactionStrategy
+from nailong_agent_sdk.memory.episode_models import CompactionStrategy, PaskCompactionPolicy
 from nailong_agent_sdk.memory.learned_retention import QuantizationPolicy, quantize_utilities
+from nailong_agent_sdk.memory.utility_features import FEATURE_NAMES
 from nailong_agent_sdk.memory.utility_models import RankingModel
 
 from ..preferences import PreferencePolicy, build_preferences
@@ -41,6 +42,34 @@ def static_scoring() -> Scoring:
         return None
 
     return Scoring("static-pckp", scorer)
+
+
+def policy_static_scoring(policy: PaskCompactionPolicy, name: str = "tuned-static-pckp") -> Scoring:
+    """The store's static utility under ``policy``, rebuilt from logged features.
+
+    The first thirteen columns of every feature schema are the v1 columns, which contain each
+    component of the static utility, so a tuned policy can be scored from the log alone.
+    """
+
+    column = {feature: FEATURE_NAMES.index(feature) for feature in FEATURE_NAMES}
+
+    def scorer(task: TaskRecord) -> dict[str, float] | None:
+        result: dict[str, float] = {}
+        for episode_id in task.episode_ids:
+            v = task.features[episode_id]
+            provenance = (
+                1.0 if v[column["substrate_backed"]] else 0.65 if v[column["exploratory"]] else 0.40
+            )
+            result[episode_id] = (
+                policy.task_relevance_weight * v[column["lexical_relevance"]]
+                + policy.dependency_centrality_weight * v[column["dependent_share"]]
+                + policy.provenance_weight * provenance
+                + policy.recency_weight * v[column["recency"]]
+                + policy.frequency_weight * v[column["frequency"]]
+            )
+        return result
+
+    return Scoring(name, scorer)
 
 
 def model_scoring(model: RankingModel, name: str) -> Scoring:
@@ -212,4 +241,34 @@ def evaluate_gate(
             f"candidate loses on matched logged outcomes: {mean(matched):+.3f} over "
             f"{len(matched)} tasks (tolerance {policy.matched_tolerance})"
         )
+    return GateDecision(not reasons, reasons, metrics)
+
+
+def evaluate_against_all(
+    candidate: Scoring,
+    incumbents: list[Scoring],
+    tasks: list[TaskRecord],
+    *,
+    preference_policy: PreferencePolicy | None = None,
+    policy: GatePolicy | None = None,
+    quantization: QuantizationPolicy | None = None,
+) -> GateDecision:
+    """Promote only if the candidate passes the full gate against every incumbent, so a tuned
+    static baseline and the current model must both be beaten."""
+
+    if not incumbents:
+        raise ValueError("At least one incumbent is required.")
+    reasons: list[str] = []
+    metrics: dict[str, Any] = {"candidate": candidate.name, "against": {}}
+    for incumbent in incumbents:
+        decision = evaluate_gate(
+            candidate,
+            incumbent,
+            tasks,
+            preference_policy=preference_policy,
+            policy=policy,
+            quantization=quantization,
+        )
+        metrics["against"][incumbent.name] = decision.metrics
+        reasons.extend(f"vs {incumbent.name}: {reason}" for reason in decision.reasons)
     return GateDecision(not reasons, reasons, metrics)

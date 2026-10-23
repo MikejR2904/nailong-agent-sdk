@@ -79,7 +79,7 @@ from .semantic_compaction import (
 )
 from .summarization_scheduler import SummarizationScheduler
 from .summary_ledger import SummaryLedger
-from .utility_features import RetentionContext
+from .utility_features import FEATURE_SCHEMA_VERSION, RetentionContext
 
 SNAPSHOT_DIRECTORY = "snapshots"
 SNAPSHOT_PREFIX = "snapshot-"
@@ -120,8 +120,10 @@ class InMemoryEpisodeStore:
         utility_predictor: EpisodeUtilityPredictor | None = None,
         utility_quantization: QuantizationPolicy | None = None,
         retention_observer: Callable[[RetentionDecision], None] | None = None,
+        retention_feature_schema: str = FEATURE_SCHEMA_VERSION,
     ) -> None:
         self._retention_observer = retention_observer
+        self._retention_feature_schema = retention_feature_schema
         self._utility_predictor = utility_predictor
         self._utility_quantization = utility_quantization or QuantizationPolicy()
         self._records: dict[str, EpisodeRecord] = {}
@@ -354,7 +356,7 @@ class InMemoryEpisodeStore:
             policy=policy,
         )
         if observer is not None and context is not None:
-            decision = build_decision(context, result)
+            decision = build_decision(context, result, self._retention_feature_schema)
             if decision is not None:
                 try:
                     observer(decision)
@@ -880,6 +882,7 @@ class InMemoryEpisodeStore:
                         "feature_schema_version": learned.identity.feature_schema_version,
                         "artifact_digest": learned.identity.artifact_digest,
                         "task_digest": result.dossier.get("relevance_query_hash"),
+                        "calibration": getattr(predictor, "last_audit", None),
                         "predicted_utilities": learned.raw,
                         "quantized_utilities": learned.quantized,
                         "quantization": learned.policy.model_dump(mode="json"),
@@ -1965,6 +1968,7 @@ class FileEpisodeStore(InMemoryEpisodeStore):
         utility_predictor: EpisodeUtilityPredictor | None = None,
         utility_quantization: QuantizationPolicy | None = None,
         retention_observer: Callable[[RetentionDecision], None] | None = None,
+        retention_feature_schema: str = FEATURE_SCHEMA_VERSION,
     ) -> None:
         if retain_generations < 1:
             raise ValueError("retain_generations must be at least 1.")
@@ -1979,6 +1983,7 @@ class FileEpisodeStore(InMemoryEpisodeStore):
             utility_predictor=utility_predictor,
             utility_quantization=utility_quantization,
             retention_observer=retention_observer,
+            retention_feature_schema=retention_feature_schema,
         )
         self._state_path = self._memory_root / "episodes.json"
         self._checkpoint_path = self._memory_root / "checkpoint.json"

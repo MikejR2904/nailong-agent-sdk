@@ -19,7 +19,8 @@ from pydantic import Field
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import sha256_hex, strict_canonical_json
-from .utility_features import FEATURE_SCHEMA_VERSION, RetentionContext, extract_features
+from .utility_features import FEATURE_SCHEMA_VERSION, RetentionContext
+from .utility_features_v2 import FEATURE_SCHEMAS
 from .utility_models import RankingModel, load_utility_model
 
 
@@ -62,13 +63,20 @@ class LearnedUtilityPredictor:
         version: str,
         artifact_digest: str,
         disabled_groups: Sequence[str] = (),
+        feature_schema: str = FEATURE_SCHEMA_VERSION,
     ) -> None:
+        if feature_schema not in FEATURE_SCHEMAS:
+            raise ValueError(
+                f'Unknown feature schema "{feature_schema}"; known: {sorted(FEATURE_SCHEMAS)}.'
+            )
+        _, extractor = FEATURE_SCHEMAS[feature_schema]
         self._model = model
         self._disabled_groups = tuple(disabled_groups)
+        self._extractor = extractor
         self._identity = PredictorIdentity(
             predictor_id=predictor_id,
             version=version,
-            feature_schema_version=FEATURE_SCHEMA_VERSION,
+            feature_schema_version=feature_schema,
             artifact_digest=artifact_digest,
         )
 
@@ -83,6 +91,7 @@ class LearnedUtilityPredictor:
             version=version,
             artifact_digest=loaded.digest,
             disabled_groups=tuple(loaded.training.get("disabled_feature_groups", ())),
+            feature_schema=loaded.training.get("feature_schema_version", FEATURE_SCHEMA_VERSION),
         )
 
     @property
@@ -90,7 +99,7 @@ class LearnedUtilityPredictor:
         return self._identity
 
     def predict(self, context: RetentionContext) -> Mapping[str, float]:
-        features = extract_features(context, self._disabled_groups)
+        features = self._extractor(context, self._disabled_groups)
         return {episode_id: self._model.score(vector) for episode_id, vector in features.items()}
 
 

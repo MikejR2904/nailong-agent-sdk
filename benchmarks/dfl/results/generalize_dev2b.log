@@ -1,0 +1,50 @@
+concurrent.futures.process._RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "C:\Python313\Lib\concurrent\futures\process.py", line 254, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+  File "C:\Python313\Lib\concurrent\futures\process.py", line 203, in _process_chunk
+    return [fn(*args) for args in chunk]
+            ~~^^^^^^^
+  File "C:\dev\nailong-agent-sdk\benchmarks\dfl\dfl_bench\generalize\protocol.py", line 107, in run_job
+    return run_fold(*job)
+  File "C:\dev\nailong-agent-sdk\benchmarks\dfl\dfl_bench\generalize\protocol.py", line 241, in run_fold
+    test_candidates = evaluate_candidates(test, executor, cfg.train_trials, seed + 99)
+  File "C:\dev\nailong-agent-sdk\benchmarks\dfl\dfl_bench\experiment.py", line 91, in evaluate_candidates
+    for candidate in generate_candidates(instance, rng, learned_predictors=learned):
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\dev\nailong-agent-sdk\benchmarks\dfl\dfl_bench\selection.py", line 208, in generate_candidates
+    base_values = static_utilities(instance)
+  File "C:\dev\nailong-agent-sdk\benchmarks\dfl\dfl_bench\selection.py", line 88, in static_utilities
+    raise ValueError(
+    ...<2 lines>...
+    )
+ValueError: Instance "aligned-short:bT0x0-aligned-0" produced no static utilities (status None); it is not a usable instance.
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\dev\nailong-agent-sdk\benchmarks\dfl\dfl_bench\generalize\__main__.py", line 64, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "C:\dev\nailong-agent-sdk\benchmarks\dfl\dfl_bench\generalize\__main__.py", line 48, in main
+    for job, result in zip(jobs, pool.map(run_job, jobs), strict=True):
+                       ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\concurrent\futures\process.py", line 617, in _chain_from_iterable_of_lists
+    for element in iterable:
+                   ^^^^^^^^
+  File "C:\Python313\Lib\concurrent\futures\_base.py", line 619, in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "C:\Python313\Lib\concurrent\futures\_base.py", line 317, in _result_or_cancel
+    return fut.result(timeout)
+           ~~~~~~~~~~^^^^^^^^^
+  File "C:\Python313\Lib\concurrent\futures\_base.py", line 456, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+ValueError: Instance "aligned-short:bT0x0-aligned-0" produced no static utilities (status None); it is not a usable instance.

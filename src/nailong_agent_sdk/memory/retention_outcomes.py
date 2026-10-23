@@ -23,7 +23,8 @@ from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import sha256_hex, strict_canonical_json
 from .episode_models import CompactionResult
 from .learned_retention import PredictorIdentity
-from .utility_features import FEATURE_SCHEMA_VERSION, RetentionContext, extract_features
+from .utility_features import FEATURE_SCHEMA_VERSION, RetentionContext
+from .utility_features_v2 import FEATURE_SCHEMAS
 
 
 class RetentionDecision(StrictModel):
@@ -52,7 +53,15 @@ class RetentionOutcome(StrictModel):
     source: str = Field(min_length=1)
 
 
-def build_decision(context: RetentionContext, result: CompactionResult) -> RetentionDecision | None:
+def build_decision(
+    context: RetentionContext,
+    result: CompactionResult,
+    feature_schema: str = FEATURE_SCHEMA_VERSION,
+) -> RetentionDecision | None:
+    if feature_schema not in FEATURE_SCHEMAS:
+        raise ValueError(
+            f'Unknown feature schema "{feature_schema}"; known: {sorted(FEATURE_SCHEMAS)}.'
+        )
     selected = result.dossier.get("retained_episode_ids")
     if selected is None:
         return None
@@ -89,7 +98,11 @@ def build_decision(context: RetentionContext, result: CompactionResult) -> Reten
         episode_ids=sorted(record.id for record in context.records),
         token_costs={key: int(value) for key, value in context.token_costs.items()},
         depends_on={record.id: list(record.depends_on) for record in context.records},
-        features={key: list(value) for key, value in extract_features(context).items()},
+        feature_schema_version=feature_schema,
+        features={
+            key: list(value)
+            for key, value in FEATURE_SCHEMAS[feature_schema][1](context, ()).items()
+        },
         utilities=utilities,
         mandatory_ids=sorted(result.dossier.get("mandatory_episode_ids", [])),
         selected_ids=selected_ids,

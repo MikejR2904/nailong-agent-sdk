@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **158 files, 565 classes and 2,013 functions** (methods and nested closures included).
+covers **161 files, 573 classes and 2,046 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -546,6 +546,9 @@ the run options. Everything else is a parameter too:
 | [`memory/learned_retention.py`](memory.md#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 161 | opt-in learned utility coefficients for dependency-closed retention |
 | [`memory/memory_snapshot.py`](memory.md#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
 | [`memory/retention_outcomes.py`](memory.md#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 187 | retention decisions and their outcomes, recorded for offline learning |
+| [`memory/utility_objectives.py`](memory.md#memoryutility_objectivespy---generalized-training-objectives-regret-weighted-pairwise-listwise-regression-group-dro) | 395 | generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO |
+| [`memory/utility_calibration.py`](memory.md#memoryutility_calibrationpy---utility-calibration-distribution-shift-evidence-and-logged-static-fallback) | 288 | utility calibration, distribution-shift evidence and logged static fallback |
+| [`memory/utility_features_v2.py`](memory.md#memoryutility_features_v2py---feature-schema-v2-task-conditioned-bipartite-graph-and-failure-propagation-features) | 147 | feature schema v2: task-conditioned, bipartite-graph and failure-propagation features |
 | [`memory/semantic_compaction.py`](memory.md#memorysemantic_compactionpy---dependency-aware-summarization-verification-and-safe-commit-of-compacted-episodes) | 1133 | dependency-aware summarization, verification and safe commit of compacted episodes |
 | [`memory/summarization_scheduler.py`](memory.md#memorysummarization_schedulerpy---bounded-background-queue-for-summarization-work-that-never-blocks-its-caller) | 190 | bounded background queue for summarization work that never blocks its caller |
 | [`memory/summary_ledger.py`](memory.md#memorysummary_ledgerpy---the-summaries-of-one-episode-store-and-where-each-one-lives) | 192 | the summaries of one episode store and where each one lives |
@@ -606,7 +609,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 158 files, 565 classes and 2013 functions (including methods and nested closures), each with a written description.*
+*Coverage: 161 files, 573 classes and 2046 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 

@@ -1,0 +1,11 @@
+seed0__budget-high.json: 1033s failures={}
+seed1__iid-template.json: 945s failures={}
+seed1__lofo_aligned-short.json: 904s failures={}
+seed1__lofo_shifted-short.json: 886s failures={}
+seed1__lofo_aligned-long.json: 753s failures={}
+seed1__lofo_shifted-long.json: 768s failures={}
+seed1__lofo_additive-deep.json: 913s failures={}
+seed1__lofo_uninformative.json: 881s failures={}
+seed1__holdout-long.json: 491s failures={}
+seed1__budget-low.json: 997s failures={}
+seed1__budget-high.json: 1016s failures={}

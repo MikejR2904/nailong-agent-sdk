@@ -7,11 +7,18 @@ import json
 import sys
 from pathlib import Path
 
+from nailong_agent_sdk.memory.episode_models import PaskCompactionPolicy
 from nailong_agent_sdk.memory.learned_retention import QuantizationPolicy
 from nailong_agent_sdk.memory.retention_outcomes import RetentionOutcomeLog
 
 from .dataset import load_tasks, split_of
-from .gate import GatePolicy, evaluate_gate, model_scoring, static_scoring
+from .gate import (
+    GatePolicy,
+    evaluate_against_all,
+    model_scoring,
+    policy_static_scoring,
+    static_scoring,
+)
 from .registry import ModelRegistry
 from .retrain import retrain, write_candidate
 
@@ -24,6 +31,18 @@ def main(argv: list[str] | None = None) -> int:
     train.add_argument("--registry", type=Path, required=True)
     train.add_argument("--model-type", choices=["linear", "mlp"], default="linear")
     train.add_argument("--seed", type=int, default=0)
+    train.add_argument(
+        "--objective",
+        choices=["pairwise", "regret-pairwise", "listwise", "regression"],
+        default="pairwise",
+    )
+    train.add_argument("--group-dro", action="store_true")
+    train.add_argument(
+        "--tuned-static",
+        type=Path,
+        default=None,
+        help="JSON of PaskCompactionPolicy weights tuned offline; the candidate must beat it too",
+    )
     train.add_argument("--min-tasks", type=int, default=8)
     train.add_argument("--min-pairs", type=int, default=20)
     train.add_argument(
@@ -43,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
     rollback.add_argument("--registry", type=Path, required=True)
     rollback.add_argument("--approver", required=True)
     rollback.add_argument("--reason", required=True)
+    disable = commands.add_parser("disable", help="stop serving learned retention entirely")
+    disable.add_argument("--registry", type=Path, required=True)
+    disable.add_argument("--approver", required=True)
+    disable.add_argument("--reason", required=True)
     status = commands.add_parser("status", help="show the current version and history")
     status.add_argument("--registry", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -50,7 +73,13 @@ def main(argv: list[str] | None = None) -> int:
     registry = ModelRegistry(args.registry)
     if args.command == "retrain":
         tasks, kind = load_tasks(RetentionOutcomeLog(args.log))
-        candidate = retrain(tasks, model_type=args.model_type, seed=args.seed)
+        candidate = retrain(
+            tasks,
+            model_type=args.model_type,
+            seed=args.seed,
+            objective=args.objective,
+            group_dro=args.group_dro,
+        )
         artifact = args.registry / "candidate.json"
         write_candidate(candidate, artifact)
         current = registry.current()
@@ -60,9 +89,13 @@ def main(argv: list[str] | None = None) -> int:
             else static_scoring()
         )
         gate_tasks = [t for t in tasks if split_of(t.task_digest) == "gate"]
-        decision = evaluate_gate(
+        incumbents = [incumbent]
+        if args.tuned_static is not None:
+            weights = json.loads(args.tuned_static.read_text(encoding="utf-8"))
+            incumbents.append(policy_static_scoring(PaskCompactionPolicy(**weights)))
+        decision = evaluate_against_all(
             model_scoring(candidate.model, "candidate"),
-            incumbent,
+            incumbents,
             gate_tasks,
             policy=GatePolicy(min_tasks=args.min_tasks, min_pairs=args.min_pairs),
             quantization=QuantizationPolicy(floor=args.quantization_floor),
@@ -74,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if decision.promote else 2
     if args.command == "promote":
         registry.promote(args.version, approver=args.approver, reason=args.reason)
+    elif args.command == "disable":
+        registry.disable(approver=args.approver, reason=args.reason)
+        print("now serving: static default")
     elif args.command == "rollback":
         print(
             "now serving:",

@@ -50,6 +50,8 @@ class ModelRegistry:
                 stack.append(event["version"])
             elif event["event"] == "rollback" and stack:
                 stack.pop()
+            elif event["event"] == "disable":
+                stack.clear()
         return stack
 
     def register(self, artifact: Path, gate: GateDecision) -> str:
@@ -98,6 +100,20 @@ class ModelRegistry:
         )
         remaining = self._promoted_stack()
         return remaining[-1] if remaining else None
+
+    def disable(self, *, approver: str, reason: str) -> None:
+        """Stop serving every learned version; static PCKP is in effect until the next promote."""
+
+        if not approver.strip() or not reason.strip():
+            raise ValueError("Disabling requires a non-empty approver and reason.")
+        self._append(
+            {
+                "event": "disable",
+                "from": self.current_version(),
+                "approver": approver,
+                "reason": reason,
+            }
+        )
 
     def current_version(self) -> str | None:
         stack = self._promoted_stack()

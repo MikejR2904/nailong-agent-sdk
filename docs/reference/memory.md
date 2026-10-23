@@ -16,6 +16,9 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 | [`memory/learned_retention.py`](#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 161 | opt-in learned utility coefficients for dependency-closed retention |
 | [`memory/memory_snapshot.py`](#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
 | [`memory/retention_outcomes.py`](#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 187 | retention decisions and their outcomes, recorded for offline learning |
+| [`memory/utility_objectives.py`](#memoryutility_objectivespy---generalized-training-objectives-regret-weighted-pairwise-listwise-regression-group-dro) | 395 | generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO |
+| [`memory/utility_calibration.py`](#memoryutility_calibrationpy---utility-calibration-distribution-shift-evidence-and-logged-static-fallback) | 288 | utility calibration, distribution-shift evidence and logged static fallback |
+| [`memory/utility_features_v2.py`](#memoryutility_features_v2py---feature-schema-v2-task-conditioned-bipartite-graph-and-failure-propagation-features) | 147 | feature schema v2: task-conditioned, bipartite-graph and failure-propagation features |
 | [`memory/semantic_compaction.py`](#memorysemantic_compactionpy---dependency-aware-summarization-verification-and-safe-commit-of-compacted-episodes) | 1133 | dependency-aware summarization, verification and safe commit of compacted episodes |
 | [`memory/summarization_scheduler.py`](#memorysummarization_schedulerpy---bounded-background-queue-for-summarization-work-that-never-blocks-its-caller) | 190 | bounded background queue for summarization work that never blocks its caller |
 | [`memory/summary_ledger.py`](#memorysummary_ledgerpy---the-summaries-of-one-episode-store-and-where-each-one-lives) | 192 | the summaries of one episode store and where each one lives |
@@ -453,7 +456,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
   - `EpisodeUtilityPredictor.identity() -> PredictorIdentity` *(property)* - The predictor's identity record.
   - `EpisodeUtilityPredictor.predict(self, context: RetentionContext) -> Mapping[str, float]` - Returns one finite utility per live episode.
 - **class `LearnedUtilityPredictor`** *(class)* - Scores episodes with a loaded ranking model; it never trains or mutates the model.
-  - `LearnedUtilityPredictor.__init__(self, model: RankingModel, *, predictor_id: str, version: str, artifact_digest: str, disabled_groups: Sequence[str]=()) -> None` - Wraps a model with its identity and any ablated feature groups.
+  - `LearnedUtilityPredictor.__init__(self, model: RankingModel, *, predictor_id: str, version: str, artifact_digest: str, disabled_groups: Sequence[str]=(), feature_schema: str=FEATURE_SCHEMA_VERSION) -> None` - Wraps a model with its identity, any ablated feature groups and the named feature schema (v1 by default, v2 selectable; unknown names raise `ValueError`).
   - `LearnedUtilityPredictor.from_artifact(cls, path: Path, *, predictor_id: str, version: str) -> LearnedUtilityPredictor` - Loads and validates an artifact, taking the ablated groups from its training metadata.
   - `LearnedUtilityPredictor.identity() -> PredictorIdentity` *(property)* - The predictor's identity record.
   - `LearnedUtilityPredictor.predict(self, context: RetentionContext) -> Mapping[str, float]` - Extracts features and scores every live episode.
@@ -508,7 +511,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 - **class `RetentionDecision`** *(class)* - One compaction decision with everything a retrain needs: task digest (never the task text), group, strategy, budget, predictor identity, per-episode features, token costs, prerequisite graph, the utilities that drove the choice, mandatory ids, the selected ids and the solver status.
 - **class `RetentionOutcome`** *(class)* - A score in [0, 1] attached to a decision for one trial, with the source that produced it (for example `measured` or `synthetic`).
-- `build_decision(context: RetentionContext, result: CompactionResult) -> RetentionDecision | None` - Builds a decision from the pre-compaction `RetentionContext` and the `CompactionResult`; returns `None` when the compaction selected nothing (within budget, or infeasible). The decision id hashes task, strategy, predictor digest, budget and selection.
+- `build_decision(context: RetentionContext, result: CompactionResult, feature_schema: str=FEATURE_SCHEMA_VERSION) -> RetentionDecision | None` - Builds a decision from the pre-compaction `RetentionContext` and the `CompactionResult`; returns `None` when the compaction selected nothing (within budget, or infeasible). The decision id hashes task, strategy, predictor digest, budget and selection; `feature_schema` picks the feature schema the logged features use (unknown names raise `ValueError`).
 - **class `RetentionOutcomeLog`** *(class)* - Append-only JSON-lines log of decisions and outcomes; thread-safe; a reload validates every line.
   - `RetentionOutcomeLog.__init__(self, path: Path, *, task_group: str='unspecified') -> None` - Opens or creates the file and ingests existing rows, raising `RETENTION_LOG_CORRUPT` with the file and line on any invalid row. `task_group` labels the decisions this log observes.
   - `RetentionOutcomeLog._ingest(self, line: str, number: int) -> None` - Validates and applies one row; rejects unknown row types, outcomes for unknown decisions and a different score for the same decision and trial.
@@ -519,6 +522,86 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
   - `RetentionOutcomeLog.outcomes(self, decision_id: str) -> list[RetentionOutcome]` - The outcomes of one decision, ordered by trial.
 
 **Algorithms & invariants.** A decision never contains the task text, only its SHA-256. A decision is recorded once per (task, strategy, predictor, budget, selection); repeating the identical decision adds nothing. Outcomes are scores, so the log carries no judgement about how they were obtained beyond the `source` label.
+
+---
+
+### `memory/utility_objectives.py` - generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO
+
+*395 lines · depends on: `foundations/contracts.py`, `memory/utility_models.py`, `memory/utility_training.py` · used by: none inside the package (host and benchmark training code) · not re-exported at the package root*
+
+**Role in the workflow.** Trains additive episode-utility models under objectives other than the plain pairwise logistic loss. A term is a pair, a list or a regression point carrying an environment label, so the same data trains by pooled risk minimisation or by Group-DRO. The PCKP solver is never differentiated through.
+
+**Contents**
+
+- **class `ObjectiveTerm`** *(class)* - One training term: its kind (`pair`, `list` or `reg`), candidate item-index tuples, targets, weight and environment label.
+- **class `ObjectiveDataset`** *(class)* - Item feature vectors plus the terms over them.
+  - `ObjectiveDataset.groups(self) -> tuple[str, ...]` - The sorted environment labels present in the terms.
+- **class `ObjectiveConfig`** *(class)* - Objective name, model type, temperatures `tau` and `tau_quality`, L2, seed, iteration limits, learning rate, the Group-DRO switch and step, and `keep_initial` (whether early stopping may return the untrained model).
+- **class `ObjectiveReport`** *(class)* - The training report plus per-environment losses, final environment weights, the objective and whether Group-DRO was used.
+- `effect_weights(effects: Sequence[float], confidences: Sequence[float], *, gamma: float, normalize: bool=True, cap_ratio: float | None=5.0) -> list[float]` - Weights `confidence * |effect|**gamma`, optionally capped at a multiple of the median and rescaled to mean one; rejects zero effects, negative gamma and non-finite inputs by name.
+- `build_objective_dataset(features: Mapping[str, Mapping[str, tuple[float, ...]]], groups: Mapping[str, str], *, pairs: Sequence[tuple[str, Sequence[str], Sequence[str], float]]=(), lists: Sequence[tuple[str, Sequence[Sequence[str]], Sequence[float], float]]=(), points: Sequence[tuple[str, Sequence[str], float, float]]=()) -> ObjectiveDataset` - Builds a dataset from pair, list and point rows keyed by snapshot; unknown snapshots, missing environment labels, missing features, short lists and non-positive weights raise `ValueError` naming the row.
+  - `build_objective_dataset.locate(snapshot: str, episode_id: str) -> int` - Returns the item index for a (snapshot, episode), adding it on first use.
+  - `build_objective_dataset.positive(weight: float, label: str) -> float` - Validates that a row weight is finite and positive.
+- `log_softmax(values: Sequence[float], temperature: float) -> list[float]` - Numerically stable log-softmax at a temperature (subtracts the maximum first).
+- `_term_loss_and_slopes(term: ObjectiveTerm, utilities: list[float], config: ObjectiveConfig) -> tuple[float, list[float]]` - Loss of one term and its derivative with respect to each candidate's set utility.
+- `_evaluate(model: RankingModel, dataset: ObjectiveDataset, config: ObjectiveConfig, group_weights: Mapping[str, float] | None, *, want_gradient: bool) -> tuple[float, dict[str, float], list[float]]` - Group-weighted objective, per-group losses and, when requested, the parameter gradient.
+- `objective_loss(model: RankingModel, dataset: ObjectiveDataset, config: ObjectiveConfig, group_weights: Mapping[str, float] | None=None) -> float` - The regularised objective for given group weights (pooled by term count when none are given).
+- `objective_group_losses(model: RankingModel, dataset: ObjectiveDataset, config: ObjectiveConfig) -> dict[str, float]` - Mean loss of each environment.
+- `objective_gradient(model: RankingModel, dataset: ObjectiveDataset, config: ObjectiveConfig, group_weights: Mapping[str, float] | None=None) -> list[float]` - The analytic parameter gradient of the objective (finite-difference verified in tests).
+- `dro_update(weights: Mapping[str, float], group_losses: Mapping[str, float], step: float) -> dict[str, float]` - One exponentiated-gradient step of the environment weights on the simplex.
+- `term_accuracy(model: RankingModel, dataset: ObjectiveDataset) -> float` - Share of pair terms ordered correctly, or of list terms whose best measured candidate gets the top utility (ties split); nan if none.
+- `train_objective(train: ObjectiveDataset, config: ObjectiveConfig, *, feature_dim: int, validation: ObjectiveDataset | None=None) -> tuple[RankingModel, ObjectiveReport]` - Trains a linear or MLP model under the configured objective and returns it with its report; an empty dataset raises `ValueError`.
+
+**Algorithms & invariants.** Pair and list terms drop items common to every candidate (they cancel in an additive model). Losses use a stable softplus and log-softmax. The trainer is full-batch Adam with early stopping on validation loss; Group-DRO reweights environments by exponentiated gradient on their losses.
+
+---
+
+### `memory/utility_calibration.py` - utility calibration, distribution-shift evidence and logged static fallback
+
+*265 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/learned_retention.py`, `memory/utility_features.py` · used by: none inside the package (host code wraps a learned predictor) · not re-exported at the package root*
+
+**Role in the workflow.** Changes only the additive coefficients handed to the PCKP solver: mixes a learned predictor with the static policy, measures whether the current context looks like the training contexts, and falls back to static utilities with the evidence recorded.
+
+**Contents**
+
+- `scale_normalize(utilities: Mapping[str, float]) -> dict[str, float]` - Divides utilities by their largest magnitude; an all-zero input stays zero.
+- `mix_utilities(learned: Mapping[str, float], static: Mapping[str, float], alpha: float) -> dict[str, float]` - `alpha * learned + (1 - alpha) * static` after scale normalisation; rejects alpha outside [0, 1] and mismatched episode sets.
+- `static_prior_weights(policy: PaskCompactionPolicy, feature_names: Sequence[str]) -> list[float]` - The static PCKP utility written as linear weights over a schema's columns (provenance is `0.40 + 0.25*exploratory + 0.35*substrate_backed`), used as the centre of a shrinkage penalty; raises `ValueError` if a needed column is missing.
+- **class `PolicyStaticPredictor`** *(class)* - The store's static PCKP utilities for a `PaskCompactionPolicy`, as a predictor over a retention context.
+  - `PolicyStaticPredictor.__init__(self, policy: PaskCompactionPolicy, *, version: str='1') -> None` - Stores the policy and derives the predictor identity from its digest.
+  - `PolicyStaticPredictor.identity(self) -> PredictorIdentity` - The predictor identity (id `static-policy`).
+  - `PolicyStaticPredictor.predict(self, context: RetentionContext) -> Mapping[str, float]` - Relevance, centrality, provenance, recency and frequency terms weighted by the policy, per live episode.
+- **class `FeatureShiftDetector`** *(class)* - Standardised distance of a context's mean feature vector from training contexts, with a validation-calibrated alarm threshold.
+  - `FeatureShiftDetector.__init__(self) -> None` - Creates an unfitted detector with no threshold.
+  - `FeatureShiftDetector.context_mean(features: Mapping[str, Sequence[float]]) -> list[float]` - The per-feature mean over a context's episodes.
+  - `FeatureShiftDetector.fit(self, contexts: Sequence[Mapping[str, Sequence[float]]]) -> FeatureShiftDetector` - Records the mean and spread of per-context means over at least two training contexts.
+  - `FeatureShiftDetector.score(self, features: Mapping[str, Sequence[float]]) -> float` - The root-mean-square standardised deviation of a context; raises if unfitted or if the feature width differs.
+  - `FeatureShiftDetector.calibrate(self, contexts: Sequence[Mapping[str, Sequence[float]]], quantile: float=0.95) -> float` - Sets and returns the threshold as a quantile of validation-context scores.
+- **class `FallbackPolicy`** *(class)* - Configured mixing weight and optional limits on shift, clipped fraction, dispersion and ensemble disagreement.
+- `dispersion(utilities: Mapping[str, float]) -> float` - Population standard deviation of utilities relative to the largest magnitude.
+- `ensemble_disagreement(members: Sequence[Mapping[str, float]]) -> float` - Mean across episodes of the members' spread after scale normalisation; needs at least two members.
+- **class `CalibratedUtilityPredictor`** *(class)* - Mixes a learned and a static predictor and falls back to static (alpha 0) when any configured evidence limit is violated.
+  - `CalibratedUtilityPredictor.__init__(self, learned: EpisodeUtilityPredictor, static: EpisodeUtilityPredictor, policy: FallbackPolicy, *, detector: FeatureShiftDetector | None=None, shift_features: Any=None, members: Sequence[EpisodeUtilityPredictor]=(), predictor_id: str='calibrated', version: str='1') -> None` - Validates that each configured limit has what it needs (a fitted detector, ensemble members) and derives the identity from the component digests and policy.
+  - `CalibratedUtilityPredictor.identity(self) -> PredictorIdentity` - The predictor identity.
+  - `CalibratedUtilityPredictor.predict(self, context: RetentionContext) -> Mapping[str, float]` - Returns the mixed utilities and records mode, alpha, evidence and reasons in `last_audit`; incomplete coverage raises `UTILITY_CALIBRATION_INCOMPLETE`.
+
+**Algorithms & invariants.** Mixing scale-normalises each side by its largest magnitude and never centres (a constant offset changes the PCKP optimum). The shift detector standardises the context's mean feature vector against per-feature statistics of training contexts; its threshold is calibrated on separate validation contexts. Every prediction stores an audit record in `last_audit`, which the store copies into `dossier['learned_ranking']['calibration']`.
+
+---
+
+### `memory/utility_features_v2.py` - feature schema v2: task-conditioned, bipartite-graph and failure-propagation features
+
+*147 lines · depends on: `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/utility_features.py` · used by: `memory/learned_retention.py`, `memory/retention_outcomes.py` · not re-exported at the package root*
+
+**Role in the workflow.** Keeps v1 columns unchanged and appends task coverage, redundancy, value-unlocked, exclusivity and failure-propagation features, selectable per predictor by schema name.
+
+**Contents**
+
+- `_identifier_terms(terms: set[str]) -> set[str]` - The query or episode terms that look like identifiers (contain a digit, hyphen or underscore).
+- `_descendants(episode_id: str, records: Mapping[str, EpisodeRecord]) -> set[str]` - The live episodes that depend, directly or transitively, on an episode.
+- `extract_features_v2(context: RetentionContext, disabled_groups: Sequence[str]=()) -> dict[str, tuple[float, ...]]` - One schema-ordered vector per live episode (v1 columns first, then the v2 groups); unknown disabled groups raise `ValueError`.
+
+**Algorithms & invariants.** The store's graph is bipartite (actions depend only on closed exploratory episodes), so transitive reachability equals direct dependence; v2 therefore uses dependent cost, exclusive dependents, co-prerequisites and failed dependents instead. Every feature is a deterministic function of the selection-time context.
 
 ---
 

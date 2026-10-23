@@ -54,6 +54,27 @@ interrupted run resumes without repeating a call, and outcomes recorded under di
 are never mixed (the file name carries a digest of model, provider and parameters). Tests that call the
 model carry the `live` marker (`pytest -m "not live"` skips them; they also skip without a key).
 
+## Generalization protocol (offline, synthetic, no model calls)
+
+`dfl-generalize-1` compares the pairwise, regret-weighted pairwise, listwise and set-regression
+objectives, Group-DRO, feature schema v2, a validation-tuned static baseline and a calibrated
+learned/static mixture across structurally different families, with leave-one-family-out folds. It
+is pre-registered in `PREREGISTRATION_GENERALIZE.md` and its evidence is synthetic only.
+
+```bash
+cd benchmarks/dfl
+PYTHONPATH=../../src:. python -m dfl_bench.generalize run --seeds 3000 3001 3002 --out results/generalize_confirmatory --workers 14 --templates 5 --per-template 4
+PYTHONPATH=../../src:. python -m dfl_bench.generalize report --results results/generalize_confirmatory --protocol PREREGISTRATION_GENERALIZE.md
+```
+
+| Module | Role |
+|---|---|
+| `generalize/worlds.py` | Six task families, budget variants, exact oracle optimum for any history length |
+| `generalize/learners.py` | Dataset builders per objective, validation-selected training, tuned static, boundary candidates, calibrated method |
+| `generalize/protocol.py` | Fold construction and the per-fold runner |
+| `generalize/report.py` | Paired template-clustered comparisons with Holm correction, worst-family tables |
+| `evolve/` | Offline retraining (any objective), gate against every incumbent including a tuned static policy, registry with promote, rollback and disable |
+
 ## Layout
 
 | Module | Role |

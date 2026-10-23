@@ -26,6 +26,7 @@ class TaskRecord:
     mandatory_ids: frozenset[str]
     decisions: tuple[RetentionDecision, ...]
     outcomes: tuple[CandidateOutcome, ...]
+    feature_schema: str = ""
 
 
 def split_of(task_digest: str, fractions: tuple[float, float, float] = (0.6, 0.15, 0.25)) -> str:
@@ -44,6 +45,11 @@ def load_tasks(log: RetentionOutcomeLog) -> tuple[list[TaskRecord], str]:
     for digest, decisions in sorted(by_task.items()):
         first = decisions[0]
         for other in decisions[1:]:
+            if other.feature_schema_version != first.feature_schema_version:
+                raise ValueError(
+                    f'Decisions for task "{digest[:12]}" mix feature schemas '
+                    f"{first.feature_schema_version} and {other.feature_schema_version}."
+                )
             if other.episode_ids != first.episode_ids or other.features != first.features:
                 raise ValueError(
                     f'Decisions for task "{digest[:12]}" disagree on the episode set or features '
@@ -82,7 +88,13 @@ def load_tasks(log: RetentionOutcomeLog) -> tuple[list[TaskRecord], str]:
                 mandatory_ids=frozenset(first.mandatory_ids),
                 decisions=tuple(decisions),
                 outcomes=candidates,
+                feature_schema=first.feature_schema_version,
             )
+        )
+    schemas = {t.feature_schema for t in tasks}
+    if len(schemas) > 1:
+        raise ValueError(
+            f"Refusing to mix feature schemas {sorted(schemas)} in one retraining dataset."
         )
     unknown = sources - set(EVIDENCE_KINDS)
     if unknown:
