@@ -16,7 +16,7 @@ from nailong_agent_sdk.foundations.optimization import (
     PckpProblem,
     PckpStatus,
 )
-from nailong_agent_sdk.foundations.optimization.solvers import tie_key
+from nailong_agent_sdk.foundations.optimization.solvers import GREEDY_SEED_MAX_ITEMS, tie_key
 
 
 def test_reverse_reachability():
@@ -238,3 +238,28 @@ def test_a_capped_search_never_returns_less_than_the_greedy_fill():
         )
         assert capped.utility >= greedy.utility
         assert capped.token_cost <= problem.token_budget
+
+
+def test_a_capped_search_above_the_seed_limit_does_not_run_the_quadratic_greedy(monkeypatch):
+    def refuse(self, problem):
+        raise AssertionError("the adaptive greedy baseline ran on a problem above the seed limit")
+
+    monkeypatch.setattr(GreedyPckpBaseline, "solve", refuse)
+    for seed in range(20):
+        rng = random.Random(seed)
+        items = [
+            PckpItem(
+                item_id=f"i{index}",
+                token_cost=rng.randint(5, 60),
+                utility=rng.randint(1, 100),
+                prerequisites=[f"i{rng.randrange(index)}"] if index and rng.random() < 0.4 else [],
+            )
+            for index in range(GREEDY_SEED_MAX_ITEMS + 100)
+        ]
+        items.append(PckpItem(item_id="join", token_cost=1, utility=1, prerequisites=["i1", "i2"]))
+        problem = PckpProblem(token_budget=2_000, items=items)
+        solution = ExactPckpSolver(max_branch_nodes=5, enable_tree_dynamic_program=False).solve(
+            problem
+        )
+        assert solution.solver == "branch-and-bound"
+        assert solution.token_cost <= problem.token_budget and solution.utility > 0
