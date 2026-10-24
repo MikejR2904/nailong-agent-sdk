@@ -34,6 +34,8 @@ from fractions import Fraction
 from ..hashing import sha256_hex, strict_canonical_json
 from .models import PckpItem, PckpProblem, PckpSolution, PckpStatus
 
+GREEDY_SEED_MAX_ITEMS = 400
+
 
 class ExactPckpSolver:
     """Solve PCKP exactly with deterministic branch-and-bound or tree DP.
@@ -108,7 +110,11 @@ class ExactPckpSolver:
                 value.item_id,
             ),
         )
-        incumbent_selection = set(GreedyPckpBaseline().solve(problem).selected_item_ids)
+        incumbent_selection = (
+            set(GreedyPckpBaseline().solve(problem).selected_item_ids)
+            if len(items) <= GREEDY_SEED_MAX_ITEMS
+            else _density_fill(mandatory, items, density_order, problem.token_budget)
+        )
         incumbent_utility = _utility(incumbent_selection, items)
         incumbent_cost = _cost(incumbent_selection, items)
         branch_nodes = 0
@@ -394,6 +400,27 @@ def _prune_dominated(states: _States) -> _States:
             retained[cost] = (utility, selection)
             best_utility = utility
     return retained
+
+
+def _density_fill(
+    mandatory: set[str],
+    items: dict[str, PckpItem],
+    density_order: list[PckpItem],
+    budget: int,
+) -> set[str]:
+    """One pass over the items by fixed density, adding each with the prerequisites it needs."""
+
+    selected = set(mandatory)
+    spent = _cost(selected, items)
+    for item in density_order:
+        if item.item_id in selected or item.utility <= 0:
+            continue
+        additions = _closure({item.item_id}, items) - selected
+        cost = _cost(additions, items)
+        if spent + cost <= budget:
+            selected |= additions
+            spent += cost
+    return selected
 
 
 def _frontier_bound(problem: PckpProblem) -> int:
