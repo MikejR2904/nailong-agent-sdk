@@ -1108,6 +1108,48 @@ class StateGraph:
                     reason=reason,
                 )
 
+    def set_edge_enabled(self, parent_node_id: str, child_node_id: str, enabled: bool) -> None:
+        """Switch every edge from one node to another on or off, before the child has started.
+
+        An edge cannot be changed in place; this replaces it and rebuilds the index the scheduler
+        reads. A child that has started, finished or been blocked keeps the edges it ran with, and
+        enabling an edge that would close a cycle is refused and leaves the graph as it was.
+        """
+
+        positions = [
+            index
+            for index, edge in enumerate(self._edges)
+            if edge.parent_node_id == parent_node_id and edge.child_node_id == child_node_id
+        ]
+        if not positions:
+            raise ValueError(f'The graph has no edge from "{parent_node_id}" to "{child_node_id}".')
+        status = self._status[child_node_id]
+        if status not in {GraphNodeStatus.PENDING, GraphNodeStatus.RUNNABLE}:
+            raise ValueError(
+                f'Cannot change an edge from "{parent_node_id}" into "{child_node_id}": node '
+                f'"{child_node_id}" is {status.value}, and only a node that has not started can '
+                "gain or lose an edge."
+            )
+        previous = list(self._edges)
+        for index in positions:
+            self._edges[index] = self._edges[index].model_copy(update={"enabled": enabled})
+        self._incoming_cache = None
+        if enabled:
+            incoming = self._incoming_edges()
+            try:
+                self._assert_acyclic(
+                    {node_id: self._dependencies_for(node_id, incoming) for node_id in self._nodes}
+                )
+            except ValueError:
+                self._edges[:] = previous
+                self._incoming_cache = None
+                raise
+            if status is GraphNodeStatus.RUNNABLE:
+                self._set_status(
+                    child_node_id, GraphNodeStatus.PENDING, "An edge into it was enabled."
+                )
+        self._refresh_runnable()
+
     def add_lateral_dependency(
         self,
         producer_node_id: str,

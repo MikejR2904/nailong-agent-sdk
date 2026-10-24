@@ -129,6 +129,11 @@ class GraphNode(StrictModel):
 
 
 class GraphEdge(StrictModel):
+    """An edge is immutable: the scheduler indexes edges, so a change goes through
+    ``StateGraph.set_edge_enabled``, which replaces the edge and rebuilds the index."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     parent_node_id: str = Field(min_length=1)
     child_node_id: str = Field(min_length=1)
     kind: GraphEdgeKind = GraphEdgeKind.STATIC
