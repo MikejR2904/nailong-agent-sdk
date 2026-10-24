@@ -6,20 +6,20 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 |---|---:|---|
 | [`memory/__init__.py`](#memory__init__py---package-marker-for-episode-memory-and-context-assembly) | 3 | package marker for episode memory and context assembly |
 | [`memory/context.py`](#memorycontextpy---builds-the-fixed-initial-prompt-for-a-run) | 51 | builds the fixed initial prompt for a run |
-| [`memory/context_projection.py`](#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 588 | per-turn bounded context projection and the tool-result journal |
+| [`memory/context_projection.py`](#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 644 | per-turn bounded context projection and the tool-result journal |
 | [`memory/entailment_screen.py`](#memoryentailment_screenpy---deterministic-lexical-screen-for-claims-that-contradict-or-outrun-their-cited-evidence) | 117 | deterministic lexical screen for claims that contradict or outrun their cited evidence |
 | [`memory/episode_archive.py`](#memoryepisode_archivepy---content-addressed-archive-of-the-original-snapshots-of-compacted-episodes) | 290 | content-addressed archive of the original snapshots of compacted episodes |
-| [`memory/episode_models.py`](#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 630 | episode records, compaction policy and the retention contracts |
+| [`memory/episode_models.py`](#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 649 | episode records, compaction policy and the retention contracts |
 | [`memory/episode_scoring.py`](#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 77 | deterministic lexical relevance and cost helpers for retention |
-| [`memory/episode_store.py`](#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 1872 | episode lifecycle and the three deterministic compaction strategies |
+| [`memory/episode_store.py`](#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 2267 | episode lifecycle and the three deterministic compaction strategies |
 | [`memory/episodes.py`](#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 97 | task-scoped episode graph of one-line summaries |
-| [`memory/learned_retention.py`](#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 161 | opt-in learned utility coefficients for dependency-closed retention |
+| [`memory/learned_retention.py`](#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 215 | opt-in learned utility coefficients for dependency-closed retention |
 | [`memory/memory_snapshot.py`](#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
-| [`memory/retention_outcomes.py`](#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 187 | retention decisions and their outcomes, recorded for offline learning |
+| [`memory/retention_outcomes.py`](#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 200 | retention decisions and their outcomes, recorded for offline learning |
 | [`memory/utility_objectives.py`](#memoryutility_objectivespy---generalized-training-objectives-regret-weighted-pairwise-listwise-regression-group-dro) | 404 | generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO |
 | [`memory/utility_calibration.py`](#memoryutility_calibrationpy---utility-calibration-distribution-shift-evidence-and-logged-static-fallback) | 288 | utility calibration, distribution-shift evidence and logged static fallback |
 | [`memory/utility_features_v2.py`](#memoryutility_features_v2py---feature-schema-v2-task-conditioned-bipartite-graph-and-failure-propagation-features) | 225 | feature schema v2: task-conditioned, bipartite-graph and failure-propagation features |
-| [`memory/tiered_retention.py`](#memorytiered_retentionpy---three-level-retention-keep-summarise-or-drop-under-one-budget) | 351 | three-level retention: keep, summarise or drop under one budget |
+| [`memory/tiered_retention.py`](#memorytiered_retentionpy---three-level-retention-keep-summarise-or-drop-under-one-budget) | 466 | three-level retention: keep, summarise or drop under one budget |
 | [`memory/semantic_compaction.py`](#memorysemantic_compactionpy---dependency-aware-summarization-verification-and-safe-commit-of-compacted-episodes) | 1133 | dependency-aware summarization, verification and safe commit of compacted episodes |
 | [`memory/summarization_scheduler.py`](#memorysummarization_schedulerpy---bounded-background-queue-for-summarization-work-that-never-blocks-its-caller) | 190 | bounded background queue for summarization work that never blocks its caller |
 | [`memory/summary_ledger.py`](#memorysummary_ledgerpy---the-summaries-of-one-episode-store-and-where-each-one-lives) | 192 | the summaries of one episode store and where each one lives |
@@ -51,7 +51,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/context_projection.py` - per-turn bounded context projection and the tool-result journal
 
-*588 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/run_fence.py`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/episode_store.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/retention.py`, `agent/retention_inventory.py`, `agent/runtime.py`, `agent/task_runner.py`, `developer_tools/inspect.py`, `mcp/server.py` (+2 more) · re-exported at the package root: 6 name(s)*
+*644 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/run_fence.py`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/episode_store.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/retention.py`, `agent/retention_inventory.py`, `agent/runtime.py`, `agent/task_runner.py`, `developer_tools/inspect.py`, `mcp/server.py` (+2 more) · re-exported at the package root: 6 name(s)*
 
 **Role in the workflow.** Each loop iteration `BaseAgent.run` calls `ContextProjector.project`, which compacts episodes and returns the observations, episode summaries and compacted-episode stubs that go into the `ModelContext`. After every tool call `project_tool_result` stores the full result in the journal and returns only a bounded preview plus a handle, which is also what the `get_tool_result` core tool later reads. The file journal can also index the handles a run records (`for_run`), which is how retention finds the tool results that belong to a run. Verified semantic summaries of compacted episodes are selected into the projection under their own budget and replace the stubs they cover.
 
@@ -182,7 +182,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/episode_models.py` - episode records, compaction policy and the retention contracts
 
-*630 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py` · used by: `agent/base_agent/agent.py`, `agent/model.py`, `memory/context_projection.py`, `memory/entailment_screen.py`, `memory/episode_archive.py`, `memory/episode_scoring.py`, `memory/episode_store.py`, `memory/memory_snapshot.py` (+2 more) · re-exported at the package root: 31 name(s)*
+*649 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py` · used by: `agent/base_agent/agent.py`, `agent/model.py`, `memory/context_projection.py`, `memory/entailment_screen.py`, `memory/episode_archive.py`, `memory/episode_scoring.py`, `memory/episode_store.py`, `memory/memory_snapshot.py` (+2 more) · re-exported at the package root: 31 name(s)*
 
 **Role in the workflow.** Typed vocabulary shared by `episodes.py`, `episode_store.py` and the projector: what an episode record holds, how compaction is configured (default strategy: exact PCKP), what a compaction returns, and the extension protocols a host can implement. The semantic layer's contracts live here too: grounded claims, the summary and its model-facing view, the summarizer, judge and archive protocols, the verification report and the policy that bounds them. The summary lifecycle (`SummaryLifecycle`, `SummaryRef`, the summary archive), the verification record that says which methods checked a summary, the claim judge and the quarantine record are here as well.
 
@@ -318,7 +318,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/episode_store.py` - episode lifecycle and the three deterministic compaction strategies
 
-*1872 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/optimization/__init__.py`, `memory/episode_archive.py`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/memory_snapshot.py`, `memory/semantic_compaction.py`, `memory/summarization_scheduler.py`, `memory/summary_ledger.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `memory/context_projection.py` · re-exported at the package root: 2 name(s)*
+*2267 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/optimization/__init__.py`, `memory/episode_archive.py`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/memory_snapshot.py`, `memory/semantic_compaction.py`, `memory/summarization_scheduler.py`, `memory/summary_ledger.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `memory/context_projection.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` opens one episode per tool call (exploratory read or action), closes it, and the projector calls `compact` every turn with the episode token budget and the latest tool batch protected. Compacted episodes are replaced by structural tombstones; their raw evidence stays in the tool-result journal.
 
@@ -453,7 +453,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/learned_retention.py` - opt-in learned utility coefficients for dependency-closed retention
 
-*161 lines · depends on: see imports · used by: `memory/episode_store.py` · not re-exported at the package root*
+*215 lines · depends on: see imports · used by: `memory/episode_store.py` · not re-exported at the package root*
 
 **Role in the workflow.** Defines the predictor interface the episode store accepts, the immutable trained-model predictor, the integer quantisation that maps learned real utilities onto PCKP's non-negative integers, and the validation that turns every predictor failure into a coded error the store converts into a documented static fallback.
 
@@ -512,7 +512,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/retention_outcomes.py` - retention decisions and their outcomes, recorded for offline learning
 
-*187 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `memory/episode_models.py`, `memory/learned_retention.py`, `memory/utility_features.py` · used by: `memory/episode_store.py` · not re-exported at the package root*
+*200 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `memory/episode_models.py`, `memory/learned_retention.py`, `memory/utility_features.py` · used by: `memory/episode_store.py` · not re-exported at the package root*
 
 **Role in the workflow.** Lets a host learn from its own runs. The store calls the optional `retention_observer` with a `RetentionDecision` for every compaction that selects episodes; a host attaches the outcome later with `RetentionOutcomeLog.record_outcome`. Retraining, gating and promotion live outside the SDK (`benchmarks/dfl/dfl_bench/evolve`).
 
@@ -536,7 +536,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/utility_objectives.py` - generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO
 
-*395 lines · depends on: `foundations/contracts.py`, `memory/utility_models.py`, `memory/utility_training.py` · used by: none inside the package (host and benchmark training code) · not re-exported at the package root*
+*404 lines · depends on: `foundations/contracts.py`, `memory/utility_models.py`, `memory/utility_training.py` · used by: none inside the package (host and benchmark training code) · not re-exported at the package root*
 
 **Role in the workflow.** Trains additive episode-utility models under objectives other than the plain pairwise logistic loss. A term is a pair, a list or a regression point carrying an environment label, so the same data trains by pooled risk minimisation or by Group-DRO. The PCKP solver is never differentiated through.
 
@@ -567,7 +567,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/utility_calibration.py` - utility calibration, distribution-shift evidence and logged static fallback
 
-*265 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/learned_retention.py`, `memory/utility_features.py` · used by: none inside the package (host code wraps a learned predictor) · not re-exported at the package root*
+*288 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/learned_retention.py`, `memory/utility_features.py` · used by: none inside the package (host code wraps a learned predictor) · not re-exported at the package root*
 
 **Role in the workflow.** Changes only the additive coefficients handed to the PCKP solver: mixes a learned predictor with the static policy, measures whether the current context looks like the training contexts, and falls back to static utilities with the evidence recorded.
 
@@ -600,7 +600,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/utility_features_v2.py` - feature schema v2: task-conditioned, bipartite-graph and failure-propagation features
 
-*147 lines · depends on: `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/utility_features.py` · used by: `memory/learned_retention.py`, `memory/retention_outcomes.py` · not re-exported at the package root*
+*225 lines · depends on: `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/utility_features.py` · used by: `memory/learned_retention.py`, `memory/retention_outcomes.py` · not re-exported at the package root*
 
 **Role in the workflow.** Keeps v1 columns unchanged and appends task coverage, redundancy, value-unlocked, exclusivity and failure-propagation features, selectable per predictor by schema name.
 
@@ -618,7 +618,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/tiered_retention.py` - three-level retention: keep, summarise or drop under one budget
 
-*351 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/optimization`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/learned_retention.py`, `memory/semantic_compaction.py`, `memory/utility_features.py` · used by: none inside the package · not re-exported at the package root*
+*466 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/optimization`, `memory/episode_models.py`, `memory/episode_scoring.py`, `memory/learned_retention.py`, `memory/semantic_compaction.py`, `memory/utility_features.py` · used by: none inside the package · not re-exported at the package root*
 
 **Role in the workflow.** Lets a host decide, jointly and exactly, which episodes to keep in full, which to keep as a grounded extractive summary and which to drop. It plans only; it does not rewrite the store.
 

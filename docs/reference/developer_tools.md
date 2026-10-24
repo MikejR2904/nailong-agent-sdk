@@ -5,12 +5,12 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 | File | Lines | Role |
 |---|---:|---|
 | [`developer_tools/__init__.py`](#developer_tools__init__py---public-surface-of-the-developer-utilities) | 94 | public surface of the developer utilities |
-| [`developer_tools/attribute_defect.py`](#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 283 | which write of an artifact introduced a defect, and which agent made it |
+| [`developer_tools/attribute_defect.py`](#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 286 | which write of an artifact introduced a defect, and which agent made it |
 | [`developer_tools/attribute_failure.py`](#developer_toolsattribute_failurepy---which-failure-and-which-model-decision-stopped-a-run) | 390 | which failure, and which model decision, stopped a run |
 | [`developer_tools/attribute_lineage.py`](#developer_toolsattribute_lineagepy---trace-a-failing-run-back-through-the-artifact-versions-it-read) | 292 | trace a failing run back through the artifact versions it read |
 | [`developer_tools/attribute_result.py`](#developer_toolsattribute_resultpy---which-tool-result-of-an-agent-run-first-failed-the-callers-check-and-which-model-turn-asked-for-it) | 207 | which tool result of an agent run first failed the caller's check, and which model turn asked for it |
 | [`developer_tools/catalog.py`](#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 605 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 607 | the `nailong-agent-sdk-dev` command line |
 | [`developer_tools/decision_links.py`](#developer_toolsdecision_linkspy---which-model-turn-a-failing-finding-traces-back-to) | 355 | which model turn a failing finding traces back to |
 | [`developer_tools/diagnose.py`](#developer_toolsdiagnosepy---where-a-run-first-went-wrong-what-ended-it-and-what-it-held-up) | 711 | where a run first went wrong, what ended it and what it held up |
 | [`developer_tools/inspect.py`](#developer_toolsinspectpy---read-only-run-evidence-inspection) | 226 | read-only run evidence inspection |
@@ -29,7 +29,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/attribute_defect.py` - which write of an artifact introduced a defect, and which agent made it
 
-*283 lines · depends on: `foundations/contracts.py`, `foundations/suffix_search.py`, `tools/artifacts.py` · used by: `developer_tools/__init__.py`, `developer_tools/cli.py` · not re-exported at the package root*
+*286 lines · depends on: `foundations/contracts.py`, `foundations/suffix_search.py`, `tools/artifacts.py` · used by: `developer_tools/__init__.py`, `developer_tools/cli.py` · not re-exported at the package root*
 
 **Role in the workflow.** Answers 'which agent introduced this defect into this file?' for an artifact written through `ArtifactStore`. `attribute_defect(run_root, relative_path, is_defective)` reads the ordered write history of the path, evaluates the caller's check on the content of as few versions as it needs (`find_suffix_start`: the newest, then 1, 2, 4, ... back, then bisection) and names the first defective version of the unbroken defective suffix, the writer recorded with it (agent identity, agent run, role, node, task, run, tool, call id, iteration), the last clean version and the writers who wrote afterwards. `content_check` builds the four checks the command line offers. Pass the directory the artifacts were written under (a task workspace, or the run root of a graph run), not its parent.
 
@@ -167,7 +167,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/cli.py` - the `nailong-agent-sdk-dev` command line
 
-*605 lines · depends on: `agent/retention.py`, `agent/retention_inventory.py`, `developer_tools/attribute_defect.py`, `developer_tools/attribute_failure.py`, `developer_tools/attribute_result.py`, `developer_tools/catalog.py`, `developer_tools/diagnose.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py`, `foundations/errors.py`, `foundations/suffix_search.py`, `mcp/authority_matrix.py`, `observability/audit_log.py`, `observability/otlp.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/run_state_store.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
+*607 lines · depends on: `agent/retention.py`, `agent/retention_inventory.py`, `developer_tools/attribute_defect.py`, `developer_tools/attribute_failure.py`, `developer_tools/attribute_result.py`, `developer_tools/catalog.py`, `developer_tools/diagnose.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py`, `foundations/errors.py`, `foundations/suffix_search.py`, `mcp/authority_matrix.py`, `observability/audit_log.py`, `observability/otlp.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/run_state_store.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
 
 **Role in the workflow.** Subcommands `catalog`, `validate`, `inspect-run`, `verify-evidence` and `quality`; each prints its report as JSON. Exit status: 0 success, 1 the artifact was inspected and is invalid, failed or has a broken chain, 2 usage error (argparse), 3 operational error. `prune-runs` is the one command that can change a run root, and only with `--apply`. `diagnose-run` reads a run's evidence and says where it first went wrong; like `inspect-run` it changes nothing. `attribute-failure` ranks the nodes that stopped a run and names the model turn behind a failure, `attribute-defect` finds the write that introduced a defect into an artifact and `attribute-result` the first tool result a text check rejects; all three read only.
 

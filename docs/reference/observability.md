@@ -6,9 +6,9 @@ Three independent records of a run, all written outside the model's context: the
 |---|---:|---|
 | [`observability/__init__.py`](#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
 | [`observability/audit_log.py`](#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 463 | append-only, hash-chained, per-run JSONL audit transcript |
-| [`observability/metric_definitions.py`](#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 400 | the SDK's standard metric catalogue |
+| [`observability/metric_definitions.py`](#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 450 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
-| [`observability/otlp.py`](#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 829 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
+| [`observability/otlp.py`](#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 863 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
 | [`observability/profiler.py`](#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
 | [`observability/run_checkpoints.py`](#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 864 | signed checkpoints of a run's chain heads, kept outside the run root |
 | [`observability/telemetry_helpers.py`](#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
@@ -81,7 +81,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/metric_definitions.py` - the SDK's standard metric catalogue
 
-*400 lines · depends on: `observability/telemetry_models.py` · used by: `observability/metrics.py` · re-exported at the package root: 1 name(s)*
+*450 lines · depends on: `observability/telemetry_models.py` · used by: `observability/metrics.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** `register_standard_metric_definitions` loads this table into the telemetry store at the start of every run so each recorded observation has a formula, unit, aggregation rule and missing-data rule that `create_run_report` can apply.
 
@@ -113,7 +113,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/otlp.py` - OTLP/HTTP JSON export of recorded runs: spans, log records and metric points
 
-*829 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/text.py`, `foundations/version.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `observability/trace_context.py` · used by: `developer_tools/cli.py` · not re-exported at the package root*
+*863 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/text.py`, `foundations/version.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `observability/trace_context.py` · used by: `developer_tools/cli.py` · not re-exported at the package root*
 
 **Role in the workflow.** Turns a run's ledger into OpenTelemetry Protocol requests and sends them to a collector. It reads the ledger after the fact, so a collector that is slow or down cannot delay an agent and an export can be repeated. The developer command `export-otlp` and `export_runs` are the entry points; nothing in `BaseAgent` calls it. A span whose parent is not in the export keeps its parent id and is marked `nailong.parent_span_exported=false`, and a graph-run span says what its window is measured from.
 
@@ -439,4 +439,3 @@ Three independent records of a run, all written outside the model's context: the
 - `_shown(value: object) -> str` - Representation of a value cut to 64 characters, so an oversized header cannot flood an error message. · *Called by:* `observability/trace_context.py::parse_traceparent`, `observability/trace_context.py::require_span_id`, `observability/trace_context.py::require_trace_id`
 
 **Algorithms & invariants.** Nothing here imports OpenTelemetry: the formats are the W3C Trace Context ones, so the `trace_id`, `span_id` and `parent_span_id` of `TelemetryContext`, `AgentRunProfile` and the `agent.profile-completed` payload can be passed to an OTLP exporter unchanged. A trace id is 32 lowercase hex characters and a span id 16, neither all zeros; `TelemetryContext` refuses anything else, naming the field. Measured on the development machine, `new_span_id` takes about 0.2 microseconds, `format_traceparent` about 0.9 and `parse_traceparent` about 1.8; a run formats one header per model turn and per tool call, and builds the process resource once. The SDK records every run, so the header it sends is always sampled (`01`), whatever flags arrived on the one that started the run; the incoming flag is parsed and reported, not propagated. `tracestate` is neither read nor sent. Derived ids make a run's trace survive a crash, a resume and another process with nothing persisted: executing the same run again continues the same trace. Only the graph-run trace and span are derived; every agent run's own root span id is random, so a node that runs twice after a crash appears as two spans in the trace, never as a duplicate id.
-

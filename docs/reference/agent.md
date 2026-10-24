@@ -6,14 +6,14 @@
 |---|---:|---|
 | [`agent/__init__.py`](#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](#agentbase_agentagentpy---the-single-task-agent-loop) | 2559 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](#agentbase_agentagentpy---the-single-task-agent-loop) | 2643 | the single-task agent loop |
 | [`agent/base_agent/types.py`](#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/cost_model.py`](#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
 | [`agent/elastic_context.py`](#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
 | [`agent/graph_agent_executor.py`](#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 320 | runs registered BaseAgent bindings as graph nodes |
-| [`agent/model.py`](#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 418 | provider-neutral model contract, streaming events and failover |
+| [`agent/model.py`](#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 439 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
-| [`agent/openai_compatible/chat.py`](#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 746 | Chat Completions adapter for the agent model contract |
+| [`agent/openai_compatible/chat.py`](#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 796 | Chat Completions adapter for the agent model contract |
 | [`agent/openai_compatible/embeddings.py`](#agentopenai_compatibleembeddingspy---synchronous-embedding-provider-for-retrieval-indexes) | 68 | synchronous embedding provider for retrieval indexes |
 | [`agent/openai_compatible/transport.py`](#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 537 | JSON HTTP transports and endpoint configuration |
 | [`agent/openai_compatible/vision.py`](#agentopenai_compatiblevisionpy---image-proposals-through-a-verified-byte-loader) | 163 | image proposals through a verified byte loader |
@@ -25,9 +25,9 @@
 | [`agent/retention_anchor.py`](#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
 | [`agent/retention_inventory.py`](#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
 | [`agent/run_checkpointer.py`](#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 71 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
-| [`agent/runtime.py`](#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 194 | composition root for the durable stores around an agent |
+| [`agent/runtime.py`](#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 222 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
-| [`agent/task_runner.py`](#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 745 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
+| [`agent/task_runner.py`](#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 749 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
 
 ---
@@ -50,7 +50,7 @@
 
 ### `agent/base_agent/agent.py` - the single-task agent loop
 
-*2559 lines · depends on: `agent/base_agent/types.py`, `agent/model.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/context.py`, `memory/context_projection.py`, `memory/episode_models.py`, `memory/episode_store.py`, `memory/episodes.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/profiler.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/project_state_engine.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/tools.py` · used by: `agent/base_agent/__init__.py` · re-exported at the package root: 1 name(s)*
+*2643 lines · depends on: `agent/base_agent/types.py`, `agent/model.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/context.py`, `memory/context_projection.py`, `memory/episode_models.py`, `memory/episode_store.py`, `memory/episodes.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/profiler.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/project_state_engine.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/tools.py` · used by: `agent/base_agent/__init__.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Per iteration: check the run deadline and cancellation; project context (compact episodes, select observations); project the bounded project state; enforce the three budget guards; call the model under a watchdog; validate the response as an `AgentTurn`; then act on it. A `blocked` turn ends BLOCKED; a `final` turn is validated and optionally gated; a tool turn runs a governed batch whose results become observations, episodes and project-state transitions. Every exit goes through `_terminate`, which records the agent result in project state, seals the profile, emits telemetry and audit entries, and builds the `AgentResult`. An instance runs one task (its profiler allows a single run). A cancellation token does more than stop the loop between iterations: it is raced against every awaited model call, tool call, hook and verification gate, so cancelling interrupts a call that is still running. With an episode store built around a `SemanticCompactor`, compacted episodes are archived, summarized and verified by the projection and the model receives their verified digests next to the stubs of the rest.
 
@@ -224,7 +224,7 @@
 
 ### `agent/model.py` - provider-neutral model contract, streaming events and failover
 
-*418 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/episode_models.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/openai_compatible/chat.py`, `agent/runtime.py`, `agent/task_runner.py`, `integrations/langchain.py`, `integrations/langgraph.py` · re-exported at the package root: 17 name(s)*
+*439 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/episode_models.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/openai_compatible/chat.py`, `agent/runtime.py`, `agent/task_runner.py`, `integrations/langchain.py`, `integrations/langgraph.py` · re-exported at the package root: 17 name(s)*
 
 **Role in the workflow.** `BaseAgent` builds a `ModelContext` each turn and calls `next_turn` (or `stream_turn` when a listener is set and the adapter supports it); adapters return an `AgentTurn` or a `ModelTurnResponse`; `FailoverAgentModel` can wrap several adapters.
 
@@ -292,7 +292,7 @@
 
 ### `agent/openai_compatible/chat.py` - Chat Completions adapter for the agent model contract
 
-*746 lines · depends on: `agent/model.py`, `agent/openai_compatible/transport.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py` · used by: `agent/openai_compatible/__init__.py`, `agent/openai_compatible/vision.py` · re-exported at the package root: 2 name(s)*
+*796 lines · depends on: `agent/model.py`, `agent/openai_compatible/transport.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py` · used by: `agent/openai_compatible/__init__.py`, `agent/openai_compatible/vision.py` · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` passes a `ModelContext`; `_chat_payload` builds a three-message request (system, stable task context, volatile per-turn context), the transport posts it off the event loop, and the response is mapped to an `AgentTurn`: tool calls become one dependency-free `tool-batch`, otherwise the content must be a JSON `AgentTurn`.
 
@@ -723,7 +723,7 @@
 
 ### `agent/runtime.py` - composition root for the durable stores around an agent
 
-*194 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/retention.py`, `agent/run_checkpointer.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/context_projection.py`, `memory/episode_store.py`, `observability/audit_log.py`, `observability/profiler.py`, `observability/run_checkpoints.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py`, `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `integrations/langgraph.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
+*222 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/retention.py`, `agent/run_checkpointer.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/context_projection.py`, `memory/episode_store.py`, `observability/audit_log.py`, `observability/profiler.py`, `observability/run_checkpoints.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py`, `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `integrations/langgraph.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** `AgentRuntimeServices.open(run_root)` creates the stores once; `create_agent` builds a `BaseAgent` bound to them. The model and tool executor stay host choices.
 
@@ -770,7 +770,7 @@
 
 ### `agent/task_runner.py` - caller-driven task runner: model, tools, permissions and limits all come from the caller
 
-*745 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/openai_compatible/__init__.py`, `agent/runtime.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/identifiers.py`, `foundations/paths.py`, `mcp/client.py`, `mcp/client_bridge.py`, `mcp/client_types.py`, `memory/context_projection.py`, `observability/telemetry_models.py`, `observability/trace_context.py`, `state/planning.py`, `state/project_state_models.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/registry.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `mcp/_shared.py`, `mcp/agent_tools.py`, `mcp/server.py` · re-exported at the package root: 5 name(s)*
+*749 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/openai_compatible/__init__.py`, `agent/runtime.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/identifiers.py`, `foundations/paths.py`, `mcp/client.py`, `mcp/client_bridge.py`, `mcp/client_types.py`, `memory/context_projection.py`, `observability/telemetry_models.py`, `observability/trace_context.py`, `state/planning.py`, `state/project_state_models.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/registry.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `mcp/_shared.py`, `mcp/agent_tools.py`, `mcp/server.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** `AgentTaskRunner.run` is the single entry point a backend calls. The definition and the task say what the agent is and what it must do; `TaskRunOptions` says how it runs: the OpenAI-compatible endpoint and key, the capabilities it may use (and which are approved in advance), the built-in tools offered to the model, the workspace, declared output paths, host commands and external MCP servers. Nothing is built in or read from the environment. Without an endpoint the run replays `scripted_turns`. The MCP `run_agent_task` tool is a thin wrapper. A caller that cannot decide approvals in advance sets `permissions.approval_mode` to `wait` and answers them while the run is paused (`approvals`, `decide_approval`; the MCP tools `list_task_approvals` and `decide_task_approval`); the files the run wrote are read back through `workspace_for` and `agent/task_files.py`.
 

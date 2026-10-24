@@ -5,9 +5,9 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | File | Lines | Role |
 |---|---:|---|
 | [`tools/__init__.py`](#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
-| [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 188 | typed approval gates for state-changing actions |
+| [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 261 | typed approval gates for state-changing actions |
 | [`tools/artifact_anchor.py`](#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 195 | signed anchors of the artifact write log, kept outside the workspace |
-| [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 599 | content-addressed artifact store with immutable write attribution and a per-path write history |
+| [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 602 | content-addressed artifact store with immutable write attribution and a per-path write history |
 | [`tools/core/__init__.py`](#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
 | [`tools/core/definitions.py`](#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 356 | typed declarations of the governed core tool set |
 | [`tools/core/helpers.py`](#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 581 | private validation, HTTP and isolated-regex helpers behind the core tools |
@@ -15,8 +15,8 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 501 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
-| [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 176 | deny-by-default capability policy |
-| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 367 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 201 | deny-by-default capability policy |
+| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 464 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/result_cache.py`](#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
 | [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
@@ -39,7 +39,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/approvals.py` - typed approval gates for state-changing actions
 
-*188 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `observability/telemetry_models.py` · used by: `agent/task_runner.py`, `mcp/authority.py`, `state/harness_coordinator.py`, `tools/policy.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*261 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `observability/telemetry_models.py` · used by: `agent/task_runner.py`, `mcp/authority.py`, `state/harness_coordinator.py`, `tools/policy.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** When `CapabilityPolicy` says a mutating or process capability needs approval, `HarnessToolExecutor` files a request here (a pending request for the same run, node and capability is reused) and returns a BLOCKED tool result carrying the approval id; a human or controller later answers it (MCP `submit_approval`) and `resume_run` re-opens the node. A registry bound to a path persists to `<run>.approvals.json`, so requests and decisions survive a restart.
 
@@ -97,7 +97,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/artifacts.py` - content-addressed artifact store with immutable write attribution and a per-path write history
 
-*599 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/hashing.py`, `foundations/paths.py`, `foundations/text.py` · used by: `agent/task_runner.py`, `developer_tools/attribute_defect.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*602 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/hashing.py`, `foundations/paths.py`, `foundations/text.py` · used by: `agent/task_runner.py`, `developer_tools/attribute_defect.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** `write_draft`/`edit_draft` write declared outputs through this store; `read_artifact`, `grep_artifact` and `diff_declared_artifacts` read them back by `sha256:` id. Each write also leaves an immutable occurrence record naming the run, node and task, which later proves that a draft was authored by the current task, and one line in a store-wide write log (`.agent-artifacts/history/writes.jsonl`). `history(path)` reads that log back as the ordered versions of one path, each with the agent, node, run, tool, call and iteration that wrote it; `developer_tools/attribute_defect.py` searches it for the write that introduced a defect. A store can be opened `read_only` on a finished run.
 
@@ -333,7 +333,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/policy.py` - deny-by-default capability policy
 
-*176 lines · depends on: `foundations/contracts.py`, `foundations/paths.py`, `tools/approvals.py` · used by: `agent/orchestrator/models.py`, `agent/task_files.py`, `agent/task_runner.py`, `mcp/client_bridge.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*201 lines · depends on: `foundations/contracts.py`, `foundations/paths.py`, `tools/approvals.py` · used by: `agent/orchestrator/models.py`, `agent/task_files.py`, `agent/task_runner.py`, `mcp/client_bridge.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** `HarnessToolExecutor.execute` asks `CapabilityPolicy.evaluate` before every governed tool call and either runs, blocks, or requests an approval based on the answer.
 
@@ -361,7 +361,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/registry.py` - capability-bound harness tool registry and its BaseAgent executor
 
-*367 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
+*464 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** The governed `ToolExecutor`: `BaseAgent` hands it every tool call; it applies policy and approvals, then runs a host handler, a core tool, a registered process command or a built-in spec/artifact reader. The registry is closed: no generic shell and no dynamically named tool.
 

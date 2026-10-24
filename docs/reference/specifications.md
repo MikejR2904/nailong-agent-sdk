@@ -6,7 +6,7 @@ The deterministic specification pipeline. `preprocessing.py` parses a manifest o
 |---|---:|---|
 | [`specifications/__init__.py`](#specifications__init__py---package-marker-for-the-specification-pipeline) | 3 | package marker for the specification pipeline |
 | [`specifications/documents.py`](#specificationsdocumentspy---manifest-document-node-and-source-locator-contracts) | 126 | manifest, document, node and source-locator contracts |
-| [`specifications/evidence_graph.py`](#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 358 | source-preserving evidence graph with required closure and bounded packing |
+| [`specifications/evidence_graph.py`](#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 371 | source-preserving evidence graph with required closure and bounded packing |
 | [`specifications/preprocessing.py`](#specificationspreprocessingpy---manifest-driven-source-preserving-specification-parsing) | 392 | manifest-driven, source-preserving specification parsing |
 | [`specifications/retrieval.py`](#specificationsretrievalpy---provenance-grounded-candidate-retrieval-with-caches-and-optional-vector-backends) | 548 | provenance-grounded candidate retrieval with caches and optional vector backends |
 | [`specifications/retrieval_models.py`](#specificationsretrieval_modelspy---retrieval-document-query-candidate-and-result-contracts) | 121 | retrieval document, query, candidate and result contracts |
@@ -54,7 +54,7 @@ The deterministic specification pipeline. `preprocessing.py` parses a manifest o
 
 ### `specifications/evidence_graph.py` - source-preserving evidence graph with required closure and bounded packing
 
-*358 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/optimization/__init__.py`, `specifications/documents.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 12 name(s)*
+*371 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/optimization/__init__.py`, `specifications/documents.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 12 name(s)*
 
 **Role in the workflow.** Given a frozen typed graph, a set of target nodes and a token budget, the selector first keeps everything reachable through mandatory relation kinds, and only then spends the remaining budget on optional evidence chosen by the exact PCKP solver. It never creates relations from model output or semantic similarity.
 

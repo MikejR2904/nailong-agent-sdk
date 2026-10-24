@@ -7,7 +7,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 | [`foundations/__init__.py`](#foundations__init__py---package-marker-for-the-dependency-free-layer) | 4 | package marker for the dependency-free layer |
 | [`foundations/atomic_io.py`](#foundationsatomic_iopy---crash-safe-file-publication-exclusive-claims-and-cross-process-locks) | 174 | crash-safe file publication, exclusive claims and cross-process locks |
 | [`foundations/benchmarks.py`](#foundationsbenchmarkspy---reproducible-exact-vs-greedy-pckp-benchmark-harness) | 88 | reproducible exact-vs-greedy PCKP benchmark harness |
-| [`foundations/contracts.py`](#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 533 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
+| [`foundations/contracts.py`](#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 534 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
 | [`foundations/dependency_graph.py`](#foundationsdependency_graphpy---deterministic-cycle-and-blast-radius-traversal-over-dependent-prerequisite-edges) | 104 | deterministic cycle and blast-radius traversal over (dependent, prerequisite) edges |
 | [`foundations/detached.py`](#foundationsdetachedpy---run-a-blocking-call-on-a-daemon-thread-that-the-awaiting-task-may-abandon) | 42 | run a blocking call on a daemon thread that the awaiting task may abandon |
 | [`foundations/errors.py`](#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 284 | typed SDK errors and secret/reasoning redaction for durable records |
@@ -21,7 +21,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 | [`foundations/paths.py`](#foundationspathspy---comparison-of-windows-extended-length-path-spellings-as-one-location) | 40 | comparison of Windows extended-length path spellings as one location |
 | [`foundations/record_locks.py`](#foundationsrecord_lockspy---per-record-cross-process-locks-re-entrant-for-the-holding-thread) | 62 | per-record cross-process locks, re-entrant for the holding thread |
 | [`foundations/run_fence.py`](#foundationsrun_fencepy---per-run-write-fence-that-retention-raises-before-it-deletes-a-runs-records) | 139 | per-run write fence that retention raises before it deletes a run's records |
-| [`foundations/suffix_search.py`](#foundationssuffix_searchpy---where-a-defect-began-in-an-ordered-history-in-olog-d-probes) | 81 | where a defect began in an ordered history, in O(log d) probes |
+| [`foundations/suffix_search.py`](#foundationssuffix_searchpy---where-a-defect-began-in-an-ordered-history-in-olog-d-probes) | 105 | where a defect began in an ordered history, in O(log d) probes |
 | [`foundations/text.py`](#foundationstextpy---newline-only-line-splitting-and-utf-8-well-formedness-for-durable-text) | 50 | newline-only line splitting and UTF-8 well-formedness for durable text |
 | [`foundations/version.py`](#foundationsversionpy---the-installed-package-name-and-version-and-the-identity-strings-derived-from-them) | 23 | the installed package name and version, and the identity strings derived from them |
 
@@ -82,7 +82,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 ### `foundations/contracts.py` - the serializable BaseAgent contract: definitions, tasks, turns, results, context types
 
-*533 lines · depends on: `foundations/dependency_graph.py`, `foundations/errors.py`, `foundations/identifiers.py`, `foundations/json_limits.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/model.py`, `agent/openai_compatible/chat.py`, `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py`, `agent/retention.py` (+62 more) · re-exported at the package root: 17 name(s)*
+*534 lines · depends on: `foundations/dependency_graph.py`, `foundations/errors.py`, `foundations/identifiers.py`, `foundations/json_limits.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/model.py`, `agent/openai_compatible/chat.py`, `agent/orchestrator/models.py`, `agent/orchestrator/orchestrator.py`, `agent/retention.py` (+62 more) · re-exported at the package root: 17 name(s)*
 
 **Role in the workflow.** The shared vocabulary of the whole SDK. A host builds an `AgentDefinition` (data only) and a `ScopedAgentTask`; `BaseAgent` validates them, asks the model for `AgentTurn`s (tool call, tool batch, final, blocked), executes tools producing `ToolExecutionResult`s, records `ModelObservation`s/`EpisodeSummary`s, and returns an `AgentResult` carrying lifecycle events and projection metadata. Every model adapter, store, MCP tool and integration exchanges these types, which is why it is the most depended-on module.
 
@@ -445,7 +445,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 
 ### `foundations/suffix_search.py` - where a defect began in an ordered history, in O(log d) probes
 
-*81 lines · depends on: nothing in the package · used by: `developer_tools/attribute_defect.py`, `developer_tools/cli.py` · not re-exported at the package root*
+*105 lines · depends on: nothing in the package · used by: `developer_tools/attribute_defect.py`, `developer_tools/cli.py` · not re-exported at the package root*
 
 **Role in the workflow.** Finds where the bad suffix of an ordered history starts without evaluating all of it. `find_suffix_start(count, is_bad)` probes the newest element, steps back 1, 2, 4, ... elements until it finds a good one and bisects the last gap; `SuffixStrategy.SCAN` walks back one element at a time instead. `developer_tools/attribute_defect.py` runs it over the versions of an artifact, where `is_bad` is the caller's check on the content of a version.
 
@@ -490,4 +490,3 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 **Algorithms & invariants.** `PACKAGE_NAME` is the distribution name `nailong-agent-sdk`; the import name is `nailong_agent_sdk`.
 
 *Module-level names:* `PACKAGE_NAME`
-

@@ -450,14 +450,14 @@ the run options. Everything else is a parameter too:
 | [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 931 | the public API surface (lazy re-exports) |
 | [`agent/__init__.py`](agent.md#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2559 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2643 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/cost_model.py`](agent.md#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
 | [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 320 | runs registered BaseAgent bindings as graph nodes |
-| [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 418 | provider-neutral model contract, streaming events and failover |
+| [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 439 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
-| [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 746 | Chat Completions adapter for the agent model contract |
+| [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 796 | Chat Completions adapter for the agent model contract |
 | [`agent/openai_compatible/embeddings.py`](agent.md#agentopenai_compatibleembeddingspy---synchronous-embedding-provider-for-retrieval-indexes) | 68 | synchronous embedding provider for retrieval indexes |
 | [`agent/openai_compatible/transport.py`](agent.md#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 537 | JSON HTTP transports and endpoint configuration |
 | [`agent/openai_compatible/vision.py`](agent.md#agentopenai_compatiblevisionpy---image-proposals-through-a-verified-byte-loader) | 163 | image proposals through a verified byte loader |
@@ -469,17 +469,17 @@ the run options. Everything else is a parameter too:
 | [`agent/retention_anchor.py`](agent.md#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
 | [`agent/retention_inventory.py`](agent.md#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
 | [`agent/run_checkpointer.py`](agent.md#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 71 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
-| [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 194 | composition root for the durable stores around an agent |
+| [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 222 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](agent.md#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
-| [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 745 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
+| [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 749 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](agent.md#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
 | [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 94 | public surface of the developer utilities |
-| [`developer_tools/attribute_defect.py`](developer_tools.md#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 283 | which write of an artifact introduced a defect, and which agent made it |
+| [`developer_tools/attribute_defect.py`](developer_tools.md#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 286 | which write of an artifact introduced a defect, and which agent made it |
 | [`developer_tools/attribute_failure.py`](developer_tools.md#developer_toolsattribute_failurepy---which-failure-and-which-model-decision-stopped-a-run) | 390 | which failure, and which model decision, stopped a run |
 | [`developer_tools/attribute_lineage.py`](developer_tools.md#developer_toolsattribute_lineagepy---trace-a-failing-run-back-through-the-artifact-versions-it-read) | 292 | trace a failing run back through the artifact versions it read |
 | [`developer_tools/attribute_result.py`](developer_tools.md#developer_toolsattribute_resultpy---which-tool-result-of-an-agent-run-first-failed-the-callers-check-and-which-model-turn-asked-for-it) | 207 | which tool result of an agent run first failed the caller's check, and which model turn asked for it |
 | [`developer_tools/catalog.py`](developer_tools.md#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 605 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 607 | the `nailong-agent-sdk-dev` command line |
 | [`developer_tools/decision_links.py`](developer_tools.md#developer_toolsdecision_linkspy---which-model-turn-a-failing-finding-traces-back-to) | 355 | which model turn a failing finding traces back to |
 | [`developer_tools/diagnose.py`](developer_tools.md#developer_toolsdiagnosepy---where-a-run-first-went-wrong-what-ended-it-and-what-it-held-up) | 711 | where a run first went wrong, what ended it and what it held up |
 | [`developer_tools/inspect.py`](developer_tools.md#developer_toolsinspectpy---read-only-run-evidence-inspection) | 226 | read-only run evidence inspection |
@@ -488,7 +488,7 @@ the run options. Everything else is a parameter too:
 | [`foundations/__init__.py`](foundations.md#foundations__init__py---package-marker-for-the-dependency-free-layer) | 4 | package marker for the dependency-free layer |
 | [`foundations/atomic_io.py`](foundations.md#foundationsatomic_iopy---crash-safe-file-publication-exclusive-claims-and-cross-process-locks) | 174 | crash-safe file publication, exclusive claims and cross-process locks |
 | [`foundations/benchmarks.py`](foundations.md#foundationsbenchmarkspy---reproducible-exact-vs-greedy-pckp-benchmark-harness) | 88 | reproducible exact-vs-greedy PCKP benchmark harness |
-| [`foundations/contracts.py`](foundations.md#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 533 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
+| [`foundations/contracts.py`](foundations.md#foundationscontractspy---the-serializable-baseagent-contract-definitions-tasks-turns-results-context-types) | 534 | the serializable BaseAgent contract: definitions, tasks, turns, results, context types |
 | [`foundations/dependency_graph.py`](foundations.md#foundationsdependency_graphpy---deterministic-cycle-and-blast-radius-traversal-over-dependent-prerequisite-edges) | 104 | deterministic cycle and blast-radius traversal over (dependent, prerequisite) edges |
 | [`foundations/detached.py`](foundations.md#foundationsdetachedpy---run-a-blocking-call-on-a-daemon-thread-that-the-awaiting-task-may-abandon) | 42 | run a blocking call on a daemon thread that the awaiting task may abandon |
 | [`foundations/errors.py`](foundations.md#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 284 | typed SDK errors and secret/reasoning redaction for durable records |
@@ -502,7 +502,7 @@ the run options. Everything else is a parameter too:
 | [`foundations/paths.py`](foundations.md#foundationspathspy---comparison-of-windows-extended-length-path-spellings-as-one-location) | 40 | comparison of Windows extended-length path spellings as one location |
 | [`foundations/record_locks.py`](foundations.md#foundationsrecord_lockspy---per-record-cross-process-locks-re-entrant-for-the-holding-thread) | 62 | per-record cross-process locks, re-entrant for the holding thread |
 | [`foundations/run_fence.py`](foundations.md#foundationsrun_fencepy---per-run-write-fence-that-retention-raises-before-it-deletes-a-runs-records) | 139 | per-run write fence that retention raises before it deletes a run's records |
-| [`foundations/suffix_search.py`](foundations.md#foundationssuffix_searchpy---where-a-defect-began-in-an-ordered-history-in-olog-d-probes) | 81 | where a defect began in an ordered history, in O(log d) probes |
+| [`foundations/suffix_search.py`](foundations.md#foundationssuffix_searchpy---where-a-defect-began-in-an-ordered-history-in-olog-d-probes) | 105 | where a defect began in an ordered history, in O(log d) probes |
 | [`foundations/text.py`](foundations.md#foundationstextpy---newline-only-line-splitting-and-utf-8-well-formedness-for-durable-text) | 50 | newline-only line splitting and UTF-8 well-formedness for durable text |
 | [`foundations/version.py`](foundations.md#foundationsversionpy---the-installed-package-name-and-version-and-the-identity-strings-derived-from-them) | 23 | the installed package name and version, and the identity strings derived from them |
 | [`integrations/__init__.py`](integrations.md#integrations__init__py---public-surface-of-the-integrations-package) | 109 | public surface of the integrations package |
@@ -521,7 +521,7 @@ the run options. Everything else is a parameter too:
 | [`mcp/__init__.py`](mcp.md#mcp__init__py---package-marker-for-the-mcp-surface) | 3 | package marker for the MCP surface |
 | [`mcp/_shared.py`](mcp.md#mcp_sharedpy---shared-context-and-error-formatting-for-every-tool-group) | 156 | shared context and error formatting for every tool group |
 | [`mcp/agent_tools.py`](mcp.md#mcpagent_toolspy---mcp-tools-for-agent-contract-validation-context-assembly-and-scripted-runs) | 217 | MCP tools for agent contract validation, context assembly and scripted runs |
-| [`mcp/arguments.py`](mcp.md#mcpargumentspy---refuse-tool-arguments-the-mcp-surface-does-not-define-instead-of-dropping-them-silently) | 116 | refuse tool arguments the MCP surface does not define instead of dropping them silently |
+| [`mcp/arguments.py`](mcp.md#mcpargumentspy---refuse-tool-arguments-the-mcp-surface-does-not-define-instead-of-dropping-them-silently) | 124 | refuse tool arguments the MCP surface does not define instead of dropping them silently |
 | [`mcp/authority.py`](mcp.md#mcpauthoritypy---who-may-call-which-tool-host-and-approver-credentials-decision-binding-and-its-audit) | 445 | who may call which tool: host and approver credentials, decision binding and its audit |
 | [`mcp/authority_matrix.py`](mcp.md#mcpauthority_matrixpy---one-export-of-who-may-do-what-state-transitions-mcp-credentials-and-tool-classes) | 118 | one export of who may do what: state transitions, MCP credentials and tool classes |
 | [`mcp/client.py`](mcp.md#mcpclientpy---outbound-mcp-client-lifecycle) | 550 | outbound MCP client lifecycle |
@@ -538,20 +538,20 @@ the run options. Everything else is a parameter too:
 | [`mcp/tool_groups.py`](mcp.md#mcptool_groupspy---the-ordered-tool-groups-every-mcp-server-registers) | 27 | the ordered tool groups every MCP server registers |
 | [`memory/__init__.py`](memory.md#memory__init__py---package-marker-for-episode-memory-and-context-assembly) | 3 | package marker for episode memory and context assembly |
 | [`memory/context.py`](memory.md#memorycontextpy---builds-the-fixed-initial-prompt-for-a-run) | 51 | builds the fixed initial prompt for a run |
-| [`memory/context_projection.py`](memory.md#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 588 | per-turn bounded context projection and the tool-result journal |
+| [`memory/context_projection.py`](memory.md#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 644 | per-turn bounded context projection and the tool-result journal |
 | [`memory/entailment_screen.py`](memory.md#memoryentailment_screenpy---deterministic-lexical-screen-for-claims-that-contradict-or-outrun-their-cited-evidence) | 117 | deterministic lexical screen for claims that contradict or outrun their cited evidence |
 | [`memory/episode_archive.py`](memory.md#memoryepisode_archivepy---content-addressed-archive-of-the-original-snapshots-of-compacted-episodes) | 290 | content-addressed archive of the original snapshots of compacted episodes |
-| [`memory/episode_models.py`](memory.md#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 630 | episode records, compaction policy and the retention contracts |
+| [`memory/episode_models.py`](memory.md#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 649 | episode records, compaction policy and the retention contracts |
 | [`memory/episode_scoring.py`](memory.md#memoryepisode_scoringpy---deterministic-lexical-relevance-and-cost-helpers-for-retention) | 77 | deterministic lexical relevance and cost helpers for retention |
-| [`memory/episode_store.py`](memory.md#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 1872 | episode lifecycle and the three deterministic compaction strategies |
+| [`memory/episode_store.py`](memory.md#memoryepisode_storepy---episode-lifecycle-and-the-three-deterministic-compaction-strategies) | 2267 | episode lifecycle and the three deterministic compaction strategies |
 | [`memory/episodes.py`](memory.md#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 97 | task-scoped episode graph of one-line summaries |
-| [`memory/learned_retention.py`](memory.md#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 161 | opt-in learned utility coefficients for dependency-closed retention |
+| [`memory/learned_retention.py`](memory.md#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 215 | opt-in learned utility coefficients for dependency-closed retention |
 | [`memory/memory_snapshot.py`](memory.md#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
-| [`memory/retention_outcomes.py`](memory.md#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 187 | retention decisions and their outcomes, recorded for offline learning |
+| [`memory/retention_outcomes.py`](memory.md#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 200 | retention decisions and their outcomes, recorded for offline learning |
 | [`memory/utility_objectives.py`](memory.md#memoryutility_objectivespy---generalized-training-objectives-regret-weighted-pairwise-listwise-regression-group-dro) | 404 | generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO |
 | [`memory/utility_calibration.py`](memory.md#memoryutility_calibrationpy---utility-calibration-distribution-shift-evidence-and-logged-static-fallback) | 288 | utility calibration, distribution-shift evidence and logged static fallback |
 | [`memory/utility_features_v2.py`](memory.md#memoryutility_features_v2py---feature-schema-v2-task-conditioned-bipartite-graph-and-failure-propagation-features) | 225 | feature schema v2: task-conditioned, bipartite-graph and failure-propagation features |
-| [`memory/tiered_retention.py`](memory.md#memorytiered_retentionpy---three-level-retention-keep-summarise-or-drop-under-one-budget) | 351 | three-level retention: keep, summarise or drop under one budget |
+| [`memory/tiered_retention.py`](memory.md#memorytiered_retentionpy---three-level-retention-keep-summarise-or-drop-under-one-budget) | 466 | three-level retention: keep, summarise or drop under one budget |
 | [`memory/semantic_compaction.py`](memory.md#memorysemantic_compactionpy---dependency-aware-summarization-verification-and-safe-commit-of-compacted-episodes) | 1133 | dependency-aware summarization, verification and safe commit of compacted episodes |
 | [`memory/summarization_scheduler.py`](memory.md#memorysummarization_schedulerpy---bounded-background-queue-for-summarization-work-that-never-blocks-its-caller) | 190 | bounded background queue for summarization work that never blocks its caller |
 | [`memory/summary_ledger.py`](memory.md#memorysummary_ledgerpy---the-summaries-of-one-episode-store-and-where-each-one-lives) | 192 | the summaries of one episode store and where each one lives |
@@ -560,9 +560,9 @@ the run options. Everything else is a parameter too:
 | [`memory/utility_training.py`](memory.md#memoryutility_trainingpy---pairwise-logistic-ranking-loss-derivatives-and-explicit-trainers) | 339 | pairwise logistic ranking loss, derivatives and explicit trainers |
 | [`observability/__init__.py`](observability.md#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
 | [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 463 | append-only, hash-chained, per-run JSONL audit transcript |
-| [`observability/metric_definitions.py`](observability.md#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 400 | the SDK's standard metric catalogue |
+| [`observability/metric_definitions.py`](observability.md#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 450 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](observability.md#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
-| [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 829 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
+| [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 863 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
 | [`observability/profiler.py`](observability.md#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
 | [`observability/run_checkpoints.py`](observability.md#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 864 | signed checkpoints of a run's chain heads, kept outside the run root |
 | [`observability/telemetry_helpers.py`](observability.md#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
@@ -571,7 +571,7 @@ the run options. Everything else is a parameter too:
 | [`observability/trace_context.py`](observability.md#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 181 | W3C Trace Context ids, the traceparent header and the process resource |
 | [`specifications/__init__.py`](specifications.md#specifications__init__py---package-marker-for-the-specification-pipeline) | 3 | package marker for the specification pipeline |
 | [`specifications/documents.py`](specifications.md#specificationsdocumentspy---manifest-document-node-and-source-locator-contracts) | 126 | manifest, document, node and source-locator contracts |
-| [`specifications/evidence_graph.py`](specifications.md#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 358 | source-preserving evidence graph with required closure and bounded packing |
+| [`specifications/evidence_graph.py`](specifications.md#specificationsevidence_graphpy---source-preserving-evidence-graph-with-required-closure-and-bounded-packing) | 371 | source-preserving evidence graph with required closure and bounded packing |
 | [`specifications/preprocessing.py`](specifications.md#specificationspreprocessingpy---manifest-driven-source-preserving-specification-parsing) | 392 | manifest-driven, source-preserving specification parsing |
 | [`specifications/retrieval.py`](specifications.md#specificationsretrievalpy---provenance-grounded-candidate-retrieval-with-caches-and-optional-vector-backends) | 548 | provenance-grounded candidate retrieval with caches and optional vector backends |
 | [`specifications/retrieval_models.py`](specifications.md#specificationsretrieval_modelspy---retrieval-document-query-candidate-and-result-contracts) | 121 | retrieval document, query, candidate and result contracts |
@@ -580,9 +580,9 @@ the run options. Everything else is a parameter too:
 | [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 911 | durable facade over the controller, the graph run, project state and telemetry |
 | [`state/coordination_records.py`](state.md#statecoordination_recordspy---durable-run-record-and-its-integrity-hash) | 42 | durable run record and its integrity hash |
 | [`state/elastic.py`](state.md#stateelasticpy---typed-elastic-node-requests-specs-spawn-records-and-the-admission-checks) | 353 | typed elastic-node requests, specs, spawn records and the admission checks |
-| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1647 | deterministic wave scheduler and authoritative typed run state |
+| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1652 | deterministic wave scheduler and authoritative typed run state |
 | [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 255 | typed node, edge, event and shared-state contracts for the run graph |
-| [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 372 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
+| [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 374 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
 | [`state/orchestration.py`](state.md#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 453 | controller state machine and its crash-safe store |
 | [`state/orchestration_models.py`](state.md#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 110 | controller phase, routing-rule and record contracts |
 | [`state/planning.py`](state.md#stateplanningpy---typed-plan-contracts-and-the-deterministic-plan-validator) | 496 | typed plan contracts and the deterministic plan validator |
@@ -592,9 +592,9 @@ the run options. Everything else is a parameter too:
 | [`state/run_state_store.py`](state.md#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 445 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
 | [`state/shared_state.py`](state.md#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 240 | typed lateral-state payloads, exact routing references and provenance records |
 | [`tools/__init__.py`](tools.md#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
-| [`tools/approvals.py`](tools.md#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 188 | typed approval gates for state-changing actions |
+| [`tools/approvals.py`](tools.md#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 261 | typed approval gates for state-changing actions |
 | [`tools/artifact_anchor.py`](tools.md#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 195 | signed anchors of the artifact write log, kept outside the workspace |
-| [`tools/artifacts.py`](tools.md#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 599 | content-addressed artifact store with immutable write attribution and a per-path write history |
+| [`tools/artifacts.py`](tools.md#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 602 | content-addressed artifact store with immutable write attribution and a per-path write history |
 | [`tools/core/__init__.py`](tools.md#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
 | [`tools/core/definitions.py`](tools.md#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 356 | typed declarations of the governed core tool set |
 | [`tools/core/helpers.py`](tools.md#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 581 | private validation, HTTP and isolated-regex helpers behind the core tools |
@@ -602,8 +602,8 @@ the run options. Everything else is a parameter too:
 | [`tools/core/services.py`](tools.md#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 501 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](tools.md#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
-| [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 176 | deny-by-default capability policy |
-| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 367 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 201 | deny-by-default capability policy |
+| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 464 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/result_cache.py`](tools.md#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
 | [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |

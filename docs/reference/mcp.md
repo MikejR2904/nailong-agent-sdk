@@ -7,7 +7,7 @@ Two directions. **Server** (`server.py` plus seven `*_tools.py` groups): `create
 | [`mcp/__init__.py`](#mcp__init__py---package-marker-for-the-mcp-surface) | 3 | package marker for the MCP surface |
 | [`mcp/_shared.py`](#mcp_sharedpy---shared-context-and-error-formatting-for-every-tool-group) | 156 | shared context and error formatting for every tool group |
 | [`mcp/agent_tools.py`](#mcpagent_toolspy---mcp-tools-for-agent-contract-validation-context-assembly-and-scripted-runs) | 217 | MCP tools for agent contract validation, context assembly and scripted runs |
-| [`mcp/arguments.py`](#mcpargumentspy---refuse-tool-arguments-the-mcp-surface-does-not-define-instead-of-dropping-them-silently) | 116 | refuse tool arguments the MCP surface does not define instead of dropping them silently |
+| [`mcp/arguments.py`](#mcpargumentspy---refuse-tool-arguments-the-mcp-surface-does-not-define-instead-of-dropping-them-silently) | 124 | refuse tool arguments the MCP surface does not define instead of dropping them silently |
 | [`mcp/authority.py`](#mcpauthoritypy---who-may-call-which-tool-host-and-approver-credentials-decision-binding-and-its-audit) | 445 | who may call which tool: host and approver credentials, decision binding and its audit |
 | [`mcp/authority_matrix.py`](#mcpauthority_matrixpy---one-export-of-who-may-do-what-state-transitions-mcp-credentials-and-tool-classes) | 118 | one export of who may do what: state transitions, MCP credentials and tool classes |
 | [`mcp/client.py`](#mcpclientpy---outbound-mcp-client-lifecycle) | 550 | outbound MCP client lifecycle |
@@ -80,7 +80,7 @@ Two directions. **Server** (`server.py` plus seven `*_tools.py` groups): `create
 
 ### `mcp/arguments.py` - refuse tool arguments the MCP surface does not define instead of dropping them silently
 
-*116 lines · depends on: nothing in the package · used by: `mcp/server.py` · not re-exported at the package root*
+*124 lines · depends on: nothing in the package · used by: `mcp/server.py` · not re-exported at the package root*
 
 **Role in the workflow.** The MCP library validates a call against the tool's signature and discards any argument it does not declare, so a caller that sent `verification_gates` or `pre_tool_hooks` would see a successful call that ignored them. `ToolArgumentGuard` is a server middleware that refuses such a call with the names of the arguments, and for a Python-only capability of `AgentTaskRunner.run` it says why MCP cannot carry it. The same names are refused inside `run_agent_task`'s `runtime_options`.
 
@@ -463,5 +463,3 @@ Two directions. **Server** (`server.py` plus seven `*_tools.py` groups): `create
 **Contents**
 
 *Module-level names:* `TOOL_GROUPS`
-
-
