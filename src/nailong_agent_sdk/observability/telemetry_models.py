@@ -14,6 +14,7 @@ identifiers must be well-formed, and integrity hashes track event chains.
 
 from __future__ import annotations
 
+import math
 import uuid
 from enum import StrEnum
 from typing import Any, Literal
@@ -26,6 +27,9 @@ from ..foundations.text import assert_well_formed_text
 from .trace_context import require_span_id, require_trace_id
 
 MAX_DECIDER_ID_CHARS = 128
+
+
+MAX_HISTOGRAM_BOUNDS = 64
 
 
 class TelemetryAuthority(StrEnum):
@@ -167,7 +171,25 @@ class MetricDefinition(StrictModel):
     missing_data_rule: str = Field(min_length=1)
     source_description: str = Field(min_length=1)
     instrument: Literal["counter", "up_down_counter", "histogram", "gauge"] | None = None
+    histogram_bounds: list[float] | None = None
     schema_version: str = "metric-definition-v1"
+
+    @field_validator("histogram_bounds")
+    @classmethod
+    def bounds_are_finite_and_strictly_increasing(
+        cls, value: list[float] | None
+    ) -> list[float] | None:
+        if value is None:
+            return value
+        if not value or len(value) > MAX_HISTOGRAM_BOUNDS:
+            raise ValueError(
+                f"histogram_bounds must hold 1 to {MAX_HISTOGRAM_BOUNDS} values, got {len(value)}"
+            )
+        if any(not math.isfinite(item) for item in value):
+            raise ValueError("histogram_bounds must be finite numbers")
+        if any(left >= right for left, right in zip(value, value[1:], strict=False)):
+            raise ValueError("histogram_bounds must be strictly increasing")
+        return value
 
 
 class MetricObservation(StrictModel):

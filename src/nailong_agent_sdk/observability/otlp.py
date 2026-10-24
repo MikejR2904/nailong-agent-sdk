@@ -13,6 +13,8 @@ import gzip
 import http.client
 import json
 import math
+import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -21,10 +23,12 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field
 
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError, redact_secrets
 from ..foundations.text import scrub_surrogates
@@ -112,6 +116,83 @@ class OtlpSendResult(StrictModel):
     error_message: str | None = None
 
 
+class RunCursor(StrictModel):
+    """How much of one run a collector has already been sent, per signal."""
+
+    traces: int = Field(default=0, ge=0)
+    logs: int = Field(default=0, ge=0)
+    metrics: list[str] = Field(default_factory=list)
+
+
+class _LedgerFile(StrictModel):
+    schema_version: str = "otlp-export-ledger-v1"
+    exports: dict[str, dict[str, RunCursor]] = Field(default_factory=dict)
+
+
+class OtlpExportLedger:
+    """Remembers what each collector was sent, so exporting a run again sends only what is new.
+
+    OTLP metrics here are delta points and logs are not de-duplicated by a collector, so sending a
+    run twice counts it twice. The ledger is a file kept per exporter endpoint: for each run, the
+    highest telemetry event sequence already sent as spans and as log records, and the ids of the
+    metric observations already sent. A cursor moves only after a request succeeded, and a point
+    the collector rejected is counted as sent, because resending the accepted points around it
+    would duplicate them.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+
+    def cursor(self, endpoint: str, run_id: str) -> RunCursor:
+        with self._lock:
+            return self._load().exports.get(endpoint, {}).get(run_id, RunCursor())
+
+    def advance(
+        self,
+        endpoint: str,
+        run_id: str,
+        *,
+        traces: int | None = None,
+        logs: int | None = None,
+        metrics: Sequence[str] = (),
+    ) -> None:
+        with self._lock:
+            state = self._load()
+            current = state.exports.setdefault(endpoint, {}).get(run_id, RunCursor())
+            state.exports[endpoint][run_id] = RunCursor(
+                traces=max(current.traces, traces or 0),
+                logs=max(current.logs, logs or 0),
+                metrics=[
+                    *current.metrics,
+                    *(item for item in metrics if item not in current.metrics),
+                ],
+            )
+            self._save(state)
+
+    def _load(self) -> _LedgerFile:
+        if not self._path.is_file():
+            return _LedgerFile()
+        try:
+            return _LedgerFile.model_validate_json(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise AgentSdkError(
+                "OTLP_LEDGER_UNREADABLE",
+                f'The export ledger "{self._path}" cannot be read: {type(error).__name__}: '
+                f"{error}. Delete it to export every run again from the start.",
+                {"path": str(self._path)},
+            ) from error
+
+    def _save(self, state: _LedgerFile) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = unique_temporary_path(self._path)
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(state.model_dump_json(indent=2))
+            stream.flush()
+            os.fsync(stream.fileno())
+        replace_atomic(temporary, self._path)
+
+
 @dataclass(frozen=True)
 class OtlpRunPayloads:
     """The OTLP/JSON request bodies of one telemetry run and how much they carry."""
@@ -127,6 +208,9 @@ class OtlpRunPayloads:
     log_records: int = 0
     metric_points: int = 0
     unavailable_metrics_skipped: int = 0
+    traces_through: int = 0
+    logs_through: int = 0
+    metric_ids: tuple[str, ...] = ()
 
     def by_signal(self) -> dict[OtlpSignal, dict[str, Any]]:
         found: dict[OtlpSignal, dict[str, Any] | None] = {
@@ -186,6 +270,10 @@ class OtlpHttpExporter:
         self._max_attempts = max_attempts
         self._sleep = sleep
         self._opener = urllib.request.build_opener(_NoRedirectHandler)
+
+    @property
+    def base_url(self) -> str:
+        return self._base
 
     def url_for(self, signal: OtlpSignal) -> str:
         return f"{self._base}/v1/{signal}"
@@ -499,16 +587,26 @@ _HISTOGRAM_BOUNDS = {
     "milliseconds": (5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1_000.0, 2_500.0, 5_000.0)
     + (10_000.0, 30_000.0, 60_000.0, 300_000.0),
     "seconds": (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0),
+    "ratio": (0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0),
+    "utility": (0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0),
+    "tokens": (1.0, 10.0, 50.0, 100.0, 500.0, 1_000.0, 5_000.0, 10_000.0, 50_000.0)
+    + (100_000.0, 500_000.0, 1_000_000.0),
+    "count": (1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1_000.0, 10_000.0),
+    "bytes": (1_024.0, 4_096.0, 16_384.0, 65_536.0, 262_144.0, 1_048_576.0)
+    + (4_194_304.0, 16_777_216.0, 67_108_864.0, 268_435_456.0, 1_073_741_824.0),
 }
 _DEFAULT_HISTOGRAM_BOUNDS = (1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0)
 
 
 def _histogram_points(
-    ordered: Sequence[MetricObservation], unit: str, run_start: int
+    ordered: Sequence[MetricObservation],
+    unit: str,
+    run_start: int,
+    bounds: Sequence[float] | None = None,
 ) -> list[dict[str, Any]]:
     """One delta point per attribute set: count, sum, extremes and explicit-bound bucket counts."""
 
-    bounds = _HISTOGRAM_BOUNDS.get(unit, _DEFAULT_HISTOGRAM_BOUNDS)
+    bounds = tuple(bounds) if bounds else _HISTOGRAM_BOUNDS.get(unit, _DEFAULT_HISTOGRAM_BOUNDS)
     groups: dict[str, list[MetricObservation]] = {}
     for item in ordered:
         key = json.dumps(_point_attributes(item), sort_keys=True, default=str)
@@ -561,7 +659,12 @@ def _metrics(
         data_points: list[dict[str, Any]] = []
         ordered = sorted(items, key=lambda entry: entry.observed_at_utc)
         if instrument == "histogram":
-            data_points = _histogram_points(ordered, items[0].unit, run_start)
+            data_points = _histogram_points(
+                ordered,
+                items[0].unit,
+                run_start,
+                definition.histogram_bounds if definition is not None else None,
+            )
         for item in ordered if instrument != "histogram" else ():
             at = _unix_nano(item.observed_at_utc)
             point: dict[str, Any] = {
@@ -689,6 +792,7 @@ def build_run_payloads(
     signals: Sequence[OtlpSignal] = SIGNALS,
     links: NodeLinks | None = None,
     exported_spans: Collection[str] | None = None,
+    since: RunCursor | None = None,
 ) -> OtlpRunPayloads:
     """Return the OTLP/JSON request bodies for one telemetry run, built from its ledger.
 
@@ -698,7 +802,10 @@ def build_run_payloads(
     """
 
     events = list(store.iter_events(run_id))
-    profiles = [event for event in events if event.event_type == PROFILE_EVENT_TYPE]
+    after = since or RunCursor()
+    traced = [event for event in events if event.sequence > after.traces]
+    logged = [event for event in events if event.sequence > after.logs]
+    profiles = [event for event in traced if event.event_type == PROFILE_EVENT_TYPE]
     recorded = next((p.payload["resource"] for p in profiles if p.payload.get("resource")), None)
     resource = {"attributes": _key_values(recorded or resource_attributes())}
     scope = _scope()
@@ -723,7 +830,7 @@ def build_run_payloads(
             spans.extend(
                 _profile_span(span, trace_id, root_attributes, node_links) for span in kept
             )
-        graph_span = _graph_run_span(run_id, events)
+        graph_span = _graph_run_span(run_id, traced)
         if graph_span is not None:
             spans.append(graph_span)
         if spans:
@@ -742,8 +849,8 @@ def build_run_payloads(
                 },
             )
 
-    if "logs" in signals and events:
-        records = [_log_record(event) for event in events]
+    if "logs" in signals and logged:
+        records = [_log_record(event) for event in logged]
         found.update(
             log_records=len(records),
             logs={
@@ -755,8 +862,10 @@ def build_run_payloads(
 
     if "metrics" in signals:
         definitions = {item.metric_id: item for item in store.list_metric_definitions()}
+        sent = set(after.metrics)
         run_start = min((_unix_nano(event.occurred_at_utc) for event in events), default=0)
-        metrics, points, skipped = _metrics(store.list_metrics(run_id), definitions, run_start)
+        unsent = [item for item in store.list_metrics(run_id) if item.observation_id not in sent]
+        metrics, points, skipped = _metrics(unsent, definitions, run_start)
         found["unavailable_metrics_skipped"] = skipped
         if metrics:
             found.update(
@@ -770,6 +879,12 @@ def build_run_payloads(
                     ]
                 },
             )
+    if traced:
+        found["traces_through"] = max(event.sequence for event in traced)
+    if logged:
+        found["logs_through"] = max(event.sequence for event in logged)
+    if "metrics" in signals:
+        found["metric_ids"] = tuple(item.observation_id for item in unsent)
     return OtlpRunPayloads(run_id=run_id, **found)
 
 
@@ -803,7 +918,11 @@ def preview_export(
     exported = exported_span_ids(store, run_ids) if "traces" in signals else None
     for run_id in run_ids:
         built = build_run_payloads(
-            store, run_id, signals=signals, links=links, exported_spans=exported
+            store,
+            run_id,
+            signals=signals,
+            links=links,
+            exported_spans=exported,
         )
         for name in totals:
             totals[name] += getattr(built, name)
@@ -817,8 +936,13 @@ def export_runs(
     *,
     signals: Sequence[OtlpSignal] = SIGNALS,
     graph_dependencies: GraphDependencies | None = None,
+    ledger: OtlpExportLedger | None = None,
 ) -> OtlpExportReport:
-    """Send each run's spans, log records and metric points; one request per run and signal."""
+    """Send each run's spans, log records and metric points; one request per run and signal.
+
+    With a ``ledger`` a run exported before sends only what was recorded since: nothing at
+    all when nothing was, and the ledger moves only after a request succeeded.
+    """
 
     totals = {
         "spans": 0,
@@ -836,7 +960,12 @@ def export_runs(
     exported = exported_span_ids(store, run_ids) if "traces" in signals else None
     for run_id in run_ids:
         built = build_run_payloads(
-            store, run_id, signals=signals, links=links, exported_spans=exported
+            store,
+            run_id,
+            signals=signals,
+            links=links,
+            exported_spans=exported,
+            since=ledger.cursor(exporter.base_url, run_id) if ledger is not None else None,
         )
         for name in totals:
             totals[name] += getattr(built, name)
@@ -850,6 +979,14 @@ def export_runs(
                     {**(error.details or {}), "run_id": run_id, "requests_sent": sent},
                 ) from error
             sent += 1
+            if ledger is not None:
+                ledger.advance(
+                    exporter.base_url,
+                    run_id,
+                    traces=built.traces_through if signal == "traces" else None,
+                    logs=built.logs_through if signal == "logs" else None,
+                    metrics=built.metric_ids if signal == "metrics" else (),
+                )
             if result.rejected:
                 rejected[signal] = rejected.get(signal, 0) + result.rejected
             if result.error_message:
