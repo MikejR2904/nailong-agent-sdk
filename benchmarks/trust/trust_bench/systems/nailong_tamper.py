@@ -23,6 +23,7 @@ from nailong_agent_sdk.observability.run_checkpoints import (
     verify_terminal_link,
 )
 from nailong_agent_sdk.observability.telemetry_models import TelemetryEvent
+from nailong_agent_sdk.tools.artifact_anchor import artifact_anchor_name, verify_artifact_anchor
 from nailong_agent_sdk.tools.artifacts import ArtifactStore
 
 from ..tamper import CLASSES, TamperReport, TamperTrial, positions, tamper_lines
@@ -78,6 +79,13 @@ def verify(run_id: str, root: Path, workspace: Path, anchor: Path | None) -> tup
         history = store.verify_history()
         if not history.ok:
             failures.append(f"artifact-history:line-{history.broken_at}")
+        if anchor is not None:
+            signer = HmacSha256Signer(CHECKPOINT_KEY, signer_id="trust-bench")
+            anchored = verify_artifact_anchor(
+                store, FileCheckpointSink(anchor), artifact_anchor_name(run_id), signer
+            )
+            if not anchored.ok:
+                failures.append(f"artifact-anchor:{anchored.verdict.value}")
     except Exception as error:
         failures.append(f"artifact-store:{type(error).__name__}")
     try:

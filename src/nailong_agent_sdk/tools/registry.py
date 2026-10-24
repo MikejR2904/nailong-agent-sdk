@@ -10,14 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from ..foundations.contracts import AgentFailure, ToolDefinition, ToolExecutionResult
+from ..foundations.hashing import canonical_hash
 from ..foundations.identifiers import require_unique
 from ..memory.context_projection import ToolResultJournal
 from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
 from ..state.planning import PlanTask
-from .approvals import ApprovalRegistry
+from .approvals import ApprovalRegistry, ApprovalRequest, ApprovalStatus
 from .artifacts import ArtifactStore
 from .core import CoreToolDispatcher, CoreToolServices, HumanQuestionResponder, WebSearchClient
-from .policy import CapabilityPolicy, SideEffectClass
+from .policy import CapabilityPolicy, PolicyDecision, SideEffectClass
 from .result_cache import ToolResultCache
 from .supervisor import ProcessExecutionRecord, ProcessExitKind, ProcessSupervisor
 from .tools import ToolExecutor, ToolInvocationContext
@@ -44,6 +45,8 @@ class HarnessExecutionContext:
     ask_human: HumanQuestionResponder | None = None
     pdf_image_cache: dict[str, tuple[str, bytes]] | None = None
     trace_parent: str | None = None
+    bind_approvals_to_arguments: bool = False
+    single_use_capabilities: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -169,7 +172,24 @@ class HarnessToolExecutor(ToolExecutor):
             )
             return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
         requested_paths = self._requested_paths(tool.name, invocation.call.arguments)
-        approval = self._approval_for(registered.capability)
+        single_use = registered.capability in self._context.single_use_capabilities
+        digest = (
+            canonical_hash({"tool": tool.name, "arguments": invocation.call.arguments})
+            if self._context.bind_approvals_to_arguments or single_use
+            else None
+        )
+        approval = self._approval_for(registered.capability, digest)
+        foreign = self._foreign_approval(approval)
+        if foreign is not None:
+            return ToolExecutionResult(
+                status="blocked",
+                error=foreign,
+                failure=AgentFailure(
+                    code="TOOL_DENIED_BY_POLICY",
+                    message=foreign,
+                    details={"tool": tool.name, "capability": registered.capability},
+                ),
+            )
         decision = self._context.policy.evaluate(
             role=self._context.role,
             capability=registered.capability,
@@ -177,14 +197,36 @@ class HarnessToolExecutor(ToolExecutor):
             run_root=self._context.run_root,
             requested_paths=requested_paths,
             approval=approval,
+            arguments_digest=digest,
         )
+        if (
+            decision.allowed
+            and approval is not None
+            and registered.side_effect is not (SideEffectClass.READ_ONLY)
+        ):
+            if not self._context.approvals.consume(approval.approval_id):
+                decision = PolicyDecision(
+                    allowed=False,
+                    reason=(
+                        f'Approval "{approval.approval_id}" for capability '
+                        f'"{registered.capability}" was used up or withdrawn before this call '
+                        "ran; a new approval is required."
+                    ),
+                    approval_required=True,
+                )
         if not decision.allowed:
             if decision.approval_required:
-                request = approval or self._context.approvals.request(
-                    self._context.run_id,
-                    self._context.node_id,
-                    registered.capability,
-                    decision.reason,
+                request = (
+                    approval
+                    if approval is not None and approval.status is ApprovalStatus.PENDING
+                    else self._context.approvals.request(
+                        self._context.run_id,
+                        self._context.node_id,
+                        registered.capability,
+                        decision.reason,
+                        arguments_digest=digest,
+                        single_use=single_use,
+                    )
                 )
                 return ToolExecutionResult(
                     status="blocked",
@@ -273,11 +315,24 @@ class HarnessToolExecutor(ToolExecutor):
             )
             return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
 
-    def _approval_for(self, capability: str):
+    def _approval_for(self, capability: str, arguments_digest: str | None = None):
         approval_id = self._context.approval_ids_by_capability.get(capability)
         if approval_id:
             return self._context.approvals.get(approval_id)
-        return self._context.approvals.find(self._context.run_id, self._context.node_id, capability)
+        return self._context.approvals.find(
+            self._context.run_id, self._context.node_id, capability, arguments_digest
+        )
+
+    def _foreign_approval(self, approval: ApprovalRequest | None) -> str | None:
+        if approval is None:
+            return None
+        if approval.run_id == self._context.run_id and approval.node_id == self._context.node_id:
+            return None
+        return (
+            f'Approval "{approval.approval_id}" belongs to run "{approval.run_id}" node '
+            f'"{approval.node_id}", not to run "{self._context.run_id}" node '
+            f'"{self._context.node_id}"; an approval cannot be used by another node.'
+        )
 
     async def _execute_registered(
         self,

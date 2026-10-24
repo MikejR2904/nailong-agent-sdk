@@ -170,6 +170,7 @@ class _RunToken:
         self._event = threading.Event()
         self._outer = outer
         self.approvals = ApprovalRegistry()
+        self.artifacts: ArtifactStore | None = None
 
     def cancel(self) -> None:
         self._event.set()
@@ -335,6 +336,8 @@ class AgentTaskRunner:
                 {"iterations": result.iterations, "reason": result.reason},
             )
             await self._services.checkpoint_after_run(task.id, context)
+            if token.artifacts is not None:
+                await self._services.anchor_artifacts_after_run(task.id, token.artifacts, context)
             return result
         finally:
             with self._running_lock:
@@ -464,13 +467,14 @@ class AgentTaskRunner:
             acceptance_criteria="\n".join(task.acceptance_criteria),
             model_tier=ModelTier.STANDARD,
         )
+        token.artifacts = ArtifactStore(workspace)
         context = HarnessExecutionContext(
             run_id=task.id,
             node_id=task.id,
             role=permissions.role,
             plan_task=plan_task,
             run_root=workspace,
-            artifacts=ArtifactStore(workspace),
+            artifacts=token.artifacts,
             policy=CapabilityPolicy(
                 [
                     CapabilityGrant(

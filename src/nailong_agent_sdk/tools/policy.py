@@ -95,6 +95,7 @@ class CapabilityPolicy:
         run_root: Path,
         requested_paths: list[str] = (),
         approval: ApprovalRequest | None = None,
+        arguments_digest: str | None = None,
     ) -> PolicyDecision:
         for requested_path in requested_paths:
             sensitive_match = self._sensitive_pattern_match(requested_path, run_root)
@@ -131,8 +132,32 @@ class CapabilityPolicy:
                 allowed=False,
                 reason="Approval capability does not match the requested action.",
             )
+        if approval.arguments_digest is not None and approval.arguments_digest != arguments_digest:
+            return PolicyDecision(
+                allowed=False,
+                reason=(
+                    f'Approval "{approval.approval_id}" was granted for different arguments '
+                    f'than this call of capability "{capability}".'
+                ),
+                approval_required=True,
+            )
         if approval.status is ApprovalStatus.APPROVED:
             return PolicyDecision(allowed=True, reason="Typed approval is present.")
+        if approval.status is ApprovalStatus.REVOKED:
+            return PolicyDecision(
+                allowed=False,
+                reason=approval.decision_reason
+                or f'Approval "{approval.approval_id}" was revoked.',
+            )
+        if approval.status is ApprovalStatus.CONSUMED:
+            return PolicyDecision(
+                allowed=False,
+                reason=(
+                    f'Single-use approval "{approval.approval_id}" for capability '
+                    f'"{capability}" was already used; a new approval is required.'
+                ),
+                approval_required=True,
+            )
         if approval.status is ApprovalStatus.REJECTED:
             return PolicyDecision(
                 allowed=False,

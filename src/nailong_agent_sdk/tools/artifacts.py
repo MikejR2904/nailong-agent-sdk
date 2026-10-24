@@ -209,6 +209,9 @@ class ArtifactStore:
     def verify_history(self) -> HistoryCheck:
         return _check_log(self._write_log)
 
+    def log_hashes(self) -> list[str | None]:
+        return [record.get("integrity_hash") for record in _log_records(self._write_log)]
+
     def paths(self, *, limit: int = MAX_LISTED_PATHS) -> list[str]:
         spelled: dict[str, str] = {}
         if self._indexed():

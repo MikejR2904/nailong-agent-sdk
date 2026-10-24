@@ -53,7 +53,9 @@ def _approvals_resolved(requests: list[ApprovalRequest]) -> bool:
         return False
     if any(request.status is ApprovalStatus.PENDING for request in requests):
         return False
-    return any(request.status is ApprovalStatus.APPROVED for request in requests)
+    return any(
+        request.status in {ApprovalStatus.APPROVED, ApprovalStatus.CONSUMED} for request in requests
+    )
 
 
 class HarnessCoordinator:

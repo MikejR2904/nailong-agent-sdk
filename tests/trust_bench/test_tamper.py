@@ -128,14 +128,18 @@ def test_edited_or_deleted_artifact_content_is_detected_by_its_content_hash(sdk_
     assert rates[("artifact-content", "delete")] == 1.0
 
 
-def test_the_artifact_write_history_catches_edits_but_not_a_cut_tail_or_a_resealed_one(
-    sdk_reports,
-):
-    rates = detections(sdk_reports[True])
+def test_the_artifact_write_history_alone_misses_a_cut_tail_or_a_resealed_one(sdk_reports):
+    rates = detections(sdk_reports[False])
     for klass in ("edit", "reorder", "insert"):
         assert rates[("artifacts", klass)] == 1.0, klass
     assert 0.0 < rates[("artifacts", "delete")] < 1.0
     assert rates[("artifacts", "truncate")] == 0.0 and rates[("artifacts", "reseal")] == 0.0
+
+
+def test_a_signed_outside_anchor_catches_every_artifact_tamper_class(sdk_reports):
+    rates = detections(sdk_reports[True])
+    for klass in ("edit", "delete", "reorder", "insert", "truncate", "reseal"):
+        assert rates[("artifacts", klass)] == 1.0, klass
 
 
 def test_langgraph_has_no_check_beyond_the_record_still_loading(tmp_path):

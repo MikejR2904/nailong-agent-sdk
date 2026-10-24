@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **164 files, 591 classes and 2,107 functions** (methods and nested closures included).
+covers **166 files, 598 classes and 2,128 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -476,6 +476,7 @@ the run options. Everything else is a parameter too:
 | [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 94 | public surface of the developer utilities |
 | [`developer_tools/attribute_defect.py`](developer_tools.md#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 283 | which write of an artifact introduced a defect, and which agent made it |
 | [`developer_tools/attribute_failure.py`](developer_tools.md#developer_toolsattribute_failurepy---which-failure-and-which-model-decision-stopped-a-run) | 390 | which failure, and which model decision, stopped a run |
+| [`developer_tools/attribute_lineage.py`](developer_tools.md#developer_toolsattribute_lineagepy---trace-a-failing-run-back-through-the-artifact-versions-it-read) | 292 | trace a failing run back through the artifact versions it read |
 | [`developer_tools/attribute_result.py`](developer_tools.md#developer_toolsattribute_resultpy---which-tool-result-of-an-agent-run-first-failed-the-callers-check-and-which-model-turn-asked-for-it) | 207 | which tool result of an agent run first failed the caller's check, and which model turn asked for it |
 | [`developer_tools/catalog.py`](developer_tools.md#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
 | [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 605 | the `nailong-agent-sdk-dev` command line |
@@ -592,6 +593,7 @@ the run options. Everything else is a parameter too:
 | [`state/shared_state.py`](state.md#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 240 | typed lateral-state payloads, exact routing references and provenance records |
 | [`tools/__init__.py`](tools.md#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
 | [`tools/approvals.py`](tools.md#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 188 | typed approval gates for state-changing actions |
+| [`tools/artifact_anchor.py`](tools.md#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 195 | signed anchors of the artifact write log, kept outside the workspace |
 | [`tools/artifacts.py`](tools.md#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 599 | content-addressed artifact store with immutable write attribution and a per-path write history |
 | [`tools/core/__init__.py`](tools.md#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
 | [`tools/core/definitions.py`](tools.md#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 356 | typed declarations of the governed core tool set |
@@ -612,7 +614,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 164 files, 591 classes and 2107 functions (including methods and nested closures), each with a written description.*
+*Coverage: 166 files, 598 classes and 2128 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 

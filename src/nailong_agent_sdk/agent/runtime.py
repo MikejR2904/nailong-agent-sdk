@@ -33,6 +33,8 @@ from ..observability.telemetry_models import (
 from ..observability.telemetry_store import TelemetryStore
 from ..state.project_state_models import ProjectStateProjectionPolicy
 from ..state.project_state_store import FileProjectStateStore
+from ..tools.artifact_anchor import ArtifactLogAnchor, anchor_artifact_log, artifact_anchor_name
+from ..tools.artifacts import ArtifactStore
 from ..tools.tools import ToolExecutor
 from .base_agent import AgentWatchdogPolicy, BaseAgent, PostToolHook, PreToolHook
 from .model import AgentModel
@@ -107,8 +109,33 @@ class AgentRuntimeServices:
             self._record_checkpoint_failure(run_id, context, error)
             return None
 
+    async def anchor_artifacts_after_run(
+        self,
+        run_id: str,
+        store: ArtifactStore,
+        context: TelemetryContext | None = None,
+    ) -> ArtifactLogAnchor | None:
+        if self.checkpointer is None:
+            return None
+        checkpointer = self.checkpointer
+        try:
+            return await asyncio.to_thread(
+                anchor_artifact_log,
+                store,
+                checkpointer.sink,
+                artifact_anchor_name(run_id),
+                checkpointer.signer,
+            )
+        except Exception as error:
+            self._record_checkpoint_failure(run_id, context, error, "artifact-log")
+            return None
+
     def _record_checkpoint_failure(
-        self, run_id: str, context: TelemetryContext | None, error: Exception
+        self,
+        run_id: str,
+        context: TelemetryContext | None,
+        error: Exception,
+        subject: str = "run-head",
     ) -> None:
         code = error.code if isinstance(error, AgentSdkError) else None
         message = str(error)[:MAX_RECORDED_CHECKPOINT_ERROR_CHARS]
@@ -128,6 +155,7 @@ class AgentRuntimeServices:
                 severity=TelemetrySeverity.WARNING,
                 payload={
                     "run_id": run_id,
+                    "subject": subject,
                     "error_type": type(error).__name__,
                     "error_code": code,
                     "error": message,

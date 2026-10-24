@@ -75,11 +75,13 @@ def test_a_failed_checkpoint_is_recorded_by_name_and_does_not_fail_the_run(tmp_p
     try:
         result = run_checkpointed_task(services)
         assert result.status is AgentRunStatus.COMPLETED
-        (failure,) = [
-            event
+        failures = {
+            event.payload["subject"]: event
             for event in services.telemetry.list_events("t1", limit=500)
             if event.event_type == "run.checkpoint-failed"
-        ]
+        }
+        assert set(failures) <= {"run-head", "artifact-log"} and "run-head" in failures
+        failure = failures["run-head"]
         assert failure.status == "failed"
         assert failure.payload["error_type"] == "OSError"
         assert "no space left on the checkpoint volume" in failure.payload["error"]

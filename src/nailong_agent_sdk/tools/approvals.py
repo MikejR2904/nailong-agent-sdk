@@ -26,6 +26,8 @@ class ApprovalStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    REVOKED = "revoked"
+    CONSUMED = "consumed"
 
 
 class ApprovalRequest(StrictModel):
@@ -38,6 +40,8 @@ class ApprovalRequest(StrictModel):
     decision_reason: str | None = None
     decided_by: str | None = None
     decision_authority: TelemetryAuthority | None = None
+    arguments_digest: str | None = None
+    single_use: bool = False
 
 
 class _PersistedApprovals(StrictModel):
@@ -58,10 +62,23 @@ class ApprovalRegistry:
         self._changed = False
         self._refresh()
 
-    def request(self, run_id: str, node_id: str, capability: str, reason: str) -> ApprovalRequest:
+    def request(
+        self,
+        run_id: str,
+        node_id: str,
+        capability: str,
+        reason: str,
+        *,
+        arguments_digest: str | None = None,
+        single_use: bool = False,
+    ) -> ApprovalRequest:
         with self._transaction():
             for existing in self._matching(run_id, node_id, capability):
-                if existing.status is ApprovalStatus.PENDING:
+                if (
+                    existing.status is ApprovalStatus.PENDING
+                    and existing.arguments_digest == arguments_digest
+                    and existing.single_use == single_use
+                ):
                     return existing
             request = ApprovalRequest(
                 approval_id=f"approval-{self._next_id}",
@@ -69,6 +86,8 @@ class ApprovalRegistry:
                 node_id=node_id,
                 capability=capability,
                 reason=reason,
+                arguments_digest=arguments_digest,
+                single_use=single_use,
             )
             self._next_id += 1
             self._requests[request.approval_id] = request
@@ -104,15 +123,69 @@ class ApprovalRegistry:
             self._changed = True
             return updated
 
+    def revoke(
+        self,
+        approval_id: str,
+        reason: str,
+        *,
+        source: DecisionSource | None = None,
+    ) -> ApprovalRequest:
+        with self._transaction():
+            request = self._requests.get(approval_id)
+            if request is None:
+                raise ValueError(f'Approval request "{approval_id}" is unknown.')
+            if request.status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
+                raise ValueError(
+                    f'Approval request "{approval_id}" has the decision '
+                    f'"{request.status.value}" and cannot be revoked.'
+                )
+            updated = request.model_copy(
+                update={
+                    "status": ApprovalStatus.REVOKED,
+                    "decision_reason": reason,
+                    "decided_by": source.identifier if source is not None else request.decided_by,
+                    "decision_authority": (
+                        source.authority if source is not None else request.decision_authority
+                    ),
+                }
+            )
+            self._requests[approval_id] = updated
+            self._changed = True
+            return updated
+
+    def consume(self, approval_id: str) -> bool:
+        """Use an approval once: a single-use approval turns ``CONSUMED``, others stay approved."""
+
+        with self._transaction():
+            request = self._requests.get(approval_id)
+            if request is None or request.status is not ApprovalStatus.APPROVED:
+                return False
+            if request.single_use:
+                self._requests[approval_id] = request.model_copy(
+                    update={"status": ApprovalStatus.CONSUMED}
+                )
+                self._changed = True
+            return True
+
     def get(self, approval_id: str) -> ApprovalRequest | None:
         with self._lock:
             self._refresh()
             return self._requests.get(approval_id)
 
-    def find(self, run_id: str, node_id: str, capability: str) -> ApprovalRequest | None:
+    def find(
+        self,
+        run_id: str,
+        node_id: str,
+        capability: str,
+        arguments_digest: str | None = None,
+    ) -> ApprovalRequest | None:
         with self._lock:
             self._refresh()
-            matching = self._matching(run_id, node_id, capability)
+            matching = [
+                request
+                for request in self._matching(run_id, node_id, capability)
+                if request.arguments_digest in {None, arguments_digest}
+            ]
             return matching[-1] if matching else None
 
     def list(self, run_id: str | None = None) -> list[ApprovalRequest]:

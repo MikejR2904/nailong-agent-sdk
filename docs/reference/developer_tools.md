@@ -7,6 +7,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 | [`developer_tools/__init__.py`](#developer_tools__init__py---public-surface-of-the-developer-utilities) | 94 | public surface of the developer utilities |
 | [`developer_tools/attribute_defect.py`](#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 283 | which write of an artifact introduced a defect, and which agent made it |
 | [`developer_tools/attribute_failure.py`](#developer_toolsattribute_failurepy---which-failure-and-which-model-decision-stopped-a-run) | 390 | which failure, and which model decision, stopped a run |
+| [`developer_tools/attribute_lineage.py`](#developer_toolsattribute_lineagepy---trace-a-failing-run-back-through-the-artifact-versions-it-read) | 292 | trace a failing run back through the artifact versions it read |
 | [`developer_tools/attribute_result.py`](#developer_toolsattribute_resultpy---which-tool-result-of-an-agent-run-first-failed-the-callers-check-and-which-model-turn-asked-for-it) | 207 | which tool result of an agent run first failed the caller's check, and which model turn asked for it |
 | [`developer_tools/catalog.py`](#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
 | [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 605 | the `nailong-agent-sdk-dev` command line |
@@ -90,6 +91,35 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 - `_graph_sentence(run_id: str, verdict: Verdict, graph: GraphAttribution) -> str` - The most responsible node with its share of the total, status, code and reason, how many nodes it holds up and releases alone, how many other nodes stopped independently and, when linked, the model turn behind its agent run. · *Called within this file by:* `developer_tools/attribute_failure.py::_summary`
 
 **Algorithms & invariants.** Scope: this is structural attribution over the declared dependency model, not statistical causal inference. The scheduler's rules are the structural equations, a repair is an exact intervention (`StateGraph.released_by`, checked against re-executing 120 random graphs with the repaired nodes completed) and `responsibility` is its Shapley value (checked by enumerating every coalition on 120 random graphs), which equals the Chockler-Halpern degree of responsibility for a node that fails if any of its causes fails. It says nothing about why a model chose an action and does not replay a run with a different decision. Invariant: the responsibilities add up to the number of roots plus the number of dependency-blocked nodes, each blocked node being shared out whole between its causes. A node held up by two failures is in neither's `released_alone` and in both `also_requires`. Roots are ranked by responsibility, then by when they stopped, then by id. Cost is linear in nodes plus edges plus the size of the root sets: about 0.12 s for 5,000 nodes with 4,700 blocked and 100 roots, 30 ms for 2,000 nodes with 3,600 explicit edges. Bounded: 50 roots, 50 blocked nodes, 100 released and 50 co-required nodes per root, 20 path nodes and ten roots linked to decisions, each with the count left out.
+
+---
+
+### `developer_tools/attribute_lineage.py` - trace a failing run back through the artifact versions it read
+
+*292 lines · depends on: `developer_tools/attribute_defect.py`, `developer_tools/decision_links.py`, `foundations/contracts.py`, `foundations/text.py`, `memory/context_projection.py`, `observability/audit_log.py`, `tools/artifacts.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
+
+**Role in the workflow.** The other attribution tools say where a failure became visible: a rejected result, a stopped node, one named path. This one follows data. From the journal of a run it recovers which artifact versions the run read, asks a caller-supplied content check which of them are defective, and follows the first defective one to its writer, then to that writer's own reads, until it reaches a write whose run read nothing defective.
+
+**Algorithms & invariants.** A read is matched to versions by artifact id (`read_artifact`, `grep_artifact`, `diff_declared_artifacts`) or, for `read_file`, by the versions of the path whose lines equal the window returned. A read is defective only when every candidate version fails the check. Several candidate writers for one defective read end the trace as ambiguous; the records cannot choose and the tool does not. The trace also ends at a writer with no run id, at a run already visited and at `max_depth` hops.
+
+**Contents**
+
+- **class `LineageRead`** *(pydantic model; bases: StrictModel)* - One journaled read, the path or artifact id, every version that could have served it as `DefectWriter` candidates, whether it was defective and why no version matched. · *Instantiated by:* `developer_tools/attribute_lineage.py::_reads`
+  - fields: `position`, `handle_id`, `tool`, `tool_call_id`, `path`, `artifact_id`, `candidates`, `defective`, `unmatched_reason`
+  - `LineageRead.unique() -> bool` *(property)* - Property: true when exactly one version could have served the read.
+- **class `LineageHop`** *(pydantic model; bases: StrictModel)* - A run on the path, how many reads it made, its first defective read and whether that read was ambiguous. · *Instantiated by:* `developer_tools/attribute_lineage.py::attribute_lineage`
+  - fields: `run_id`, `reads`, `defective_read`, `ambiguous`
+- **class `LineageAttribution`** *(pydantic model; bases: StrictModel)* - The hops, the write at which the trace ended, the model turn behind it when the audit ledger links it, the reason the trace ended and a summary. · *Instantiated by:* `developer_tools/attribute_lineage.py::attribute_lineage`
+  - fields: `schema_version`, `run_id`, `ok`, `hops`, `origin`, `origin_decision`, `origin_reason`, `summary`
+- **class `_Index`** *(dataclass)* - The store with its versions indexed by artifact id and by path. · *Instantiated by:* `developer_tools/attribute_lineage.py::_index`
+- `attribute_lineage(run_root: Path, workspace: Path, run_id: str, is_defective: ContentCheck, *, max_depth: int=DEFAULT_MAX_DEPTH) -> LineageAttribution` - Follows the defective inputs of a run upstream, read-only. Requires a journal under the run root and an artifact store under the workspace (a `ValueError` names the missing directory) and `max_depth` of at least 1.
+- `_index(store: ArtifactStore) -> _Index` - Indexes every version of every path by artifact id and by path. · *Called by:* `developer_tools/attribute_lineage.py::attribute_lineage`
+- `_reads(journal: FileToolResultJournal, index: _Index, run_id: str, check: ContentCheck) -> list[LineageRead]` - The successful artifact reads in a run's journal with their candidate versions and verdicts. · *Called by:* `developer_tools/attribute_lineage.py::attribute_lineage`
+- `_served(tool: str, arguments: dict[str, Any], output: dict[str, Any], index: _Index) -> list[tuple[str | None, str | None, list[ArtifactVersion], str | None]]` - The (path, artifact id, versions, reason) each read call could have been served from. · *Called by:* `developer_tools/attribute_lineage.py::_reads`
+- `_by_artifact(artifact_id: object, index: _Index) -> tuple[str | None, str | None, list[ArtifactVersion], str | None]` - The versions that wrote one artifact id, or the reason there are none. · *Called by:* `developer_tools/attribute_lineage.py::_served`
+- `_window(store: ArtifactStore, version: ArtifactVersion, offset: int, count: int) -> list[str]` - The lines of a version that a `read_file` window would have returned. · *Called by:* `developer_tools/attribute_lineage.py::_served`
+- `_origin_decision(run_root: Path, origin: DefectWriter) -> DecisionRef | None` - Links the origin write to the model turn that issued it, or `None` when the write recorded no run or call id. · *Called by:* `developer_tools/attribute_lineage.py::attribute_lineage`
+- `_summary(run_id: str, ok: bool, hops: list[LineageHop], origin: DefectWriter | None, decision: DecisionRef | None, reason: str) -> str` - One sentence naming the first defective read, the hops and where the trace ended. · *Called by:* `developer_tools/attribute_lineage.py::attribute_lineage`
 
 ---
 
