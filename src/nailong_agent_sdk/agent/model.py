@@ -56,6 +56,27 @@ class ProviderUsage:
 
 
 @dataclass(frozen=True)
+class RequestDiagnostics:
+    """SDK estimates about one outbound request; never provider-reported.
+
+    ``estimated_shared_prefix_tokens`` is the length of the common prefix with the previous request
+    of the same task, an upper bound on what a provider prefix cache could reuse.
+    """
+
+    estimated_request_tokens: int
+    estimated_stable_prefix_tokens: int
+    estimated_shared_prefix_tokens: int
+    previous_request_tokens: int | None
+
+
+@runtime_checkable
+class RequestDiagnosticsSource(Protocol):
+    """Optional adapter capability: report the estimates for the latest request of a task."""
+
+    def request_diagnostics(self, task_id: str) -> RequestDiagnostics | None: ...
+
+
+@dataclass(frozen=True)
 class ProviderContinuation:
     """Opaque provider-owned conversation state required for a later model turn.
 

@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **161 files, 573 classes and 2,046 functions** (methods and nested closures included).
+covers **164 files, 591 classes and 2,107 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -452,6 +452,7 @@ the run options. Everything else is a parameter too:
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
 | [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2559 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
+| [`agent/cost_model.py`](agent.md#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
 | [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 320 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 418 | provider-neutral model contract, streaming events and failover |
@@ -546,9 +547,10 @@ the run options. Everything else is a parameter too:
 | [`memory/learned_retention.py`](memory.md#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 161 | opt-in learned utility coefficients for dependency-closed retention |
 | [`memory/memory_snapshot.py`](memory.md#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
 | [`memory/retention_outcomes.py`](memory.md#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 187 | retention decisions and their outcomes, recorded for offline learning |
-| [`memory/utility_objectives.py`](memory.md#memoryutility_objectivespy---generalized-training-objectives-regret-weighted-pairwise-listwise-regression-group-dro) | 395 | generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO |
+| [`memory/utility_objectives.py`](memory.md#memoryutility_objectivespy---generalized-training-objectives-regret-weighted-pairwise-listwise-regression-group-dro) | 404 | generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO |
 | [`memory/utility_calibration.py`](memory.md#memoryutility_calibrationpy---utility-calibration-distribution-shift-evidence-and-logged-static-fallback) | 288 | utility calibration, distribution-shift evidence and logged static fallback |
-| [`memory/utility_features_v2.py`](memory.md#memoryutility_features_v2py---feature-schema-v2-task-conditioned-bipartite-graph-and-failure-propagation-features) | 147 | feature schema v2: task-conditioned, bipartite-graph and failure-propagation features |
+| [`memory/utility_features_v2.py`](memory.md#memoryutility_features_v2py---feature-schema-v2-task-conditioned-bipartite-graph-and-failure-propagation-features) | 225 | feature schema v2: task-conditioned, bipartite-graph and failure-propagation features |
+| [`memory/tiered_retention.py`](memory.md#memorytiered_retentionpy---three-level-retention-keep-summarise-or-drop-under-one-budget) | 351 | three-level retention: keep, summarise or drop under one budget |
 | [`memory/semantic_compaction.py`](memory.md#memorysemantic_compactionpy---dependency-aware-summarization-verification-and-safe-commit-of-compacted-episodes) | 1133 | dependency-aware summarization, verification and safe commit of compacted episodes |
 | [`memory/summarization_scheduler.py`](memory.md#memorysummarization_schedulerpy---bounded-background-queue-for-summarization-work-that-never-blocks-its-caller) | 190 | bounded background queue for summarization work that never blocks its caller |
 | [`memory/summary_ledger.py`](memory.md#memorysummary_ledgerpy---the-summaries-of-one-episode-store-and-where-each-one-lives) | 192 | the summaries of one episode store and where each one lives |
@@ -600,6 +602,7 @@ the run options. Everything else is a parameter too:
 | [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 176 | deny-by-default capability policy |
 | [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 367 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/result_cache.py`](tools.md#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
 | [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](tools.md#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
@@ -609,7 +612,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 161 files, 573 classes and 2046 functions (including methods and nested closures), each with a written description.*
+*Coverage: 164 files, 591 classes and 2107 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 

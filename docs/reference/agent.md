@@ -8,6 +8,7 @@
 | [`agent/base_agent/__init__.py`](#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
 | [`agent/base_agent/agent.py`](#agentbase_agentagentpy---the-single-task-agent-loop) | 2559 | the single-task agent loop |
 | [`agent/base_agent/types.py`](#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
+| [`agent/cost_model.py`](#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
 | [`agent/elastic_context.py`](#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
 | [`agent/graph_agent_executor.py`](#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 320 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 418 | provider-neutral model contract, streaming events and failover |
@@ -86,6 +87,8 @@
     - `BaseAgent._guarded_stream_listener.finish(pending: Awaitable[Any]) -> None` *(async)* - Awaits an awaitable the listener returned, reporting its exception.
     - `BaseAgent._guarded_stream_listener.guarded(event: Any) -> Awaitable[None] | None` - The wrapped listener: calls the host listener and turns any exception into a report.
   - `BaseAgent._record_provider_usage(telemetry_context: TelemetryContext, usage: ProviderUsage, iteration: int) -> None` - Records provider-reported token counters as metrics, or an unavailable marker with a reason for each counter the provider omitted, and the remaining-context metric when computable. · *Called by:* `base_agent/agent.py::BaseAgent.run`
+  - `BaseAgent._record_cost(telemetry_context: TelemetryContext, usage: ProviderUsage, iteration: int) -> None` - With a price table, prices the call, appends it to `cost_ledger` and records `model.cost`, `model.cache_savings` and `model.cache_hit_ratio`; an unknown price or incomplete usage records them as unavailable with the error code and message instead of failing the run.
+  - `BaseAgent._record_request_diagnostics(task_id: str, telemetry_context: TelemetryContext, iteration: int) -> None` - When the adapter implements `RequestDiagnosticsSource`, records its estimated request tokens and shared-prefix tokens as SDK estimates.
   - `BaseAgent._terminate(status: AgentRunStatus, task: ScopedAgentTask, iterations: int, reason: str | None, prompt: Any, episodes: InMemoryEpisodeGraph, events: list[Agen...` - Single exit path: records the agent result as a project-state transition (a recording failure demotes COMPLETED to FAILED and keeps the output), builds the escalation when the status is not COMPLETED, emits `terminated`, `escalated` and `state-updated`, finishes the profiler, emits the profile telemetry (integrity hash, trace id, process resource, the span count and the most recent 512 spans; the run root finishes last, so it is always among them) and terminal metrics (derived from the events this run emitted, streamed from the sequence recorded when it started), appends the audit profile entry and returns the `AgentResult`. The profile is dumped to JSON once and that one dump serves the metrics, the event and `AgentResult.profile`. With a telemetry store and an audit store the run's `agent.profile-completed` event records the audit head (`audit_head`: entry count and head hash) and a final `terminal-link` audit entry records that event's sequence and hash (`telemetry_head`), so the two chains commit to each other at the end of a run (`verify_terminal_link`). The link is its own tiny entry so that a small audit payload cap cannot truncate it. The `terminated` event also carries the failure's bounded `failure_details`, which for a call that ended the run name its tool and call id. · *Called by:* `base_agent/agent.py::BaseAgent._accept_final_turn`, `base_agent/agent.py::BaseAgent._execute_tool_batch`, `base_agent/agent.py::BaseAgent._record_tool_outcome`, `base_agent/agent.py::BaseAgent.run`
   - `BaseAgent._record_tool_outcome(outcome: ToolCallOutcome, task: ScopedAgentTask, iteration: int, prompt: Any, episodes: InMemoryEpisodeGraph, events: list[AgentLifecycleEvent], e...` - Applies an outcome to project state; a failure terminates the run with a typed state-update failure. · *Called by:* `base_agent/agent.py::BaseAgent._execute_tool_batch`
   - `BaseAgent._apply_tool_outcome_to_project_state(outcome: ToolCallOutcome, emit: Callable[..., None], iteration: int) -> ProjectState` - Reduces a tool outcome into a `TOOL_OUTCOME` transition (using the configured action summary size) and emits `state-updated`. · *Called by:* `base_agent/agent.py::BaseAgent._record_tool_outcome`
@@ -141,6 +144,44 @@
 
 ---
 
+### `agent/cost_model.py` - token prices, per-call and per-run cost, and prefix-cache forecasting
+
+*261 lines · depends on: `agent/model.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py` · used by: `agent/base_agent/agent.py`, `agent/openai_compatible/chat.py` · not re-exported at the package root*
+
+**Role in the workflow.** Turns provider-reported usage into money and predicts what a prompt layout will cost, so cache effects can be valued and compared. Prices come from the host.
+
+**Contents**
+
+- **class `TokenPrice`** *(class)* - Host-supplied cost per million fresh-input, cached-input and output tokens; a cache read dearer than a fresh read is rejected.
+  - `TokenPrice.cached_input_is_not_dearer(self) -> TokenPrice` - Validator: cached input must not cost more than fresh input.
+- **class `PriceTable`** *(class)* - Prices by (provider, model); the SDK ships none.
+  - `PriceTable.__init__(self, prices: Mapping[tuple[str, str], TokenPrice]) -> None` - Copies the mapping of (provider, model) to `TokenPrice`.
+  - `PriceTable.price_for(self, provider: str, model: str) -> TokenPrice` - The registered price; an unknown model raises `PRICE_UNKNOWN` naming the model and the registered ones.
+- **class `CallCost`** *(class)* - One priced call: token split, the three cost parts, the uncached total and whether the provider reported a cached counter.
+  - `CallCost.total(self) -> Decimal` - Fresh + cached + output cost.
+  - `CallCost.savings(self) -> Decimal` - Uncached total minus actual total.
+  - `CallCost.cache_hit_ratio(self) -> Decimal` - Cached share of input tokens.
+- `price_call(input_tokens: int, cached_input_tokens: int, output_tokens: int, price: TokenPrice, cached_reported: bool=True) -> CallCost` - Prices a token split; cached tokens above input raise `COST_USAGE_INVALID`.
+- `price_usage(usage: ProviderUsage, price: TokenPrice) -> CallCost` - Prices a `ProviderUsage`; missing input or output counts raise `COST_USAGE_INCOMPLETE` naming them and the request id; an unreported cached counter is priced as zero and flagged.
+- **class `RunCostLedger`** *(class)* - Accumulates `CallCost` per call for one run.
+  - `RunCostLedger.record(self, cost: CallCost) -> None` - Appends a priced call.
+  - `RunCostLedger.total(self) -> Decimal` - Total cost of the run.
+  - `RunCostLedger.savings(self) -> Decimal` - Total saved by cached input.
+  - `RunCostLedger.cache_hit_ratio(self) -> Decimal` - Cached share of all input tokens.
+  - `RunCostLedger.to_json(self) -> dict[str, Any]` - Totals, token counts, savings, hit ratio and how many calls lacked a cached counter.
+- **class `CacheRules`** *(class)* - When an automatic prefix cache can serve a shared prefix: a minimum length and a block granularity.
+  - `CacheRules.cacheable(self, shared_prefix_tokens: int) -> int` - Cacheable tokens of a shared prefix: zero below the minimum, otherwise rounded down to the granularity.
+- `shared_prefix_tokens(previous: str, current: str) -> int` - Estimated tokens in the longest common prefix of two serialized requests.
+- **class `RunForecast`** *(class)* - Per-turn priced calls of a forecast run.
+  - `RunForecast.total(self) -> Decimal` - Forecast cost with the cache.
+  - `RunForecast.total_uncached(self) -> Decimal` - Forecast cost if nothing were cached.
+  - `RunForecast.savings(self) -> Decimal` - Forecast saving from the cache.
+- `forecast_run(price: TokenPrice, *, stable_tokens: int, growth_tokens_per_turn: int, volatile_tail_tokens: int, output_tokens_per_turn: int, turns: int, rules: CacheRules=OPENAI_AUTOMATIC, history_before_tail: bool=True) -> RunForecast` - Expected cost of a run from the stable prefix, per-turn growth, volatile tail and output sizes; history before the tail and append-only keeps the previous turn's prefix reusable, otherwise only the stable block is.
+
+**Algorithms & invariants.** Cost = fresh_input*p_in + cached_input*p_cached + output*p_out with `Decimal` arithmetic; `cached <= input`. The forecast assumes turn t sends stable + growth*(t-1) + tail tokens and that only a common prefix with the previous request can be cached.
+
+---
+
 ### `agent/elastic_context.py` - bounded task text for exploration and continuation nodes
 
 *105 lines · depends on: `state/elastic.py`, `state/graph_models.py` · used by: `agent/graph_agent_executor.py` · re-exported at the package root: 1 name(s)*
@@ -192,6 +233,10 @@
 - **class `ProviderUsage`** *(dataclass)* - Provider-reported token counters (never estimated by the SDK) and request id. · *Instantiated by:* `openai_compatible/chat.py::_provider_usage`
   - fields: `input_tokens`, `output_tokens`, `cached_input_tokens`, `reasoning_tokens`, `context_window_tokens`, `request_id`
   - `ProviderUsage.__post_init__() -> None` - Rejects negative counters, naming the field.
+- **class `RequestDiagnostics`** *(dataclass)* - SDK estimates about one outbound request (never provider-reported): estimated request tokens, stable-prefix tokens, tokens shared with the previous request of the same task, and the previous request's size.
+  - fields: `estimated_request_tokens`, `estimated_stable_prefix_tokens`, `estimated_shared_prefix_tokens`, `previous_request_tokens`
+- **class `RequestDiagnosticsSource`** *(protocol)* - Optional adapter capability reporting the latest `RequestDiagnostics` for a task.
+  - `RequestDiagnosticsSource.request_diagnostics(task_id: str) -> RequestDiagnostics | None` - The estimates for the task's latest request, or None.
 - **class `ProviderContinuation`** *(dataclass)* - Opaque provider-owned conversation state the agent stores and forwards without interpreting. · *Instantiated by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._continuation_from_response`, `openai_compatible/chat.py::OpenAICompatibleAgentModel.accept_tool_results`
   - fields: `provider`, `state`
 - **class `ModelTurnResponse`** *(dataclass)* - An untrusted turn with optional continuation and usage. · *Instantiated by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._turn_response_from`
@@ -266,9 +311,12 @@
   - `OpenAICompatibleAgentModel._turn_response_from(response: Mapping[str, Any]) -> ModelTurnResponse` - Builds the turn, continuation and usage from a response. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.next_turn`, `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
   - `OpenAICompatibleAgentModel.accept_tool_results(continuation: ProviderContinuation, results: Sequence[ProviderToolResult]) -> ProviderContinuation` *(async)* - Requires a continuation from this provider whose tool call ids exactly match the returned results, then stores the results as `tool` messages.
   - `OpenAICompatibleAgentModel._validate_binding(binding: ModelBinding) -> None` - Raises `MODEL_BINDING_MISMATCH` with both pairs when provider or model differ. · *Called within this file by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._require_binding`
-  - `OpenAICompatibleAgentModel._chat_payload(context: ModelContext, binding: ModelBinding) -> dict[str, Any]` - Builds the request: a system instruction, a stable message (task id and input, prompt, output schema; byte-identical across turns for provider prompt caching) and a volatile message (project state, iteration, recent observations, episode summaries, compacted-episode stubs and their omitted count), plus any continuation messages, the declared tools and `json_object` response format only when no tools exist. When the context carries semantic summaries the volatile message also holds `semantic_summaries` and `omitted_summary_count`, and the system message gains one sentence saying a digest is derived, not evidence; without summaries neither appears and the request is exactly as before. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.next_turn`, `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
+  - `OpenAICompatibleAgentModel._chat_payload(context: ModelContext, binding: ModelBinding) -> dict[str, Any]` - Builds the request: a system instruction identical on every call, a stable message (task id and input, prompt with tools reduced to names when they are sent as native function tools, output schema; byte-identical across turns for provider prompt caching) and a volatile message ordered from slowest to fastest changing (semantic summaries when present, compacted-episode stubs and their omitted count, recent observations, episode summaries, then project state and iteration), plus any continuation messages, the declared tools and `json_object` response format only when no tools exist. It also records request diagnostics for the task. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.next_turn`, `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
+  - `OpenAICompatibleAgentModel.request_diagnostics(task_id: str) -> RequestDiagnostics | None` - The latest request's estimated size, stable-prefix size and prefix shared with the task's previous request.
+  - `OpenAICompatibleAgentModel._observe_request(task_id: str, payload: Mapping[str, Any], tools: Sequence[Mapping[str, Any]]) -> None` - Serializes tools then messages, measures the prefix shared with the previous request of the task and stores the estimates (bounded to the 128 most recent tasks).
   - `OpenAICompatibleAgentModel._continuation_from_response(response: Mapping[str, Any], turn: AgentTurn) -> ProviderContinuation | None` - Keeps the raw tool calls of a tool turn for the next request. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._turn_response_from`
   - `OpenAICompatibleAgentModel._continuation_messages(continuation: ProviderContinuation) -> list[dict[str, Any]]` - Rebuilds the assistant tool-call message and the tool-result messages from a continuation, validating their shape. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._chat_payload`
+- `_prompt_without_duplicate_tools(context: ModelContext, tools: Sequence[Mapping[str, Any]]) -> dict[str, Any]` - The prompt as data with tools already sent as native function tools reduced to their names, so each definition is sent once.
 - `_safe_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]` - Requires JSON-compatible finite parameters and forbids credential and endpoint keys. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._chat_payload`
 - `_chat_tools(context: ModelContext) -> list[dict[str, Any]]` - Converts the prompt's declared tools into function-tool schemas. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._chat_payload`
 - `_agent_turn_from_chat_response(response: Mapping[str, Any]) -> AgentTurn` - Raises for a truncated (`finish_reason` length) or filtered response, turns tool calls into a tool batch (names the offending part of a malformed call) or parses JSON content, then validates against `AgentTurn` with up to five field-path errors. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._turn_response_from`

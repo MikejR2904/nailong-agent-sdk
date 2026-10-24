@@ -122,6 +122,7 @@ class StateGraph:
         require_unique([node.node_id for node in nodes], "graph node IDs")
         self._nodes = {node.node_id: node for node in nodes}
         self._edges = list(edges or [])
+        self._incoming_cache: tuple[int, dict[str, list[GraphEdge]]] | None = None
         self._shared_state = shared_state or GraphSharedState.unbound()
         self._max_elastic_depth = max_elastic_depth
         self._max_elastic_nodes = max_elastic_nodes
@@ -1542,10 +1543,14 @@ class StateGraph:
         )
 
     def _incoming_edges(self) -> dict[str, list[GraphEdge]]:
+        cached = self._incoming_cache
+        if cached is not None and cached[0] == len(self._edges):
+            return cached[1]
         incoming: dict[str, list[GraphEdge]] = {}
         for edge in self._edges:
             if edge.enabled:
                 incoming.setdefault(edge.child_node_id, []).append(edge)
+        self._incoming_cache = (len(self._edges), incoming)
         return incoming
 
     def _split_dependencies(
@@ -1553,7 +1558,7 @@ class StateGraph:
     ) -> tuple[set[str], set[str]]:
         hard = set(self._nodes[node_id].dependencies)
         soft: set[str] = set()
-        for edge in self._edges if incoming is None else incoming.get(node_id, ()):
+        for edge in (self._incoming_edges() if incoming is None else incoming).get(node_id, ()):
             if edge.child_node_id != node_id or not edge.enabled:
                 continue
             if edge.kind is GraphEdgeKind.FAN_IN:

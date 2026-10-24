@@ -229,3 +229,24 @@ def test_evidence_large_budget_behaviour():
         }
     assert all(entry["status"] == "selected" for entry in report.values()), report
     assert max(entry["seconds"] for entry in report.values()) < 15, report
+
+
+def test_a_large_optional_pool_is_searched_within_the_branch_node_cap():
+    rng = random.Random(11)
+    specs = [
+        (f"n{i:03d}", EvidenceNodeKind.DECISION, {"t": "x" * i}, rng.randint(40, 90), 0, [])
+        for i in range(60)
+    ]
+    graph = _egraph([("target", EvidenceNodeKind.REQUIREMENT, {}, 10, 0, []), *specs])
+    request = EvidenceSelectionRequest(
+        snapshot_id="snap", target_ids=["target"], token_budget=2_000, task_text="x"
+    )
+    policy = EvidenceSelectionPolicy(policy_id="p")
+    result = StructuralContextSelector(max_branch_nodes=5).select(graph, request, policy)
+    assert result.token_cost <= 2_000 and "target" in result.mandatory_node_ids
+    assert result.status in {
+        EvidenceSelectionStatus.SELECTED,
+        EvidenceSelectionStatus.BEST_EFFORT,
+    }
+    with pytest.raises(ValueError, match="max_branch_nodes must be at least 1, got 0"):
+        StructuralContextSelector(max_branch_nodes=0)

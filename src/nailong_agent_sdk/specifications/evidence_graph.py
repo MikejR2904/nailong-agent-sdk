@@ -24,6 +24,8 @@ from ..foundations.identifiers import require_unique
 from ..foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem, PckpStatus
 from .documents import SourceRef
 
+DEFAULT_MAX_BRANCH_NODES = 50_000
+
 
 class EvidenceNodeKind(StrEnum):
     REQUIREMENT = "requirement"
@@ -192,7 +194,18 @@ class EvidenceSelectionResult(StrictModel):
 
 
 class StructuralContextSelector:
-    """Compute required graph closure before exact optional evidence packing."""
+    """Compute required graph closure before exact optional evidence packing.
+
+    ``max_branch_nodes`` bounds the branch-and-bound fallback used when the optional items are
+    too many for the dynamic program; a run that reaches it returns ``BEST_EFFORT`` with the
+    best feasible set found, seeded by the greedy density fill, instead of searching without
+    limit.
+    """
+
+    def __init__(self, *, max_branch_nodes: int | None = DEFAULT_MAX_BRANCH_NODES) -> None:
+        if max_branch_nodes is not None and max_branch_nodes < 1:
+            raise ValueError(f"max_branch_nodes must be at least 1, got {max_branch_nodes}.")
+        self._max_branch_nodes = max_branch_nodes
 
     def select(
         self,
@@ -242,7 +255,7 @@ class StructuralContextSelector:
             ]
             or [PckpItem(item_id="__empty__", token_cost=0, utility=0)],
         )
-        solution = ExactPckpSolver().solve(problem)
+        solution = ExactPckpSolver(max_branch_nodes=self._max_branch_nodes).solve(problem)
         selected_optional = set(solution.selected_item_ids) - {"__empty__"}
         selected_ids = mandatory | selected_optional
         omissions = [

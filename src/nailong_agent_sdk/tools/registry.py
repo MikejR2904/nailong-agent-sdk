@@ -18,6 +18,7 @@ from .approvals import ApprovalRegistry
 from .artifacts import ArtifactStore
 from .core import CoreToolDispatcher, CoreToolServices, HumanQuestionResponder, WebSearchClient
 from .policy import CapabilityPolicy, SideEffectClass
+from .result_cache import ToolResultCache
 from .supervisor import ProcessExecutionRecord, ProcessExitKind, ProcessSupervisor
 from .tools import ToolExecutor, ToolInvocationContext
 
@@ -125,9 +126,15 @@ class HarnessToolRegistry:
 class HarnessToolExecutor(ToolExecutor):
     """Bridge BaseAgent tool calls into policy-governed typed harness actions."""
 
-    def __init__(self, registry: HarnessToolRegistry, context: HarnessExecutionContext) -> None:
+    def __init__(
+        self,
+        registry: HarnessToolRegistry,
+        context: HarnessExecutionContext,
+        cache: ToolResultCache | None = None,
+    ) -> None:
         self._registry = registry
         self._context = context
+        self._cache = cache
         self._core = CoreToolDispatcher(
             CoreToolServices(
                 root=context.run_root,
@@ -206,6 +213,41 @@ class HarnessToolExecutor(ToolExecutor):
                 ),
             )
 
+        cache = self._cache
+        cacheable = (
+            cache is not None
+            and registered.side_effect is SideEffectClass.READ_ONLY
+            and cache.cacheable(tool.name)
+        )
+        if cache is not None and cacheable:
+            replay = cache.lookup(
+                tool.name,
+                invocation.call.arguments,
+                call_id=invocation.call.id,
+                iteration=invocation.iteration,
+            )
+            if replay is not None:
+                return replay
+        result = await self._invoke(registered, tool, invocation)
+        if cache is not None:
+            if registered.side_effect is not SideEffectClass.READ_ONLY:
+                cache.invalidate(f"{tool.name} ({registered.side_effect.value})")
+            elif cacheable:
+                cache.store(
+                    tool.name,
+                    invocation.call.arguments,
+                    result,
+                    call_id=invocation.call.id,
+                    iteration=invocation.iteration,
+                )
+        return result
+
+    async def _invoke(
+        self,
+        registered: RegisteredTool,
+        tool: ToolDefinition,
+        invocation: ToolInvocationContext,
+    ) -> ToolExecutionResult:
         try:
             output = await self._execute_registered(
                 registered,

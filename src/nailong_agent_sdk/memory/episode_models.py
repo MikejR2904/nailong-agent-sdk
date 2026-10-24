@@ -95,6 +95,7 @@ class PaskCompactionPolicy(StrictModel):
     frequency_weight: float = Field(default=0.05, ge=0)
     diversity_weight: float = Field(default=0.05, ge=0)
     exact_max_branch_nodes: int = Field(default=50_000, ge=1, le=1_000_000)
+    cache_tolerance: float = Field(default=0.0, ge=0.0, le=0.5)
 
     @model_validator(mode="after")
     def has_positive_weight(self) -> PaskCompactionPolicy:
@@ -597,6 +598,16 @@ class EvictedEpisode(StrictModel):
             archive_id=self.archive_id,
             content_hash=self.content_hash,
         )
+
+
+class RehydrationQuote(StrictModel):
+    """What restoring one compacted episode would cost, without restoring it."""
+
+    episode_id: str = Field(min_length=1)
+    restorable: bool
+    closure_ids: list[str] = Field(default_factory=list)
+    tokens: int = Field(default=0, ge=0)
+    reason: str | None = None
 
 
 class RehydrationResult(StrictModel):

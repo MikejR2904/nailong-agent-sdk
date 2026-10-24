@@ -79,6 +79,7 @@ from ...state.project_state_models import (
 )
 from ...state.project_state_store import InMemoryProjectStateStore
 from ...tools.tools import ToolExecutor, ToolInvocationContext
+from ..cost_model import PriceTable, RunCostLedger, price_usage
 from ..model import (
     UNREPORTED_CANCELLATION,
     AgentModel,
@@ -91,6 +92,7 @@ from ..model import (
     ProviderToolResult,
     ProviderToolResultConsumer,
     ProviderUsage,
+    RequestDiagnosticsSource,
     StreamingAgentModel,
 )
 from ..verification import VerificationDecision, VerificationGateRegistry
@@ -113,6 +115,11 @@ _CANCELLATION_POLL_SECONDS = 0.05
 _PROFILE_EVENT_SPAN_LIMIT = 512
 _SPAN_ATTRIBUTE_TEXT_CHARS = 256
 _OUTCOME_ERROR_CHARS = 300
+_COST_METRICS = (
+    ("model.cost", "currency"),
+    ("model.cache_savings", "currency"),
+    ("model.cache_hit_ratio", "ratio"),
+)
 _DECLARED_TOOLS_LISTED = 20
 
 
@@ -145,6 +152,7 @@ class BaseAgent:
         profiler: AgentRunProfiler | None = None,
         on_model_stream: ModelStreamListener | None = None,
         episode_history_limit: int | None = None,
+        price_table: PriceTable | None = None,
     ) -> None:
         if episode_history_limit is not None and episode_history_limit < 1:
             raise ValueError(
@@ -174,6 +182,9 @@ class BaseAgent:
         self.project_state_store = project_state_store or InMemoryProjectStateStore()
         self._episode_store_factory = episode_store_factory or InMemoryEpisodeStore
         self._episode_history_limit = episode_history_limit
+        self.price_table = price_table
+        self._rehydrated_tokens = 0
+        self.cost_ledger = RunCostLedger()
         self._active_memory: InMemoryEpisodeStore | None = None
         self._active_project_id: str | None = None
         self._active_project_state: ProjectState | None = None
@@ -238,6 +249,8 @@ class BaseAgent:
         projection_history: list[ContextProjectionMetadata] = []
         continuation: ProviderContinuation | None = None
         self._provider_usage_reported = False
+        self._rehydrated_tokens = 0
+        self.cost_ledger = RunCostLedger()
         protected_episode_ids: frozenset[str] = frozenset()
         caller_context = self.telemetry_context or TelemetryContext(
             run_id=task.id,
@@ -892,6 +905,8 @@ class BaseAgent:
                 if usage is not None:
                     self._provider_usage_reported = True
                     self._record_provider_usage(telemetry_context, usage, iteration)
+                    self._record_cost(telemetry_context, usage, iteration)
+                self._record_request_diagnostics(task.id, telemetry_context, iteration)
                 if self.audit_logs is not None:
                     self.audit_logs.append(
                         telemetry_context.run_id,
@@ -1607,6 +1622,7 @@ class BaseAgent:
                     episode_ids=restored,
                     tool=call.name,
                     tool_call_id=call.id,
+                    run_rehydrated_tokens=self._rehydrated_tokens,
                 )
             unavailable = self._unavailable_consumed_episodes(effective_call, episodes, memory)
             if unavailable:
@@ -1798,7 +1814,13 @@ class BaseAgent:
         ]
         if not wanted:
             return []
-        return list(self.context_projector.rehydrate(memory, wanted).restored_episode_ids)
+        run_budget = self.context_projector.policy.rehydration_run_budget
+        remaining = None if run_budget is None else run_budget - self._rehydrated_tokens
+        if remaining is not None and remaining <= 0:
+            return []
+        result = self.context_projector.rehydrate(memory, wanted, remaining)
+        self._rehydrated_tokens += result.restored_tokens
+        return list(result.restored_episode_ids)
 
     @staticmethod
     def _unavailable_consumed_episodes(
@@ -2120,6 +2142,67 @@ class BaseAgent:
                     "request_id": usage.request_id,
                     "kind": "provider-reported",
                 },
+            )
+
+    def _record_cost(
+        self, telemetry_context: TelemetryContext, usage: ProviderUsage, iteration: int
+    ) -> None:
+        if self.price_table is None:
+            return
+        binding = self.definition.model_binding
+        details = {"iteration": iteration, "request_id": usage.request_id}
+        try:
+            price = self.price_table.price_for(binding.provider, binding.model)
+            cost = price_usage(usage, price)
+        except AgentSdkError as error:
+            if self.telemetry is not None:
+                for metric_id, unit in _COST_METRICS:
+                    record_metric_unavailable(
+                        self.telemetry,
+                        telemetry_context,
+                        metric_id,
+                        unit,
+                        f"{error.code}: {error.message}",
+                        details=details,
+                    )
+            return
+        self.cost_ledger.record(cost)
+        if self.telemetry is None:
+            return
+        values = {
+            "model.cost": float(cost.total),
+            "model.cache_savings": float(cost.savings),
+            "model.cache_hit_ratio": float(cost.cache_hit_ratio),
+        }
+        for metric_id, unit in _COST_METRICS:
+            record_metric_value(
+                self.telemetry,
+                telemetry_context,
+                metric_id,
+                values[metric_id],
+                unit,
+                details={**details, "kind": "derived-from-provider-usage"},
+            )
+
+    def _record_request_diagnostics(
+        self, task_id: str, telemetry_context: TelemetryContext, iteration: int
+    ) -> None:
+        if self.telemetry is None or not isinstance(self.model, RequestDiagnosticsSource):
+            return
+        diagnostics = self.model.request_diagnostics(task_id)
+        if diagnostics is None:
+            return
+        for metric_id, value in (
+            ("model.estimated_request_tokens", diagnostics.estimated_request_tokens),
+            ("model.estimated_shared_prefix_tokens", diagnostics.estimated_shared_prefix_tokens),
+        ):
+            record_metric_value(
+                self.telemetry,
+                telemetry_context,
+                metric_id,
+                float(value),
+                "tokens",
+                details={"iteration": iteration, "kind": "sdk-estimate"},
             )
 
     def _terminate(

@@ -16,17 +16,23 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, MutableSequence, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..foundations.atomic_io import fsync_directory, replace_atomic, unique_temporary_path
 from ..foundations.contracts import EpisodeKind
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import sha256_hex, strict_canonical_json
 from ..foundations.identifiers import require_unique
-from ..foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem, PckpStatus
+from ..foundations.optimization import (
+    ExactPckpSolver,
+    PckpItem,
+    PckpProblem,
+    PckpSolution,
+    PckpStatus,
+)
 from .episode_archive import (
     FileEpisodeArchive,
     InMemoryEpisodeArchive,
@@ -45,6 +51,7 @@ from .episode_models import (
     EvictedEpisode,
     PaskCompactionPolicy,
     QuarantinedSummary,
+    RehydrationQuote,
     RehydrationResult,
     SemanticEpisodeSummary,
     SemanticSummaryView,
@@ -753,6 +760,15 @@ class InMemoryEpisodeStore:
             ],
         )
         solution = ExactPckpSolver(max_branch_nodes=policy.exact_max_branch_nodes).solve(problem)
+        cache_report: dict[str, Any] | None = None
+        if (
+            policy.cache_tolerance > 0
+            and solution.status is not PckpStatus.INFEASIBLE_MANDATORY
+            and set(solution.selected_item_ids) != live_ids
+        ):
+            solution, cache_report = self._prefix_preserving_solution(
+                problem, solution, live_ids, policy
+            )
         query_hash = sha256_hex(relevance_query)
         if solution.status is PckpStatus.INFEASIBLE_MANDATORY:
             compacted = self._compact_unretained(live_ids - mandatory)
@@ -799,6 +815,7 @@ class InMemoryEpisodeStore:
                 "branch_node_limit": policy.exact_max_branch_nodes,
                 "solver": solution.model_dump(mode="json"),
                 "objective": "additive static utility under dependency-closed PCKP",
+                **({"cache_aware": cache_report} if cache_report is not None else {}),
                 "guarantee": (
                     "proven-optimal dependency-closed selection"
                     if solution.status is PckpStatus.OPTIMAL
@@ -806,6 +823,79 @@ class InMemoryEpisodeStore:
                 ),
             },
         )
+
+    def _prefix_preserving_solution(
+        self,
+        problem: PckpProblem,
+        base: PckpSolution,
+        live_ids: set[str],
+        policy: PaskCompactionPolicy,
+    ) -> tuple[PckpSolution, dict[str, Any]]:
+        """Keep the longest chronological prefix of live episodes whose retention costs at most
+        ``cache_tolerance`` of the unconstrained optimum.
+
+        A provider prefix cache reuses everything before the first change to the context, so the
+        first episode evicted decides how much cached prefix is lost. Forcing the oldest ``k``
+        live episodes to stay moves that point later; utility is non-increasing in ``k``, so the
+        largest admissible ``k`` is found by bisection.
+        """
+
+        order = sorted(live_ids, key=episode_order_key)
+        position = {episode_id: index for index, episode_id in enumerate(order)}
+        costs = {item.item_id: item.token_cost for item in problem.items}
+        floor = base.utility * (1.0 - policy.cache_tolerance)
+        solver = ExactPckpSolver(max_branch_nodes=policy.exact_max_branch_nodes)
+
+        def solve_with(prefix: int) -> PckpSolution:
+            forced = set(order[:prefix])
+            return solver.solve(
+                PckpProblem(
+                    token_budget=problem.token_budget,
+                    items=[
+                        item.model_copy(
+                            update={"mandatory": item.mandatory or item.item_id in forced}
+                        )
+                        for item in problem.items
+                    ],
+                )
+            )
+
+        def invalidated(selected: set[str]) -> int:
+            evicted = [position[i] for i in live_ids - selected]
+            if not evicted:
+                return 0
+            first = min(evicted)
+            return sum(costs[i] for i in selected if position[i] > first)
+
+        best, best_prefix = base, 0
+        low, high = 0, len(order)
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = solve_with(middle)
+            if (
+                candidate.status is not PckpStatus.INFEASIBLE_MANDATORY
+                and candidate.utility >= floor
+            ):
+                best, best_prefix, low = candidate, middle, middle
+            else:
+                high = middle - 1
+        report = {
+            "tolerance": policy.cache_tolerance,
+            "forced_prefix_episodes": best_prefix,
+            "live_episodes": len(order),
+            "utility_unconstrained": base.utility,
+            "utility_selected": best.utility,
+            "utility_loss_ratio": (
+                (base.utility - best.utility) / base.utility if base.utility else 0.0
+            ),
+            "invalidated_tokens_unconstrained": invalidated(set(base.selected_item_ids)),
+            "invalidated_tokens_selected": invalidated(set(best.selected_item_ids)),
+            "guarantee": (
+                "optimal among selections that keep the forced prefix and whose utility is within "
+                "the tolerance of the unconstrained optimum"
+            ),
+        }
+        return best, report
 
     def _compact_learned_pckp(
         self,
@@ -1827,39 +1917,99 @@ class InMemoryEpisodeStore:
             evicted.append(record.id)
         return evicted
 
-    def rehydrate(self, episode_ids: Iterable[str], *, token_budget: int) -> RehydrationResult:
-        """Restore archived episodes (and archived prerequisites) to live, within a budget."""
+    def rehydration_quote(self, episode_ids: Iterable[str]) -> Sequence[RehydrationQuote]:
+        """The prerequisite closure and token cost of restoring each episode; restores nothing."""
+
+        quotes: MutableSequence[RehydrationQuote] = []
+        archive = self._archive
+        for episode_id in dict.fromkeys(episode_ids):
+            record = self.get(episode_id)
+            if record is None:
+                quotes.append(
+                    RehydrationQuote(
+                        episode_id=episode_id, restorable=False, reason="unknown episode"
+                    )
+                )
+            elif record.state is not EpisodeState.COMPACTED:
+                quotes.append(
+                    RehydrationQuote(episode_id=episode_id, restorable=False, reason="already live")
+                )
+            elif record.content is None and (archive is None or record.archive_id is None):
+                quotes.append(
+                    RehydrationQuote(episode_id=episode_id, restorable=False, reason="not archived")
+                )
+            else:
+                try:
+                    plan = self._rehydration_plan(record, archive)
+                except AgentSdkError as error:
+                    quotes.append(
+                        RehydrationQuote(
+                            episode_id=episode_id,
+                            restorable=False,
+                            reason=f"{error.code}: {error.message}"[:300],
+                        )
+                    )
+                    continue
+                quotes.append(
+                    RehydrationQuote(
+                        episode_id=episode_id,
+                        restorable=True,
+                        closure_ids=[snapshot.id for snapshot in plan],
+                        tokens=sum(_episode_tokens(snapshot) for snapshot in plan),
+                    )
+                )
+        return quotes
+
+    def rehydrate(
+        self,
+        episode_ids: Iterable[str],
+        *,
+        token_budget: int,
+        order: Literal["in-order", "cheapest-first"] = "in-order",
+    ) -> RehydrationResult:
+        """Restore archived episodes (and archived prerequisites) to live, within a budget.
+
+        ``in-order`` takes requests as given. ``cheapest-first`` repeatedly takes the request whose
+        closure adds the fewest tokens beyond what is already scheduled, so requests that share a
+        prerequisite are served together and a cheap request is not starved by an expensive one.
+        """
 
         if token_budget < 0:
             raise ValueError("rehydration token budget may not be negative")
         archive = self._archive
-        restored: list[str] = []
         skipped: dict[str, str] = {}
+        plans: dict[str, Sequence[EpisodeRecord]] = {}
+        for quote in self.rehydration_quote(episode_ids):
+            if not quote.restorable:
+                skipped[quote.episode_id] = quote.reason or "not restorable"
+                continue
+            record = self.get(quote.episode_id)
+            assert record is not None
+            plans[quote.episode_id] = self._rehydration_plan(record, archive)
+        scheduled: dict[str, EpisodeRecord] = {}
         spent = 0
-        for episode_id in dict.fromkeys(episode_ids):
-            record = self.get(episode_id)
-            if record is None:
-                skipped[episode_id] = "unknown episode"
-                continue
-            if record.state is not EpisodeState.COMPACTED:
-                skipped[episode_id] = "already live"
-                continue
-            if record.content is None and (archive is None or record.archive_id is None):
-                skipped[episode_id] = "not archived"
-                continue
-            try:
-                plan = self._rehydration_plan(record, archive)
-            except AgentSdkError as error:
-                skipped[episode_id] = f"{error.code}: {error.message}"[:300]
-                continue
-            cost = sum(_episode_tokens(snapshot) for snapshot in plan)
+
+        def marginal(plan: Sequence[EpisodeRecord]) -> int:
+            return sum(_episode_tokens(s) for s in plan if s.id not in scheduled)
+
+        pending = list(plans)
+        while pending:
+            if order == "cheapest-first":
+                chosen = min(pending, key=lambda eid: (marginal(plans[eid]), pending.index(eid)))
+            else:
+                chosen = pending[0]
+            pending.remove(chosen)
+            cost = marginal(plans[chosen])
             if spent + cost > token_budget:
-                skipped[episode_id] = f"needs {cost} tokens but {token_budget - spent} remain"
+                skipped[chosen] = f"needs {cost} tokens but {token_budget - spent} remain"
                 continue
-            for snapshot in plan:
-                self._restore(snapshot)
-                restored.append(snapshot.id)
+            for snapshot in plans[chosen]:
+                scheduled.setdefault(snapshot.id, snapshot)
             spent += cost
+        restored: list[str] = []
+        for snapshot in sorted(scheduled.values(), key=lambda s: episode_order_key(s.id)):
+            self._restore(snapshot)
+            restored.append(snapshot.id)
         return RehydrationResult(
             restored_episode_ids=restored,
             skipped=skipped,

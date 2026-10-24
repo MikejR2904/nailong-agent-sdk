@@ -108,13 +108,13 @@ class ExactPckpSolver:
                 value.item_id,
             ),
         )
-        incumbent_selection = set(mandatory)
+        incumbent_selection = set(GreedyPckpBaseline().solve(problem).selected_item_ids)
         incumbent_utility = _utility(incumbent_selection, items)
         incumbent_cost = _cost(incumbent_selection, items)
         branch_nodes = 0
         exhausted = True
         root_upper = _fractional_upper_bound(
-            incumbent_selection, set(), items, density_order, problem.token_budget
+            set(mandatory), set(), items, density_order, problem.token_budget
         )
 
         stack: list[tuple[set[str], set[str]]] = [(set(mandatory), set())]

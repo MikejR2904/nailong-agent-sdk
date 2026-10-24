@@ -225,3 +225,16 @@ def test_wide_general_dag_at_the_branch_node_cap_returns_promptly():
         PckpStatus.BEST_EFFORT,
         PckpStatus.INFEASIBLE_MANDATORY,
     )
+
+
+def test_a_capped_search_never_returns_less_than_the_greedy_fill():
+    for seed in range(20):
+        problem = random_problem(random.Random(seed), forest=False, n=16)
+        greedy = GreedyPckpBaseline().solve(problem)
+        if greedy.status is PckpStatus.INFEASIBLE_MANDATORY:
+            continue
+        capped = ExactPckpSolver(max_branch_nodes=1, enable_tree_dynamic_program=False).solve(
+            problem
+        )
+        assert capped.utility >= greedy.utility
+        assert capped.token_cost <= problem.token_budget

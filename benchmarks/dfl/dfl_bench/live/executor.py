@@ -22,6 +22,7 @@ from nailong_agent_sdk.foundations.contracts import (
 )
 from nailong_agent_sdk.foundations.errors import AgentSdkError, TransientProviderError
 from nailong_agent_sdk.memory.context_projection import ContextProjectionPolicy
+from nailong_agent_sdk.memory.episode_models import SemanticSummaryView
 
 from ..instances import Instance
 from ..ledger import OutcomeLedger
@@ -53,6 +54,9 @@ def api_key_from_environment(name: str, env_file: Path | None = None) -> str:
             f'"{env_file}"; the live executor cannot call the model without it.',
         )
     return value
+
+
+SUMMARY_SUFFIX = "~s"
 
 
 @dataclass(frozen=True)
@@ -169,6 +173,7 @@ class LiveExecutor:
         self.usage = usage if usage is not None else UsageTotals()
         self._throttle = throttle if throttle is not None else Throttle(settings.concurrency)
         self._scenes: dict[str, object] = {}
+        self.summaries: dict[tuple[str, str], tuple[str, int]] = {}
 
     def _binding(self, trial: int) -> ModelBinding:
         return ModelBinding(
@@ -184,12 +189,32 @@ class LiveExecutor:
             if self._settings.enforce_budget
             else ContextProjectionPolicy(episode_token_budget=12_000),
         )
+        full = {i for i in selection if not i.endswith(SUMMARY_SUFFIX)}
+        summarized = sorted(
+            i[: -len(SUMMARY_SUFFIX)] for i in selection if i.endswith(SUMMARY_SUFFIX)
+        )
+        views = []
+        summary_tokens = 0
+        for episode_id in summarized:
+            text, tokens = self.summaries[(task.instance.instance_id, episode_id)]
+            summary_tokens += tokens
+            views.append(
+                SemanticSummaryView(
+                    summary_id=f"tier-{episode_id}",
+                    level=1,
+                    summary_text=text,
+                    source_episode_ids=[episode_id],
+                    source_episode_count=1,
+                )
+            )
         context = model_context(
             scene,
-            set(selection),
+            full,
             task.output_schema,
             self._binding(trial),
             enforce_budget=self._settings.enforce_budget,
+            summaries=views,
+            summary_tokens=summary_tokens,
         )
         for attempt in range(1, self._settings.max_attempts + 1):
             await self._throttle.acquire()

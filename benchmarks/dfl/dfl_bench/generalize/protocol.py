@@ -22,6 +22,7 @@ from ..oracle import SyntheticOracleExecutor
 from ..preferences import PreferencePolicy, build_preferences
 from ..selection import LEARNED, STATIC, static_utilities
 from ..splits import assert_no_leakage, split_instances
+from .advantage import fit_gated, static_selections
 from .learners import (
     BENCH_VERSION,
     Method,
@@ -60,6 +61,8 @@ class Config:
     boundary: bool = True
     include_mlp: bool = False
     plan: str = "full"
+    gate_v2_only: bool = False
+    support_templates: int = 2
 
 
 def fold_names() -> list[str]:
@@ -106,6 +109,10 @@ def make_fold(
 
 
 def run_job(job: tuple[int, str, Config]) -> dict:
+    if job[2].plan == "fewshot":
+        from .fewshot import run_fewshot_fold
+
+        return run_fewshot_fold(job[0], job[1], job[2])
     return run_fold(*job)
 
 
@@ -170,7 +177,7 @@ def run_fold(seed: int, fold: str, cfg: Config = Config()) -> dict:
         ("dro-pairwise-v1", "pairwise", V1, {"group_dro": True}),
         ("dro-listwise-v2", "listwise", V2, {"group_dro": True}),
     ]
-    if cfg.plan == "shrink":
+    if cfg.plan in ("shrink", "gate"):
         plan = [row for row in plan if row[0] in ("pairwise-v1", "regression-v1")]
 
     failures: dict[str, str] = {}
@@ -188,6 +195,44 @@ def run_fold(seed: int, fold: str, cfg: Config = Config()) -> dict:
         ("shrunk-regression-v2", "regression", V2, {}),
         ("shrunk-listwise-v2", "listwise", V2, {}),
     ]
+    if cfg.plan == "gate":
+        try:
+            methods["pairwise-v1-equalcard"] = fit(
+                "pairwise-v1-equalcard", "pairwise", V1, equal_cardinality=True
+            )
+        except ValueError as error:
+            failures["pairwise-v1-equalcard"] = str(error)
+        try:
+            methods["shrunk-regression-v2"] = fit_shrunk(
+                "shrunk-regression-v2",
+                "regression",
+                V2,
+                caches,
+                train,
+                train_out,
+                executor,
+                preference_policy=policy,
+                seed=seed,
+                trials=cfg.validation_trials,
+            )
+        except ValueError as error:
+            failures["shrunk-regression-v2"] = str(error)
+        for schema, tag in ((V1, "v1"), (V2, "v2")):
+            if cfg.gate_v2_only and schema == V1:
+                continue
+            gated, ungated = fit_gated(
+                f"advantage-{tag}",
+                schema,
+                caches,
+                train,
+                train_out,
+                executor,
+                preference_policy=policy,
+                seed=seed,
+                trials=cfg.validation_trials,
+            )
+            methods[gated.name] = gated
+            methods[ungated.name] = ungated
     if cfg.plan == "shrink":
         for name, objective, schema, extra in shrunk_plan:
             try:
@@ -229,7 +274,7 @@ def run_fold(seed: int, fold: str, cfg: Config = Config()) -> dict:
                 failures[name] = str(error)
 
     shrunk = [m for n, m in methods.items() if n.startswith("shrunk-")]
-    if shrunk:
+    if shrunk and cfg.plan == "shrink":
 
         def inner_quality(m: Method) -> float:
             d = m.detail
@@ -251,7 +296,7 @@ def run_fold(seed: int, fold: str, cfg: Config = Config()) -> dict:
         for m in methods.values()
         if m.family == "learned" and m.detail.get("objective") and not m.name.startswith("shrunk-")
     ]
-    if new_learned and cfg.plan != "shrink":
+    if new_learned and cfg.plan == "full":
         base = max(
             new_learned,
             key=lambda m: (
@@ -277,6 +322,7 @@ def run_fold(seed: int, fold: str, cfg: Config = Config()) -> dict:
     methods["combined-validation"] = _alias(methods[chosen], "combined-validation")
     methods["combined-validation"].detail["chosen"] = chosen
 
+    static_ids = static_selections(test)
     optimum = {i.instance_id: fast_optimum_quality(i) for i in test}
     per_method: dict[str, list[dict]] = {}
     for name, method in methods.items():
@@ -287,6 +333,8 @@ def run_fold(seed: int, fold: str, cfg: Config = Config()) -> dict:
             row["family"] = family_of(instance)
             row["template"] = instance.template_id
             row["calibration_mode"] = selection.meta.get("calibration_mode")
+            row["differs_from_static"] = selection.ids != static_ids[instance.instance_id]
+            row["gate_accepted"] = selection.meta.get("gate_accepted")
             rows.append(row)
         per_method[name] = rows
 

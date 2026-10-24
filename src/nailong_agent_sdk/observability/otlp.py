@@ -8,6 +8,7 @@ collector that is slow or down cannot delay an agent, and an export can be repea
 
 from __future__ import annotations
 
+import bisect
 import gzip
 import http.client
 import json
@@ -494,6 +495,48 @@ def _point_attributes(observation: MetricObservation) -> dict[str, Any]:
     return attributes
 
 
+_HISTOGRAM_BOUNDS = {
+    "milliseconds": (5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1_000.0, 2_500.0, 5_000.0)
+    + (10_000.0, 30_000.0, 60_000.0, 300_000.0),
+    "seconds": (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0),
+}
+_DEFAULT_HISTOGRAM_BOUNDS = (1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0)
+
+
+def _histogram_points(
+    ordered: Sequence[MetricObservation], unit: str, run_start: int
+) -> list[dict[str, Any]]:
+    """One delta point per attribute set: count, sum, extremes and explicit-bound bucket counts."""
+
+    bounds = _HISTOGRAM_BOUNDS.get(unit, _DEFAULT_HISTOGRAM_BOUNDS)
+    groups: dict[str, list[MetricObservation]] = {}
+    for item in ordered:
+        key = json.dumps(_point_attributes(item), sort_keys=True, default=str)
+        groups.setdefault(key, []).append(item)
+    points: list[dict[str, Any]] = []
+    for members in groups.values():
+        values = [float(member.value or 0.0) for member in members]
+        counts = [0] * (len(bounds) + 1)
+        for value in values:
+            counts[bisect.bisect_left(bounds, value)] += 1
+        first = _unix_nano(members[0].observed_at_utc)
+        last = _unix_nano(members[-1].observed_at_utc)
+        points.append(
+            {
+                "attributes": _key_values(_point_attributes(members[0])),
+                "startTimeUnixNano": str(min(run_start, first)),
+                "timeUnixNano": str(last),
+                "count": str(len(values)),
+                "sum": math.fsum(values),
+                "min": min(values),
+                "max": max(values),
+                "bucketCounts": [str(count) for count in counts],
+                "explicitBounds": list(bounds),
+            }
+        )
+    return points
+
+
 def _metrics(
     observations: Sequence[MetricObservation],
     definitions: Mapping[str, MetricDefinition],
@@ -516,27 +559,18 @@ def _metrics(
         instrument = (definition.instrument if definition else None) or "gauge"
         previous = run_start
         data_points: list[dict[str, Any]] = []
-        for item in sorted(items, key=lambda entry: entry.observed_at_utc):
+        ordered = sorted(items, key=lambda entry: entry.observed_at_utc)
+        if instrument == "histogram":
+            data_points = _histogram_points(ordered, items[0].unit, run_start)
+        for item in ordered if instrument != "histogram" else ():
             at = _unix_nano(item.observed_at_utc)
-            value = float(item.value or 0.0)
             point: dict[str, Any] = {
                 "attributes": _key_values(_point_attributes(item)),
                 "timeUnixNano": str(at),
+                "asDouble": float(item.value or 0.0),
             }
-            if instrument == "histogram":
-                point.update(
-                    startTimeUnixNano=str(min(previous, at)),
-                    count="1",
-                    sum=value,
-                    min=value,
-                    max=value,
-                    bucketCounts=[],
-                    explicitBounds=[],
-                )
-            else:
-                point["asDouble"] = value
-                if instrument in {"counter", "up_down_counter"}:
-                    point["startTimeUnixNano"] = str(min(previous, at))
+            if instrument in {"counter", "up_down_counter"}:
+                point["startTimeUnixNano"] = str(min(previous, at))
             previous = at
             data_points.append(point)
         points += len(data_points)

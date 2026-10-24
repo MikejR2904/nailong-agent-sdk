@@ -147,7 +147,7 @@ def test_a_missing_root_a_bad_strategy_and_a_lost_blob_are_named(tmp_path):
         attribute_defect(tmp_path / "typo", "report.txt", has_bug)
     store = written(tmp_path, ["a\n", "b\n"])
     with pytest.raises(
-        ValueError, match=r"strategy must be one of \['gallop', 'scan'\], got \"fast\""
+        ValueError, match=r"strategy must be one of \['gallop', 'scan', 'confirmed'\], got \"fast\""
     ):
         attribute_defect(tmp_path, "report.txt", has_bug, strategy="fast")
     newest = store.history("report.txt")[-1]

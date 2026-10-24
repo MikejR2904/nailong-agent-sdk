@@ -8,7 +8,7 @@ benchmark supplies is the recorded tool-call history and the retention set under
 from __future__ import annotations
 
 import itertools
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -31,6 +31,7 @@ from nailong_agent_sdk.memory.context_projection import (
     ContextProjector,
     InMemoryToolResultJournal,
 )
+from nailong_agent_sdk.memory.episode_models import SemanticSummaryView
 from nailong_agent_sdk.memory.episode_store import InMemoryEpisodeStore
 from nailong_agent_sdk.memory.episodes import InMemoryEpisodeGraph
 from nailong_agent_sdk.state.project_state_engine import ProjectStateProjector
@@ -162,9 +163,11 @@ def model_context(
     binding: ModelBinding,
     *,
     enforce_budget: bool = True,
+    summaries: Sequence[SemanticSummaryView] = (),
+    summary_tokens: int = 0,
 ) -> ModelContext:
     scene.store.retain_only(retained_ids)
-    retained_tokens = scene.store.estimate_tokens()
+    retained_tokens = scene.store.estimate_tokens() + summary_tokens
     if enforce_budget and retained_tokens > scene.instance.budget:
         raise ValueError(
             f'Retention set for "{scene.instance.instance_id}" costs {retained_tokens} tokens, '
@@ -198,7 +201,7 @@ def model_context(
         model_binding=binding,
         output_schema=output_schema,
         compacted_episodes=projection.compacted_episodes,
-        semantic_summaries=projection.summaries,
+        semantic_summaries=[*projection.summaries, *summaries],
     )
 
 

@@ -58,6 +58,7 @@ class DefectAttribution(StrictModel):
     check: str
     strategy: str
     evaluations: int = Field(ge=0)
+    proven: bool = False
     probes: list[VersionVerdict] = Field(default_factory=list)
     born_defective: bool = False
     introduced_by: DefectWriter | None = None
@@ -112,6 +113,7 @@ def attribute_defect(
             check=check,
             strategy=chosen.value,
             evaluations=len(verdicts),
+            proven=search.exact,
             probes=probes,
             last_clean=_writer(versions[-1]),
             summary=(
@@ -129,6 +131,7 @@ def attribute_defect(
         check=check,
         strategy=chosen.value,
         evaluations=len(verdicts),
+        proven=search.exact,
         probes=probes,
         born_defective=clean is None,
         introduced_by=_writer(introduced),

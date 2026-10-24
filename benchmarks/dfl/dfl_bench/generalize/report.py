@@ -11,7 +11,13 @@ BANNER = (
     "SYNTHETIC ORACLE EVIDENCE ONLY (evidence_kind=synthetic). Outcomes are Bernoulli draws from a "
     "closed-form quality model; nothing here measures a real agent."
 )
-REFERENCES = ("static-pckp", "tuned-static-pckp", "linear-dfl", "regression-pckp")
+REFERENCES = (
+    "static-pckp",
+    "tuned-static-pckp",
+    "tuned-static-support",
+    "linear-dfl",
+    "regression-pckp",
+)
 CANDIDATES = (
     "regret-pairwise-v1",
     "listwise-v1",
@@ -28,6 +34,15 @@ CANDIDATES = (
     "shrunk-regression-v2",
     "shrunk-listwise-v2",
     "shrunk-selected",
+    "advantage-v1",
+    "advantage-v2",
+    "advantage-v1-ungated",
+    "advantage-v2-ungated",
+    "pairwise-v1-equalcard",
+    "adapt-regression-static",
+    "adapt-listwise-static",
+    "adapt-regression-source",
+    "adapt-listwise-source",
 )
 
 
@@ -125,6 +140,42 @@ def method_table(results: list[dict], fold_prefix: str) -> list[dict]:
     return sorted(table, key=lambda r: -r["mean_worst_fold_per_seed"])
 
 
+def delta_table(results: list[dict], fold_prefix: str) -> list[dict]:
+    """Quality change against static PCKP on the same instance, with how often a method deviates."""
+
+    static = {
+        (r["seed"], r["fold"], row["instance_id"]): row["quality"]
+        for r, row in _rows(results, "static-pckp", fold_prefix)
+    }
+    names = sorted({m for r in results for m in r["per_method"]} - {"static-pckp"})
+    table = []
+    for name in names:
+        deltas, by_family, deviated = [], defaultdict(list), []
+        for r, row in _rows(results, name, fold_prefix):
+            key = (r["seed"], r["fold"], row["instance_id"])
+            if key not in static:
+                continue
+            delta = row["quality"] - static[key]
+            deltas.append(delta)
+            by_family[row["family"]].append(delta)
+            if row.get("differs_from_static"):
+                deviated.append(delta)
+        if not deltas:
+            continue
+        table.append(
+            {
+                "method": name,
+                "mean_delta": mean(deltas),
+                "worst_family_delta": min(mean(v) for v in by_family.values()),
+                "negative_transfer": sum(1 for d in deltas if d < 0) / len(deltas),
+                "deviation_rate": len(deviated) / len(deltas),
+                "delta_when_deviating": mean(deviated) if deviated else None,
+                "n": len(deltas),
+            }
+        )
+    return sorted(table, key=lambda r: -r["mean_delta"])
+
+
 def per_fold_table(results: list[dict], fold_prefix: str) -> dict[str, dict[str, float]]:
     table: dict[str, dict[str, float]] = defaultdict(dict)
     names = sorted({m for r in results for m in r["per_method"]})
@@ -217,6 +268,23 @@ def render(results: list[dict], protocol_hash: str, label: str) -> str:
                     f"| {row['comparison']} | {row['mean']:+.3f} | [{row['ci_low']:+.3f}, "
                     f"{row['ci_high']:+.3f}] | {row['p']:.4f} | {row['holm_p']:.4f} | "
                     f"{row['clusters']} |"
+                )
+            lines.append("")
+        deltas = delta_table(results, prefix)
+        if prefix == "lofo:" and deltas:
+            lines += [
+                "Change against static PCKP on the same instance:",
+                "",
+                "| method | mean delta | worst-family delta | negative-transfer rate | "
+                "deviation rate | delta when deviating | n |",
+                "|---|---|---|---|---|---|---|",
+            ]
+            for row in deltas:
+                lines.append(
+                    f"| {row['method']} | {row['mean_delta']:+.3f} | "
+                    f"{row['worst_family_delta']:+.3f} | {row['negative_transfer']:.2f} | "
+                    f"{row['deviation_rate']:.2f} | {_f(row['delta_when_deviating'])} | "
+                    f"{row['n']} |"
                 )
             lines.append("")
         folds = per_fold_table(results, prefix)

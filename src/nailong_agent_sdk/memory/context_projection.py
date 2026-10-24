@@ -16,7 +16,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import Field
 
@@ -74,6 +74,9 @@ class ContextProjectionPolicy(StrictModel):
     compacted_summary_chars: int = Field(default=160, ge=32, le=2_000)
     semantic_summary_token_budget: int = Field(default=1_200, ge=0, le=1_000_000)
     rehydration_token_budget: int = Field(default=0, ge=0, le=1_000_000)
+    observation_block: int = Field(default=0, ge=0, le=10_000)
+    rehydration_run_budget: int | None = Field(default=None, ge=0, le=10_000_000)
+    rehydration_order: Literal["in-order", "cheapest-first"] = "in-order"
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
@@ -381,17 +384,40 @@ class ContextProjector:
                 max(0, self._policy.context_token_budget - base_tokens),
             ),
         )
+        if self._policy.rehydration_token_budget > 0 and stubs:
+            quotes = {
+                quote.episode_id: quote.tokens
+                for quote in memory.rehydration_quote([stub.episode_id for stub in stubs])
+                if quote.restorable
+            }
+            stubs = tuple(
+                stub.model_copy(update={"restore_tokens": quotes[stub.episode_id]})
+                if stub.episode_id in quotes
+                else stub
+                for stub in stubs
+            )
+            stub_tokens = sum(estimate_tokens(stub.model_dump(mode="json")) for stub in stubs)
         base_tokens += stub_tokens
         selected: list[ModelObservation] = []
         omitted = len(observations) - len(eligible_observations)
-        for observation in reversed(eligible_observations):
-            candidate_tokens = estimate_tokens(observation)
-            if base_tokens + candidate_tokens > self._policy.context_token_budget:
-                omitted += 1
-                continue
-            selected.append(observation)
-            base_tokens += candidate_tokens
-        selected.reverse()
+        if self._policy.observation_block > 0:
+            kept, base_tokens = _block_aligned_suffix(
+                eligible_observations,
+                self._policy.context_token_budget - base_tokens,
+                self._policy.observation_block,
+                base_tokens,
+            )
+            omitted += len(eligible_observations) - len(kept)
+            selected = kept
+        else:
+            for observation in reversed(eligible_observations):
+                candidate_tokens = estimate_tokens(observation)
+                if base_tokens + candidate_tokens > self._policy.context_token_budget:
+                    omitted += 1
+                    continue
+                selected.append(observation)
+                base_tokens += candidate_tokens
+            selected.reverse()
         return ContextProjection(
             observations=tuple(selected),
             episodes=retained_episodes,
@@ -411,9 +437,17 @@ class ContextProjector:
         )
 
     def rehydrate(
-        self, memory: InMemoryEpisodeStore, episode_ids: Sequence[str]
+        self,
+        memory: InMemoryEpisodeStore,
+        episode_ids: Sequence[str],
+        token_budget: int | None = None,
     ) -> RehydrationResult:
-        return memory.rehydrate(episode_ids, token_budget=self._policy.rehydration_token_budget)
+        budget = self._policy.rehydration_token_budget
+        if token_budget is not None:
+            budget = min(budget, token_budget)
+        return memory.rehydrate(
+            episode_ids, token_budget=budget, order=self._policy.rehydration_order
+        )
 
     def project_tool_result(
         self,
@@ -429,6 +463,28 @@ class ContextProjector:
             preview=preview,
             error=_truncate_text(result.error, self._policy.tool_result_preview_chars),
         )
+
+
+def _block_aligned_suffix(
+    observations: Sequence[ModelObservation], allowance: int, block: int, base_tokens: int
+) -> tuple[list[ModelObservation], int]:
+    """The newest contiguous run of observations that fits, started on a multiple of ``block``.
+
+    A window that slides by one observation per turn changes the first observation of the context
+    every turn, so a provider prefix cache can reuse nothing past it. Starting the window on a block
+    boundary moves its front only once per ``block`` turns, at the price of dropping up to
+    ``block - 1`` extra old observations.
+    """
+
+    costs = [estimate_tokens(observation) for observation in observations]
+    start = len(observations)
+    used = 0
+    while start > 0 and used + costs[start - 1] <= allowance:
+        start -= 1
+        used += costs[start]
+    aligned = min(len(observations), -(-start // block) * block)
+    kept = list(observations[aligned:])
+    return kept, base_tokens + sum(costs[aligned:])
 
 
 def _select_summaries(

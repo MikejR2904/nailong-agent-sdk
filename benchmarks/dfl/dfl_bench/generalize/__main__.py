@@ -27,7 +27,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--templates", type=int, default=4)
     run.add_argument("--per-template", type=int, default=4)
     run.add_argument("--no-boundary", action="store_true")
-    run.add_argument("--plan", choices=["full", "shrink"], default="full")
+    run.add_argument("--plan", choices=["full", "shrink", "gate", "fewshot"], default="full")
+    run.add_argument("--gate-v2-only", action="store_true")
+    run.add_argument("--support-templates", type=int, default=2)
     report = sub.add_parser("report")
     report.add_argument("--results", type=Path, required=True)
     report.add_argument("--protocol", type=Path, required=True)
@@ -39,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
             per_template=args.per_template,
             boundary=not args.no_boundary and args.plan == "full",
             plan=args.plan,
+            gate_v2_only=args.gate_v2_only,
+            support_templates=args.support_templates,
         )
         folds = args.folds or fold_names()
         args.out.mkdir(parents=True, exist_ok=True)

@@ -80,9 +80,12 @@ class Method:
     schema: str | None = None
     train_seconds: float = 0.0
     detail: dict = field(default_factory=dict)
+    selector: Callable[[Instance], Selection] | None = None
 
 
 def run_method(method: Method, instance: Instance) -> Selection:
+    if method.selector is not None:
+        return method.selector(instance)
     selection, _, _ = select_via_store(
         instance,
         method.policy,
@@ -95,6 +98,16 @@ def run_method(method: Method, instance: Instance) -> Selection:
         selection.meta["calibration_mode"] = audit["mode"]
         selection.meta["calibration_reasons"] = audit["reasons"]
     return selection
+
+
+QualityMany = Callable[[Sequence[tuple["Method", Sequence[Instance]]]], list[float]]
+
+
+def sequential_quality(executor: DownstreamExecutor, trials: int) -> QualityMany:
+    def evaluate(jobs: Sequence[tuple[Method, Sequence[Instance]]]) -> list[float]:
+        return [decision_quality(method, instances, executor, trials) for method, instances in jobs]
+
+    return evaluate
 
 
 def decision_quality(
@@ -116,12 +129,19 @@ def objective_data(
     gamma: float = 1.0,
     normalize: bool = True,
     cap_ratio: float | None = 5.0,
+    equal_cardinality: bool = False,
 ) -> ObjectiveDataset:
     ids = sorted({o.instance_id for o in outcomes})
     features = {i: cache.get(i) for i in ids}
     labels = {i: family_of_id(i) for i in ids}
     if objective in ("pairwise", "regret-pairwise"):
         preferences = build_preferences(list(outcomes), policy)
+        if equal_cardinality:
+            preferences = [
+                p
+                for p in preferences
+                if len(p.positive - p.negative) == len(p.negative - p.positive)
+            ]
         if objective == "regret-pairwise" and preferences:
             weights = effect_weights(
                 [p.effect for p in preferences],
@@ -212,6 +232,7 @@ def fit_method(
     gamma: float = 1.0,
     normalize: bool = True,
     cap_ratio: float | None = 5.0,
+    equal_cardinality: bool = False,
     l2_grid: Sequence[float] = L2_GRID,
 ) -> Method:
     cache = caches[schema]
@@ -224,6 +245,7 @@ def fit_method(
         gamma=gamma,
         normalize=normalize,
         cap_ratio=cap_ratio,
+        equal_cardinality=equal_cardinality,
     )
     validation = objective_data(
         objective,
@@ -233,6 +255,7 @@ def fit_method(
         gamma=gamma,
         normalize=normalize,
         cap_ratio=cap_ratio,
+        equal_cardinality=equal_cardinality,
     )
     if not train.terms:
         raise ValueError(f"{name}: no {objective} terms in the training outcomes.")
@@ -277,6 +300,8 @@ def fit_method(
                     "gamma": gamma,
                     "normalize": normalize,
                     "cap_ratio": cap_ratio,
+                    "equal_cardinality": equal_cardinality,
+                    "bias_weight": model.parameters[0],
                     "config": config.model_dump(),
                 }
                 best = (quality, candidate)
@@ -291,6 +316,7 @@ def tune_static(
     trials: int,
     seed: int,
     draws: int = 40,
+    quality_many: QualityMany | None = None,
 ) -> Method:
     """Random search over the five static weights on non-test instances; the default policy is a
     candidate, so the tuned policy is never worse than the default on the tuning set."""
@@ -312,10 +338,11 @@ def tune_static(
                 frequency_weight=w[4],
             )
         )
+    methods = [Method("tuned-static-pckp", "static", policy) for policy in candidates]
+    evaluate = quality_many or sequential_quality(executor, trials)
+    qualities = evaluate([(method, instances) for method in methods])
     best: tuple[float, PaskCompactionPolicy] | None = None
-    for policy in candidates:
-        method = Method("tuned-static-pckp", "static", policy)
-        quality = decision_quality(method, instances, executor, trials)
+    for policy, quality in zip(candidates, qualities, strict=True):
         if best is None or quality > best[0]:
             best = (quality, policy)
     assert best is not None

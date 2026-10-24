@@ -190,7 +190,9 @@ def test_metrics_follow_the_declared_instrument_and_skip_unavailable_values(reco
     wall = metrics["agent.wall_duration_ms"]
     assert wall["unit"] == "ms" and wall["histogram"]["aggregationTemporality"] == 1
     (point,) = wall["histogram"]["dataPoints"]
-    assert point["count"] == "1" and point["bucketCounts"] == [] and point["sum"] == point["min"]
+    assert point["count"] == "1" and point["sum"] == point["min"] == point["max"]
+    assert len(point["bucketCounts"]) == len(point["explicitBounds"]) + 1
+    assert sum(int(count) for count in point["bucketCounts"]) == 1
     assert "gauge" in metrics["context.estimated_input_tokens"]
     assert built.unavailable_metrics_skipped >= 4
     assert built.metric_points == sum(
@@ -235,6 +237,58 @@ def test_delta_points_start_where_the_previous_observation_ended(tmp_path):
         assert first["timeUnixNano"] == second["startTimeUnixNano"]
         assert attributes_of(first)["nailong.tool"] == {"stringValue": "echo"}
         assert attributes_of(first)["nailong.run_id"] == {"stringValue": "run-m"}
+    finally:
+        store.close()
+
+
+def test_histogram_observations_aggregate_per_attribute_set_into_buckets(tmp_path):
+    store = TelemetryStore(tmp_path)
+    try:
+        store.register_metric_definition(
+            MetricDefinition(
+                metric_id="demo.latency_ms",
+                name="Latency",
+                unit="milliseconds",
+                direction="lower-is-better",
+                formula="t",
+                aggregation="last",
+                missing_data_rule="unavailable",
+                source_description="tests",
+                instrument="histogram",
+            )
+        )
+        for second, value, tool in (
+            (1, 3.0, "a"),
+            (2, 40.0, "a"),
+            (3, 4_000.0, "a"),
+            (4, 7.0, "b"),
+        ):
+            store.record_metric(
+                MetricObservation(
+                    metric_id="demo.latency_ms",
+                    run_id="run-h",
+                    value=value,
+                    unit="milliseconds",
+                    availability=MetricAvailability.AVAILABLE,
+                    observed_at_utc=f"2026-01-01T00:00:0{second}+00:00",
+                    context={"details": {"tool": tool}},
+                )
+            )
+        built = build_run_payloads(store, "run-h", signals=["metrics"])
+        metric = built.metrics["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
+        by_tool = {
+            attributes_of(point)["nailong.tool"]["stringValue"]: point
+            for point in metric["histogram"]["dataPoints"]
+        }
+        a, b = by_tool["a"], by_tool["b"]
+        assert a["count"] == "3" and a["sum"] == 4_043.0 and a["min"] == 3.0 and a["max"] == 4_000.0
+        bounds = a["explicitBounds"]
+        counts = [int(count) for count in a["bucketCounts"]]
+        assert len(counts) == len(bounds) + 1 and sum(counts) == 3
+        assert counts[bounds.index(5.0)] == 1
+        assert counts[bounds.index(50.0)] == 1
+        assert counts[bounds.index(5_000.0)] == 1
+        assert b["count"] == "1" and built.metric_points == 2
     finally:
         store.close()
 

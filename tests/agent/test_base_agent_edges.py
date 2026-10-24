@@ -1,12 +1,15 @@
 import asyncio
+from decimal import Decimal
 
 import pytest
 
 from nailong_agent_sdk.agent.base_agent import AgentWatchdogPolicy, BaseAgent
+from nailong_agent_sdk.agent.cost_model import PriceTable, TokenPrice
 from nailong_agent_sdk.agent.model import (
     ModelTurnResponse,
     ProviderContinuation,
     ProviderUsage,
+    RequestDiagnostics,
     ScriptedModel,
 )
 from nailong_agent_sdk.foundations.contracts import AgentRunStatus
@@ -47,7 +50,7 @@ def metrics_of(store, run_id="run-1"):
     return by_id
 
 
-def run_with_telemetry(tmp_path, model):
+def run_with_telemetry(tmp_path, model, **agent_kwargs):
     store = TelemetryStore(tmp_path)
     try:
         subject = BaseAgent(
@@ -57,8 +60,11 @@ def run_with_telemetry(tmp_path, model):
             telemetry_context=TelemetryContext(
                 run_id="run-1", task_id="t1", agent_id="audit-agent"
             ),
+            **agent_kwargs,
         )
         arun(subject.run(task()))
+        if agent_kwargs.get("price_table") is not None:
+            run_with_telemetry.ledger = subject.cost_ledger
         return metrics_of(store)
     finally:
         store.close()
@@ -265,3 +271,74 @@ def test_a_tool_executor_that_raises_an_sdk_error_ends_the_run_with_its_code():
     assert result.status is FAILED
     assert result.reason == 'Tool "probe" lifecycle failed: the simulator driver crashed'
     assert result.failure.code == "DRIVER_CRASHED"
+
+
+PRICES = PriceTable(
+    {
+        ("fake", "fake-1"): TokenPrice(
+            input_per_million=Decimal("2.50"),
+            cached_input_per_million=Decimal("1.25"),
+            output_per_million=Decimal("10.00"),
+        )
+    }
+)
+
+
+def test_priced_usage_becomes_cost_savings_and_hit_ratio_metrics_and_a_run_ledger(tmp_path):
+    usage = ProviderUsage(
+        input_tokens=10_000, cached_input_tokens=6_000, output_tokens=500, request_id="req-1"
+    )
+    metrics = run_with_telemetry(tmp_path, UsageModel(usage), price_table=PRICES)
+    for metric_id, expected in (
+        ("model.cost", 0.0225),
+        ("model.cache_savings", 0.0075),
+        ("model.cache_hit_ratio", 0.6),
+    ):
+        (observation,) = metrics[metric_id]
+        assert observation.value == pytest.approx(expected)
+        assert observation.availability.value == "available"
+    ledger = run_with_telemetry.ledger
+    assert len(ledger.calls) == 1 and ledger.total == Decimal("0.0225")
+
+
+def test_cost_is_unavailable_with_the_reason_when_the_price_or_usage_is_missing(tmp_path):
+    complete = ProviderUsage(input_tokens=100, output_tokens=10)
+    unknown = PriceTable({("fake", "other"): PRICES.price_for("fake", "fake-1")})
+    metrics = run_with_telemetry(tmp_path / "a", UsageModel(complete), price_table=unknown)
+    (cost,) = metrics["model.cost"]
+    assert cost.value is None and cost.unavailable_reason.startswith("PRICE_UNKNOWN: ")
+    metrics = run_with_telemetry(
+        tmp_path / "b", UsageModel(ProviderUsage(input_tokens=100)), price_table=PRICES
+    )
+    (cost,) = metrics["model.cost"]
+    assert cost.value is None and cost.unavailable_reason.startswith("COST_USAGE_INCOMPLETE: ")
+
+
+def test_no_price_table_means_no_cost_metrics(tmp_path):
+    metrics = run_with_telemetry(
+        tmp_path, UsageModel(ProviderUsage(input_tokens=1, output_tokens=1))
+    )
+    assert not {"model.cost", "model.cache_savings", "model.cache_hit_ratio"} & set(metrics)
+
+
+class DiagnosticModel:
+    def __init__(self):
+        self.inner = UsageModel(None)
+
+    async def next_turn(self, context):
+        return await self.inner.next_turn(context)
+
+    def request_diagnostics(self, task_id):
+        return RequestDiagnostics(
+            estimated_request_tokens=2_000,
+            estimated_stable_prefix_tokens=900,
+            estimated_shared_prefix_tokens=1_500,
+            previous_request_tokens=1_800,
+        )
+
+
+def test_request_diagnostics_from_the_adapter_are_recorded_as_estimates(tmp_path):
+    metrics = run_with_telemetry(tmp_path, DiagnosticModel())
+    (request,) = metrics["model.estimated_request_tokens"]
+    (shared,) = metrics["model.estimated_shared_prefix_tokens"]
+    assert request.value == 2_000.0 and shared.value == 1_500.0

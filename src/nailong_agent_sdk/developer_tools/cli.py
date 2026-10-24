@@ -166,7 +166,9 @@ def _parser() -> argparse.ArgumentParser:
         choices=[item.value for item in SuffixStrategy],
         default=SuffixStrategy.GALLOP.value,
         help="gallop probes O(log d) versions and assumes the defect persists to the newest "
-        "version; scan probes every version back to the first clean one.",
+        "version, and the result reports whether its probes prove the boundary; confirmed gallops "
+        "and then probes the rest of the bad run, exact for any history; scan probes every "
+        "version back to the first clean one.",
     )
 
     outcome = subparsers.add_parser(

@@ -334,7 +334,7 @@ def test_the_profile_integrity_hash_covers_the_trace_id():
 
 
 def test_every_standard_metric_declares_the_instrument_its_unit_and_aggregation_imply():
-    assert len(STANDARD_METRIC_DEFINITIONS) == 35
+    assert len(STANDARD_METRIC_DEFINITIONS) == 40
     for definition in STANDARD_METRIC_DEFINITIONS:
         assert definition.instrument == _instrument_for(definition.unit, definition.aggregation)
     by_id = {definition.metric_id: definition for definition in STANDARD_METRIC_DEFINITIONS}

@@ -165,3 +165,41 @@ def test_a_v1_model_on_the_v2_schema_fails_by_name_and_unknown_schemas_are_rejec
     )
     with pytest.raises(ValueError):
         narrow.predict(store._retention_context(10_000, QUERY))
+
+
+def test_v3_rarity_features_flag_sole_source_identifiers_independently_of_access_counts():
+    from nailong_agent_sdk.memory.utility_calibration import static_prior_weights
+    from nailong_agent_sdk.memory.utility_features_v2 import (
+        FEATURE_NAMES_V3,
+        extract_features_v3,
+    )
+
+    store, root, other, side, shared, solo = chain_store()
+    context = store._retention_context(10_000, QUERY)
+    features = extract_features_v3(context)
+    v2 = extract_features_v2(context)
+    assert all(len(v) == len(FEATURE_NAMES_V3) for v in features.values())
+    assert all(features[i][: len(FEATURE_NAMES_V2)] == v2[i] for i in v2)
+
+    def col(name):
+        return {i: v[FEATURE_NAMES_V3.index(name)] for i, v in features.items()}
+
+    assert col("sole_source_share")[root] == 1.0 and col("sole_source_share")[other] == 0.0
+    assert col("sole_source_failure")[root] == 1.0 and col("sole_source_failure")[side] == 0.0
+    assert col("identifier_density")[root] > col("identifier_density")[side]
+    assert col("max_term_rarity")[root] >= col("term_rarity")[root] > 0.0
+    assert all(
+        0.0 <= value <= 1.0 for name in FEATURE_NAMES_V3[-6:] for value in col(name).values()
+    )
+
+    before = {n: col(n)[root] for n in FEATURE_NAMES_V3[-6:]}
+    store.mark_accessed([root, root, root])
+    after = extract_features_v3(store._retention_context(10_000, QUERY))
+    assert {n: after[root][FEATURE_NAMES_V3.index(n)] for n in before} == before
+
+    masked = extract_features_v3(context, ["rarity_v3"])
+    assert all(masked[root][FEATURE_NAMES_V3.index(n)] == 0.0 for n in before)
+    with pytest.raises(ValueError, match="Unknown feature groups"):
+        extract_features_v3(context, ["nope"])
+    weights = static_prior_weights(PaskCompactionPolicy(), FEATURE_NAMES_V3)
+    assert len(weights) == len(FEATURE_NAMES_V3) and weights[-6:] == [0.0] * 6

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +17,8 @@ from pydantic import TypeAdapter, ValidationError
 from ...foundations.contracts import AgentTurn, ModelBinding
 from ...foundations.detached import run_detached
 from ...foundations.errors import AgentSdkError
+from ...foundations.hashing import estimate_tokens
+from ..cost_model import shared_prefix_tokens
 from ..model import (
     AgentModel,
     ModelCancellationOutcome,
@@ -29,6 +32,7 @@ from ..model import (
     ProviderContinuation,
     ProviderToolResult,
     ProviderUsage,
+    RequestDiagnostics,
     TransportCancellation,
 )
 from .transport import (
@@ -43,6 +47,7 @@ from .transport import (
 
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
 PROVIDER_CANCEL_TIMEOUT_SECONDS = 5.0
+_DIAGNOSTIC_TASK_LIMIT = 128
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,8 @@ class OpenAICompatibleAgentModel(AgentModel):
         self._streaming_transport = streaming_transport or HttpxStreamingJsonTransport()
         self._provider_cancel = provider_cancel
         self._cancellations: dict[str, ModelCancellationOutcome] = {}
+        self._last_requests: OrderedDict[str, str] = OrderedDict()
+        self._diagnostics: OrderedDict[str, RequestDiagnostics] = OrderedDict()
 
     async def next_turn(self, context: ModelContext) -> ModelTurnResponse:
         binding = self._require_binding(context)
@@ -303,31 +310,14 @@ class OpenAICompatibleAgentModel(AgentModel):
                 "MODEL_OUTPUT_SCHEMA_REQUIRED",
                 "OpenAI-compatible model calls require the declared output schema.",
             )
-        # Split by iteration-stability, not by topic: everything here is byte-identical
-        # on every call for this task, so it stays in its own leading message and the
-        # provider's automatic prompt-cache can match this whole prefix turn after
-        # turn. ``project_state``/``iteration`` change every call and must never be
-        # merged into this message, or they would invalidate the cached prefix.
+        tools = _chat_tools(context)
         stable_context = {
             "task_id": context.task.id,
             "task_input": context.task.input,
-            "prompt": context.prompt.model_dump(mode="json"),
+            "prompt": _prompt_without_duplicate_tools(context, tools),
             "output_schema": output_schema,
         }
-        volatile_context = {
-            "project_state": context.project_state.model_dump(mode="json"),
-            "iteration": context.iteration,
-            "recent_observations": [
-                observation.model_dump(mode="json") for observation in context.observations
-            ],
-            "episode_summaries": [episode.model_dump(mode="json") for episode in context.episodes],
-            "compacted_episodes": [
-                stub.model_dump(mode="json") for stub in context.compacted_episodes
-            ],
-            "omitted_compacted_count": (
-                context.projection.omitted_compacted_count if context.projection else 0
-            ),
-        }
+        volatile_context: dict[str, Any] = {}
         if context.semantic_summaries:
             volatile_context["semantic_summaries"] = [
                 item.model_dump(mode="json") for item in context.semantic_summaries
@@ -335,6 +325,20 @@ class OpenAICompatibleAgentModel(AgentModel):
             volatile_context["omitted_summary_count"] = (
                 context.projection.omitted_summary_count if context.projection else 0
             )
+        volatile_context["compacted_episodes"] = [
+            stub.model_dump(mode="json") for stub in context.compacted_episodes
+        ]
+        volatile_context["omitted_compacted_count"] = (
+            context.projection.omitted_compacted_count if context.projection else 0
+        )
+        volatile_context["recent_observations"] = [
+            observation.model_dump(mode="json") for observation in context.observations
+        ]
+        volatile_context["episode_summaries"] = [
+            episode.model_dump(mode="json") for episode in context.episodes
+        ]
+        volatile_context["project_state"] = context.project_state.model_dump(mode="json")
+        volatile_context["iteration"] = context.iteration
         system = (
             "You are an untrusted proposal component in a governed agent runtime. "
             "Use only declared function tools when a tool is needed. If no tool is needed, "
@@ -349,15 +353,14 @@ class OpenAICompatibleAgentModel(AgentModel):
             "stored-result reader such as get_tool_result is available you can fetch the "
             "full result by passing it that handle_id. omitted_compacted_count is how many "
             "still older compacted calls are not listed. Check all of these before choosing "
-            "your next action so you do not repeat a call whose outcome you already have."
+            "your next action so you do not repeat a call whose outcome you already have. "
+            "semantic_summaries, when present, are verified digests of groups of earlier "
+            "calls that are no longer listed individually: they carry facts, decisions and "
+            "unresolved_issues with the episode ids they came from. A digest is derived, "
+            "not evidence; fetch a source handle in source_handles when its detail matters. "
+            "The volatile message lists slowly changing sections first and project_state and "
+            "iteration last."
         )
-        if context.semantic_summaries:
-            system += (
-                " semantic_summaries, when present, are verified digests of groups of earlier "
-                "calls that are no longer listed individually: they carry facts, decisions and "
-                "unresolved_issues with the episode ids they came from. A digest is derived, "
-                "not evidence; fetch a source handle in source_handles when its detail matters."
-            )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(stable_context, separators=(",", ":"))},
@@ -365,14 +368,39 @@ class OpenAICompatibleAgentModel(AgentModel):
         ]
         if context.continuation is not None:
             messages.extend(self._continuation_messages(context.continuation))
-        tools = _chat_tools(context)
         payload: dict[str, Any] = {"model": self._model, "messages": messages, **parameters}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         else:
             payload["response_format"] = {"type": "json_object"}
+        self._observe_request(context.task.id, payload, tools)
         return payload
+
+    def request_diagnostics(self, task_id: str) -> RequestDiagnostics | None:
+        return self._diagnostics.get(task_id)
+
+    def _observe_request(
+        self, task_id: str, payload: Mapping[str, Any], tools: Sequence[Mapping[str, Any]]
+    ) -> None:
+        messages = payload["messages"]
+        text = json.dumps({"tools": list(tools), "messages": messages}, separators=(",", ":"))
+        stable = json.dumps({"tools": list(tools), "messages": messages[:2]}, separators=(",", ":"))
+        previous = self._last_requests.get(task_id)
+        shared = shared_prefix_tokens(previous, text) if previous is not None else 0
+        self._diagnostics[task_id] = RequestDiagnostics(
+            estimated_request_tokens=estimate_tokens(text, str),
+            estimated_stable_prefix_tokens=estimate_tokens(stable, str),
+            estimated_shared_prefix_tokens=shared,
+            previous_request_tokens=(
+                estimate_tokens(previous, str) if previous is not None else None
+            ),
+        )
+        self._last_requests[task_id] = text
+        for registry in (self._last_requests, self._diagnostics):
+            registry.move_to_end(task_id)
+            while len(registry) > _DIAGNOSTIC_TASK_LIMIT:
+                registry.popitem(last=False)
 
     def _continuation_from_response(
         self,
@@ -426,6 +454,28 @@ class OpenAICompatibleAgentModel(AgentModel):
                 )
             messages.append(dict(item))
         return messages
+
+
+def _prompt_without_duplicate_tools(
+    context: ModelContext, tools: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """The prompt as data, with tools already sent as native function tools reduced to names."""
+
+    dump = context.prompt.model_dump(mode="json")
+    declared = [str(tool["function"]["name"]) for tool in tools]
+    if not declared:
+        return dump
+    for section in dump["sections"]:
+        if section["kind"] == "tools" and isinstance(section["value"], list):
+            section["value"] = {
+                "function_tools": declared,
+                "other": [
+                    item
+                    for item in section["value"]
+                    if not (isinstance(item, Mapping) and item.get("name") in declared)
+                ],
+            }
+    return dump
 
 
 def _safe_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:

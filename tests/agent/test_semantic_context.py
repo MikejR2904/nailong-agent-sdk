@@ -344,9 +344,8 @@ def ask(context):
 
 def test_the_chat_request_carries_digests_only_when_there_are_some():
     base = model_context()
-    system, volatile = ask(base)
+    base_system, volatile = ask(base)
     assert "semantic_summaries" not in volatile and "omitted_summary_count" not in volatile
-    assert "semantic_summaries, when present" not in system
     with_digests = replace(
         base,
         semantic_summaries=(view_of(),),
@@ -363,6 +362,7 @@ def test_the_chat_request_carries_digests_only_when_there_are_some():
     assert volatile["semantic_summaries"][0]["source_handles"] == ["result-1"]
     assert volatile["omitted_summary_count"] == 3
     assert "A digest is derived, not evidence" in system
+    assert system == base_system
 
 
 def join_background_workers():

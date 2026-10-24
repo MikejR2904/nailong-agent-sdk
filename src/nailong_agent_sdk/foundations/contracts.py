@@ -349,6 +349,7 @@ class CompactedEpisodeStub(StrictModel):
     status: Literal["succeeded", "failed", "blocked"] | None = None
     iteration: int | None = Field(default=None, ge=1)
     handle_id: str | None = None
+    restore_tokens: int | None = Field(default=None, ge=0)
 
 
 class ModelObservation(StrictModel):

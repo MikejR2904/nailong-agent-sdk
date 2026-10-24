@@ -194,3 +194,53 @@ def test_reports_aggregate_paired_comparisons_and_state_the_synthetic_banner(tin
     text = render(results, "deadbeef", "unit")
     assert "SYNTHETIC ORACLE EVIDENCE ONLY" in text and "deadbeef" in text
     assert all(not math.isnan(row["mean_quality"]) for row in table)
+
+
+def test_the_advantage_dataset_negates_static_only_items_so_utility_differences_are_exact():
+    from dfl_bench.experiment import evaluate_candidates
+    from dfl_bench.generalize.advantage import (
+        Decision,
+        accepts,
+        advantage_dataset,
+        static_selections,
+    )
+    from dfl_bench.oracle import SyntheticOracleExecutor
+    from dfl_bench.selection import Selection
+
+    from nailong_agent_sdk.memory.utility_models import LinearRankingModel
+
+    world = build_world(6, templates=2, per_template=2)[:4]
+    cache = SchemaCache(world, FEATURE_SCHEMA_VERSION)
+    outcomes = evaluate_candidates(world, SyntheticOracleExecutor(), 8, 0)
+    static = static_selections(world)
+    data = advantage_dataset(
+        cache, outcomes, static, [i.instance_id for i in world], PreferencePolicy()
+    )
+    assert data.terms
+    model = LinearRankingModel([0.1 * (k + 1) for k in range(cache.dim)])
+    scores = [model.score(item) for item in data.items]
+    term = data.terms[0]
+    instance_id = next(
+        i.instance_id
+        for i in world
+        for o in outcomes
+        if o.instance_id == i.instance_id and o.selection != static[i.instance_id]
+    )
+    assert sum(scores[k] for k in term.candidates[0]) == pytest.approx(
+        sum(scores[k] for k in term.candidates[0])
+    )
+    features = cache.get(instance_id)
+    other = next(
+        o for o in outcomes if o.instance_id == instance_id and o.selection != static[instance_id]
+    )
+    expected = sum(model.score(features[e]) for e in other.selection - static[instance_id]) - sum(
+        model.score(features[e]) for e in static[instance_id] - other.selection
+    )
+    matches = [sum(scores[k] for k in t.candidates[0]) for t in data.terms]
+    assert any(m == pytest.approx(expected) for m in matches)
+
+    same = Selection(frozenset({"a"}), "s")
+    assert not accepts(Decision(same, same, 9.0, 0.0), 0.0, 0.0)
+    better = Selection(frozenset({"b"}), "l")
+    assert accepts(Decision(same, better, 1.0, 0.2), 2.0, 0.5)
+    assert not accepts(Decision(same, better, 1.0, 0.6), 2.0, 0.0)

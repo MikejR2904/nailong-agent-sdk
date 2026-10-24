@@ -16,6 +16,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 176 | deny-by-default capability policy |
 | [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 367 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/result_cache.py`](#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
 | [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
@@ -350,6 +351,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - **class `HarnessToolExecutor`** *(class; bases: ToolExecutor)* - Bridges BaseAgent tool calls into policy-governed typed harness actions. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `HarnessToolExecutor.__init__(registry: HarnessToolRegistry, context: HarnessExecutionContext) -> None` - Stores the registry and context and builds an internal `CoreToolDispatcher` from the context, limiting reads to the role's read scope.
   - `HarnessToolExecutor.execute(tool: ToolDefinition, invocation: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Resolve the tool, collect requested write paths, look up any approval for the capability, evaluate policy; blocked decisions return BLOCKED with a typed failure (`TOOL_APPROVAL_REQUIRED` naming the approval id, filing the request when one is needed, or `TOOL_DENIED_BY_POLICY`), and a tool the registry does not know returns FAILED `HARNESS_TOOL_UNKNOWN`; otherwise run the tool and convert exceptions into a failed result with `HARNESS_TOOL_EXECUTION_FAILED`. The call that runs also carries the writer fields, so what it writes is attributed to the agent, run, tool, call and iteration. · *Called within this file by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
+  - `HarnessToolExecutor._invoke(registered: RegisteredTool, tool: ToolDefinition, invocation: ToolInvocationContext) -> ToolExecutionResult` - Runs the registered tool and maps an exception to a failed result with `HARNESS_TOOL_EXECUTION_FAILED`; `execute` calls it after policy allowed the call and around the optional result cache.
   - `HarnessToolExecutor._approval_for(capability: str)` - The approval registered for a capability in this context, else the latest request this node filed for it, so a decision made after the block is found. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
   - `HarnessToolExecutor._execute_registered(tool: RegisteredTool, arguments: dict[str, Any], trace_parent: str | None=None, writer: dict[str, Any] | None=None) -> Any` *(async)* - Dispatch chain: custom handler -> `read_spec` (only the plan task's scope pointer) -> `request_elastic_node` (always an error here: it only works for a graph node run through `GraphAgentExecutor`) -> `run_registered_command` -> core tool names -> authorization-checked artifact read/grep/diff -> command-template process tools. A custom handler receives a copy of the context carrying the call's `trace_parent`. It receives the `writer` fields built by `execute` (agent identity, agent run id, role, tool, call id, iteration) and hands them to the core tools. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
   - `HarnessToolExecutor._requested_paths(tool_name: str, arguments: dict[str, Any]) -> list[str]` *(staticmethod)* - Write-style tools declare their `path` argument for the path-containment check. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
@@ -359,6 +361,31 @@ Everything between a model's tool request and the real world. `tools.py` defines
 **Algorithms & invariants.** `read_artifact` and `grep_artifact` check the plan-task authorization here and then run the implementation in `core/services.py`; `diff_declared_artifacts` has its own authorization (including occurrence proof) here and calls `ArtifactStore.diff`.
 
 *Module-level names:* `HarnessToolHandler`
+
+---
+
+### `tools/result_cache.py` - opt-in cache of successful results of read-only tools
+
+*160 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py` · used by: `tools/registry.py` · not re-exported at the package root*
+
+**Role in the workflow.** Lets a host replay the result of an identical read-only call instead of running the tool again. The executor consults it only after capability policy allowed the call, and any run of a tool that can change state clears it.
+
+**Contents**
+
+- **class `CacheableTool`** *(class)* - How long a tool's result may be replayed (time-to-live) and, optionally, within how many iterations a repeat gets a reference to the earlier call instead of the text.
+- **class `ToolCachePolicy`** *(class)* - The tools the host chose to cache; empty means no caching.
+- **class `CachedResult`** *(class)* - A stored result with when, by which call and in which iteration it was stored, and its estimated tokens.
+- **class `CacheStats`** *(class)* - Hits, references, misses, stores, expirations, invalidations, evictions, replayed tokens and the reason of each invalidation.
+- **class `ToolResultCache`** *(class)* - Bounded least-recently-used cache keyed by tool name and canonical arguments.
+  - `ToolResultCache.__init__(self, policy: ToolCachePolicy, *, clock: Callable[[], float]=time.monotonic, max_entries: int=256) -> None` - Takes the policy, an injectable clock and an entry bound of at least one.
+  - `ToolResultCache.cacheable(self, tool_name: str) -> bool` - Whether the policy lists the tool.
+  - `ToolResultCache.stats(self) -> CacheStats` - The running counters.
+  - `ToolResultCache._key(tool_name: str, arguments: dict[str, Any]) -> str` - Hash of the tool name and canonical arguments (argument order is irrelevant).
+  - `ToolResultCache.lookup(self, tool_name: str, arguments: dict[str, Any], *, call_id: str, iteration: int) -> ToolExecutionResult | None` - The earlier result (a copy), a reference to it inside the reference window, or None on a miss or expiry; an unlisted tool raises `ValueError`.
+  - `ToolResultCache.store(self, tool_name: str, arguments: dict[str, Any], result: ToolExecutionResult, *, call_id: str, iteration: int) -> bool` - Stores a successful result of a listed tool; anything else is refused and returns False.
+  - `ToolResultCache.invalidate(self, reason: str) -> int` - Drops every entry and records why; returns how many were dropped.
+
+**Algorithms & invariants.** Only successful results of read-only tools the host listed are stored; mutating, process and destructive tools invalidate all entries; entries expire after their time-to-live. Changes made outside the run are invisible to the cache, so the time-to-live is the bound on staleness.
 
 ---
 

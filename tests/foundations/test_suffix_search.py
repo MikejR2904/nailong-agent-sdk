@@ -106,3 +106,33 @@ def test_an_error_in_the_check_is_not_swallowed():
 
     with pytest.raises(RuntimeError, match="cannot read version 4"):
         find_suffix_start(5, broken)
+
+
+def newest_bad_run_start(verdicts):
+    index = len(verdicts)
+    while index > 0 and verdicts[index - 1]:
+        index -= 1
+    return index
+
+
+def test_confirmed_is_exact_on_every_short_history_including_bad_good_bad_ones():
+    for count in range(1, 11):
+        for mask in range(1 << count):
+            verdicts = [bool(mask >> i & 1) for i in range(count)]
+            result = find_suffix_start(
+                count, lambda index, v=verdicts: v[index], strategy=SuffixStrategy.CONFIRMED
+            )
+            expected = newest_bad_run_start(verdicts)
+            assert result.start == (None if expected == count else expected), verdicts
+            assert result.exact
+
+
+def test_gallop_can_misplace_a_non_monotone_history_and_says_it_is_not_proven():
+    verdicts = [False] * 4 + [True, True, False] + [True] * 5
+    result = find_suffix_start(len(verdicts), lambda index: verdicts[index], strategy=GALLOP)
+    assert result.start != newest_bad_run_start(verdicts) and not result.exact
+
+
+def test_scan_is_always_exact_and_a_clean_head_is_proven_by_one_probe():
+    assert find_suffix_start(5, lambda index: index >= 2, strategy=SCAN).exact
+    assert find_suffix_start(50, lambda index: False, strategy=GALLOP).exact
