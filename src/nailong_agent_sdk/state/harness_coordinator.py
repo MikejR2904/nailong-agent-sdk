@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Concatenate
 
 from ..observability.telemetry_models import DecisionSource
-from ..tools.approvals import ApprovalRegistry, ApprovalRequest, ApprovalStatus
+from ..tools.approvals import (
+    ApprovalEventSink,
+    ApprovalRegistry,
+    ApprovalRequest,
+    ApprovalStatus,
+)
 from .coordination_records import RunRecord, _hash_run
 from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .graph import StateGraph, resolve_parallelism
@@ -67,8 +72,14 @@ class HarnessCoordinator:
     lateral-state persistence channel.
     """
 
-    def __init__(self, run_root: Path) -> None:
+    def __init__(
+        self,
+        run_root: Path,
+        *,
+        approval_sink: ApprovalEventSink | None = None,
+    ) -> None:
         self._store = RunStateStore(run_root)
+        self._approval_sink = approval_sink
         self._validator = PlanValidator()
         self._graphs: dict[str, StateGraph] = {}
         self._approvals: dict[str, ApprovalRegistry] = {}
@@ -293,6 +304,16 @@ class HarnessCoordinator:
     ) -> ApprovalRequest:
         return self.approvals(run_id).submit(approval_id, approved, reason, source=source)
 
+    def revoke_approval(
+        self,
+        run_id: str,
+        approval_id: str,
+        reason: str,
+        *,
+        source: DecisionSource | None = None,
+    ) -> ApprovalRequest:
+        return self.approvals(run_id).revoke(approval_id, reason, source=source)
+
     def approvals(self, run_id: str) -> ApprovalRegistry:
         if not self._store.exists(run_id):
             raise ValueError(f'Run "{run_id}" is unknown.')
@@ -333,7 +354,9 @@ class HarnessCoordinator:
     def _approval_registry(self, run_id: str) -> ApprovalRegistry:
         registry = self._approvals.get(run_id)
         if registry is None:
-            registry = ApprovalRegistry(self._store.approvals_path(run_id))
+            registry = ApprovalRegistry(
+                self._store.approvals_path(run_id), sink=self._approval_sink
+            )
             self._approvals[run_id] = registry
         return registry
 

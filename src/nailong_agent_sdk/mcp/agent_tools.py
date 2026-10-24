@@ -171,6 +171,50 @@ def register_agent_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
+    @ctx.tool(server, "revoke_task_approval", exclusive=False, operation=McpOperation.APPROVAL)
+    def revoke_task_approval(
+        task_id: str,
+        approval_id: str,
+        reason: str,
+        request_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
+    ) -> dict[str, Any]:
+        """Withdraw a pending or approved approval request of a running agent task, so that
+        no later call is authorized by it and a task waiting on it stops.
+
+        An approver credential must send `request_hash` (from `list_task_approvals`) and
+        `issued_at_utc`; the host credential cannot revoke."""
+
+        def current_digest() -> str | None:
+            for item in ctx.task_runner.approvals(task_id):
+                if item.approval_id == approval_id:
+                    return approval_request_digest(item)
+            return None
+
+        try:
+            with ctx.gate.decide(
+                "revoke_task_approval",
+                subject=f'approval request "{approval_id}" of task "{task_id}"',
+                approved=False,
+                binding_field="request_hash",
+                expected=request_hash,
+                actual=current_digest,
+                issued_at_utc=issued_at_utc,
+                label=approver_label,
+                reason=reason,
+            ) as receipt:
+                request = ctx.task_runner.revoke_approval(
+                    task_id, approval_id, reason, source=receipt.source()
+                )
+            return {
+                "ok": True,
+                "approval": request.model_dump(mode="json"),
+                **receipt.fields(),
+            }
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
     @ctx.tool(server, "list_task_files", exclusive=False, operation=McpOperation.READ)
     def list_task_files(
         task_id: str,

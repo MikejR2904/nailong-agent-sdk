@@ -97,6 +97,51 @@ def register_run_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
+    @ctx.tool(server, "revoke_run_approval", operation=McpOperation.APPROVAL)
+    def revoke_run_approval(
+        run_id: str,
+        approval_id: str,
+        reason: str,
+        request_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
+    ) -> dict[str, Any]:
+        """Withdraw a pending or approved approval request of a graph run so that no later call
+        is authorized by it.
+
+        An approver credential must send `request_hash` (from `list_run_approvals`) and
+        `issued_at_utc`; the host credential cannot revoke. The revocation is recorded in the
+        decision stream and as an `approval.revoked` event of the run."""
+
+        def current_digest() -> str | None:
+            request = ctx.coordinator.approvals(run_id).get(approval_id)
+            if request is None or request.run_id != run_id:
+                return None
+            return approval_request_digest(request)
+
+        try:
+            with ctx.gate.decide(
+                "revoke_run_approval",
+                subject=f'approval request "{approval_id}" of run "{run_id}"',
+                approved=False,
+                binding_field="request_hash",
+                expected=request_hash,
+                actual=current_digest,
+                issued_at_utc=issued_at_utc,
+                label=approver_label,
+                reason=reason,
+            ) as receipt:
+                approval = ctx.coordinator.revoke_approval(
+                    run_id, approval_id, reason, source=receipt.source()
+                )
+            return {
+                "ok": True,
+                "approval": approval.model_dump(mode="json"),
+                **receipt.fields(),
+            }
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
     @ctx.tool(server, "resume_run")
     def resume_run(run_id: str) -> dict[str, Any]:
         """Integrity-check persisted graph state before returning it for scheduler resumption."""

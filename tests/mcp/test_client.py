@@ -68,7 +68,7 @@ def test_http_connection_to_the_sdk_server_works_with_the_installed_mcp(tmp_path
 
         statuses, reply = arun(scenario())
         sdk = statuses["sdk"]
-        assert sdk.state is McpConnectionState.CONNECTED and len(sdk.tools) == 55, sdk.detail
+        assert sdk.state is McpConnectionState.CONNECTED and len(sdk.tools) == 57, sdk.detail
         assert sdk.auth_configured is True and '"ok"' in reply
         anonymous = statuses["anonymous"]
         assert anonymous.state is McpConnectionState.FAILED and anonymous.auth_configured is False

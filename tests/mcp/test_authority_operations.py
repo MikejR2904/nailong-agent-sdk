@@ -19,6 +19,8 @@ def test_the_host_credential_cannot_decide_an_approval_and_nothing_changes(harne
 def test_every_approval_tool_refuses_the_host_credential(harness):
     arguments = {
         "submit_approval": {"run_id": "r", "approval_id": "a", "approved": True},
+        "revoke_run_approval": {"run_id": "r", "approval_id": "a", "reason": "x"},
+        "revoke_task_approval": {"task_id": "t", "approval_id": "a", "reason": "x"},
         "decide_task_approval": {"task_id": "t", "approval_id": "a", "approved": True},
         "approve_controller_plan": {"controller_id": "c", "approved": True},
         "approve_orchestration": {"orchestration_id": "o", "approved": True},
@@ -113,8 +115,10 @@ def test_a_tool_that_is_not_classified_is_closed_to_the_approver(tmp_path):
         "get_run_state",
         "list_run_approvals",
         "submit_approval",
+        "revoke_run_approval",
         "list_task_approvals",
         "decide_task_approval",
+        "revoke_task_approval",
         "list_task_files",
         "read_task_file",
         "get_project_state",

@@ -10,15 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from ..foundations.contracts import AgentFailure, ToolDefinition, ToolExecutionResult
-from ..foundations.hashing import canonical_hash
 from ..foundations.identifiers import require_unique
 from ..memory.context_projection import ToolResultJournal
 from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
 from ..state.planning import PlanTask
-from .approvals import ApprovalRegistry, ApprovalRequest, ApprovalStatus
+from .approvals import ApprovalRegistry
 from .artifacts import ArtifactStore
+from .authorization import CapabilityToolAuthorizer
 from .core import CoreToolDispatcher, CoreToolServices, HumanQuestionResponder, WebSearchClient
-from .policy import CapabilityPolicy, PolicyDecision, SideEffectClass
+from .policy import CapabilityPolicy, SideEffectClass
 from .result_cache import ToolResultCache
 from .supervisor import ProcessExecutionRecord, ProcessExitKind, ProcessSupervisor
 from .tools import ToolExecutor, ToolInvocationContext
@@ -138,6 +138,7 @@ class HarnessToolExecutor(ToolExecutor):
         self._registry = registry
         self._context = context
         self._cache = cache
+        self._authorizer = CapabilityToolAuthorizer(registry.resolve, context)
         self._core = CoreToolDispatcher(
             CoreToolServices(
                 root=context.run_root,
@@ -158,102 +159,32 @@ class HarnessToolExecutor(ToolExecutor):
             )
         )
 
+    @property
+    def authorizer(self) -> CapabilityToolAuthorizer:
+        return self._authorizer
+
     async def execute(
         self,
         tool: ToolDefinition,
         invocation: ToolInvocationContext,
     ) -> ToolExecutionResult:
+        authorization = invocation.authorization
+        if (
+            authorization is None
+            or authorization.issuer is not self._authorizer
+            or authorization.tool != tool.name
+            or authorization.call_id != invocation.call.id
+        ):
+            authorization = self._authorizer.authorize(tool, invocation)
+        if not authorization.allowed:
+            if authorization.result is None:
+                raise RuntimeError(
+                    f'The authorizer refused tool "{tool.name}" without a result to return.'
+                )
+            return authorization.result
         registered = self._registry.resolve(tool.name)
         if registered is None:
-            failure = AgentFailure(
-                code="HARNESS_TOOL_UNKNOWN",
-                message=f'No harness tool named "{tool.name}" exists.',
-                details={"tool": tool.name},
-            )
-            return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
-        requested_paths = self._requested_paths(tool.name, invocation.call.arguments)
-        single_use = registered.capability in self._context.single_use_capabilities
-        digest = (
-            canonical_hash({"tool": tool.name, "arguments": invocation.call.arguments})
-            if self._context.bind_approvals_to_arguments or single_use
-            else None
-        )
-        approval = self._approval_for(registered.capability, digest)
-        foreign = self._foreign_approval(approval)
-        if foreign is not None:
-            return ToolExecutionResult(
-                status="blocked",
-                error=foreign,
-                failure=AgentFailure(
-                    code="TOOL_DENIED_BY_POLICY",
-                    message=foreign,
-                    details={"tool": tool.name, "capability": registered.capability},
-                ),
-            )
-        decision = self._context.policy.evaluate(
-            role=self._context.role,
-            capability=registered.capability,
-            side_effect=registered.side_effect,
-            run_root=self._context.run_root,
-            requested_paths=requested_paths,
-            approval=approval,
-            arguments_digest=digest,
-        )
-        if (
-            decision.allowed
-            and approval is not None
-            and registered.side_effect is not (SideEffectClass.READ_ONLY)
-        ):
-            if not self._context.approvals.consume(approval.approval_id):
-                decision = PolicyDecision(
-                    allowed=False,
-                    reason=(
-                        f'Approval "{approval.approval_id}" for capability '
-                        f'"{registered.capability}" was used up or withdrawn before this call '
-                        "ran; a new approval is required."
-                    ),
-                    approval_required=True,
-                )
-        if not decision.allowed:
-            if decision.approval_required:
-                request = (
-                    approval
-                    if approval is not None and approval.status is ApprovalStatus.PENDING
-                    else self._context.approvals.request(
-                        self._context.run_id,
-                        self._context.node_id,
-                        registered.capability,
-                        decision.reason,
-                        arguments_digest=digest,
-                        single_use=single_use,
-                    )
-                )
-                return ToolExecutionResult(
-                    status="blocked",
-                    output={
-                        "approval_id": request.approval_id,
-                        "capability": registered.capability,
-                    },
-                    error=decision.reason,
-                    failure=AgentFailure(
-                        code="TOOL_APPROVAL_REQUIRED",
-                        message=decision.reason,
-                        details={
-                            "tool": tool.name,
-                            "capability": registered.capability,
-                            "approval_id": request.approval_id,
-                        },
-                    ),
-                )
-            return ToolExecutionResult(
-                status="blocked",
-                error=decision.reason,
-                failure=AgentFailure(
-                    code="TOOL_DENIED_BY_POLICY",
-                    message=decision.reason,
-                    details={"tool": tool.name, "capability": registered.capability},
-                ),
-            )
+            raise RuntimeError(f'Tool "{tool.name}" was authorized but is no longer registered.')
 
         cache = self._cache
         cacheable = (
@@ -314,25 +245,6 @@ class HarnessToolExecutor(ToolExecutor):
                 details={"tool": tool.name, "error_type": type(error).__name__},
             )
             return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
-
-    def _approval_for(self, capability: str, arguments_digest: str | None = None):
-        approval_id = self._context.approval_ids_by_capability.get(capability)
-        if approval_id:
-            return self._context.approvals.get(approval_id)
-        return self._context.approvals.find(
-            self._context.run_id, self._context.node_id, capability, arguments_digest
-        )
-
-    def _foreign_approval(self, approval: ApprovalRequest | None) -> str | None:
-        if approval is None:
-            return None
-        if approval.run_id == self._context.run_id and approval.node_id == self._context.node_id:
-            return None
-        return (
-            f'Approval "{approval.approval_id}" belongs to run "{approval.run_id}" node '
-            f'"{approval.node_id}", not to run "{self._context.run_id}" node '
-            f'"{self._context.node_id}"; an approval cannot be used by another node.'
-        )
 
     async def _execute_registered(
         self,
@@ -436,13 +348,6 @@ class HarnessToolExecutor(ToolExecutor):
             return payload
 
         raise ValueError(f'No implementation is registered for "{tool.name}".')
-
-    @staticmethod
-    def _requested_paths(tool_name: str, arguments: dict[str, Any]) -> list[str]:
-        if tool_name in {"write_draft", "edit_draft", "notebook_edit"}:
-            path = arguments.get("path")
-            return [path] if isinstance(path, str) else []
-        return []
 
 
 def _process_failure_message(name: str, process: ProcessExecutionRecord) -> str:

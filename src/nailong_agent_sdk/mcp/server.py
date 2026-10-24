@@ -27,6 +27,7 @@ from ..state.controller_runtime import ControllerRuntime
 from ..state.harness_coordinator import HarnessCoordinator
 from ..state.planning import PlanValidator
 from ..state.project_state_store import FileProjectStateStore
+from ..tools.approval_audit import TelemetryApprovalSink
 from ._shared import McpContext
 from .arguments import ToolArgumentGuard
 from .authority import McpAuthorityPolicy
@@ -62,7 +63,10 @@ def create_mcp_server(
         checkpointer.require_outside(resolved_run_root.resolve())
     telemetry = TelemetryStore(resolved_run_root)
     register_standard_metric_definitions(telemetry)
-    coordinator = HarnessCoordinator(resolved_run_root)
+    coordinator = HarnessCoordinator(
+        resolved_run_root,
+        approval_sink=TelemetryApprovalSink(telemetry),
+    )
     project_states = FileProjectStateStore(resolved_run_root)
     controller_runtime = ControllerRuntime(
         resolved_run_root,

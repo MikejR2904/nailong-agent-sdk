@@ -50,6 +50,8 @@ EXPECTED_TOOLS = {
     "request_lateral_dependency",
     "resolve_project_question",
     "resume_run",
+    "revoke_run_approval",
+    "revoke_task_approval",
     "run_agent_task",
     "start_run",
     "submit_approval",
@@ -68,7 +70,7 @@ def test_server_exposes_exactly_the_documented_tools(server):
 
     tools = asyncio.run(listing())
     names = {t.name for t in tools}
-    assert names == EXPECTED_TOOLS and len(tools) == 55
+    assert names == EXPECTED_TOOLS and len(tools) == 57
     assert all(t.description and t.input_schema for t in tools)
 
 

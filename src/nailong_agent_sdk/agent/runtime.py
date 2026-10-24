@@ -35,7 +35,7 @@ from ..state.project_state_models import ProjectStateProjectionPolicy
 from ..state.project_state_store import FileProjectStateStore
 from ..tools.artifact_anchor import ArtifactLogAnchor, anchor_artifact_log, artifact_anchor_name
 from ..tools.artifacts import ArtifactStore
-from ..tools.tools import ToolExecutor
+from ..tools.tools import ToolAuthorizer, ToolExecutor
 from .base_agent import AgentWatchdogPolicy, BaseAgent, PostToolHook, PreToolHook
 from .model import AgentModel
 from .retention import RunRetention
@@ -184,6 +184,8 @@ class AgentRuntimeServices:
         model: AgentModel,
         *,
         tool_executor: ToolExecutor | None = None,
+        tool_authorizer: ToolAuthorizer | None = None,
+        require_tool_authorization: bool = False,
         verification_gates: VerificationGateRegistry | None = None,
         pre_tool_hooks: Sequence[PreToolHook] = (),
         post_tool_hooks: Sequence[PostToolHook] = (),
@@ -205,6 +207,8 @@ class AgentRuntimeServices:
             definition,
             model,
             tool_executor=tool_executor,
+            tool_authorizer=tool_authorizer,
+            require_tool_authorization=require_tool_authorization,
             verification_gates=verification_gates,
             pre_tool_hooks=pre_tool_hooks,
             post_tool_hooks=post_tool_hooks,

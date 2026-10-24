@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
@@ -35,13 +36,26 @@ from ..observability.telemetry_models import (
 from ..observability.trace_context import new_trace_id, parse_traceparent
 from ..state.planning import ModelTier, PlanTask
 from ..state.project_state_models import ProjectStateProjectionPolicy
-from ..tools.approvals import ApprovalRegistry, ApprovalRequest, ApprovalStatus
+from ..tools.approval_audit import TelemetryApprovalSink
+from ..tools.approvals import (
+    ApprovalEventKind,
+    ApprovalEventSink,
+    ApprovalRegistry,
+    ApprovalRequest,
+    ApprovalStatus,
+)
 from ..tools.artifacts import ArtifactStore
 from ..tools.core import DuckDuckGoHtmlClient, core_tool_definitions
 from ..tools.policy import CapabilityGrant, CapabilityPolicy
 from ..tools.registry import HarnessExecutionContext, HarnessToolExecutor, HarnessToolRegistry
 from ..tools.supervisor import CommandTemplate, ProcessSupervisor
-from ..tools.tools import InMemoryTaskToolExecutor, ToolExecutor, ToolInvocationContext
+from ..tools.tools import (
+    InMemoryTaskToolExecutor,
+    ToolAuthorization,
+    ToolAuthorizer,
+    ToolExecutor,
+    ToolInvocationContext,
+)
 from .base_agent import AgentWatchdogPolicy, CancellationToken, PostToolHook, PreToolHook
 from .model import AgentModel, FailoverAgentModel, ScriptedModel
 from .openai_compatible import (
@@ -79,16 +93,25 @@ class PermissionOptions(StrictModel):
     approved_capabilities: list[str] = Field(default_factory=list)
     approval_mode: Literal["block", "wait"] = "block"
     approval_timeout_seconds: float = Field(default=300.0, gt=0, le=86_400)
+    single_use_capabilities: list[str] = Field(default_factory=list)
+    bind_approvals_to_arguments: bool = False
 
     @model_validator(mode="after")
     def lists_are_consistent(self) -> PermissionOptions:
         require_unique(self.capabilities, "permissions.capabilities")
         require_unique(self.allowed_paths, "permissions.allowed_paths")
         require_unique(self.approved_capabilities, "permissions.approved_capabilities")
+        require_unique(self.single_use_capabilities, "permissions.single_use_capabilities")
         ungranted = sorted(set(self.approved_capabilities) - set(self.capabilities))
         if ungranted:
             raise ValueError(
                 f"permissions.approved_capabilities {ungranted} must also be listed in "
+                "permissions.capabilities."
+            )
+        unlisted = sorted(set(self.single_use_capabilities) - set(self.capabilities))
+        if unlisted:
+            raise ValueError(
+                f"permissions.single_use_capabilities {unlisted} must also be listed in "
                 "permissions.capabilities."
             )
         return self
@@ -166,10 +189,13 @@ class TaskRunOptions(RuntimeOptions):
 
 
 class _RunToken:
-    def __init__(self, outer: CancellationToken | None) -> None:
+    def __init__(
+        self, outer: CancellationToken | None, sink: ApprovalEventSink | None = None
+    ) -> None:
         self._event = threading.Event()
         self._outer = outer
-        self.approvals = ApprovalRegistry()
+        self.approvals = ApprovalRegistry(sink=sink)
+        self.authorizer: ToolAuthorizer | None = None
         self.artifacts: ArtifactStore | None = None
 
     def cancel(self) -> None:
@@ -227,6 +253,22 @@ class AgentTaskRunner:
             )
         return registry.submit(approval_id, approved, reason, source=source)
 
+    def revoke_approval(
+        self,
+        task_id: str,
+        approval_id: str,
+        reason: str,
+        *,
+        source: DecisionSource | None = None,
+    ) -> ApprovalRequest:
+        registry = self._running_token(task_id).approvals
+        request = registry.get(approval_id)
+        if request is None or request.run_id != task_id:
+            raise TaskOptionError(
+                f'Agent task "{task_id}" has no approval request "{approval_id}".'
+            )
+        return registry.revoke(approval_id, reason, source=source)
+
     def _running_token(self, task_id: str) -> _RunToken:
         with self._running_lock:
             token = self._running.get(task_id)
@@ -252,7 +294,13 @@ class AgentTaskRunner:
         self._require_process_options_allowed(options)
         self._require_preapprovals_for(options, approved_by, approval_reason)
         live = model is not None or options.is_live
-        token = _RunToken(cancellation)
+        token = _RunToken(
+            cancellation,
+            TelemetryApprovalSink(
+                self._services.telemetry,
+                kinds=_AUDITED_APPROVAL_EVENTS,
+            ),
+        )
         with self._running_lock:
             if task.id in self._running:
                 raise TaskOptionError(f'Agent task "{task.id}" is already running.')
@@ -299,6 +347,8 @@ class AgentTaskRunner:
                 run_definition,
                 agent_model,
                 tool_executor=executor,
+                tool_authorizer=token.authorizer,
+                require_tool_authorization=token.authorizer is not None,
                 verification_gates=verification_gates,
                 pre_tool_hooks=pre_tool_hooks,
                 post_tool_hooks=post_tool_hooks,
@@ -452,8 +502,11 @@ class AgentTaskRunner:
         approvals = token.approvals
         approval_ids: dict[str, str] = {}
         reason = approval_reason or _RUN_OPTIONS_REASON
+        single_use = frozenset(permissions.single_use_capabilities)
         for capability in permissions.approved_capabilities:
-            request = approvals.request(task.id, task.id, capability, reason)
+            request = approvals.request(
+                task.id, task.id, capability, reason, single_use=capability in single_use
+            )
             approvals.submit(
                 request.approval_id, True, reason, source=approved_by or _RUN_OPTIONS_SOURCE
             )
@@ -494,11 +547,15 @@ class AgentTaskRunner:
             approval_ids_by_capability=approval_ids,
             result_journal=self._services.result_journal,
             search_client=DuckDuckGoHtmlClient() if options.web_search else None,
+            bind_approvals_to_arguments=permissions.bind_approvals_to_arguments,
+            single_use_capabilities=single_use,
         )
-        executor: ToolExecutor = HarnessToolExecutor(registry, context)
+        harness = HarnessToolExecutor(registry, context)
+        executor: ToolExecutor = harness
+        token.authorizer = harness.authorizer
         if permissions.approval_mode == "wait":
-            executor = _ApprovalWaitingExecutor(
-                executor,
+            token.authorizer = _ApprovalWaitingAuthorizer(
+                harness.authorizer,
                 approvals,
                 permissions.approval_timeout_seconds,
                 lambda event_type, status, payload, authority: self._emit(
@@ -615,6 +672,14 @@ class AgentTaskRunner:
 
 
 _APPROVAL_POLL_SECONDS = 0.05
+_AUDITED_APPROVAL_EVENTS = frozenset(
+    {
+        ApprovalEventKind.REVOKED,
+        ApprovalEventKind.CONSUMED,
+        ApprovalEventKind.EXPIRED,
+        ApprovalEventKind.DENIED,
+    }
+)
 _RUN_OPTIONS_SOURCE = DecisionSource(
     authority=TelemetryAuthority.DETERMINISTIC, identifier="run-options"
 )
@@ -634,10 +699,12 @@ def _decision_payload(request: ApprovalRequest) -> dict[str, Any]:
     }
 
 
-class _ApprovalWaitingExecutor(ToolExecutor):
+class _ApprovalWaitingAuthorizer:
+    """Hold a call that needs an approval until it is decided, then authorize it again."""
+
     def __init__(
         self,
-        inner: ToolExecutor,
+        inner: ToolAuthorizer,
         approvals: ApprovalRegistry,
         timeout_seconds: float,
         record: Callable[[str, str, dict[str, Any], TelemetryAuthority], None],
@@ -647,16 +714,19 @@ class _ApprovalWaitingExecutor(ToolExecutor):
         self._timeout_seconds = timeout_seconds
         self._record = record
 
-    async def execute(
+    async def authorize(
         self, tool: ToolDefinition, invocation: ToolInvocationContext
-    ) -> ToolExecutionResult:
-        result = await self._inner.execute(tool, invocation)
+    ) -> ToolAuthorization:
+        verdict = self._inner.authorize(tool, invocation)
+        if verdict.allowed or verdict.result is None:
+            return verdict
+        result = verdict.result
         approval_id = _awaited_approval_id(result)
         if approval_id is None:
-            return result
+            return verdict
         request = self._approvals.get(approval_id)
         if request is None:
-            return result
+            return verdict
         self._record(
             "approval.requested",
             "pending",
@@ -674,23 +744,26 @@ class _ApprovalWaitingExecutor(ToolExecutor):
             request = self._expire(request)
             if request.decision_reason == self._expiry_reason:
                 self._record_decision(request, "timed-out")
-                return result.model_copy(
-                    update={
-                        "error": f'Approval "{approval_id}" for capability '
-                        f'"{request.capability}" was not decided within '
-                        f"{self._timeout_seconds:g}s."
-                    }
+                return self._refused(
+                    verdict,
+                    f'Approval "{approval_id}" for capability '
+                    f'"{request.capability}" was not decided within '
+                    f"{self._timeout_seconds:g}s.",
                 )
         self._record_decision(request, request.status.value)
         if request.status is ApprovalStatus.APPROVED:
-            return await self._inner.execute(tool, invocation)
+            return self._inner.authorize(tool, invocation)
         detail = f": {request.decision_reason}" if request.decision_reason else "."
-        return result.model_copy(
-            update={
-                "error": f'Approval "{approval_id}" for capability "{request.capability}" '
-                f"was rejected{detail}"
-            }
+        return self._refused(
+            verdict,
+            f'Approval "{approval_id}" for capability "{request.capability}" '
+            f"was {request.status.value}{detail}",
         )
+
+    @staticmethod
+    def _refused(verdict: ToolAuthorization, error: str) -> ToolAuthorization:
+        assert verdict.result is not None
+        return replace(verdict, result=verdict.result.model_copy(update={"error": error}))
 
     @property
     def _expiry_reason(self) -> str:
@@ -698,8 +771,8 @@ class _ApprovalWaitingExecutor(ToolExecutor):
 
     def _expire(self, request: ApprovalRequest) -> ApprovalRequest:
         try:
-            return self._approvals.submit(
-                request.approval_id, False, self._expiry_reason, source=_EXPIRY_SOURCE
+            return self._approvals.expire(
+                request.approval_id, self._expiry_reason, source=_EXPIRY_SOURCE
             )
         except ValueError:
             return self._approvals.get(request.approval_id) or request

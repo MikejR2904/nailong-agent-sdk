@@ -4,10 +4,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from ..foundations.contracts import ScopedAgentTask, ToolCall, ToolDefinition, ToolExecutionResult
+
+
+@dataclass(frozen=True)
+class ToolAuthorization:
+    """The verdict of a ``ToolAuthorizer`` on one call, stamped with who issued it.
+
+    ``issuer`` is the authorizer object itself: an executor that holds the same object accepts the
+    stamp instead of authorizing again, so a single-use approval is consumed once per call.
+    ``result`` is the blocked or denied result to return when ``allowed`` is false.
+    """
+
+    allowed: bool
+    tool: str
+    call_id: str
+    issuer: object | None = None
+    capability: str | None = None
+    approval_id: str | None = None
+    result: ToolExecutionResult | None = None
 
 
 @dataclass(frozen=True)
@@ -17,6 +36,15 @@ class ToolInvocationContext:
     iteration: int
     call: ToolCall
     trace_parent: str | None = None
+    authorization: ToolAuthorization | None = None
+
+
+class ToolAuthorizer(Protocol):
+    """Decides whether one tool call may run, before any executor sees it."""
+
+    def authorize(
+        self, tool: ToolDefinition, context: ToolInvocationContext
+    ) -> ToolAuthorization | Awaitable[ToolAuthorization]: ...
 
 
 class ToolExecutor(Protocol):

@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import Field
 
@@ -19,7 +20,10 @@ from ..foundations.atomic_io import (
     unique_temporary_path,
 )
 from ..foundations.contracts import StrictModel
+from ..foundations.logging import get_logger
 from ..observability.telemetry_models import DecisionSource, TelemetryAuthority
+
+_logger = get_logger("approvals")
 
 
 class ApprovalStatus(StrEnum):
@@ -44,6 +48,37 @@ class ApprovalRequest(StrictModel):
     single_use: bool = False
 
 
+class ApprovalEventKind(StrEnum):
+    REQUESTED = "requested"
+    GRANTED = "granted"
+    REJECTED = "rejected"
+    REVOKED = "revoked"
+    CONSUMED = "consumed"
+    EXPIRED = "expired"
+    DENIED = "denied"
+
+
+class ApprovalEvent(StrictModel):
+    """One structured record of what happened to an approval or to a call it governs."""
+
+    kind: ApprovalEventKind
+    run_id: str = Field(min_length=1)
+    node_id: str = Field(min_length=1)
+    capability: str = Field(min_length=1)
+    approval_id: str | None = None
+    tool: str | None = None
+    tool_call_id: str | None = None
+    reason: str | None = None
+    decided_by: str | None = None
+    decision_authority: TelemetryAuthority | None = None
+    arguments_digest: str | None = None
+    single_use: bool = False
+
+
+class ApprovalEventSink(Protocol):
+    def record(self, event: ApprovalEvent) -> None: ...
+
+
 class _PersistedApprovals(StrictModel):
     schema_version: str = "approvals-v1"
     next_id: int = Field(ge=1)
@@ -53,14 +88,42 @@ class _PersistedApprovals(StrictModel):
 class ApprovalRegistry:
     """Own approval state as typed data rather than conversation text."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, path: Path | None = None, *, sink: ApprovalEventSink | None = None) -> None:
         self._path = path
+        self._sink = sink
         self._lock = threading.RLock()
         self._requests: dict[str, ApprovalRequest] = {}
         self._next_id = 1
         self._fingerprint: tuple[int, int] | None = None
         self._changed = False
         self._refresh()
+
+    @property
+    def sink(self) -> ApprovalEventSink | None:
+        return self._sink
+
+    def record_event(self, event: ApprovalEvent, *, strict: bool = False) -> None:
+        """Hand an event to the sink; ``strict`` lets a recording failure reach the caller."""
+
+        if self._sink is None:
+            return
+        try:
+            self._sink.record(event)
+        except Exception as error:
+            if strict:
+                raise
+            _logger.warning(
+                'The %s event of approval "%s" could not be recorded: %s: %s',
+                event.kind.value,
+                event.approval_id,
+                type(error).__name__,
+                error,
+            )
+
+    def _announce(
+        self, request: ApprovalRequest, kind: ApprovalEventKind, reason: str | None = None
+    ) -> None:
+        self.record_event(event_of(request, kind, reason))
 
     def request(
         self,
@@ -92,7 +155,8 @@ class ApprovalRegistry:
             self._next_id += 1
             self._requests[request.approval_id] = request
             self._changed = True
-            return request
+        self._announce(request, ApprovalEventKind.REQUESTED, reason)
+        return request
 
     def submit(
         self,
@@ -101,6 +165,39 @@ class ApprovalRegistry:
         reason: str | None = None,
         *,
         source: DecisionSource | None = None,
+    ) -> ApprovalRequest:
+        updated = self._decide(
+            approval_id,
+            ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED,
+            reason,
+            source,
+        )
+        self._announce(
+            updated,
+            ApprovalEventKind.GRANTED if approved else ApprovalEventKind.REJECTED,
+            reason,
+        )
+        return updated
+
+    def expire(
+        self,
+        approval_id: str,
+        reason: str,
+        *,
+        source: DecisionSource | None = None,
+    ) -> ApprovalRequest:
+        """Reject a request nobody decided in time; the record shows it expired, not refused."""
+
+        updated = self._decide(approval_id, ApprovalStatus.REJECTED, reason, source)
+        self._announce(updated, ApprovalEventKind.EXPIRED, reason)
+        return updated
+
+    def _decide(
+        self,
+        approval_id: str,
+        status: ApprovalStatus,
+        reason: str | None,
+        source: DecisionSource | None,
     ) -> ApprovalRequest:
         with self._transaction():
             request = self._requests.get(approval_id)
@@ -113,7 +210,7 @@ class ApprovalRegistry:
                 )
             updated = request.model_copy(
                 update={
-                    "status": ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED,
+                    "status": status,
                     "decision_reason": reason,
                     "decided_by": source.identifier if source is not None else None,
                     "decision_authority": source.authority if source is not None else None,
@@ -121,7 +218,7 @@ class ApprovalRegistry:
             )
             self._requests[approval_id] = updated
             self._changed = True
-            return updated
+        return updated
 
     def revoke(
         self,
@@ -151,7 +248,8 @@ class ApprovalRegistry:
             )
             self._requests[approval_id] = updated
             self._changed = True
-            return updated
+        self._announce(updated, ApprovalEventKind.REVOKED, reason)
+        return updated
 
     def consume(self, approval_id: str) -> bool:
         """Use an approval once: a single-use approval turns ``CONSUMED``, others stay approved."""
@@ -259,3 +357,27 @@ class ApprovalRegistry:
 def _approval_order(request: ApprovalRequest) -> tuple[int, str]:
     number = request.approval_id.rpartition("-")[2]
     return (int(number) if number.isdigit() else 0, request.approval_id)
+
+
+def event_of(
+    request: ApprovalRequest,
+    kind: ApprovalEventKind,
+    reason: str | None = None,
+    *,
+    tool: str | None = None,
+    tool_call_id: str | None = None,
+) -> ApprovalEvent:
+    return ApprovalEvent(
+        kind=kind,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        capability=request.capability,
+        approval_id=request.approval_id,
+        tool=tool,
+        tool_call_id=tool_call_id,
+        reason=reason,
+        decided_by=request.decided_by,
+        decision_authority=request.decision_authority,
+        arguments_digest=request.arguments_digest,
+        single_use=request.single_use,
+    )

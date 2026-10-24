@@ -32,7 +32,7 @@ from ..state.graph_models import (
 )
 from ..state.project_state_models import ProjectStateProjectionPolicy
 from ..tools.elastic_requests import ElasticRequestBuffer, ElasticRequestToolExecutor
-from ..tools.tools import ToolExecutor
+from ..tools.tools import ToolAuthorizer, ToolExecutor
 from .base_agent import AgentWatchdogPolicy, PostToolHook, PreToolHook
 from .elastic_context import render_elastic_instructions
 from .model import AgentModel
@@ -42,6 +42,7 @@ from .verification import VerificationGateRegistry
 GraphTaskAdapter = Callable[[GraphNode, GraphNodeExecutionContext], ScopedAgentTask]
 GraphModelFactory = Callable[[GraphNode, GraphNodeExecutionContext], AgentModel]
 GraphToolExecutorFactory = Callable[[GraphNode, GraphNodeExecutionContext], ToolExecutor | None]
+GraphToolAuthorizerFactory = Callable[[GraphNode, GraphNodeExecutionContext], ToolAuthorizer | None]
 GraphContextProjectionPolicyFactory = Callable[
     [GraphNode, GraphNodeExecutionContext], ContextProjectionPolicy | None
 ]
@@ -73,6 +74,8 @@ class GraphAgentBinding:
     project_state_projection_policy: ProjectStateProjectionPolicy | None = None
     episode_store_factory: Callable[[], InMemoryEpisodeStore] | None = None
     escalate_elastic_overflow: bool = False
+    tool_authorizer_factory: GraphToolAuthorizerFactory | None = None
+    require_tool_authorization: bool = False
 
     @property
     def binding_hash(self) -> str:
@@ -178,10 +181,17 @@ class GraphAgentExecutor:
                 if callable(binding.context_projection_policy)
                 else binding.context_projection_policy
             )
+            authorizer = (
+                binding.tool_authorizer_factory(node, context)
+                if binding.tool_authorizer_factory is not None
+                else None
+            )
             agent = self._services.create_agent(
                 binding.definition,
                 model,
                 tool_executor=tool_executor,
+                tool_authorizer=authorizer,
+                require_tool_authorization=binding.require_tool_authorization,
                 verification_gates=binding.verification_gates,
                 pre_tool_hooks=binding.pre_tool_hooks,
                 post_tool_hooks=binding.post_tool_hooks,

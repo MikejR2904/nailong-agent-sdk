@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Any
@@ -78,7 +79,12 @@ from ...state.project_state_models import (
     StageStateSchema,
 )
 from ...state.project_state_store import InMemoryProjectStateStore
-from ...tools.tools import ToolExecutor, ToolInvocationContext
+from ...tools.tools import (
+    ToolAuthorization,
+    ToolAuthorizer,
+    ToolExecutor,
+    ToolInvocationContext,
+)
 from ..cost_model import PriceTable, RunCostLedger, price_usage
 from ..model import (
     UNREPORTED_CANCELLATION,
@@ -153,6 +159,8 @@ class BaseAgent:
         on_model_stream: ModelStreamListener | None = None,
         episode_history_limit: int | None = None,
         price_table: PriceTable | None = None,
+        tool_authorizer: ToolAuthorizer | None = None,
+        require_tool_authorization: bool = False,
     ) -> None:
         if episode_history_limit is not None and episode_history_limit < 1:
             raise ValueError(
@@ -169,6 +177,8 @@ class BaseAgent:
         self.definition = definition
         self.model = model
         self.tool_executor = tool_executor
+        self.tool_authorizer = tool_authorizer
+        self.require_tool_authorization = require_tool_authorization
         self.verification_gates = verification_gates or VerificationGateRegistry()
         self.pre_tool_hooks = tuple(pre_tool_hooks)
         self.post_tool_hooks = tuple(post_tool_hooks)
@@ -1556,6 +1566,40 @@ class BaseAgent:
         self.profiler.finish_span(span, status, attributes={"result_status": outcome.result.status})
         return outcome
 
+    async def _authorize_tool_call(
+        self, tool: ToolDefinition, context: ToolInvocationContext, deadline: float | None
+    ) -> ToolAuthorization | None:
+        if self.tool_authorizer is None:
+            return None
+        try:
+            decision = self.tool_authorizer.authorize(tool, context)
+            if inspect.isawaitable(decision):
+                decision = await self._await_with_watchdog(
+                    decision, self.watchdog_policy.tool_call_timeout_seconds, deadline
+                )
+            return decision
+        except (RunCancelled, WatchdogExpired):
+            raise
+        except Exception as error:
+            message = (
+                f'Tool "{tool.name}" was refused because its authorizer failed: '
+                f"{type(error).__name__}: {error}"
+            )
+            return ToolAuthorization(
+                allowed=False,
+                tool=tool.name,
+                call_id=context.call.id,
+                result=ToolExecutionResult(
+                    status="blocked",
+                    error=message,
+                    failure=AgentFailure(
+                        code="TOOL_AUTHORIZATION_FAILED",
+                        message=message,
+                        details={"tool": tool.name, "tool_call_id": context.call.id},
+                    ),
+                ),
+            )
+
     async def _execute_tool_call(
         self,
         task: ScopedAgentTask,
@@ -1591,6 +1635,21 @@ class BaseAgent:
             failure = AgentFailure(
                 code="TOOL_EXECUTOR_MISSING",
                 message=f'No tool executor is configured for declared tool "{call.name}".',
+                details={"tool": call.name, "tool_call_id": call.id},
+            )
+            return self._record_unexecuted_result(
+                call,
+                ToolExecutionResult(status="failed", error=failure.message, failure=failure),
+                iteration,
+                terminal_status=AgentRunStatus.FAILED,
+            )
+        if self.require_tool_authorization and self.tool_authorizer is None:
+            failure = AgentFailure(
+                code="TOOL_AUTHORIZER_MISSING",
+                message=(
+                    f'Tool "{call.name}" was not run: this agent requires every tool call to be '
+                    "authorized and has no tool_authorizer, so the executor alone cannot decide."
+                ),
                 details={"tool": call.name, "tool_call_id": call.id},
             )
             return self._record_unexecuted_result(
@@ -1666,11 +1725,20 @@ class BaseAgent:
                         iteration,
                         terminal_status=AgentRunStatus.BLOCKED,
                     )
-            result = await self._await_with_watchdog(
-                self.tool_executor.execute(tool, context),
-                self.watchdog_policy.tool_call_timeout_seconds,
-                deadline,
-            )
+            authorization = await self._authorize_tool_call(tool, context, deadline)
+            if authorization is not None and authorization.allowed:
+                context = replace(context, authorization=authorization)
+            if authorization is not None and not authorization.allowed:
+                result = authorization.result or ToolExecutionResult(
+                    status="blocked",
+                    error=f'Tool "{call.name}" was refused by its authorizer.',
+                )
+            else:
+                result = await self._await_with_watchdog(
+                    self.tool_executor.execute(tool, context),
+                    self.watchdog_policy.tool_call_timeout_seconds,
+                    deadline,
+                )
             for hook in self.post_tool_hooks:
                 await self._await_with_watchdog(
                     hook(context, result), self.watchdog_policy.tool_call_timeout_seconds, deadline
