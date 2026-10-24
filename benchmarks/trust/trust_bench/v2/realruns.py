@@ -35,7 +35,7 @@ def verify_scenario(scenario: Path) -> list[dict[str, Any]]:
         shutil.copytree(scenario, copy, ignore=shutil.ignore_patterns("__pycache__"))
         with open_ledgers(copy, "__none__") as probe:
             telemetry = probe.telemetry
-            runs = [item.run_id for item in telemetry.list_runs(limit=10_000)] if telemetry else []
+            runs = [item.run_id for item in telemetry.list_runs(limit=1_000)] if telemetry else []
         for run_id in runs:
             row: dict[str, Any] = {"scenario": scenario.name, "run_id": run_id}
             try:

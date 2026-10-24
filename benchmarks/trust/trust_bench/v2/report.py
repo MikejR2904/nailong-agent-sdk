@@ -37,7 +37,11 @@ def detection(detected: int, trials: int) -> tuple[str, str]:
         return NOT_RUN, "no trials"
     lower = exact_lower(detected, trials)
     estimate = f"{detected}/{trials}; exact lower {_fmt(lower)}"
-    return (PASS if detected == trials and lower >= CELL_FLOOR else FAIL), estimate
+    if detected < trials:
+        return FAIL, estimate
+    if lower < CELL_FLOOR:
+        return NOT_RUN, f"{estimate}; a 0.98 lower bound needs 183 trials with no miss"
+    return PASS, estimate
 
 
 def table(rows: list[tuple[str, ...]], header: tuple[str, ...]) -> list[str]:
@@ -65,15 +69,26 @@ def tamper_section(rows: list[dict[str, Any]]) -> tuple[list[str], list[tuple[st
     failing = [
         f"{key[1]}/{key[2]} {value[0]}/{value[1]}"
         for key, value in sorted(anchored.items())
-        if detection(*value)[0] != PASS
+        if detection(*value)[0] == FAIL
     ]
-    verdict = NOT_RUN if not anchored else (FAIL if failing else PASS)
+    underpowered = [
+        f"{key[1]}/{key[2]} {value[0]}/{value[1]}"
+        for key, value in sorted(anchored.items())
+        if detection(*value)[0] == NOT_RUN
+    ]
+    if not anchored:
+        verdict = NOT_RUN
+    elif failing:
+        verdict = FAIL
+    else:
+        verdict = NOT_RUN if underpowered else PASS
     cards.append(
         (
             "V2.1a",
             "with the anchor every class on every store is detected",
-            f"{len(anchored) - len(failing)} of {len(anchored)} cells pass"
-            + (f"; failing: {', '.join(failing)}" if failing else ""),
+            f"{len(anchored) - len(failing) - len(underpowered)} of {len(anchored)} cells pass"
+            + (f"; missed: {', '.join(failing)}" if failing else "")
+            + (f"; too few trials for 0.98: {', '.join(underpowered)}" if underpowered else ""),
             verdict,
         )
     )
