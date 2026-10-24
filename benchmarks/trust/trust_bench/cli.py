@@ -1,6 +1,7 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Command line: gates, run, tamper, verify, attack, authority, report, lock and verify-lock."""
+"""Command line: gates, run, tamper, verify, attack, authority, report, lock and verify-lock, and
+the v2 batteries (boundary, crash, staterun, lineage, realruns, source-tests, report-v2)."""
 
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ from .report import render
 from .splits import Split
 from .tamper_jobs import ARMS as TAMPER_ARMS
 from .tamper_jobs import tamper_job
+from .v2 import commands as v2_commands
 from .verify_jobs import (
     ATTACK_FAMILIES,
     VERIFY_ARMS,
@@ -177,6 +179,7 @@ def _parser() -> argparse.ArgumentParser:
                 "--model-table", help="the allocations the judge wrote, needed by the model arm"
             )
     judge_commands.register(sub)
+    v2_commands.register(sub)
     report = sub.add_parser("report", help="render a markdown report")
     for name in (
         "results",
@@ -265,6 +268,8 @@ def main(argv: Sequence[str] | None = None, *, repo: Path | None = None) -> int:
         return 0
     if args.command in KINDS:
         return _run_kind(args, repo, command_text)
+    if args.command in v2_commands.COMMANDS:
+        return v2_commands.dispatch(args)
     if args.command in judge_commands.COMMANDS:
         return judge_commands.dispatch(args, repo, command_text) or 0
     loaded = {
