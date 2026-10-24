@@ -5,9 +5,11 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | File | Lines | Role |
 |---|---:|---|
 | [`tools/__init__.py`](#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
-| [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 261 | typed approval gates for state-changing actions |
-| [`tools/artifact_anchor.py`](#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 195 | signed anchors of the artifact write log, kept outside the workspace |
-| [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 602 | content-addressed artifact store with immutable write attribution and a per-path write history |
+| [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 383 | typed approval gates for state-changing actions |
+| [`tools/approval_audit.py`](#toolsapproval_auditpy---approval-lifecycle-events-written-to-the-hash-chained-telemetry-ledger) | 55 | approval lifecycle events written to the hash-chained telemetry ledger |
+| [`tools/authorization.py`](#toolsauthorizationpy---the-capability-path-and-approval-check-every-governed-tool-call-passes) | 312 | the capability, path and approval check every governed tool call passes |
+| [`tools/artifact_anchor.py`](#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 196 | signed anchors of the artifact write log, kept outside the workspace |
+| [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 632 | content-addressed artifact store with immutable write attribution and a per-path write history |
 | [`tools/core/__init__.py`](#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
 | [`tools/core/definitions.py`](#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 356 | typed declarations of the governed core tool set |
 | [`tools/core/helpers.py`](#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 581 | private validation, HTTP and isolated-regex helpers behind the core tools |
@@ -16,14 +18,14 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | [`tools/delegation.py`](#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 201 | deny-by-default capability policy |
-| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 464 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 369 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/result_cache.py`](#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
 | [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
 | [`tools/task_models.py`](#toolstask_modelspy---records-for-background-tasks) | 43 | records for background tasks |
 | [`tools/tasks.py`](#toolstaskspy---background-task-lifecycle-start-poll-stop) | 258 | background task lifecycle: start, poll, stop |
-| [`tools/tools.py`](#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 73 | the ToolExecutor protocol and two deterministic test executors |
+| [`tools/tools.py`](#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 101 | the ToolExecutor protocol and two deterministic test executors |
 | [`tools/worktree_models.py`](#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
@@ -37,28 +39,53 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ---
 
-### `tools/approvals.py` - typed approval gates for state-changing actions
+### `tools/approval_audit.py` - approval lifecycle events written to the hash-chained telemetry ledger
 
-*261 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `observability/telemetry_models.py` · used by: `agent/task_runner.py`, `mcp/authority.py`, `state/harness_coordinator.py`, `tools/policy.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*55 lines · depends on: `observability/telemetry_models.py`, `observability/telemetry_store.py`, `tools/approvals.py` · used by: `agent/task_runner.py`, `mcp/server.py` · not re-exported at the package root*
 
-**Role in the workflow.** When `CapabilityPolicy` says a mutating or process capability needs approval, `HarnessToolExecutor` files a request here (a pending request for the same run, node and capability is reused) and returns a BLOCKED tool result carrying the approval id; a human or controller later answers it (MCP `submit_approval`) and `resume_run` re-opens the node. A registry bound to a path persists to `<run>.approvals.json`, so requests and decisions survive a restart.
+**Role in the workflow.** `ApprovalRegistry` reports what happens to an approval through an `ApprovalEventSink`. This sink turns each event into one `approval.<kind>` telemetry event (`requested`, `granted`, `rejected`, `revoked`, `consumed`, `expired`, `denied`) under the run and node it belongs to, with the event's payload as the full `ApprovalEvent`, the decider's authority when the approval names one (a human who granted or revoked it) and the system's otherwise, and a warning severity for a revocation, an expiry or a denial. `AgentTaskRunner` attaches it for `revoked`, `consumed`, `expired` and `denied`, because its own `approval.requested` and `approval.decided` events already cover the rest; the MCP service attaches it for every kind on graph-run approvals.
 
 **Contents**
 
-- **class `ApprovalStatus`** *(enum; bases: StrEnum)* - pending, approved or rejected.
-  - members: `PENDING`, `APPROVED`, `REJECTED`
-- **class `ApprovalRequest`** *(pydantic model; bases: StrictModel)* - One request: id, run, node, capability, reason, status, the decision reason and, once decided, who decided (`decided_by`) and in what authority class (`decision_authority`). · *Instantiated by:* `tools/approvals.py::ApprovalRegistry.request`
-  - fields: `approval_id`, `run_id`, `node_id`, `capability`, `reason`, `status`, `decision_reason`, `decided_by`, `decision_authority`
+- **class `TelemetryApprovalSink`** *(class)* - Writes approval events to a `TelemetryStore`, optionally only some kinds. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner.run`, `mcp/server.py::create_mcp_server`
+  - `TelemetryApprovalSink.__init__(telemetry: TelemetryStore, *, kinds: Collection[ApprovalEventKind] | None=None) -> None` - Keeps the store and the kinds to write (all when `None`).
+  - `TelemetryApprovalSink.record(event: ApprovalEvent) -> None` - Emits one telemetry event named `approval.<kind>`, status the kind, severity by kind, payload the event without its empty fields.
+
+---
+
+### `tools/approvals.py` - typed approval gates for state-changing actions
+
+*383 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `observability/telemetry_models.py` · used by: `agent/task_runner.py`, `mcp/authority.py`, `state/harness_coordinator.py`, `tools/policy.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+
+**Role in the workflow.** When `CapabilityPolicy` says a mutating or process capability needs approval, `HarnessToolExecutor` files a request here (a pending request for the same run, node and capability is reused) and returns a BLOCKED tool result carrying the approval id; a human or controller later answers it (MCP `submit_approval`) and `resume_run` re-opens the node. A registry bound to a path persists to `<run>.approvals.json`, so requests and decisions survive a restart. An approval is a standing grant for its capability unless it is narrowed: a request can carry the digest of one call's tool and arguments (`arguments_digest`) so it covers only that call, and can be `single_use`, in which case `consume` turns it `consumed` inside the registry's transaction so that, across threads and processes, exactly one call uses it. `revoke` withdraws a pending or approved request. Every change is reported to an optional `ApprovalEventSink` (`requested`, `granted`, `rejected`, `revoked`, `expired`) and the authorizer adds `consumed` and `denied`; `tools/approval_audit.py` writes them to telemetry.
+
+**Contents**
+
+- **class `ApprovalStatus`** *(enum; bases: StrEnum)* - pending, approved, rejected, revoked (withdrawn after the fact) or consumed (a single-use approval that has run).
+  - members: `PENDING`, `APPROVED`, `REJECTED`, `REVOKED`, `CONSUMED`
+- **class `ApprovalRequest`** *(pydantic model; bases: StrictModel)* - One request: id, run, node, capability, reason, status, the decision reason and, once decided, who decided (`decided_by`) and in what authority class (`decision_authority`). Two optional fields narrow it: `arguments_digest` (the canonical hash of one tool call's name and arguments) and `single_use`. · *Instantiated by:* `tools/approvals.py::ApprovalRegistry.request`
+  - fields: `approval_id`, `run_id`, `node_id`, `capability`, `reason`, `status`, `decision_reason`, `decided_by`, `decision_authority`, `arguments_digest`, `single_use`
+- **class `ApprovalEventKind`** *(enum; bases: StrEnum)* - `requested`, `granted`, `rejected`, `revoked`, `consumed` (a single-use approval used by a call), `expired` (nobody decided in time) or `denied` (a call refused).
+  - members: `REQUESTED`, `GRANTED`, `REJECTED`, `REVOKED`, `CONSUMED`, `EXPIRED`, `DENIED`
+- **class `ApprovalEvent`** *(pydantic model; bases: StrictModel)* - One structured record: kind, run, node, capability, approval id, the tool and call it concerns, the reason, who decided and in what authority class, the argument digest and whether the approval is single-use. · *Instantiated by:* `tools/approvals.py::event_of`, `tools/authorization.py::CapabilityToolAuthorizer._deny_event`
+  - fields: `kind`, `run_id`, `node_id`, `capability`, `approval_id`, `tool`, `tool_call_id`, `reason`, `decided_by`, `decision_authority`, `arguments_digest`, `single_use`
+- **class `ApprovalEventSink`** *(Protocol; bases: Protocol)* - Where a registry reports events.
+  - `ApprovalEventSink.record(event: ApprovalEvent) -> None` - Accepts one event.
 - **class `_PersistedApprovals`** *(pydantic model; bases: StrictModel)* - On-disk form of a registry: schema version `approvals-v1`, the next id counter and the requests.
   - fields: `schema_version`, `next_id`, `requests`
 - **class `ApprovalRegistry`** *(class)* - In-memory owner of approval state as typed data rather than conversation text. · *Instantiated by:* `agent/task_runner.py::_RunToken.__init__`, `state/harness_coordinator.py::HarnessCoordinator._approval_registry`
-  - `ApprovalRegistry.__init__(path: Path | None=None) -> None` - Starts empty with the id counter at 1; given a path it loads the persisted file (if present) and re-reads it whenever its modification time or size changes.
-  - `ApprovalRegistry.request(run_id: str, node_id: str, capability: str, reason: str) -> ApprovalRequest` - Returns the existing pending request for the same run, node and capability, otherwise creates a pending `approval-N`; when persisted, the whole read-modify-write runs under a cross-process lock (`APPROVAL_LOCK_TIMEOUT`). · *Called by:* `agent/elastic_context.py::_child_entry`, `agent/elastic_context.py::render_elastic_instructions`, `agent/graph_agent_executor.py::GraphAgentExecutor.execute`, `openai_compatible/chat.py::OpenAICompatibleAgentModel._ask_provider_to_cancel` (+74 more)
+  - `ApprovalRegistry.__init__(path: Path | None=None, *, sink: ApprovalEventSink | None=None) -> None` - Starts empty with the id counter at 1; given a path it loads the persisted file (if present) and re-reads it whenever its modification time or size changes. A `sink` receives the events of every change.
+  - `ApprovalRegistry.sink() -> ApprovalEventSink | None` *(property)* - Property: the sink events go to, or `None`.
+  - `ApprovalRegistry.record_event(event: ApprovalEvent, *, strict: bool=False) -> None` - Hands an event to the sink; a failure is logged and swallowed unless `strict`, which the authorizer uses for the consumption of a single-use approval.
+  - `ApprovalRegistry._announce(request: ApprovalRequest, kind: ApprovalEventKind, reason: str | None=None) -> None` - Reports a change to a request, after its transaction has finished.
+  - `ApprovalRegistry.request(run_id: str, node_id: str, capability: str, reason: str, *, arguments_digest: str | None=None, single_use: bool=False) -> ApprovalRequest` - Returns the existing pending request for the same run, node, capability, digest and single-use flag, otherwise creates a pending `approval-N`; when persisted, the whole read-modify-write runs under a cross-process lock (`APPROVAL_LOCK_TIMEOUT`). · *Called by:* `agent/elastic_context.py::_child_entry`, `agent/elastic_context.py::render_elastic_instructions`, `agent/graph_agent_executor.py::GraphAgentExecutor.execute`, `openai_compatible/chat.py::OpenAICompatibleAgentModel._ask_provider_to_cancel` (+74 more)
   - `ApprovalRegistry.submit(approval_id: str, approved: bool, reason: str | None=None, *, source: DecisionSource | None=None) -> ApprovalRequest` - Records approve/reject exactly once; an unknown id raises, and an already-decided request raises naming the decision it already has. `source` records who decided and the authority class on the request; without one both stay None, which says the decider was not named.
+  - `ApprovalRegistry.expire(approval_id: str, reason: str, *, source: DecisionSource | None=None) -> ApprovalRequest` - Rejects a request nobody decided in time; the stored status is `rejected` and the event is `expired`, so the record says it lapsed and was not refused.
+  - `ApprovalRegistry._decide(approval_id: str, status: ApprovalStatus, reason: str | None, source: DecisionSource | None) -> ApprovalRequest` - The shared transaction of `submit` and `expire`: only a pending request can be decided, and an unknown or decided one raises naming the approval.
   - `ApprovalRegistry.revoke(approval_id: str, reason: str, *, source: DecisionSource | None=None) -> ApprovalRequest` - Withdraws a pending or approved request so the next call is denied with the reason; any other decision raises a `ValueError` naming the approval and its decision.
   - `ApprovalRegistry.consume(approval_id: str) -> bool` - Uses an approval inside the registry's transaction: true for an approved request, which turns `consumed` when it is single-use; false when the request is unknown or no longer approved, so concurrent callers cannot both use a single-use approval.
   - `ApprovalRegistry.get(approval_id: str) -> ApprovalRequest | None` - Returns a request by id (refreshing from disk first) or None. · *Called within this file by:* `tools/approvals.py::ApprovalRegistry.submit`
-  - `ApprovalRegistry.find(run_id: str, node_id: str, capability: str) -> ApprovalRequest | None` - The latest request for a run, node and capability (whatever its status), or None.
+  - `ApprovalRegistry.find(run_id: str, node_id: str, capability: str, arguments_digest: str | None=None) -> ApprovalRequest | None` - The latest request for a run, node and capability (whatever its status) that is unbound or bound to the given digest, or None; a request bound to other arguments is not returned.
   - `ApprovalRegistry.list(run_id: str | None=None) -> list[ApprovalRequest]` - All requests (optionally for one run) sorted by numeric approval id.
   - `ApprovalRegistry._matching(run_id: str, node_id: str, capability: str) -> list[ApprovalRequest]` - Requests for a run, node and capability in id order.
   - `ApprovalRegistry._transaction() -> Iterator[None]` *(contextmanager)* - Context manager for one mutation: holds the thread lock, and for a persisted registry also the file lock, reloads the file, runs the body and saves only if something changed. · *Called within this file by:* `tools/approvals.py::ApprovalRegistry.request`, `tools/approvals.py::ApprovalRegistry.submit`
@@ -66,12 +93,49 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `ApprovalRegistry._load(path: Path) -> None` - Reads and validates the persisted file (retrying transient sharing violations) and replaces the in-memory requests and counter. · *Called within this file by:* `tools/approvals.py::ApprovalRegistry._refresh`, `tools/approvals.py::ApprovalRegistry._transaction`
   - `ApprovalRegistry._save(path: Path) -> None` - Writes the persisted form through a unique temporary file and `replace_atomic`, then records the new fingerprint.
 - `_approval_order(request: ApprovalRequest) -> tuple[int, str]` - Sort key `(numeric suffix of the id, id)`.
+- `event_of(request: ApprovalRequest, kind: ApprovalEventKind, reason: str | None=None, *, tool: str | None=None, tool_call_id: str | None=None) -> ApprovalEvent` - The event describing a request, with the decider, the digest and the single-use flag copied from it.
+
+---
+
+### `tools/authorization.py` - the capability, path and approval check every governed tool call passes
+
+*312 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `tools/approvals.py`, `tools/policy.py`, `tools/tools.py` · used by: `tools/registry.py` · not re-exported at the package root*
+
+**Role in the workflow.** `CapabilityToolAuthorizer` is the one implementation of the question "may this call run?". `BaseAgent` consults it at the shared dispatch boundary, after the pre-tool hooks and before any `ToolExecutor`, when the agent holds it as `tool_authorizer`; `HarnessToolExecutor` holds the same object and accepts the stamp it issued instead of asking twice, so a single-use approval is consumed once per call. A host that passes its own executor and no authorizer is not governed by it: the SDK cannot see around an executor it was not given.
+
+**Algorithms & invariants.** The order is: the tool must be in the closed registry (`HARNESS_TOOL_UNKNOWN`); an approval that belongs to another run or node is refused; `CapabilityPolicy.evaluate` runs (sensitive paths, role grant, path containment, approval state, argument binding); for a state-changing tool the approval is then consumed inside the registry's transaction, which is what makes a single-use approval allow one call across threads and processes; and a single-use consumption is recorded before the call is allowed, so if the sink cannot record it the call is refused and the approval stays used. A call that needs an approval files (or reuses) a pending request and returns `TOOL_APPROVAL_REQUIRED`; every other refusal is `TOOL_DENIED_BY_POLICY` and is recorded as a `denied` approval event with the tool, the call id and the reason. The scope (run, node, role, policy, approvals, approval ids, flags) is read live at every call, never copied.
+
+**Contents**
+
+- **class `RegisteredToolLike`** *(Protocol; bases: Protocol)* - What the authorizer needs of a registered tool: its capability and side-effect class.
+  - `RegisteredToolLike.capability() -> str` *(property)* - Property: the capability a role must hold to call the tool.
+  - `RegisteredToolLike.side_effect() -> SideEffectClass` *(property)* - Property: read-only, mutating, process or destructive.
+- **class `AuthorizationScope`** *(Protocol; bases: Protocol)* - The run-level facts an authorization depends on; `HarnessExecutionContext` satisfies it.
+  - `AuthorizationScope.run_id() -> str` *(property)* - Property: the run the calls belong to.
+  - `AuthorizationScope.node_id() -> str` *(property)* - Property: the node the calls belong to; an approval of another node is not honoured.
+  - `AuthorizationScope.role() -> str` *(property)* - Property: the role whose grant is consulted.
+  - `AuthorizationScope.run_root() -> Path` *(property)* - Property: the directory path containment is judged against.
+  - `AuthorizationScope.policy() -> CapabilityPolicy` *(property)* - Property: the deny-by-default policy.
+  - `AuthorizationScope.approvals() -> ApprovalRegistry` *(property)* - Property: where approvals are found, consumed and requested.
+  - `AuthorizationScope.approval_ids_by_capability() -> Mapping[str, str]` *(property)* - Property: approvals pinned by id for a capability, read live.
+  - `AuthorizationScope.bind_approvals_to_arguments() -> bool` *(property)* - Property: whether approvals are filed and matched per call digest.
+  - `AuthorizationScope.single_use_capabilities() -> Collection[str]` *(property)* - Property: capabilities whose approvals are used up by the call they allow.
+- `requested_paths(tool_name: str, arguments: dict[str, Any]) -> list[str]` - The `path` argument of a write-style tool (`write_draft`, `edit_draft`, `notebook_edit`) when it is a string, else nothing; the policy's path checks run on it, and the core tools still reject a malformed path afterwards. · *Called by:* `tools/authorization.py::CapabilityToolAuthorizer.authorize`
+- **class `CapabilityToolAuthorizer`** *(class)* - Authorizes one call: closed registry, role grant, paths, then a typed approval. · *Instantiated by:* `tools/registry.py::HarnessToolExecutor.__init__`
+  - `CapabilityToolAuthorizer.__init__(resolve: Callable[[str], RegisteredToolLike | None], scope: AuthorizationScope) -> None` - Keeps the registry lookup and the live scope.
+  - `CapabilityToolAuthorizer.authorize(tool: ToolDefinition, context: ToolInvocationContext) -> ToolAuthorization` - The decision described above, as a `ToolAuthorization` stamped with this authorizer as `issuer` and carrying, when refused, the blocked or failed result to return.
+  - `CapabilityToolAuthorizer._approval_for(capability: str, digest: str | None) -> ApprovalRequest | None` - The approval pinned for the capability, else the latest request this node filed for it that is unbound or bound to this call's digest; a pinned approval that was consumed gives way to a newer request, so the next approval is found.
+  - `CapabilityToolAuthorizer._foreign(approval: ApprovalRequest | None) -> str | None` - A sentence naming the approval's run and node when they are not this scope's, else `None`.
+  - `CapabilityToolAuthorizer._consume(approval: ApprovalRequest, tool: ToolDefinition, context: ToolInvocationContext, capability: str, decision: PolicyDecision) -> PolicyDecision` - Consumes the approval; refuses with "used up or withdrawn" when it no longer is approved, and records the consumption of a single-use approval, refusing the call if that cannot be recorded.
+  - `CapabilityToolAuthorizer._denied(tool: ToolDefinition, context: ToolInvocationContext, capability: str, reason: str, approval: ApprovalRequest | None) -> ToolAuthorization` - Records a `denied` event and returns the `TOOL_DENIED_BY_POLICY` refusal.
+  - `CapabilityToolAuthorizer._refusal(tool: ToolDefinition, context: ToolInvocationContext, capability: str | None, result: ToolExecutionResult, approval_id: str | None=None) -> ToolAuthorization` - Builds a refused `ToolAuthorization` around a result.
+  - `CapabilityToolAuthorizer._deny_event(capability: str, tool: ToolDefinition, context: ToolInvocationContext, reason: str, approval: ApprovalRequest | None=None) -> None` - Hands a `denied` `ApprovalEvent` to the registry's sink.
 
 ---
 
 ### `tools/artifact_anchor.py` - signed anchors of the artifact write log, kept outside the workspace
 
-*195 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/run_checkpoints.py`, `tools/artifacts.py` · used by: `agent/runtime.py` · not re-exported at the package root*
+*196 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/run_checkpoints.py`, `tools/artifacts.py` · used by: `agent/runtime.py` · not re-exported at the package root*
 
 **Role in the workflow.** The artifact write log chains its records with an unkeyed hash, so an edit in the middle is detected but anyone who can write the file can recompute the whole chain, and the newest records can be cut without a trace. An anchor records the log's length and head hash, signed with a key the writer does not hold, in an append-only sink the operator keeps elsewhere (the same `CheckpointSink` and signer as the run-head checkpoints). Verification detects a log that was resealed, truncated or rewritten after it was anchored.
 
@@ -97,9 +161,9 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/artifacts.py` - content-addressed artifact store with immutable write attribution and a per-path write history
 
-*602 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/hashing.py`, `foundations/paths.py`, `foundations/text.py` · used by: `agent/task_runner.py`, `developer_tools/attribute_defect.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
+*632 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/hashing.py`, `foundations/paths.py`, `foundations/text.py` · used by: `agent/task_runner.py`, `developer_tools/attribute_defect.py`, `developer_tools/attribute_lineage.py`, `tools/artifact_anchor.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
-**Role in the workflow.** `write_draft`/`edit_draft` write declared outputs through this store; `read_artifact`, `grep_artifact` and `diff_declared_artifacts` read them back by `sha256:` id. Each write also leaves an immutable occurrence record naming the run, node and task, which later proves that a draft was authored by the current task, and one line in a store-wide write log (`.agent-artifacts/history/writes.jsonl`). `history(path)` reads that log back as the ordered versions of one path, each with the agent, node, run, tool, call and iteration that wrote it; `developer_tools/attribute_defect.py` searches it for the write that introduced a defect. A store can be opened `read_only` on a finished run.
+**Role in the workflow.** `write_draft`/`edit_draft` write declared outputs through this store; `read_artifact`, `grep_artifact` and `diff_declared_artifacts` read them back by `sha256:` id. Each write also leaves an immutable occurrence record naming the run, node and task, which later proves that a draft was authored by the current task, and one line in a store-wide write log (`.agent-artifacts/history/writes.jsonl`). `history(path)` reads that log back as the ordered versions of one path, each with the agent, node, run, tool, call and iteration that wrote it; `developer_tools/attribute_defect.py` searches it for the write that introduced a defect, and `developer_tools/attribute_lineage.py` matches the reads in a run's journal to its versions. A store opened `durable=True` (the task runner does when a checkpointer is configured) syncs blob, manifests and log line before a write returns. The log is chained with an unkeyed hash, so on its own it is tamper-evident only: `tools/artifact_anchor.py` signs its length and head outside the workspace, which is what detects a resealed or truncated log. A store can be opened `read_only` on a finished run.
 
 **Contents**
 
@@ -124,6 +188,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `ArtifactStore.paths(*, limit: int=MAX_LISTED_PATHS) -> list[str]` - The relative paths with at least one recorded write, as first spelled and sorted, at most `limit` (default 200); it lets a caller say what to ask for when a path has no history. · *Called by:* `developer_tools/attribute_defect.py::attribute_defect`
   - `ArtifactStore.verify_history() -> HistoryCheck` - Reads the write log without writing anything and checks that the `write_sequence` of every record follows the one before it, that each chained record's `previous_hash` is the hash of the record before it and that its `integrity_hash` matches its content; records written before the chain existed (no hash) are accepted only ahead of the chained ones. The first problem is reported with its line number. It detects an edited, deleted from the middle, inserted or reordered record; a log cut at its end, or a tail rewritten and re-chained, still verifies, so the `head` has to be kept somewhere the writer cannot reach. · *No in-package callers (public API, entry point, or protocol hook).*
   - `ArtifactStore.log_hashes() -> list[str | None]` - The integrity hash of every write record in log order, `None` for a record written before the log was chained; what an anchor compares its head against.
+  - `ArtifactStore.sync_log() -> None` - Forces the write log and its directory to stable storage; `anchor_artifact_log` calls it first, so an anchor never covers writes a crash could take back. A store opened `durable=True` also syncs every blob, manifest and log line as it writes them.
   - `ArtifactStore.occurrence_matches_task_draft(occurrence_id: str, artifact_id: str, *, run_id: str, node_id: str, task_id: str, declared_output_paths: tuple[str, ...]) -> bool` - True only if the occurrence is for that artifact, wrote a declared output path, and its manifest names the given run, node and task. · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
   - `ArtifactStore.diff(base_artifact_id: str, draft_artifact_id: str) -> dict[str, Any]` - Unified diff of two artifacts' text (lines split on newline only), returned with both ids. · *Called by:* `core/services.py::CoreToolDispatcher._diff`, `tools/registry.py::HarnessToolExecutor._execute_registered`
   - `ArtifactStore._register(target: Path, relative_path: str, content: bytes, kind: str, manifest: dict[str, Any]) -> ArtifactRecord` - Hashes content, then, under the store-wide history lock (an exclusive file lock across threads and processes; `ARTIFACT_HISTORY_LOCK_TIMEOUT` when it cannot be taken), takes the next write sequence and the hash of the last record (`_tail_state`), saves the blob once, saves the manifest on first registration, always writes a new unique occurrence record and appends one chained line to the write log. A store that predates the log is adopted first (`_ensure_indexed`). · *Called within this file by:* `tools/artifacts.py::ArtifactStore.register_existing`, `tools/artifacts.py::ArtifactStore.write_text`
@@ -335,7 +400,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 *201 lines · depends on: `foundations/contracts.py`, `foundations/paths.py`, `tools/approvals.py` · used by: `agent/orchestrator/models.py`, `agent/task_files.py`, `agent/task_runner.py`, `mcp/client_bridge.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
 
-**Role in the workflow.** `HarnessToolExecutor.execute` asks `CapabilityPolicy.evaluate` before every governed tool call and either runs, blocks, or requests an approval based on the answer.
+**Role in the workflow.** `CapabilityToolAuthorizer` (which calls `CapabilityPolicy.evaluate`) is asked before every governed tool call, by `BaseAgent` when it holds the authorizer and by `HarnessToolExecutor` otherwise, and the call is run, blocked, or an approval is requested based on the answer.
 
 **Contents**
 
@@ -349,7 +414,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - **class `CapabilityPolicy`** *(class)* - Checks sensitive paths, role grant, path containment and typed approval state in that order. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `CapabilityPolicy.__init__(grants: list[CapabilityGrant]) -> None` - Indexes grants by role.
   - `CapabilityPolicy.read_scope(role: str) -> tuple[str, ...]` - The paths a role may read: its grant's `allowed_paths` when the grant holds `filesystem.read`, otherwise none. · *Called by:* `tools/registry.py::HarnessToolExecutor.__init__`
-  - `CapabilityPolicy.evaluate(*, role: str, capability: str, side_effect: SideEffectClass, run_root: Path, requested_paths: list[str]=(), approval: ApprovalRequest | None=None)...` - Order: deny built-in credential paths (no grant can override) -> role must hold the capability -> every requested path must be inside the grant's allowed paths -> read-only is allowed; anything else needs a matching, approved typed approval (missing, pending and rejected each have their own reason).
+  - `CapabilityPolicy.evaluate(*, role: str, capability: str, side_effect: SideEffectClass, run_root: Path, requested_paths: list[str]=(), approval: ApprovalRequest | None=None, arguments_digest: str | None=None)...` - Order: deny built-in credential paths (no grant can override) -> role must hold the capability -> every requested path must be inside the grant's allowed paths -> read-only is allowed; anything else needs a matching, approved typed approval (missing, pending, rejected, revoked and consumed each have their own reason; an approval bound to other arguments than `arguments_digest` is refused with `approval_required` so a new one is filed).
   - `CapabilityPolicy._sensitive_pattern_match(requested_path: str, run_root: Path) -> str | None` *(staticmethod)* - Resolves a requested path against the run root and returns `sensitive_pattern_for` of it. · *Called by:* `tools/policy.py::CapabilityPolicy.evaluate`
   - `CapabilityPolicy._path_is_allowed(requested_path: str, allowed_paths: list[str], run_root: Path) -> bool` *(staticmethod)* - True if the resolved path stays under the run root and under at least one allowed path (empty list means nothing is allowed); both tests use `relative_to_base`. · *Called by:* `tools/policy.py::CapabilityPolicy.evaluate`
 
@@ -361,13 +426,13 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/registry.py` - capability-bound harness tool registry and its BaseAgent executor
 
-*464 lines · depends on: `foundations/contracts.py`, `foundations/identifiers.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
+*369 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** The governed `ToolExecutor`: `BaseAgent` hands it every tool call; it applies policy and approvals, then runs a host handler, a core tool, a registered process command or a built-in spec/artifact reader. The registry is closed: no generic shell and no dynamically named tool.
 
 **Contents**
 
-- **class `HarnessExecutionContext`** *(dataclass)* - Non-prompt state for one scheduled node: run/node/role, plan task, run root, artifact store, policy, approvals, supervisor, spec snapshots, declared outputs, approval ids, journal, search client, human responder and PDF image cache. `trace_parent` is set only on the per-call copy a custom handler receives. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
+- **class `HarnessExecutionContext`** *(dataclass)* - Non-prompt state for one scheduled node: run/node/role, plan task, run root, artifact store, policy, approvals, supervisor, spec snapshots, declared outputs, approval ids, `bind_approvals_to_arguments` (file a digest-bound request per call) and `single_use_capabilities` (capabilities whose approvals are consumed by the call they allow), journal, search client, human responder and PDF image cache. `trace_parent` is set only on the per-call copy a custom handler receives. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - fields: `run_id`, `node_id`, `role`, `plan_task`, `run_root`, `artifacts`, `policy`, `approvals`, `supervisor`, `spec_snapshots`, `declared_output_paths`, `approval_ids_by_capability`, `result_journal`, `search_client`, `ask_human`, `pdf_image_cache`, `trace_parent`
 - **class `RegisteredTool`** *(dataclass)* - Name, capability, side-effect class and an optional command template name. · *Instantiated by:* `mcp/client_bridge.py::mcp_tools_as_extensions`, `tools/registry.py::HarnessToolRegistry.default_tools`
   - fields: `name`, `capability`, `side_effect`, `command_template`
@@ -380,12 +445,10 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `HarnessToolRegistry.handler_for(name: str) -> HarnessToolHandler | None` - The custom handler registered for a name, if any. · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
 - **class `HarnessToolExecutor`** *(class; bases: ToolExecutor)* - Bridges BaseAgent tool calls into policy-governed typed harness actions. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`
   - `HarnessToolExecutor.__init__(registry: HarnessToolRegistry, context: HarnessExecutionContext) -> None` - Stores the registry and context and builds an internal `CoreToolDispatcher` from the context, limiting reads to the role's read scope.
-  - `HarnessToolExecutor.execute(tool: ToolDefinition, invocation: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Resolve the tool, collect requested write paths, look up any approval for the capability, evaluate policy; blocked decisions return BLOCKED with a typed failure (`TOOL_APPROVAL_REQUIRED` naming the approval id, filing the request when one is needed, or `TOOL_DENIED_BY_POLICY`), and a tool the registry does not know returns FAILED `HARNESS_TOOL_UNKNOWN`; otherwise run the tool and convert exceptions into a failed result with `HARNESS_TOOL_EXECUTION_FAILED`. The call that runs also carries the writer fields, so what it writes is attributed to the agent, run, tool, call and iteration. · *Called within this file by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
+  - `HarnessToolExecutor.authorizer() -> CapabilityToolAuthorizer` *(property)* - Property: the authorizer this executor consults; give the same object to `BaseAgent(tool_authorizer=)` so the decision is taken at the agent's dispatch boundary and the executor accepts its stamp.
+  - `HarnessToolExecutor.execute(tool: ToolDefinition, invocation: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Accepts the `ToolAuthorization` the invocation carries when this executor's own authorizer issued it for this tool and call, and otherwise asks the authorizer itself; a refusal returns its result (`HARNESS_TOOL_UNKNOWN`, `TOOL_APPROVAL_REQUIRED` naming the approval id, or `TOOL_DENIED_BY_POLICY`). An allowed call is served from the read-only result cache when one applies, otherwise run, with exceptions converted into a failed result with `HARNESS_TOOL_EXECUTION_FAILED`. The call that runs also carries the writer fields, so what it writes is attributed to the agent, run, tool, call and iteration.
   - `HarnessToolExecutor._invoke(registered: RegisteredTool, tool: ToolDefinition, invocation: ToolInvocationContext) -> ToolExecutionResult` - Runs the registered tool and maps an exception to a failed result with `HARNESS_TOOL_EXECUTION_FAILED`; `execute` calls it after policy allowed the call and around the optional result cache.
-  - `HarnessToolExecutor._approval_for(capability: str)` - The approval registered for a capability in this context, else the latest request this node filed for it, so a decision made after the block is found. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
-  - `HarnessToolExecutor._foreign_approval(approval: ApprovalRequest | None) -> str | None` - A sentence naming the approval's run and node when it belongs to another run or node than this executor's, else `None`; the call is then denied before the policy is consulted.
   - `HarnessToolExecutor._execute_registered(tool: RegisteredTool, arguments: dict[str, Any], trace_parent: str | None=None, writer: dict[str, Any] | None=None) -> Any` *(async)* - Dispatch chain: custom handler -> `read_spec` (only the plan task's scope pointer) -> `request_elastic_node` (always an error here: it only works for a graph node run through `GraphAgentExecutor`) -> `run_registered_command` -> core tool names -> authorization-checked artifact read/grep/diff -> command-template process tools. A custom handler receives a copy of the context carrying the call's `trace_parent`. It receives the `writer` fields built by `execute` (agent identity, agent run id, role, tool, call id, iteration) and hands them to the core tools. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
-  - `HarnessToolExecutor._requested_paths(tool_name: str, arguments: dict[str, Any]) -> list[str]` *(staticmethod)* - Write-style tools declare their `path` argument for the path-containment check. · *Called by:* `tools/registry.py::HarnessToolExecutor.execute`
 - `_process_failure_message(name: str, process: ProcessExecutionRecord) -> str` - `<code>: registered command "<name>" <what happened>` for a failed process (exit code, timeout, cancellation or resource limit). · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
 - `_string_argument(arguments: dict[str, Any], key: str) -> str` - Argument must be a non-empty string. · *Called by:* `tools/registry.py::HarnessToolExecutor._execute_registered`
 
@@ -566,14 +629,17 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/tools.py` - the ToolExecutor protocol and two deterministic test executors
 
-*73 lines · depends on: `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `agent/task_runner.py`, `integrations/langchain.py`, `integrations/langgraph.py`, `tools/elastic_requests.py` (+1 more) · not re-exported at the package root*
+*101 lines · depends on: `foundations/contracts.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/runtime.py`, `agent/task_runner.py`, `integrations/langchain.py`, `integrations/langgraph.py`, `tools/elastic_requests.py` (+1 more) · not re-exported at the package root*
 
 **Role in the workflow.** `BaseAgent` depends only on `ToolExecutor`: any object with `async execute(tool, context)` can serve a run.
 
 **Contents**
 
+- **class `ToolAuthorization`** *(dataclass)* - The verdict of a `ToolAuthorizer` on one call: allowed or not, the tool and call id, the `issuer` (the authorizer object itself, so an executor that holds the same one accepts the stamp), the capability, the approval id and, when refused, the result to return.
 - **class `ToolInvocationContext`** *(dataclass)* - What an executor receives with each call: agent identity, task, iteration, the call and the `traceparent` of the call's span (None outside `BaseAgent`), for an executor that calls another service and wants to continue the trace. · *Instantiated by:* `base_agent/agent.py::BaseAgent._execute_tool_call`
   - fields: `agent_identity`, `task`, `iteration`, `call`, `trace_parent`
+- **class `ToolAuthorizer`** *(Protocol; bases: Protocol)* - Decides whether one call may run, before any executor sees it; `authorize` may be sync or async.
+  - `ToolAuthorizer.authorize(tool: ToolDefinition, context: ToolInvocationContext) -> ToolAuthorization | Awaitable[ToolAuthorization]` - Returns the verdict.
 - **class `ToolExecutor`** *(Protocol; bases: Protocol)* - Protocol: `execute(tool, context)` returns a `ToolExecutionResult`.
   - `ToolExecutor.execute(tool: ToolDefinition, context: ToolInvocationContext) -> ToolExecutionResult` *(async)* - Protocol method.
 - **class `InMemoryTaskToolExecutor`** *(class)* - Safe deterministic tools for protocol tests: `read_locked_interface` and `echo`; no filesystem or process. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._prepare_tools`

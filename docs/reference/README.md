@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **166 files, 598 classes and 2,128 functions** (methods and nested closures included).
+covers **170 files, 622 classes and 2,211 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -213,19 +213,36 @@ compacted episode) restores originals from the archive within a token budget.
 
 `BaseAgent._execute_tool_call` rejects an undeclared tool (`TOOL_NOT_DECLARED`) and a missing
 executor (`TOOL_EXECUTOR_MISSING`), each ending the run FAILED; arguments that violate the
-declared JSON schema, or an action that consumes
-episodes that are unavailable, come back to the model as a failed result so it can correct
-them. It then runs pre-tool hooks (a denial ends BLOCKED), the host's `ToolExecutor` and
-post-tool hooks, all under the tool watchdog. With the SDK's `HarnessToolExecutor`
-(`tools/registry.py`): the tool must be in the closed `HarnessToolRegistry`;
-`CapabilityPolicy` checks sensitive paths first, then the role's capability grant, path
-containment and any typed approval (a pending approval returns a `blocked` result; once it is
-decided, `resume_run` re-opens the node); the handler then runs a core tool (`tools/core`), a
-supervised process (`tools/supervisor.py`) or a sandbox backend. The result is stored in the
-journal, becomes an episode and an observation with a handle, is reduced into project state,
-and is written to the audit log and telemetry. `tool-batch-completed` lists every outcome and,
-for one that did not succeed, its failure code and a message of at most 300 characters, so the
-reason a call never ran (bad arguments, a denial) is in the ledger.
+declared JSON schema, or an action that consumes episodes that are unavailable, come back to the
+model as a failed result so it can correct them. It then runs the pre-tool hooks (a denial ends
+BLOCKED), then asks the agent's **tool authorizer**, if it has one, and only then the host's
+`ToolExecutor` and the post-tool hooks, all under the tool watchdog. The authorizer is the point
+where authority is decided: an authorizer that denies stops a custom executor before it is
+called, one that raises refuses the call (`TOOL_AUTHORIZATION_FAILED`), and
+`require_tool_authorization=True` fails a run that has none (`TOOL_AUTHORIZER_MISSING`).
+`AgentTaskRunner` always sets one; a graph node sets one through
+`GraphAgentBinding.tool_authorizer_factory`; an agent built by hand with an executor of its own
+and no authorizer is not governed by the SDK (see "Trust boundaries").
+
+`CapabilityToolAuthorizer` (`tools/authorization.py`), which `HarnessToolExecutor` also holds and
+whose stamp the executor accepts instead of asking twice, decides in this order: the tool must be
+in the closed `HarnessToolRegistry` (`HARNESS_TOOL_UNKNOWN`); an approval of another run or node
+is refused; `CapabilityPolicy` checks sensitive paths first, then the role's capability grant,
+path containment and the approval (missing, pending, rejected, revoked, used up, or granted for
+other arguments each have a reason); for a state-changing tool the approval is then consumed
+inside the registry's transaction, so a single-use approval allows one call however many race for
+it, and a consumption that cannot be recorded refuses the call. A pending approval returns a
+`blocked` result (`TOOL_APPROVAL_REQUIRED`) and, once decided, `resume_run` re-opens the node, or
+with `approval_mode` "wait" the call is held until a decision. Every grant, rejection, revocation,
+expiry, consumption and denial is an `ApprovalEvent`, written to the hash-chained telemetry
+ledger as `approval.<kind>`. An approver revokes over MCP with `revoke_run_approval` or
+`revoke_task_approval`; an agent has no tool that grants or revokes anything. After the
+authorizer the handler runs a core tool (`tools/core`), a supervised process
+(`tools/supervisor.py`) or a sandbox backend. The result is stored in the journal, becomes an
+episode and an observation with a handle, is reduced into project state, and is written to the
+audit log and telemetry. `tool-batch-completed` lists every outcome and, for one that did not
+succeed, its failure code and a message of at most 300 characters, so the reason a call never ran
+(bad arguments, a denial) is in the ledger.
 
 ## Workflow 4 - several agents (`Orchestrator`)
 
@@ -319,8 +336,10 @@ specification: that belongs to the interface that calls the agent.
 | Controllers | `.agent-controllers/` | event-prefix hash named by the snapshot, one cross-process lock per controller |
 | Orchestrations | `.agent-orchestrations/` | atomic replace under one cross-process lock per record, policy immutability |
 | Run-head checkpoints | outside the run root, in a `CheckpointSink` (by default one file per run: `<destination>/<run>.checkpoints.jsonl`) | a signature (HMAC-SHA256, or a host signer) over the sequence and head hash of the telemetry and audit chains, appended under a lock, taken by the runtime when a `RunHeadCheckpointer` is configured and checked by `verify-checkpoints` against the run and, for a pruned run, retention's tombstone |
+| Graph run-record anchors | outside the run root, in the same `CheckpointSink` (`<run>.run.checkpoints.jsonl`) | an HMAC-SHA256 signature over the run's history length, the hash of that history prefix and the record hash, appended when `HarnessCoordinator(anchorer=)` finishes `execute_run` and checked by `verify_run_anchor`; without it a record re-saved with consistent hashes passes the store's own check |
+| Artifact write-log anchors | outside the workspace, in the same `CheckpointSink` (`<run>.artifacts.checkpoints.jsonl`) | an HMAC-SHA256 signature over the log's record count and head hash, appended when a task run ends (`anchor_artifacts_after_run`), every `checkpoint_interval_seconds` while it runs and when a graph node finishes (`GraphAgentBinding.artifact_store_factory`), and checked by `verify_artifact_anchor`; without it the log is tamper-evident only |
 
-Each chain detects an edit in the middle; the artifact write log (`.agent-artifacts/history/writes.jsonl`) is chained the same way and checked by `ArtifactStore.verify_history`. The removal of the newest entries, or a rewrite that reseals a chain, is detected only against a record kept outside the run root: the tombstone anchor for the retention log and a signed run-head checkpoint (`export_run_head_checkpoint`, `nailong-agent-sdk-dev checkpoint-run`) for a run. At the end of a run its `agent.profile-completed` event records the audit chain's head and a final `terminal-link` audit entry records that event's hash, so one intact store vouches for the other (`verify_terminal_link`); the link is an entry of its own so that a small audit payload bound cannot cut it. A run that retention pruned verifies as `pruned`, not `truncated`, when its tombstone holds the checkpoint's final heads. Nothing is checkpointed unless asked: by `checkpoint-run`, or by the runtime when `AgentRuntimeServices.open(checkpointer=...)` (the MCP service: `AGENT_RUNTIME_CHECKPOINT_DIR` and `AGENT_RUNTIME_CHECKPOINT_KEY_FILE`) names a `RunHeadCheckpointer`.
+Each chain detects an edit in the middle; the artifact write log (`.agent-artifacts/history/writes.jsonl`) is chained the same way and checked by `ArtifactStore.verify_history`. The removal of the newest entries, or a rewrite that reseals a chain, is detected only against a record kept outside the run root: the tombstone anchor for the retention log, a signed anchor of the artifact write log (`anchor_artifact_log`) and a signed run-head checkpoint (`export_run_head_checkpoint`, `nailong-agent-sdk-dev checkpoint-run`) for a run. At the end of a run its `agent.profile-completed` event records the audit chain's head and a final `terminal-link` audit entry records that event's hash, so one intact store vouches for the other (`verify_terminal_link`); the link is an entry of its own so that a small audit payload bound cannot cut it. A run that retention pruned verifies as `pruned`, not `truncated`, when its tombstone holds the checkpoint's final heads. Nothing is checkpointed unless asked: by `checkpoint-run`, or by the runtime when `AgentRuntimeServices.open(checkpointer=...)` (the MCP service: `AGENT_RUNTIME_CHECKPOINT_DIR` and `AGENT_RUNTIME_CHECKPOINT_KEY_FILE`) names a `RunHeadCheckpointer`.
 
 Verifying the chains says whether the evidence can be trusted, not what the run did.
 `nailong-agent-sdk-dev diagnose-run <root> <run-id>` (`diagnose_run`) reads the same ledgers and,
@@ -342,6 +361,40 @@ agent, node, run, tool call and iteration made it.
 answers the same question for a tool result: which result of an agent run first fails a check
 you supply (a tool that reported success with a corrupted payload), and which model turn asked
 for it. All three read only.
+`attribute_lineage(run_root, workspace, run_id, check, is_defective_result=)` (a library call, no
+command yet) follows data instead of the call stack. From the journal of a failing run it
+recovers what the run retrieved, typed as an artifact version, a stored result fetched again
+with `get_tool_result`, a registered command's output, a fetched page or a search, asks your
+checks which are defective and follows the first one: an artifact to its writer and that
+writer's own retrievals, a stored result to the run that recorded it, and a command output, page
+or search to the call that retrieved it, where it stops because that data comes from outside the
+SDK's records. It links the end of the trace to its model turn and names ambiguity instead of
+guessing when several writes produced identical content. Every relation is labelled: a retrieval
+that came before a write is *observed* and never causal, and with `infer_verbatim=True` an exact
+repeat of a line is an *inferred* hint, also never causal; nothing is concluded from similarity.
+
+## Trust boundaries - what the SDK enforces, what it only shows, and what it cannot touch
+
+Three different things are easy to confuse. A **source-level guarantee** holds by construction
+and is pinned by a test of the paths the test exercises. **Tamper evidence** shows that a record
+was changed without preventing it. **Enforcement** stops an action before it happens. The SDK
+does all three in different places, and only inside the boundaries below.
+
+| What | How it works | Where it holds | Where it stops |
+|---|---|---|---|
+| No governed tool call runs without authority | `CapabilityToolAuthorizer` decides before the executor; a state-changing call consumes its approval first | Calls through `BaseAgent` with a `tool_authorizer` (always the case for `AgentTaskRunner`) and calls through `HarnessToolExecutor` | An agent built with a `ToolExecutor` of the host's and no authorizer (`require_tool_authorization=True` fails such a run); a graph node whose binding has no `tool_authorizer_factory`; tools of MCP servers, whose side-effect class is what the caller declared; whatever a registered command does with the host process's own privileges; a network call or a file write made outside the SDK's tools |
+| A single-use approval allows one call | Consumption inside the registry's transaction (a cross-process lock on the approvals file) | One machine and one file system with working advisory locks; across threads and across registry instances on one file | Hosts that do not share the file; file systems without usable locks; an in-memory registry, which belongs to one process |
+| An agent cannot grant or revoke its own approvals | No registered tool grants, revokes or authorizes; granting and revoking are host operations (`submit`, `revoke`, the approver credential over MCP) | The tools the SDK registers | A host that wires the approver credential or the registry into a tool it gives the agent |
+| A changed record is noticed | Hash chains over telemetry, audit, artifact writes and graph history | An edit, insertion, deletion or reorder inside a record | Rewriting the whole chain (the hashes are unkeyed) and cutting the newest records |
+| A rewritten or shortened record is noticed | Signed anchors and checkpoints kept outside the writer's reach | Everything up to the newest anchor, taken at run end, every few seconds with `checkpoint_interval_seconds`, and at graph-node end | Writes after the newest anchor; an attacker who can rewrite both the evidence and the key or the sink; a sink on the same disk and under the same OS user is separate only in name |
+| A crash does not corrupt the evidence | A torn final record is read as ending before it and discarded on the next append, with an `audit.tail-repaired` entry for the audit log; the artifact store can sync blob, manifests and log line (`durable=True`, set by the task runner when a checkpointer exists); audit entries and checkpoints are synced as written | Process death at any point of a write | A power loss can still drop what the operating system had not written; writes since the last checkpoint stay unprotected after any crash |
+| A trace names where a defect came from | `attribute_lineage` over the tool-result journal, with every relation labelled observed or inferred | The retrievals the journal recorded: artifact reads, stored results, command outputs, fetched pages and searches | Data that reached a run by another path; an exact textual match is a hint and never causal; it needs the caller's checks |
+
+None of this concerns what a model decides. The SDK records a model turn and can link a failure to
+it; it does not judge the model's reasoning, and nothing in it makes a live model refuse a
+request it should refuse. The batteries in `benchmarks/trust` (pre-registration v2) test the
+rows above with scripted solvers and injected faults; a live-model run is a separate piece of
+evidence that has not been made.
 
 ## Workflow 8 - calling the agent from a backend (`AgentTaskRunner`)
 
@@ -450,11 +503,11 @@ the run options. Everything else is a parameter too:
 | [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 931 | the public API surface (lazy re-exports) |
 | [`agent/__init__.py`](agent.md#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2643 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2711 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/cost_model.py`](agent.md#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
-| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 320 | runs registered BaseAgent bindings as graph nodes |
+| [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 338 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 439 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
 | [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 796 | Chat Completions adapter for the agent model contract |
@@ -465,18 +518,19 @@ the run options. Everything else is a parameter too:
 | [`agent/orchestrator/models.py`](agent.md#agentorchestratormodelspy---user-owned-orchestration-policy-request-and-record-contracts) | 180 | user-owned orchestration policy, request and record contracts |
 | [`agent/orchestrator/orchestrator.py`](agent.md#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 1004 | deterministic composition of policy, plan, controller and graph execution |
 | [`agent/orchestrator/state_store.py`](agent.md#agentorchestratorstate_storepy---atomic-local-persistence-of-orchestration-records-and-policies) | 119 | atomic local persistence of orchestration records and policies |
+| [`agent/periodic_checkpoints.py`](agent.md#agentperiodic_checkpointspy---signed-checkpoints-and-artifact-anchors-taken-while-a-run-is-going) | 102 | signed checkpoints and artifact anchors taken while a run is going |
 | [`agent/retention.py`](agent.md#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 666 | opt-in pruning of finished runs with a hash-chained tombstone for each |
 | [`agent/retention_anchor.py`](agent.md#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
 | [`agent/retention_inventory.py`](agent.md#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
 | [`agent/run_checkpointer.py`](agent.md#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 71 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
-| [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 222 | composition root for the durable stores around an agent |
+| [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 226 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](agent.md#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
-| [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 749 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
+| [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 847 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](agent.md#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
 | [`developer_tools/__init__.py`](developer_tools.md#developer_tools__init__py---public-surface-of-the-developer-utilities) | 94 | public surface of the developer utilities |
 | [`developer_tools/attribute_defect.py`](developer_tools.md#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 286 | which write of an artifact introduced a defect, and which agent made it |
 | [`developer_tools/attribute_failure.py`](developer_tools.md#developer_toolsattribute_failurepy---which-failure-and-which-model-decision-stopped-a-run) | 390 | which failure, and which model decision, stopped a run |
-| [`developer_tools/attribute_lineage.py`](developer_tools.md#developer_toolsattribute_lineagepy---trace-a-failing-run-back-through-the-artifact-versions-it-read) | 292 | trace a failing run back through the artifact versions it read |
+| [`developer_tools/attribute_lineage.py`](developer_tools.md#developer_toolsattribute_lineagepy---trace-a-failing-run-back-through-what-it-read-to-the-write-or-the-retrieval-that-began-it) | 644 | trace a failing run back through what it read to the write or the retrieval that began it |
 | [`developer_tools/attribute_result.py`](developer_tools.md#developer_toolsattribute_resultpy---which-tool-result-of-an-agent-run-first-failed-the-callers-check-and-which-model-turn-asked-for-it) | 207 | which tool result of an agent run first failed the caller's check, and which model turn asked for it |
 | [`developer_tools/catalog.py`](developer_tools.md#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
 | [`developer_tools/cli.py`](developer_tools.md#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 607 | the `nailong-agent-sdk-dev` command line |
@@ -498,7 +552,7 @@ the run options. Everything else is a parameter too:
 | [`foundations/logging.py`](foundations.md#foundationsloggingpy---opt-in-stdlib-logging-namespace-for-the-few-paths-outside-structured-telemetry) | 25 | opt-in stdlib logging namespace for the few paths outside structured telemetry |
 | [`foundations/optimization/__init__.py`](foundations.md#foundationsoptimization__init__py---re-exports-the-pckp-models-and-solvers) | 17 | re-exports the PCKP models and solvers |
 | [`foundations/optimization/models.py`](foundations.md#foundationsoptimizationmodelspy---pckp-problem-item-and-solution-contracts) | 90 | PCKP problem, item and solution contracts |
-| [`foundations/optimization/solvers.py`](foundations.md#foundationsoptimizationsolverspy---exact-tree-dp--branch-and-bound-and-greedy-pckp-solvers) | 503 | exact (tree DP / branch-and-bound) and greedy PCKP solvers |
+| [`foundations/optimization/solvers.py`](foundations.md#foundationsoptimizationsolverspy---exact-tree-dp--branch-and-bound-and-greedy-pckp-solvers) | 530 | exact (tree DP / branch-and-bound) and greedy PCKP solvers |
 | [`foundations/paths.py`](foundations.md#foundationspathspy---comparison-of-windows-extended-length-path-spellings-as-one-location) | 40 | comparison of Windows extended-length path spellings as one location |
 | [`foundations/record_locks.py`](foundations.md#foundationsrecord_lockspy---per-record-cross-process-locks-re-entrant-for-the-holding-thread) | 62 | per-record cross-process locks, re-entrant for the holding thread |
 | [`foundations/run_fence.py`](foundations.md#foundationsrun_fencepy---per-run-write-fence-that-retention-raises-before-it-deletes-a-runs-records) | 139 | per-run write fence that retention raises before it deletes a run's records |
@@ -520,7 +574,7 @@ the run options. Everything else is a parameter too:
 | [`integrations/receipts.py`](integrations.md#integrationsreceiptspy---receipt-sinks-for-external-operations) | 65 | receipt sinks for external operations |
 | [`mcp/__init__.py`](mcp.md#mcp__init__py---package-marker-for-the-mcp-surface) | 3 | package marker for the MCP surface |
 | [`mcp/_shared.py`](mcp.md#mcp_sharedpy---shared-context-and-error-formatting-for-every-tool-group) | 156 | shared context and error formatting for every tool group |
-| [`mcp/agent_tools.py`](mcp.md#mcpagent_toolspy---mcp-tools-for-agent-contract-validation-context-assembly-and-scripted-runs) | 217 | MCP tools for agent contract validation, context assembly and scripted runs |
+| [`mcp/agent_tools.py`](mcp.md#mcpagent_toolspy---mcp-tools-for-agent-contract-validation-context-assembly-and-scripted-runs) | 261 | MCP tools for agent contract validation, context assembly and scripted runs |
 | [`mcp/arguments.py`](mcp.md#mcpargumentspy---refuse-tool-arguments-the-mcp-surface-does-not-define-instead-of-dropping-them-silently) | 124 | refuse tool arguments the MCP surface does not define instead of dropping them silently |
 | [`mcp/authority.py`](mcp.md#mcpauthoritypy---who-may-call-which-tool-host-and-approver-credentials-decision-binding-and-its-audit) | 445 | who may call which tool: host and approver credentials, decision binding and its audit |
 | [`mcp/authority_matrix.py`](mcp.md#mcpauthority_matrixpy---one-export-of-who-may-do-what-state-transitions-mcp-credentials-and-tool-classes) | 118 | one export of who may do what: state transitions, MCP credentials and tool classes |
@@ -530,15 +584,15 @@ the run options. Everything else is a parameter too:
 | [`mcp/controller_tools.py`](mcp.md#mcpcontroller_toolspy---mcp-tools-for-the-deterministic-controller) | 340 | MCP tools for the deterministic controller |
 | [`mcp/orchestration_tools.py`](mcp.md#mcporchestration_toolspy---mcp-tools-for-plan-validation-graph-runs-and-orchestration-compilation) | 156 | MCP tools for plan validation, graph runs and orchestration compilation |
 | [`mcp/project_state_tools.py`](mcp.md#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 274 | MCP tools for project working memory |
-| [`mcp/run_tools.py`](mcp.md#mcprun_toolspy---mcp-tools-for-graph-run-state-cancellation-approvals-and-resumption) | 107 | MCP tools for graph run state, cancellation, approvals and resumption |
+| [`mcp/run_tools.py`](mcp.md#mcprun_toolspy---mcp-tools-for-graph-run-state-cancellation-approvals-and-resumption) | 152 | MCP tools for graph run state, cancellation, approvals and resumption |
 | [`mcp/security.py`](mcp.md#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 443 | bearer-token authentication and host checks for the HTTP service |
-| [`mcp/server.py`](mcp.md#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 205 | MCP server factory and loopback entry point |
+| [`mcp/server.py`](mcp.md#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 210 | MCP server factory and loopback entry point |
 | [`mcp/specification_tools.py`](mcp.md#mcpspecification_toolspy---mcp-tool-for-specification-parsing) | 40 | MCP tool for specification parsing |
 | [`mcp/telemetry_tools.py`](mcp.md#mcptelemetry_toolspy---mcp-tools-for-telemetry-audit-logs-and-metrics) | 212 | MCP tools for telemetry, audit logs and metrics |
 | [`mcp/tool_groups.py`](mcp.md#mcptool_groupspy---the-ordered-tool-groups-every-mcp-server-registers) | 27 | the ordered tool groups every MCP server registers |
 | [`memory/__init__.py`](memory.md#memory__init__py---package-marker-for-episode-memory-and-context-assembly) | 3 | package marker for episode memory and context assembly |
 | [`memory/context.py`](memory.md#memorycontextpy---builds-the-fixed-initial-prompt-for-a-run) | 51 | builds the fixed initial prompt for a run |
-| [`memory/context_projection.py`](memory.md#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 644 | per-turn bounded context projection and the tool-result journal |
+| [`memory/context_projection.py`](memory.md#memorycontext_projectionpy---per-turn-bounded-context-projection-and-the-tool-result-journal) | 657 | per-turn bounded context projection and the tool-result journal |
 | [`memory/entailment_screen.py`](memory.md#memoryentailment_screenpy---deterministic-lexical-screen-for-claims-that-contradict-or-outrun-their-cited-evidence) | 117 | deterministic lexical screen for claims that contradict or outrun their cited evidence |
 | [`memory/episode_archive.py`](memory.md#memoryepisode_archivepy---content-addressed-archive-of-the-original-snapshots-of-compacted-episodes) | 290 | content-addressed archive of the original snapshots of compacted episodes |
 | [`memory/episode_models.py`](memory.md#memoryepisode_modelspy---episode-records-compaction-policy-and-the-retention-contracts) | 649 | episode records, compaction policy and the retention contracts |
@@ -559,14 +613,14 @@ the run options. Everything else is a parameter too:
 | [`memory/utility_models.py`](memory.md#memoryutility_modelspy---additive-linear-and-mlp-utility-models-with-digest-checked-artifacts) | 293 | additive linear and MLP utility models with digest-checked artifacts |
 | [`memory/utility_training.py`](memory.md#memoryutility_trainingpy---pairwise-logistic-ranking-loss-derivatives-and-explicit-trainers) | 339 | pairwise logistic ranking loss, derivatives and explicit trainers |
 | [`observability/__init__.py`](observability.md#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
-| [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 463 | append-only, hash-chained, per-run JSONL audit transcript |
+| [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 550 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/metric_definitions.py`](observability.md#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 450 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](observability.md#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
-| [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 863 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
+| [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 1000 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
 | [`observability/profiler.py`](observability.md#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
-| [`observability/run_checkpoints.py`](observability.md#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 864 | signed checkpoints of a run's chain heads, kept outside the run root |
+| [`observability/run_checkpoints.py`](observability.md#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 890 | signed checkpoints of a run's chain heads, kept outside the run root |
 | [`observability/telemetry_helpers.py`](observability.md#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
-| [`observability/telemetry_models.py`](observability.md#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 239 | telemetry event, context, actor and metric contracts |
+| [`observability/telemetry_models.py`](observability.md#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 261 | telemetry event, context, actor and metric contracts |
 | [`observability/telemetry_store.py`](observability.md#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 768 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
 | [`observability/trace_context.py`](observability.md#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 181 | W3C Trace Context ids, the traceparent header and the process resource |
 | [`specifications/__init__.py`](specifications.md#specifications__init__py---package-marker-for-the-specification-pipeline) | 3 | package marker for the specification pipeline |
@@ -580,21 +634,24 @@ the run options. Everything else is a parameter too:
 | [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 911 | durable facade over the controller, the graph run, project state and telemetry |
 | [`state/coordination_records.py`](state.md#statecoordination_recordspy---durable-run-record-and-its-integrity-hash) | 42 | durable run record and its integrity hash |
 | [`state/elastic.py`](state.md#stateelasticpy---typed-elastic-node-requests-specs-spawn-records-and-the-admission-checks) | 353 | typed elastic-node requests, specs, spawn records and the admission checks |
-| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1652 | deterministic wave scheduler and authoritative typed run state |
-| [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 255 | typed node, edge, event and shared-state contracts for the run graph |
-| [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 374 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
+| [`state/graph.py`](state.md#stategraphpy---deterministic-wave-scheduler-and-authoritative-typed-run-state) | 1694 | deterministic wave scheduler and authoritative typed run state |
+| [`state/graph_models.py`](state.md#stategraph_modelspy---typed-node-edge-event-and-shared-state-contracts-for-the-run-graph) | 260 | typed node, edge, event and shared-state contracts for the run graph |
+| [`state/harness_coordinator.py`](state.md#stateharness_coordinatorpy---run-lifecycle-plan-validation-graph-start-wave-execution-approvals-cancel-and-recovery) | 428 | run lifecycle: plan validation, graph start, wave execution, approvals, cancel and recovery |
 | [`state/orchestration.py`](state.md#stateorchestrationpy---controller-state-machine-and-its-crash-safe-store) | 453 | controller state machine and its crash-safe store |
 | [`state/orchestration_models.py`](state.md#stateorchestration_modelspy---controller-phase-routing-rule-and-record-contracts) | 110 | controller phase, routing-rule and record contracts |
 | [`state/planning.py`](state.md#stateplanningpy---typed-plan-contracts-and-the-deterministic-plan-validator) | 496 | typed plan contracts and the deterministic plan validator |
 | [`state/project_state_engine.py`](state.md#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 533 | mechanical reducer and token-bounded projector over `ProjectState` |
 | [`state/project_state_models.py`](state.md#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 363 | bounded, hash-sealed working-memory contracts |
 | [`state/project_state_store.py`](state.md#stateproject_state_storepy---in-memory-and-file-backed-project-state-stores-with-a-hash-chained-audit-trail) | 252 | in-memory and file-backed project-state stores with a hash-chained audit trail |
-| [`state/run_state_store.py`](state.md#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 445 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
+| [`state/run_anchor.py`](state.md#staterun_anchorpy---signed-anchors-of-a-graph-runs-record-kept-outside-the-run-root) | 228 | signed anchors of a graph run's record, kept outside the run root |
+| [`state/run_state_store.py`](state.md#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 451 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
 | [`state/shared_state.py`](state.md#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 240 | typed lateral-state payloads, exact routing references and provenance records |
 | [`tools/__init__.py`](tools.md#tools__init__py---package-marker-for-governed-tool-execution) | 3 | package marker for governed tool execution |
-| [`tools/approvals.py`](tools.md#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 261 | typed approval gates for state-changing actions |
-| [`tools/artifact_anchor.py`](tools.md#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 195 | signed anchors of the artifact write log, kept outside the workspace |
-| [`tools/artifacts.py`](tools.md#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 602 | content-addressed artifact store with immutable write attribution and a per-path write history |
+| [`tools/approvals.py`](tools.md#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 383 | typed approval gates for state-changing actions |
+| [`tools/approval_audit.py`](tools.md#toolsapproval_auditpy---approval-lifecycle-events-written-to-the-hash-chained-telemetry-ledger) | 55 | approval lifecycle events written to the hash-chained telemetry ledger |
+| [`tools/authorization.py`](tools.md#toolsauthorizationpy---the-capability-path-and-approval-check-every-governed-tool-call-passes) | 312 | the capability, path and approval check every governed tool call passes |
+| [`tools/artifact_anchor.py`](tools.md#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 196 | signed anchors of the artifact write log, kept outside the workspace |
+| [`tools/artifacts.py`](tools.md#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 632 | content-addressed artifact store with immutable write attribution and a per-path write history |
 | [`tools/core/__init__.py`](tools.md#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
 | [`tools/core/definitions.py`](tools.md#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 356 | typed declarations of the governed core tool set |
 | [`tools/core/helpers.py`](tools.md#toolscorehelperspy---private-validation-http-and-isolated-regex-helpers-behind-the-core-tools) | 581 | private validation, HTTP and isolated-regex helpers behind the core tools |
@@ -603,18 +660,18 @@ the run options. Everything else is a parameter too:
 | [`tools/delegation.py`](tools.md#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 201 | deny-by-default capability policy |
-| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 464 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 369 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/result_cache.py`](tools.md#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
 | [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](tools.md#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
 | [`tools/task_models.py`](tools.md#toolstask_modelspy---records-for-background-tasks) | 43 | records for background tasks |
 | [`tools/tasks.py`](tools.md#toolstaskspy---background-task-lifecycle-start-poll-stop) | 258 | background task lifecycle: start, poll, stop |
-| [`tools/tools.py`](tools.md#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 73 | the ToolExecutor protocol and two deterministic test executors |
+| [`tools/tools.py`](tools.md#toolstoolspy---the-toolexecutor-protocol-and-two-deterministic-test-executors) | 101 | the ToolExecutor protocol and two deterministic test executors |
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 166 files, 598 classes and 2128 functions (including methods and nested closures), each with a written description.*
+*Coverage: 170 files, 622 classes and 2211 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 
@@ -846,10 +903,51 @@ Examined and left alone:
 |---|---|
 | Statistical causal estimation (causal discovery, effect sizes over many runs) | Not built. One run has one outcome, and over the declared graph the structural answer is exact; an estimate needs a population of comparable runs the SDK does not keep and returns a probability instead of a record. |
 | Replaying a run with a different model decision, or ablating one | Not built. The audit entry of a turn is bounded and can be cut (item 2), the model is not deterministic and tools have side effects; `released_by` answers the structural question without running anything. |
-| Tracking what a node read into what it wrote | Not built. A write names its writer, not the artifacts the writer read, so a defect derived from an earlier defective artifact is attributed to the agent that wrote the derived file. |
+| Tracking what a node read into what it wrote | Built later as a developer-tool trace, not as a field of the write log: see "Resolved by the evidence and authority pass". A write still names only its writer; `attribute_lineage` recovers the reads from the tool-result journal. |
 | A decision graph inside one agent run | Not built. A turn records what the model did and what it saw, never its reasoning (hidden reasoning is stripped by design); `consumed_episode_ids` and `depends_on_call_ids` are declared links and are in the audit turn. |
 | MCP `attribute_failure` and `attribute_defect` tools | Not added, for the reason `diagnose_run` was not: the TypeScript client enumerates the 55 registered tools, and the functions and commands cover a local run root. |
 | `fsync` of the write log | Not added. The blob and occurrence files are not synced either; item 15 states what a crash can lose. |
+
+### Resolved by the evidence and authority pass
+
+The Trust Profile development run showed three kinds of gap: tamper classes the SDK's own check
+missed, a failure traced only to where it became visible, and an authority boundary that was
+enforced but wider than it looked. Each row names what was measured or reproduced, and what
+changed. The tamper rows were measured with the scripted tamper battery (20 cases per arm,
+seeds 1-10, no model calls); the others by a probe or a test that fails without the change.
+
+| Area | Resolved |
+|---|---|
+| Artifact write log had no outside anchor | Resealing, truncating or deleting the tail of the log went undetected (artifacts/reseal 0/40, truncate 0/20, delete 20/40, in both the plain and the anchored arm), because the log is chained with an unkeyed hash. `tools/artifact_anchor.py` signs its length and head with the run-head signer into an append-only sink outside the workspace; `AgentTaskRunner` appends one when a run ends and the benchmark verifies it. With the anchor all six classes are detected (40/40, 20/20, 40/40), with no false alarm on an untouched run. A broken log is refused, never signed. |
+| An approval of another run or node was accepted | An approved request filed for `other-run`/`other-node` and placed in `approval_ids_by_capability` let a write through, because the policy compared the capability only. The executor now denies it before the policy, naming both pairs. |
+| An approval was a standing grant | One approval allowed every later call of its capability, with any arguments, with no way to withdraw it. `ApprovalRegistry.revoke`, `consume` and the `arguments_digest` and `single_use` fields add withdrawal, one-call use (12 concurrent calls: exactly one ran; two registries on one file: one winner of six) and per-call binding; `HarnessExecutionContext.single_use_capabilities` and `bind_approvals_to_arguments` switch them on. The default is unchanged. |
+| A wait for approval called every non-approval "rejected" | The wrapper that waits for a decision reported a revoked or used approval as rejected; it now reports the status. |
+| A failure was traced to where it showed, not to its input | `attribute_lineage` recovers the artifact versions a run read from its journal and follows a defective one to its writer and that run's own reads, ending at the write whose run read nothing defective. It needs the caller's content check and reports ambiguity instead of choosing. |
+| `gallop` could misplace a boundary silently | A bad, good, bad history made it report an older start with no sign. `SuffixSearch.exact` reports whether the probes prove the boundary, `DefectAttribution.proven` carries it, and `SuffixStrategy.CONFIRMED` (`--strategy confirmed`) is exact on every history of up to ten elements (all 1,024 patterns of length ten tested). |
+| Evidence selection could search without limit | When the optional pool was too large for the dynamic program the exact solver ran without a node cap. `StructuralContextSelector(max_branch_nodes=50_000)` bounds it and the search starts from a feasible selection (the adaptive greedy up to 400 items, a one-pass density fill beyond). The first version of that seed was quadratic and took 31 s on 2,000 items; the density fill takes 0.3-0.9 s. |
+| The scheduler scanned every edge per pending node | Item 16 below, as first written, measured 4.66 s for three `runnable()` calls on 2,000 nodes with about 4,000 edges. The incoming-edge index is cached and rebuilt only when an edge is appended: 0.02 s. |
+| OTLP histograms carried no distribution | Each observation was exported as its own one-sample point with no buckets. Observations are now folded into one delta point per attribute set with count, sum, min, max and bucket counts over explicit bounds chosen by unit. |
+
+### Resolved by the boundary, recovery and lineage pass
+
+This pass moved authority from one executor to the shared tool-dispatch boundary, made the
+evidence survive an abrupt exit, and widened lineage past the four read tools. Every defect
+below had a failing test before its fix. The numbers are from `benchmarks/trust`
+(`PREREGISTRATION_V2.md`, report `reports/v2_dev.md`, the tree at `8b4917f`, scripted solvers,
+no model calls); a pass is a statement about those fault classes, not a claim that the SDK is
+trustworthy.
+
+| Area | Resolved |
+|---|---|
+| A custom `ToolExecutor` bypassed `CapabilityPolicy` | `BaseAgent` now asks a `ToolAuthorizer` after the pre-hooks and before any executor; `require_tool_authorization=True` fails a run without one, and an authorizer that raises refuses the call. The nine adversarial scenarios (custom executor, single-use race, revoked, foreign, bound arguments, malformed paths, delegation, state change, retry storm) let 0 of 150 trials through each (exact upper 0.0198); the controls that remove the guard violate 150/150, so the battery can fail. |
+| Approvals could not be narrowed or revoked from `TaskRunOptions` or MCP | `PermissionOptions.single_use_capabilities` and `bind_approvals_to_arguments`, `AgentTaskRunner.revoke_approval`, and the MCP tools `revoke_run_approval` and `revoke_task_approval` (approver credential, bound to the request hash). The agent has no tool that grants or revokes. |
+| Grants, consumptions, revocations, expiries and denials left no event | `ApprovalEvent` with a sink; `TelemetryApprovalSink` writes `approval.<kind>` to the hash-chained ledger. 0 of 1,350 attempted denials, consumptions and revocations lacked their event (exact upper 0.0022). |
+| Graph run records were verified by the store only | `anchor_run_record` and `verify_run_anchor`. Edit, reseal, truncate, result rewrite and delete are each detected 200/200 with the anchor (exact lower 0.9851); the store's own check detects 0/200 of reseal, truncate and result rewrite; 0 false alarms in 1,000 untouched records. |
+| Anchors were taken once, at the end of a run | `checkpoint_interval_seconds` runs a daemon thread that checkpoints and anchors the artifact log while the run goes on, and a graph node anchors its artifact log when it ends. |
+| A torn final record made verifiers raise and writers refuse to append | The audit log and the checkpoint files read a torn tail as ending before it and discard it on the next append (`audit.tail-repaired`). `ArtifactStore(durable=True)` syncs blob, manifests and log line. In 300 child processes killed at the k-th model request, no verifier alarmed, every anchor read as a match or advanced, every writer resumed and every chain verified again; 635 cuts past the newest checkpoint were detected (635/635, exact lower 0.9953), and 358/358 cuts exactly back to it were not, as designed. |
+| Lineage ended at the four read tools | Command outputs, stored results, fetched pages and searches are typed inputs. Relations are labelled observed or inferred; nothing is concluded from textual similarity. Synthetic chains: origin found 1,200/1,200 (Wilson lower 0.9968), no unsupported origin in 300, no unique answer for 150 ambiguous chains, no relation marked causal. |
+| OTLP exported the same run twice and used millisecond bounds for every unit | Bounds follow the unit; `OtlpExportLedger` sends each record once. |
+| The scheduler's edge index could go stale | `GraphEdge` is frozen and `StateGraph.set_edge_enabled` switches an edge through the graph, which invalidates the index. |
 
 ### Still open
 
@@ -1012,18 +1110,60 @@ Examined and left alone:
     is `unlinked` until someone classifies it. A graph run links its ten most responsible
     roots, and only while their telemetry is in the same run root.
 15. **[inspected] Artifact attribution covers writes made through `ArtifactStore`, and
-    `gallop` assumes the defect persists.** A file changed by anything else (a shell command,
-    an editor) has no version. The write log is appended without `fsync`: an operating-system
-    crash can drop its last lines, after which `history` omits those writes although their
-    occurrence files exist. A store written before the log is read from its occurrence records
+    `gallop` assumes the defect persists (`confirmed` does not).** A file changed by anything else (a shell command,
+    an editor) has no version. Unless the store was opened with `durable=True`, the write log is appended without
+    `fsync`: an operating-system crash can drop its last lines, after which `history` omits
+    those writes although their occurrence files exist. A store written before the log is read from its occurrence records
     ordered by time, the order of the clock rather than of the lock. On Windows two paths that
     differ only in case are one path. `gallop` can report an older introduction when a defect
-    was fixed and introduced again (`--strategy scan` reports the newest), and the answer is
+    was fixed and introduced again (`--strategy scan` or `confirmed` reports the newest, and `proven` on the result says whether the probes made prove the boundary), and the answer is
     only as good as the caller's check. The command needs the directory that holds
     `.agent-artifacts`, which for a task service is a workspace and not the run root.
-16. **[measured] The scheduler still scans every edge per pending node.**
-    `_refresh_runnable` and `_block_unreachable_nodes` call `_split_dependencies`, which reads
-    the whole edge list, once per node: a graph of 2,000 nodes with 3,600 explicit edges took
-    11 s to execute where reading its root causes now takes 12 ms. Validation, root causes and
-    attribution index the incoming edges once; the scheduler's own loops are unchanged, so a
-    graph with many explicit edges pays for them on every wave.
+16. **[measured] The scheduler still sweeps until stable.** The per-node edge scan is gone and
+    the index follows `set_edge_enabled`. `_block_unreachable_nodes` still repeats full sweeps
+    until nothing changes, so a long dependency chain costs one sweep per level; rewriting it as a
+    worklist could change the order of the recorded status events, which replay and snapshots
+    depend on, and was not done.
+17. **[inspected] An anchor covers the evidence only up to its newest record.** Writes after the
+    newest checkpoint or anchor are `advanced`, not protected (cutting exactly back to it is not
+    detected: 358/358 undetected), and a crash before the first one leaves none. Anchors are
+    independent only while the signing key and the sink are out of the writer's reach; one
+    on the same disk and under the same OS user is separate in name only, and an attacker who
+    rewrites both the evidence and its anchor is not resisted. The HMAC key is shared, so
+    whoever holds it can sign. `ArtifactStore(durable=)` is false unless the task runner has a
+    checkpointer, and a power loss can still drop what the operating system had not written.
+    With no anchor the plain arm of the tamper battery still misses artifacts/reseal and
+    truncate, half of artifacts/delete, audit reseal and telemetry reseal, delete and truncate.
+18. **[inspected] Authority is enforced where the SDK dispatches, and nowhere else.** An agent
+    built by hand with an executor of its own and no authorizer is governed only if
+    `require_tool_authorization=True`; a graph node without a `tool_authorizer_factory` is not;
+    the side-effect class of a custom or MCP tool is whatever its declaration says; a
+    registered command acts with the host process's privileges; and a network call or file write
+    made outside the SDK's tools is invisible to it. Single-use consumption relies on the
+    approvals file's advisory lock, so it holds on one machine and file system and not across
+    hosts. MCP approvals separate roles, not people (item 3).
+19. **[inspected] Lineage sees only what the journal and the store recorded.** Data that
+    reached a run by another path is not followed, and the chain then ends with a statement of
+    what was not seen. A `read_file` is matched by the lines it returned, so a journal entry cut
+    at its size limit or pruned by retention matches no version. Only the first defective
+    retrieval of each run is followed, and the check runs once per candidate version. An exact
+    repeat is an inferred hint under `infer_verbatim`, never causal. The synthetic chains of the
+    benchmark were written by the author of the tool, so they show the labelling rules work, not
+    that real runs are covered.
+20. **[measured] Exact search is bounded, not free.** Evidence selection returns `BEST_EFFORT`
+    where it used to search to the end, for pools beyond the dynamic program. A capped search
+    above 400 items starts from the density fill, weaker than the adaptive greedy (2,000 items:
+    54,401 against 59,574 utility at 200 nodes). Memory retention is unaffected unless its own
+    50,000-node cap is reached.
+21. **[inspected] Histogram bounds depend on the unit.** Units without their own bounds use 1
+    to 100,000 by decades. A ledger makes an export idempotent only if the caller passes it;
+    without one, exporting a run twice sends it twice.
+22. **[measured] The v2 evidence is partly under-powered and not a live-model run.** The tamper
+    battery ran 30 seeds: the artifact cells have 60 to 120 trials, below the 183 a 0.98 lower
+    bound needs with no miss, and the untouched control has 120 trials, below the 149 a 0.02
+    upper bound needs, so V2.1a and V2.1b are reported NOT RUN although no tampering went
+    undetected with the anchor. The v1 P1.4 line has the same cause (all detected, too few
+    trials). No battery calls a model; the 44 committed live-model runs were only verified
+    read-only (all intact). The v1 lock and the test-split confirmatory run are the owner's and
+    were not made, and the Jev judge arm was not run. The benchmark ran on a tree whose only
+    uncommitted changes were documentation.
