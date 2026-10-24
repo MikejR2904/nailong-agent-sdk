@@ -205,6 +205,19 @@ class FileToolResultJournal(InMemoryToolResultJournal):
     def _run_lock_path(self, run_id: str) -> Path:
         return self._root / _RUN_INDEX_DIRECTORY / f"{file_safe_name(run_id)}.lock"
 
+    def owner_of(self, handle_id: str) -> str | None:
+        """The run whose index lists ``handle_id``, or None; a run id that needed escaping in a
+        file name comes back as the escaped name."""
+
+        directory = self._root / _RUN_INDEX_DIRECTORY
+        if not directory.is_dir():
+            return None
+        for index in sorted(directory.glob("*.handles")):
+            listed = index.read_text(encoding="utf-8").split()
+            if handle_id in listed:
+                return index.stem
+        return None
+
     def handles_of(self, run_id: str) -> list[str]:
         index = self._index_path(run_id)
         if not index.is_file():
