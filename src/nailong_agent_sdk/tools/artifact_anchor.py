@@ -84,6 +84,7 @@ def anchor_artifact_log(
             f"{check.reason}",
             {"name": name, "broken_at": check.broken_at},
         )
+    store.sync_log()
     hashes = store.log_hashes()
     draft = ArtifactLogAnchor(
         name=name,

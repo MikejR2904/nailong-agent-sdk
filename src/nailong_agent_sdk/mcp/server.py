@@ -66,6 +66,7 @@ def create_mcp_server(
     coordinator = HarnessCoordinator(
         resolved_run_root,
         approval_sink=TelemetryApprovalSink(telemetry),
+        anchorer=checkpointer,
     )
     project_states = FileProjectStateStore(resolved_run_root)
     controller_runtime = ControllerRuntime(

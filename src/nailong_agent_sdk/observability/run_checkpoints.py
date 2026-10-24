@@ -29,10 +29,12 @@ from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import canonical_json, sha256_hex
 from ..foundations.identifiers import file_safe_name
+from ..foundations.logging import get_logger
 from .audit_log import AuditLogEntry, AuditTranscriptStore
 from .telemetry_models import ChainBreak
 from .telemetry_store import TelemetryStore
 
+_logger = get_logger("run-checkpoints")
 CHECKPOINT_SCHEMA = "agent-sdk-run-head-checkpoint-v1"
 MIN_HMAC_KEY_BYTES = 32
 MAX_SIGNER_ID_CHARS = 128
@@ -122,6 +124,8 @@ class FileCheckpointSink:
             with exclusive_file_lock(
                 path.with_suffix(".lock"), timeout_code="RUN_CHECKPOINT_LOCK_TIMEOUT"
             ):
+                if path.exists():
+                    _discard_unterminated_tail(path)
                 with path.open("ab") as stream:
                     stream.write(record.encode("utf-8"))
                     stream.write(b"\n")
@@ -448,7 +452,29 @@ def _read_lines(path: Path) -> list[str]:
             f'The checkpoint file "{path}" cannot be read: {type(error).__name__}: {error}',
             {"path": str(path)},
         ) from error
+    if text and not text.endswith("\n"):
+        text = text[: text.rfind("\n") + 1]
     return text.splitlines()
+
+
+def _discard_unterminated_tail(path: Path) -> None:
+    """Drop the half of a record a crash cut off; an acknowledged append ends with a newline."""
+
+    data = path.read_bytes()
+    if not data or data.endswith(b"\n"):
+        return
+    keep = data.rfind(b"\n") + 1
+    _logger.warning(
+        'The checkpoint file "%s" ended in %d unterminated bytes (sha256 %s), a write cut off '
+        "by a crash; they were discarded before the next record was appended.",
+        path,
+        len(data) - keep,
+        sha256_hex(data[keep:]),
+    )
+    with path.open("r+b") as stream:
+        stream.truncate(keep)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _parse(lines: Sequence[str], label: str) -> list[RunHeadCheckpoint]:

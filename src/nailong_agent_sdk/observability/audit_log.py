@@ -156,28 +156,66 @@ class AuditTranscriptStore:
                 self._fence.raise_if_fenced(run_id, "append an audit entry")
                 # Append-mode writes use the true end even after tail inspection.
                 handle = self._handle_for(run_id)
+                label = self._jsonl_path(run_id).name
                 handle.seek(0, os.SEEK_END)
-                end = handle.tell()
-                tail = _read_tail_entry(handle, end, self._jsonl_path(run_id).name)
-                _require_transcript_owner(tail, run_id, self._jsonl_path(run_id).name)
-                prepared = AuditLogEntry(
-                    sequence=(tail.sequence if tail is not None else 0) + 1,
-                    event_type=event_type,
-                    occurred_at_utc=datetime.now(UTC).isoformat(),
-                    run_id=run_id,
-                    task_id=task_id,
-                    iteration=iteration,
-                    payload=_bound_and_redact(payload, self._max_payload_chars),
-                    previous_hash=tail.integrity_hash if tail is not None else None,
+                end, torn = _complete_end(handle, handle.tell())
+                tail = _read_tail_entry(handle, end, label)
+                _require_transcript_owner(tail, run_id, label)
+                if not torn and end:
+                    handle.seek(end - 1)
+                    if handle.read(1) != b"\n":
+                        handle.write(b"\n")
+                if torn:
+                    discarded = _discard_torn_tail(handle, end)
+                    tail = self._write_entry(
+                        handle,
+                        run_id,
+                        tail,
+                        "audit.tail-repaired",
+                        {
+                            "discarded_bytes": len(discarded),
+                            "discarded_sha256": sha256_hex(discarded),
+                            "reason": (
+                                "The transcript ended in an unterminated line that is not a "
+                                "valid entry, the mark of a write interrupted by a crash; "
+                                "nothing in it was acknowledged to a caller."
+                            ),
+                        },
+                        None,
+                        None,
+                    )
+                return self._write_entry(
+                    handle, run_id, tail, event_type, payload, task_id, iteration
                 )
-                complete = prepared.model_copy(
-                    update={"integrity_hash": canonical_hash(prepared.model_dump(mode="json"))}
-                )
-                handle.write(complete.model_dump_json().encode("utf-8"))
-                handle.write(b"\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-                return complete
+
+    def _write_entry(
+        self,
+        handle: IO[bytes],
+        run_id: str,
+        tail: AuditLogEntry | None,
+        event_type: str,
+        payload: dict[str, Any],
+        task_id: str | None,
+        iteration: int | None,
+    ) -> AuditLogEntry:
+        prepared = AuditLogEntry(
+            sequence=(tail.sequence if tail is not None else 0) + 1,
+            event_type=event_type,
+            occurred_at_utc=datetime.now(UTC).isoformat(),
+            run_id=run_id,
+            task_id=task_id,
+            iteration=iteration,
+            payload=_bound_and_redact(payload, self._max_payload_chars),
+            previous_hash=tail.integrity_hash if tail is not None else None,
+        )
+        complete = prepared.model_copy(
+            update={"integrity_hash": canonical_hash(prepared.model_dump(mode="json"))}
+        )
+        handle.write(complete.model_dump_json().encode("utf-8"))
+        handle.write(b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        return complete
 
     def list_entries(
         self,
@@ -212,7 +250,8 @@ class AuditTranscriptStore:
             if path.is_file() and path.stat().st_size:
                 with path.open("rb") as handle:
                     handle.seek(0, os.SEEK_END)
-                    tail = _read_tail_entry(handle, handle.tell(), path.name)
+                    end, _torn = _complete_end(handle, handle.tell())
+                    tail = _read_tail_entry(handle, end, path.name)
                 _require_transcript_owner(tail, run_id, path.name)
         return AuditFootprint(
             run_id=run_id,
@@ -259,6 +298,8 @@ class AuditTranscriptStore:
         with path.open(encoding="utf-8", newline="\n") as handle:
             for line in handle:
                 if line.strip():
+                    if not line.endswith("\n") and _is_torn(line.encode("utf-8")):
+                        return
                     entry = AuditLogEntry.model_validate_json(line)
                     _require_transcript_owner(entry, run_id, path.name)
                     if entry.sequence > boundary:
@@ -324,7 +365,7 @@ class AuditTranscriptStore:
             return None, 0
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
-            end = handle.tell()
+            end, _torn = _complete_end(handle, handle.tell())
             tail = _read_tail_entry(handle, end, path.name)
         if tail is None:
             return None, 0
@@ -405,6 +446,52 @@ def _last_line(handle: IO[bytes], end: int) -> bytes:
             break
         chunks.append(chunk)
     return b"".join(reversed(chunks))
+
+
+def _is_torn(line: bytes) -> bool:
+    try:
+        AuditLogEntry.model_validate_json(line)
+    except ValidationError:
+        return True
+    return False
+
+
+def _complete_end(handle: IO[bytes], end: int) -> tuple[int, int]:
+    """Where the last complete line ends, and how many bytes of an interrupted write follow it.
+
+    A final line with no newline that is not a valid entry is the half of a write that a crash
+    cut off. It was never acknowledged, so readers ignore it and the next append discards it.
+    """
+
+    if end == 0:
+        return 0, 0
+    handle.seek(end - 1)
+    if handle.read(1) == b"\n":
+        return end, 0
+    position = end
+    last_break = -1
+    while position > 0 and last_break == -1:
+        size = min(_TAIL_CHUNK_BYTES, position)
+        position -= size
+        handle.seek(position)
+        chunk = handle.read(size)
+        found = chunk.rfind(b"\n")
+        if found != -1:
+            last_break = position + found
+    start = last_break + 1
+    handle.seek(start)
+    unterminated = handle.read(end - start)
+    return (start, end - start) if _is_torn(unterminated) else (end, 0)
+
+
+def _discard_torn_tail(handle: IO[bytes], keep: int) -> bytes:
+    handle.seek(keep)
+    discarded = handle.read()
+    handle.truncate(keep)
+    handle.flush()
+    os.fsync(handle.fileno())
+    handle.seek(0, os.SEEK_END)
+    return discarded
 
 
 def _read_tail_entry(handle: IO[bytes], end: int, label: str) -> AuditLogEntry | None:

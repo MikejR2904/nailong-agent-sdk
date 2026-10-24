@@ -16,6 +16,7 @@ from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Concatenate
 
+from ..foundations.logging import get_logger
 from ..observability.telemetry_models import DecisionSource
 from ..tools.approvals import (
     ApprovalEventSink,
@@ -36,6 +37,7 @@ from .graph_models import (
     ReplayPolicy,
 )
 from .planning import Plan, PlanValidationReport, PlanValidator, render_plan_errors
+from .run_anchor import AnchorTarget, anchor_run_record
 from .run_state_store import RunStateStore
 from .shared_state import ExploratoryDiscovery, LateralDependencyRequest, SharedStateWrite
 
@@ -51,6 +53,9 @@ def _serialized[**P, R](
             return method(self, run_id, *args, **kwargs)
 
     return wrapper
+
+
+_logger = get_logger("harness-coordinator")
 
 
 def _approvals_resolved(requests: list[ApprovalRequest]) -> bool:
@@ -77,7 +82,9 @@ class HarnessCoordinator:
         run_root: Path,
         *,
         approval_sink: ApprovalEventSink | None = None,
+        anchorer: AnchorTarget | None = None,
     ) -> None:
+        self._anchorer = anchorer
         self._store = RunStateStore(run_root)
         self._approval_sink = approval_sink
         self._validator = PlanValidator()
@@ -233,6 +240,30 @@ class HarnessCoordinator:
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
     async def execute_run(
+        self,
+        run_id: str,
+        executors: Mapping[GraphNodeKind, NodeExecutor],
+        *,
+        max_parallelism: int | None = None,
+    ) -> RunRecord:
+        record = await self._execute_run(run_id, executors, max_parallelism=max_parallelism)
+        self._anchor_run(run_id)
+        return record
+
+    def _anchor_run(self, run_id: str) -> None:
+        if self._anchorer is None:
+            return
+        try:
+            anchor_run_record(self._store, self._anchorer.sink, run_id, self._anchorer.signer)
+        except Exception as error:
+            _logger.warning(
+                'The record of run "%s" could not be anchored: %s: %s',
+                run_id,
+                type(error).__name__,
+                error,
+            )
+
+    async def _execute_run(
         self,
         run_id: str,
         executors: Mapping[GraphNodeKind, NodeExecutor],

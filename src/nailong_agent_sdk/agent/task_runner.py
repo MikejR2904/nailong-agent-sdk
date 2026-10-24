@@ -66,6 +66,7 @@ from .openai_compatible import (
     OpenAICompatibleEndpoint,
     StreamingJsonHttpTransport,
 )
+from .periodic_checkpoints import PeriodicCheckpoints
 from .runtime import AgentRuntimeServices
 from .verification import VerificationGateRegistry
 
@@ -129,6 +130,7 @@ class TaskRunOptions(RuntimeOptions):
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     web_search: Literal["duckduckgo-html"] | None = None
     traceparent: str | None = None
+    checkpoint_interval_seconds: float | None = Field(default=None, gt=0, le=86_400)
 
     @field_validator("traceparent")
     @classmethod
@@ -292,6 +294,14 @@ class AgentTaskRunner:
     ) -> AgentResult:
         options = options or TaskRunOptions()
         self._require_process_options_allowed(options)
+        if options.checkpoint_interval_seconds is not None and (
+            self._services.checkpointer is None
+        ):
+            raise TaskOptionError(
+                "checkpoint_interval_seconds asks for checkpoints while the run is going, but "
+                "this service has no RunHeadCheckpointer; open it with "
+                "AgentRuntimeServices.open(checkpointer=...)."
+            )
         self._require_preapprovals_for(options, approved_by, approval_reason)
         live = model is not None or options.is_live
         token = _RunToken(
@@ -378,7 +388,22 @@ class AgentTaskRunner:
                 ),
                 telemetry_context=context,
             )
-            result = await agent.run(task, token)
+            periodic = (
+                PeriodicCheckpoints(
+                    self._services,
+                    task.id,
+                    options.checkpoint_interval_seconds,
+                    artifacts=token.artifacts,
+                    context=context,
+                ).start()
+                if options.checkpoint_interval_seconds is not None
+                else None
+            )
+            try:
+                result = await agent.run(task, token)
+            finally:
+                if periodic is not None:
+                    periodic.stop()
             self._emit(
                 "run.completed" if result.status.value == "completed" else "run.terminated",
                 context,
@@ -520,7 +545,7 @@ class AgentTaskRunner:
             acceptance_criteria="\n".join(task.acceptance_criteria),
             model_tier=ModelTier.STANDARD,
         )
-        token.artifacts = ArtifactStore(workspace)
+        token.artifacts = ArtifactStore(workspace, durable=self._services.checkpointer is not None)
         context = HarnessExecutionContext(
             run_id=task.id,
             node_id=task.id,

@@ -129,6 +129,12 @@ class RunStateStore:
         _verify_run_record(record)
         return record
 
+    def history_prefix(self, run_id: str, entries: int) -> tuple[int, str]:
+        """How many history entries exist up to ``entries`` and the hash of that prefix."""
+
+        _history, counts, digest = _replay_history(self._history_path(run_id), entry_limit=entries)
+        return counts.entry_count, digest
+
     def _require_writable(self, operation: str) -> None:
         if self._read_only:
             raise RuntimeError(

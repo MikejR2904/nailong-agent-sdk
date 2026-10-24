@@ -16,7 +16,12 @@ from typing import Any
 
 from pydantic import Field
 
-from ..foundations.atomic_io import exclusive_file_lock, replace_atomic, unique_temporary_path
+from ..foundations.atomic_io import (
+    exclusive_file_lock,
+    fsync_directory,
+    replace_atomic,
+    unique_temporary_path,
+)
 from ..foundations.contracts import StrictModel
 from ..foundations.hashing import canonical_hash
 from ..foundations.paths import relative_to_base
@@ -95,9 +100,10 @@ class ArtifactStore:
     so the versions of a path and who wrote each can be read back in order.
     """
 
-    def __init__(self, run_root: Path, *, read_only: bool = False) -> None:
+    def __init__(self, run_root: Path, *, read_only: bool = False, durable: bool = False) -> None:
         self._root = run_root.resolve()
         self._read_only = read_only
+        self._durable = durable
         self._manifest_root = self._root / ".agent-artifacts"
         self._content_root = self._manifest_root / "content"
         self._occurrence_root = self._manifest_root / "occurrences"
@@ -209,6 +215,17 @@ class ArtifactStore:
     def verify_history(self) -> HistoryCheck:
         return _check_log(self._write_log)
 
+    def sync_log(self) -> None:
+        """Force the write log to stable storage, so an anchor taken next covers only what a
+        crash cannot take back."""
+
+        if not self._write_log.is_file():
+            return
+        with self._write_log.open("ab") as stream:
+            stream.flush()
+            os.fsync(stream.fileno())
+        fsync_directory(self._write_log.parent)
+
     def log_hashes(self) -> list[str | None]:
         return [record.get("integrity_hash") for record in _log_records(self._write_log)]
 
@@ -311,7 +328,7 @@ class ArtifactStore:
                 occurrence.model_dump_json(indent=2).encode("utf-8"),
             )
             line, integrity_hash = _log_line(occurrence, self._history_key(target), previous_hash)
-            _append_line(self._write_log, line)
+            _append_line(self._write_log, line, durable=self._durable)
             _TAILS[str(self._write_log)] = (
                 self._write_log.stat().st_size,
                 write_sequence,
@@ -351,7 +368,7 @@ class ArtifactStore:
                 line, previous_hash = _log_line(
                     item, self._history_key_for(item.relative_path), previous_hash
                 )
-                _append_line(self._write_log, line)
+                _append_line(self._write_log, line, durable=self._durable)
             marker.write_text("1", encoding="utf-8")
 
     def _legacy_occurrences(self) -> list[ArtifactWriteOccurrence]:
@@ -418,12 +435,19 @@ class ArtifactStore:
             raise ValueError("Artifact path escapes the configured run root.") from error
         return target
 
-    @staticmethod
-    def _atomic_write_bytes(target: Path, content: bytes) -> None:
+    def _atomic_write_bytes(self, target: Path, content: bytes) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = unique_temporary_path(target)
-        temporary.write_bytes(content)
+        if self._durable:
+            with temporary.open("wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        else:
+            temporary.write_bytes(content)
         _replace_with_retry(temporary, target)
+        if self._durable:
+            fsync_directory(target.parent)
 
 
 def _version_of(item: ArtifactWriteOccurrence, sequence: int) -> ArtifactVersion:
@@ -560,10 +584,16 @@ def _record_problem(
     return None
 
 
-def _append_line(path: Path, line: str) -> None:
+def _append_line(path: Path, line: str, *, durable: bool = False) -> None:
+    created = not path.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as stream:
         stream.write(line.encode("utf-8") + b"\n")
+        if durable:
+            stream.flush()
+            os.fsync(stream.fileno())
+    if durable and created:
+        fsync_directory(path.parent)
 
 
 def _repair_and_read_tail(path: Path) -> dict[str, Any] | None:

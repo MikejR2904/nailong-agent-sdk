@@ -106,7 +106,7 @@ class AgentRuntimeServices:
         try:
             return await asyncio.to_thread(self.checkpoint_run, run_id)
         except Exception as error:
-            self._record_checkpoint_failure(run_id, context, error)
+            self.record_checkpoint_failure(run_id, context, error)
             return None
 
     async def anchor_artifacts_after_run(
@@ -127,10 +127,10 @@ class AgentRuntimeServices:
                 checkpointer.signer,
             )
         except Exception as error:
-            self._record_checkpoint_failure(run_id, context, error, "artifact-log")
+            self.record_checkpoint_failure(run_id, context, error, "artifact-log")
             return None
 
-    def _record_checkpoint_failure(
+    def record_checkpoint_failure(
         self,
         run_id: str,
         context: TelemetryContext | None,

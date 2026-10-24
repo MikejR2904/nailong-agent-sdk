@@ -31,6 +31,7 @@ from ..state.graph_models import (
     NodeExecutor,
 )
 from ..state.project_state_models import ProjectStateProjectionPolicy
+from ..tools.artifacts import ArtifactStore
 from ..tools.elastic_requests import ElasticRequestBuffer, ElasticRequestToolExecutor
 from ..tools.tools import ToolAuthorizer, ToolExecutor
 from .base_agent import AgentWatchdogPolicy, PostToolHook, PreToolHook
@@ -43,6 +44,7 @@ GraphTaskAdapter = Callable[[GraphNode, GraphNodeExecutionContext], ScopedAgentT
 GraphModelFactory = Callable[[GraphNode, GraphNodeExecutionContext], AgentModel]
 GraphToolExecutorFactory = Callable[[GraphNode, GraphNodeExecutionContext], ToolExecutor | None]
 GraphToolAuthorizerFactory = Callable[[GraphNode, GraphNodeExecutionContext], ToolAuthorizer | None]
+GraphArtifactStoreFactory = Callable[[GraphNode, GraphNodeExecutionContext], ArtifactStore | None]
 GraphContextProjectionPolicyFactory = Callable[
     [GraphNode, GraphNodeExecutionContext], ContextProjectionPolicy | None
 ]
@@ -76,6 +78,7 @@ class GraphAgentBinding:
     escalate_elastic_overflow: bool = False
     tool_authorizer_factory: GraphToolAuthorizerFactory | None = None
     require_tool_authorization: bool = False
+    artifact_store_factory: GraphArtifactStoreFactory | None = None
 
     @property
     def binding_hash(self) -> str:
@@ -211,10 +214,15 @@ class GraphAgentExecutor:
                     f"error-type:{type(error).__name__}",
                 ],
             )
-        await self._services.checkpoint_after_run(
-            result.task_id,
-            graph_node_telemetry_context(node, task, binding, context),
+        node_context = graph_node_telemetry_context(node, task, binding, context)
+        await self._services.checkpoint_after_run(result.task_id, node_context)
+        store = (
+            binding.artifact_store_factory(node, context)
+            if binding.artifact_store_factory is not None
+            else None
         )
+        if store is not None:
+            await self._services.anchor_artifacts_after_run(result.task_id, store, node_context)
         status = _graph_status(result.status)
         queued = buffer.requests if buffer is not None else []
         spawn_requests = queued if status is GraphNodeStatus.COMPLETED else []
