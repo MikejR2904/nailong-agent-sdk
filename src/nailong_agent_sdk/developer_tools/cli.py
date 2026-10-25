@@ -28,6 +28,7 @@ from ..foundations.suffix_search import SuffixStrategy
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.otlp import (
     SIGNALS,
+    OtlpExportLedger,
     OtlpHttpExporter,
     OtlpSignal,
     export_runs,
@@ -283,6 +284,17 @@ def _parser() -> argparse.ArgumentParser:
     export.add_argument("--timeout-seconds", type=float, default=10.0)
     export.add_argument("--gzip", action="store_true")
     export.add_argument(
+        "--ledger",
+        type=Path,
+        help="File that remembers what each endpoint was sent; default "
+        "<run-root>/.otlp-export-ledger.json, so exporting a run again sends only what is new.",
+    )
+    export.add_argument(
+        "--no-ledger",
+        action="store_true",
+        help="Send everything again; a collector counts delta metrics and logs twice.",
+    )
+    export.add_argument(
         "--dry-run",
         action="store_true",
         help="Build the requests and report what would be sent without contacting the collector.",
@@ -475,8 +487,20 @@ def _export_otlp(arguments: argparse.Namespace) -> object:
             timeout_seconds=arguments.timeout_seconds,
             compress=arguments.gzip,
         )
+        ledger = (
+            None
+            if arguments.no_ledger
+            else OtlpExportLedger(
+                arguments.ledger or arguments.run_root / ".otlp-export-ledger.json"
+            )
+        )
         return export_runs(
-            store, run_ids, exporter, signals=signals, graph_dependencies=dependencies
+            store,
+            run_ids,
+            exporter,
+            signals=signals,
+            graph_dependencies=dependencies,
+            ledger=ledger,
         )
     finally:
         store.close()

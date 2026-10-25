@@ -144,3 +144,19 @@ def test_a_run_root_without_a_ledger_is_reported_not_created(tmp_path, capsys):
     status, _, err = run_cli(capsys, tmp_path / "empty", "--run-id", "x", "--dry-run")
     assert status == 3 and "does not exist" in err
     assert not (tmp_path / "empty").exists()
+
+
+def test_exporting_a_run_again_sends_nothing_unless_the_ledger_is_switched_off(
+    run_root, collector, capsys
+):
+    base = (run_root, "--run-id", "cli-1", "--endpoint", collector.url)
+    status, out, _ = run_cli(capsys, *base)
+    first = json.loads(out)
+    assert status == 0 and first["requests"] > 0
+    assert (run_root / ".otlp-export-ledger.json").is_file()
+    before = len(collector.requests)
+    status, out, _ = run_cli(capsys, *base)
+    assert status == 0 and json.loads(out)["requests"] == 0
+    assert len(collector.requests) == before
+    status, out, _ = run_cli(capsys, *base, "--no-ledger")
+    assert status == 0 and json.loads(out)["requests"] == first["requests"]
