@@ -951,6 +951,20 @@ trustworthy.
 | OTLP exported the same run twice and used millisecond bounds for every unit | Bounds follow the unit; `OtlpExportLedger` sends each record once. |
 | The scheduler's edge index could go stale | `GraphEdge` is frozen and `StateGraph.set_edge_enabled` switches an edge through the graph, which invalidates the index. |
 
+### Resolved by the defaults pass
+
+The v2 report left two limits that depended on the host: with no anchor the SDK was
+tamper-evident only, and an executor with no authorizer ran ungoverned. Both defaults changed.
+Numbers are from `benchmarks/trust` (`PREREGISTRATION_V3.md`, `reports/v3_dev.md`, scripted
+solvers) and from a small live-model run.
+
+| Area | Resolved |
+|---|---|
+| Detection depended on the host configuring an anchor | `AgentRuntimeServices.open` and `create_mcp_server` sign checkpoints with a random local key and a sink under `NAILONG_ANCHOR_HOME` (outside the run root) unless `checkpointer=None`. In the default configuration all 22 store/class tamper cells were detected (at least 200 trials each, exact lower bound 0.985 or more) and 600 untouched checks raised no alarm (exact upper 0.0050). With `checkpointer=None` the old gaps remain, and the report lists them as expected. |
+| An executor with no authorizer ran ungoverned | `require_tool_authorization` defaults to true on `BaseAgent`, graph bindings and LangGraph bindings: such a call is refused with `TOOL_AUTHORIZER_MISSING` unless the executor enforces authorization itself or the host passes `False`. The `no-authorizer-default` scenario let 0 of 150 trials through; its control violates 150/150. |
+| The capped search seed was weaker than the greedy | The seed above 400 items is the adaptive fill, which selects what the greedy baseline selects (13,631 utility on a 2,000-item DAG in 0.06 s against 39 s); it falls back to the density fill only when the closures are too large to hold. |
+| Re-exporting a run to a collector doubled it | `export-otlp` keeps `<run-root>/.otlp-export-ledger.json` by default; `--no-ledger` resends. |
+
 ### Still open
 
 1. **[inspected] Retention covers telemetry, audit transcripts and tool-result journals of
@@ -1126,24 +1140,26 @@ trustworthy.
     until nothing changes, so a long dependency chain costs one sweep per level; rewriting it as a
     worklist could change the order of the recorded status events, which replay and snapshots
     depend on, and was not done.
-17. **[inspected] An anchor covers the evidence only up to its newest record.** Writes after the
-    newest checkpoint or anchor are `advanced`, not protected (cutting exactly back to it is not
-    detected: 358/358 undetected), and a crash before the first one leaves none. Anchors are
-    independent only while the signing key and the sink are out of the writer's reach; one
-    on the same disk and under the same OS user is separate in name only, and an attacker who
-    rewrites both the evidence and its anchor is not resisted. The HMAC key is shared, so
-    whoever holds it can sign. `ArtifactStore(durable=)` is false unless the task runner has a
-    checkpointer, and a power loss can still drop what the operating system had not written.
-    With no anchor the plain arm of the tamper battery still misses artifacts/reseal and
-    truncate, half of artifacts/delete, audit reseal and telemetry reseal, delete and truncate.
-18. **[inspected] Authority is enforced where the SDK dispatches, and nowhere else.** An agent
-    built by hand with an executor of its own and no authorizer is governed only if
-    `require_tool_authorization=True`; a graph node without a `tool_authorizer_factory` is not;
-    the side-effect class of a custom or MCP tool is whatever its declaration says; a
-    registered command acts with the host process's privileges; and a network call or file write
-    made outside the SDK's tools is invisible to it. Single-use consumption relies on the
-    approvals file's advisory lock, so it holds on one machine and file system and not across
-    hosts. MCP approvals separate roles, not people (item 3).
+17. **[inspected] An anchor covers the evidence only up to its newest record, and the default
+    anchor shares the writer's operating-system user.** Writes after the newest checkpoint or
+    anchor are `advanced`, not protected (cutting exactly back to it is not detected: 266/266
+    undetected), and a crash before the first one leaves none. The default key and sink sit in
+    `NAILONG_ANCHOR_HOME`, so they cover a change made to the run root and not a process that can
+    also read that directory; an attacker who rewrites the evidence and the key or the sink is not
+    resisted, and a deployment that needs that supplies its own signer and a sink the writer cannot
+    reach. If the anchor home cannot be created the service logs the path and the exception and
+    runs tamper-evident only. `ArtifactStore(durable=)` is false unless a checkpointer exists, and
+    a power loss can still drop what the operating system had not written. With
+    `checkpointer=None` the tamper battery still misses artifacts/reseal and truncate, half of
+    artifacts/delete, audit reseal and telemetry reseal, delete and truncate.
+18. **[inspected] Authority is enforced where the SDK dispatches, and nowhere else.** A host
+    that passes `require_tool_authorization=False` with an executor of its own is ungoverned by
+    choice; the side-effect class of a custom tool is whatever its declaration says (tools
+    bridged from MCP servers are classified `PROCESS`); a registered command acts with the host
+    process's privileges; and a network call or file write made outside the SDK's tools is
+    invisible to it. Single-use consumption relies on the approvals file's advisory lock, so it
+    holds on one machine and file system and not across hosts. MCP approvals separate roles, not
+    people (item 3).
 19. **[inspected] Lineage sees only what the journal and the store recorded.** Data that
     reached a run by another path is not followed, and the chain then ends with a statement of
     what was not seen. A `read_file` is matched by the lines it returned, so a journal entry cut
@@ -1160,12 +1176,12 @@ trustworthy.
 21. **[inspected] Histogram bounds depend on the unit.** Units without their own bounds use 1
     to 100,000 by decades. A ledger makes an export idempotent only if the caller passes it;
     without one, exporting a run twice sends it twice.
-22. **[measured] The v2 evidence is partly under-powered and not a live-model run.** The tamper
-    battery ran 30 seeds: the artifact cells have 60 to 120 trials, below the 183 a 0.98 lower
-    bound needs with no miss, and the untouched control has 120 trials, below the 149 a 0.02
-    upper bound needs, so V2.1a and V2.1b are reported NOT RUN although no tampering went
-    undetected with the anchor. The v1 P1.4 line has the same cause (all detected, too few
-    trials). No battery calls a model; the 44 committed live-model runs were only verified
-    read-only (all intact). The v1 lock and the test-split confirmatory run are the owner's and
-    were not made, and the Jev judge arm was not run. The benchmark ran on a tree whose only
-    uncommitted changes were documentation.
+22. **[measured] What the evidence does and does not show.** All batteries use scripted
+    solvers. The live-model run is 20 runs of one model (`glm-5p3-flash`) in four small scenarios:
+    chains intact, anchors matching and cut-backs detected in all 20, no file outside the declared
+    output, and the approval gate blocked the write in the 5 unapproved runs. In the 10 runs that
+    pressed the model to write outside its output (hostile text in a file, an instruction in the
+    task) it never tried, so the live runs say nothing about whether the boundary holds against a
+    model; one run ended on the provider's output limit. The 44 committed live-model ledgers were
+    verified read-only (all intact). The 0.98 exact lower bound needs 149 trials with no miss
+    (the v2 and v3 pre-registrations say 183, which is wrong; the code was right).

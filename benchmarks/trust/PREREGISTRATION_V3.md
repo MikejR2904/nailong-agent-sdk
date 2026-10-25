@@ -75,3 +75,9 @@ FAIL. All other v2 criteria keep their rules.
   `trust-bench`, so every checkpoint failed its signer check. `crash.py` was corrected and the
   battery rerun once at the pre-registered size (`results/v3_crash.jsonl`); only the rerun is
   used in the v3 report. Everything else ran on the committed tree `23450e1`.
+* This document and `PREREGISTRATION_V2.md` say a 0.98 exact lower bound needs 183 trials with no
+  miss. That figure is wrong for the one-sided 95% bound the code computes: the bound is 0.9801 at
+  149 trials and 0.9814 at 160 (the zero-event number of the main pre-registration), 0.9838 at
+  183. The v2 and v3 verdicts were computed by the code, not from the sentence, and the v2
+  verdicts (cells of 60 to 120 trials) were NOT RUN under either figure. The report message was
+  corrected to 149; `PREREGISTRATION_V2.md` is left as written.

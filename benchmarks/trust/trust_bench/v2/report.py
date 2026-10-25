@@ -40,7 +40,7 @@ def detection(detected: int, trials: int) -> tuple[str, str]:
     if detected < trials:
         return FAIL, estimate
     if lower < CELL_FLOOR:
-        return NOT_RUN, f"{estimate}; a 0.98 lower bound needs 183 trials with no miss"
+        return NOT_RUN, f"{estimate}; a 0.98 lower bound needs 149 trials with no miss"
     return PASS, estimate
 
 
