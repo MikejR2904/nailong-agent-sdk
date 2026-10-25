@@ -47,7 +47,7 @@ MAX_CRASH_POINT = 27
 
 
 def signer() -> HmacSha256Signer:
-    return HmacSha256Signer(CHECKPOINT_KEY, signer_id="trust-bench")
+    return HmacSha256Signer(CHECKPOINT_KEY, signer_id="local-anchor")
 
 
 def child_environment() -> dict[str, str]:

@@ -66,3 +66,12 @@ FAIL. All other v2 criteria keep their rules.
   process that can also read `NAILONG_ANCHOR_HOME`.
 * Writes after the newest checkpoint are not protected.
 * A host that passes `require_tool_authorization=False` is ungoverned by choice.
+
+## Deviations recorded during the run
+
+* The first v3 crash run (`results/v3_crash_signer_mismatch.jsonl`, kept) reported 300/300 alarms and
+  39/634 cuts detected. The cause was in the harness, not the SDK: the explicit-anchor arm's signer
+  id had been renamed to `local-anchor` for the default arm while `v2/crash.py` still verified with
+  `trust-bench`, so every checkpoint failed its signer check. `crash.py` was corrected and the
+  battery rerun once at the pre-registered size (`results/v3_crash.jsonl`); only the rerun is
+  used in the v3 report. Everything else ran on the committed tree `23450e1`.
