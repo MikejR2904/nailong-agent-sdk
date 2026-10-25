@@ -263,3 +263,45 @@ def test_a_capped_search_above_the_seed_limit_does_not_run_the_quadratic_greedy(
         )
         assert solution.solver == "branch-and-bound"
         assert solution.token_cost <= problem.token_budget and solution.utility > 0
+
+
+def large_dag(seed, n):
+    rng = random.Random(seed)
+    items = [
+        PckpItem(
+            item_id=f"i{index}",
+            token_cost=rng.randint(1, 40),
+            utility=rng.randint(1, 30),
+            prerequisites=[
+                f"i{q}"
+                for q in rng.sample(range(index), min(index, rng.choice([0, 0, 1, 1, 2, 3])))
+            ],
+            mandatory=rng.random() < 0.01,
+        )
+        for index in range(n)
+    ]
+    return PckpProblem(token_budget=sum(item.token_cost for item in items) // 4, items=items)
+
+
+def test_the_adaptive_fill_reproduces_the_greedy_selection_on_a_large_dag():
+    from nailong_agent_sdk.foundations.optimization.solvers import _adaptive_fill, _closure
+
+    for seed in range(3):
+        problem = large_dag(seed, 450)
+        items = {item.item_id: item for item in problem.items}
+        mandatory = _closure({item.item_id for item in problem.items if item.mandatory}, items)
+        greedy = GreedyPckpBaseline().solve(problem)
+        assert _adaptive_fill(mandatory, items, problem.token_budget) == set(
+            greedy.selected_item_ids
+        )
+
+
+def test_the_adaptive_fill_gives_up_when_the_closures_are_too_large(monkeypatch):
+    from nailong_agent_sdk.foundations.optimization import solvers
+
+    monkeypatch.setattr(solvers, "ADAPTIVE_FILL_MAX_CLOSURE_ENTRIES", 10)
+    problem = large_dag(0, 450)
+    items = {item.item_id: item for item in problem.items}
+    assert solvers._adaptive_fill(set(), items, problem.token_budget) is None
+    solution = ExactPckpSolver(max_branch_nodes=3, enable_tree_dynamic_program=False).solve(problem)
+    assert solution.token_cost <= problem.token_budget and solution.utility > 0

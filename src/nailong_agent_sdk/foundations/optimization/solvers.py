@@ -28,6 +28,7 @@ https://www.sciencedirect.com/science/article/abs/pii/S0377221706010642
 
 from __future__ import annotations
 
+import heapq
 from collections.abc import Iterable
 from fractions import Fraction
 
@@ -35,6 +36,7 @@ from ..hashing import sha256_hex, strict_canonical_json
 from .models import PckpItem, PckpProblem, PckpSolution, PckpStatus
 
 GREEDY_SEED_MAX_ITEMS = 400
+ADAPTIVE_FILL_MAX_CLOSURE_ENTRIES = 3_000_000
 
 
 class ExactPckpSolver:
@@ -113,7 +115,7 @@ class ExactPckpSolver:
         incumbent_selection = (
             set(GreedyPckpBaseline().solve(problem).selected_item_ids)
             if len(items) <= GREEDY_SEED_MAX_ITEMS
-            else _density_fill(mandatory, items, density_order, problem.token_budget)
+            else _seed_fill(mandatory, items, density_order, problem.token_budget)
         )
         incumbent_utility = _utility(incumbent_selection, items)
         incumbent_cost = _cost(incumbent_selection, items)
@@ -400,6 +402,75 @@ def _prune_dominated(states: _States) -> _States:
             retained[cost] = (utility, selection)
             best_utility = utility
     return retained
+
+
+def _seed_fill(
+    mandatory: set[str],
+    items: dict[str, PckpItem],
+    density_order: list[PckpItem],
+    budget: int,
+) -> set[str]:
+    adaptive = _adaptive_fill(mandatory, items, budget)
+    if adaptive is not None:
+        return adaptive
+    return _density_fill(mandatory, items, density_order, budget)
+
+
+def _adaptive_fill(mandatory: set[str], items: dict[str, PckpItem], budget: int) -> set[str] | None:
+    closures: dict[str, set[str]] = {}
+    entries = 0
+    for item_id in sorted(items):
+        closures[item_id] = _closure({item_id}, items)
+        entries += len(closures[item_id])
+        if entries > ADAPTIVE_FILL_MAX_CLOSURE_ENTRIES:
+            return None
+    containing: dict[str, list[str]] = {}
+    for item_id, closure in closures.items():
+        for member in closure:
+            containing.setdefault(member, []).append(item_id)
+    selected = set(mandatory)
+    remaining_cost = {}
+    remaining_utility = {}
+    for item_id, closure in closures.items():
+        outside = closure - selected
+        remaining_cost[item_id] = _cost(outside, items)
+        remaining_utility[item_id] = _utility(outside, items)
+    version = dict.fromkeys(items, 0)
+    spent = _cost(selected, items)
+    heap: list[tuple[Fraction, int, int, str, int]] = []
+
+    def push(item_id: str) -> None:
+        utility = remaining_utility[item_id]
+        if item_id in selected or utility <= 0:
+            return
+        cost = remaining_cost[item_id]
+        heapq.heappush(
+            heap, (-Fraction(utility, cost or 1), -utility, cost, item_id, version[item_id])
+        )
+
+    for item_id in sorted(items):
+        push(item_id)
+    while heap:
+        _, _, cost, item_id, stamp = heapq.heappop(heap)
+        if stamp != version[item_id] or item_id in selected:
+            continue
+        if spent + cost > budget:
+            continue
+        added = closures[item_id] - selected
+        selected |= added
+        spent += cost
+        touched: set[str] = set()
+        for member in added:
+            cost_of = items[member].token_cost
+            utility_of = items[member].utility
+            for owner in containing[member]:
+                remaining_cost[owner] -= cost_of
+                remaining_utility[owner] -= utility_of
+                touched.add(owner)
+        for owner in touched:
+            version[owner] += 1
+            push(owner)
+    return selected
 
 
 def _density_fill(
