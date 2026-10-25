@@ -17,6 +17,7 @@ from typing import Any
 
 from ..jobs import parse_seeds, read_results, write_results
 from ..splits import Split
+from . import live as live_module
 from . import realruns
 from .boundary import boundary_job, enumerate_boundary_jobs
 from .crash import crash_job, enumerate_crash_jobs
@@ -40,7 +41,7 @@ BATTERIES: dict[str, tuple[str, Callable[[list[int]], list[Any]], Callable[[Any]
         lineage_job,
     ),
 }
-COMMANDS = frozenset({*BATTERIES, "realruns", "source-tests", "report-v2"})
+COMMANDS = frozenset({*BATTERIES, "live", "realruns", "source-tests", "report-v2"})
 
 SOURCE_PROPERTIES: dict[str, list[str]] = {
     "approval consumption is atomic across threads and processes": [
@@ -111,12 +112,34 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "realruns", help="verify the committed real-agent ledgers (read-only copy)"
     )
     real.add_argument("--out", type=Path, required=True)
+    live = sub.add_parser(
+        "live", help="drive three small scenarios with a real model (calls the model)"
+    )
+    live.add_argument("--reps", type=int, default=3)
+    live.add_argument("--model", default=live_module.MODEL)
+    live.add_argument("--scenarios", default="")
+    live.add_argument("--out", type=Path, required=True)
+    live.add_argument(
+        "--confirm-model-calls",
+        action="store_true",
+        help="required: the run sends requests to the provider and costs money",
+    )
     source = sub.add_parser(
         "source-tests", help="run the source-level property tests and record them"
     )
     source.add_argument("--out", type=Path, required=True)
     report = sub.add_parser("report-v2", help="render the v2 report")
-    for item in ("tamper", "crash", "staterun", "boundary", "lineage", "realruns", "source", "v1"):
+    for item in (
+        "tamper",
+        "crash",
+        "staterun",
+        "boundary",
+        "lineage",
+        "realruns",
+        "live",
+        "source",
+        "v1",
+    ):
         report.add_argument(f"--{item}", type=Path)
     report.add_argument("--commit", default="unknown")
     report.add_argument("--out", type=Path, required=True)
@@ -204,6 +227,13 @@ def dispatch(args: argparse.Namespace) -> int:
         return _run(args.command, args)
     if args.command == "realruns":
         return _realruns(args)
+    if args.command == "live":
+        if not args.confirm_model_calls:
+            print("live calls a paid model; pass --confirm-model-calls to run it.")
+            return 2
+        names = [item for item in args.scenarios.split(",") if item] or None
+        live_module.live_run(args.reps, args.model, args.out, names)
+        return 0
     if args.command == "source-tests":
         return _source_tests(args)
     source = (
@@ -217,6 +247,7 @@ def dispatch(args: argparse.Namespace) -> int:
         boundary=_load(args.boundary),
         lineage=_load(args.lineage),
         realruns=_load(args.realruns),
+        live=_load(args.live),
         source=source,
         v1=str(args.v1) if args.v1 else None,
     )
