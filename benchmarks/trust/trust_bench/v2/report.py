@@ -65,7 +65,8 @@ def tamper_section(rows: list[dict[str, Any]]) -> tuple[list[str], list[tuple[st
             cell[0] += bool(found)
     out: list[str] = []
     cards: list[tuple[str, ...]] = []
-    anchored = {key: value for key, value in cells.items() if key[0] == "sdk+anchor"}
+    primary = "sdk-default" if any(key[0] == "sdk-default" for key in cells) else "sdk+anchor"
+    anchored = {key: value for key, value in cells.items() if key[0] == primary}
     failing = [
         f"{key[1]}/{key[2]} {value[0]}/{value[1]}"
         for key, value in sorted(anchored.items())
@@ -85,15 +86,19 @@ def tamper_section(rows: list[dict[str, Any]]) -> tuple[list[str], list[tuple[st
     cards.append(
         (
             "V2.1a",
-            "with the anchor every class on every store is detected",
+            "with the default configuration every class on every store is detected",
             f"{len(anchored) - len(failing) - len(underpowered)} of {len(anchored)} cells pass"
             + (f"; missed: {', '.join(failing)}" if failing else "")
             + (f"; too few trials for 0.98: {', '.join(underpowered)}" if underpowered else ""),
             verdict,
         )
     )
-    total_events = sum(value[0] for key, value in alarms.items() if key in ("sdk", "sdk+anchor"))
-    total_trials = sum(value[1] for key, value in alarms.items() if key in ("sdk", "sdk+anchor"))
+    total_events = sum(
+        value[0] for key, value in alarms.items() if key in ("sdk", "sdk+anchor", "sdk-default")
+    )
+    total_trials = sum(
+        value[1] for key, value in alarms.items() if key in ("sdk", "sdk+anchor", "sdk-default")
+    )
     state, estimate = zero_event(total_events, total_trials)
     cards.append(("V2.1b", "an untouched run raises no alarm", estimate, state))
     for arm in sorted({key[0] for key in cells}):
@@ -326,7 +331,7 @@ def boundary_section(rows: list[dict[str, Any]]) -> tuple[list[str], list[tuple[
         ("V2.3b", "every denial, consumption and revocation has its event", estimate, state)
     )
     controlled = []
-    for scenario in ("custom-executor", "single-use-race", "foreign"):
+    for scenario in ("custom-executor", "no-authorizer-default", "single-use-race", "foreign"):
         mine = [row for row in rows if row["scenario"] == scenario and row["arm"] == "control"]
         if mine:
             controlled.append((scenario, sum(1 for row in mine if row["violations"]), len(mine)))

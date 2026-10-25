@@ -393,6 +393,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - **class `ElasticRequestToolExecutor`** *(class)* - Tool executor that serves `request_elastic_node` from the queue and passes every other tool to the wrapped executor (or fails naming the tool when there is none). · *Instantiated by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`
   - `ElasticRequestToolExecutor.__init__(inner: ToolExecutor | None, buffer: ElasticRequestBuffer) -> None` - Stores the wrapped executor and the queue.
   - `ElasticRequestToolExecutor.execute(tool: ToolDefinition, context: ToolInvocationContext) -> ToolExecutionResult` *(async)* - For `request_elastic_node`: validates the arguments into an `ElasticSpawnRequest` (failure `ELASTIC_REQUEST_INVALID` naming each field) and queues it (failure with the refusal code); success returns the receipt.
+  - `ElasticRequestToolExecutor.enforces_authorization() -> bool` *(property)* - True when there is no inner executor (the request tool alone changes nothing) or the inner one enforces authorization, so wrapping an executor does not hide whether it is governed.
 
 ---
 
@@ -455,6 +456,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 **Algorithms & invariants.** `read_artifact` and `grep_artifact` check the plan-task authorization here and then run the implementation in `core/services.py`; `diff_declared_artifacts` has its own authorization (including occurrence proof) here and calls `ArtifactStore.diff`.
 
 *Module-level names:* `HarnessToolHandler`
+  - `HarnessToolExecutor.enforces_authorization() -> bool` *(property)* - Always True: the executor asks its own `CapabilityToolAuthorizer`, which is what lets `BaseAgent` accept it without a separate authorizer.
 
 ---
 

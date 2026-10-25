@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -137,6 +138,7 @@ def run_sdk(
     run_dir: Path,
     *,
     anchored: bool = False,
+    default_anchor: bool = False,
     acceptance: Acceptance | None = None,
 ) -> SdkRun:
     if len(case.nodes()) > 1:
@@ -148,7 +150,7 @@ def run_sdk(
     anchor_dir = run_dir / "anchor" if anchored else None
     checkpointer = None
     if anchor_dir is not None:
-        signer = HmacSha256Signer(CHECKPOINT_KEY, signer_id="trust-bench")
+        signer = HmacSha256Signer(CHECKPOINT_KEY, signer_id="local-anchor")
         checkpointer = RunHeadCheckpointer(signer, FileCheckpointSink(anchor_dir))
     workspace = run_root / "workspaces" / file_safe_name(run_id)
     case.materialize(workspace, fault)
@@ -159,7 +161,16 @@ def run_sdk(
         agent_id=case.agent_label,
         watcher=WorkspaceWatcher(workspace),
     )
-    services = AgentRuntimeServices.open(run_root, checkpointer=checkpointer)
+    if default_anchor:
+        home = run_dir / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "anchor.key").write_text(CHECKPOINT_KEY.decode("ascii"), encoding="utf-8")
+        os.environ["NAILONG_ANCHOR_HOME"] = str(home)
+        services = AgentRuntimeServices.open(run_root)
+        assert services.checkpointer is not None
+        anchor_dir = Path(services.checkpointer.sink.directory)
+    else:
+        services = AgentRuntimeServices.open(run_root, checkpointer=checkpointer)
     task = ScopedAgentTask(
         id=run_id,
         input={},

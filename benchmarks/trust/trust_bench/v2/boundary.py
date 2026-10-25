@@ -56,6 +56,7 @@ from nailong_agent_sdk.tools.tools import ToolInvocationContext
 
 SCENARIOS = (
     "custom-executor",
+    "no-authorizer-default",
     "single-use-race",
     "revoked",
     "foreign",
@@ -66,7 +67,7 @@ SCENARIOS = (
     "retry-storm",
 )
 ARMS = ("sdk", "control")
-CONTROLLED = frozenset({"custom-executor", "single-use-race", "foreign"})
+CONTROLLED = frozenset({"custom-executor", "no-authorizer-default", "single-use-race", "foreign"})
 HUMAN = DecisionSource(authority=TelemetryAuthority.HUMAN, identifier="bench-approver")
 RUN = "run-1"
 NODE = "node-1"
@@ -187,7 +188,9 @@ def row(world: World | None, **fields: Any) -> dict[str, Any]:
     return base
 
 
-def scenario_custom_executor(rng: random.Random, arm: str, root: Path) -> dict[str, Any]:
+def scenario_custom_executor(
+    rng: random.Random, arm: str, root: Path, *, supply_authorizer: bool = True
+) -> dict[str, Any]:
     world = build_world(root)
     executed: list[str] = []
 
@@ -234,12 +237,19 @@ def scenario_custom_executor(rng: random.Random, arm: str, root: Path) -> dict[s
     from pydantic import TypeAdapter
 
     adapter: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
+    governance: dict[str, Any] = (
+        {
+            "tool_authorizer": world.executor().authorizer if arm == "sdk" else None,
+            "require_tool_authorization": arm == "sdk",
+        }
+        if supply_authorizer
+        else ({} if arm == "sdk" else {"require_tool_authorization": False})
+    )
     agent = BaseAgent(
         definition,
         ScriptedModel([adapter.validate_python(turn) for turn in turns]),
         tool_executor=Host(),
-        tool_authorizer=world.executor().authorizer if arm == "sdk" else None,
-        require_tool_authorization=arm == "sdk",
+        **governance,
     )
     task = ScopedAgentTask(
         id="T1",
@@ -253,8 +263,12 @@ def scenario_custom_executor(rng: random.Random, arm: str, root: Path) -> dict[s
     refusals = world.events.count(ApprovalEventKind.REQUESTED) + world.events.count(
         ApprovalEventKind.DENIED
     )
-    gap = 0 if arm == "control" or not count or refusals >= 1 else 1
+    gap = 0 if arm == "control" or not supply_authorizer or not count or refusals >= 1 else 1
     return row(world, attempts=count, executed=len(executed), violations=len(executed), gaps=gap)
+
+
+def scenario_no_authorizer_default(rng: random.Random, arm: str, root: Path) -> dict[str, Any]:
+    return scenario_custom_executor(rng, arm, root, supply_authorizer=False)
 
 
 def scenario_single_use_race(rng: random.Random, arm: str, root: Path) -> dict[str, Any]:
@@ -450,6 +464,7 @@ def scenario_retry_storm(rng: random.Random, arm: str, root: Path) -> dict[str, 
 
 RUNNERS = {
     "custom-executor": scenario_custom_executor,
+    "no-authorizer-default": scenario_no_authorizer_default,
     "single-use-race": scenario_single_use_race,
     "revoked": scenario_revoked,
     "foreign": scenario_foreign,

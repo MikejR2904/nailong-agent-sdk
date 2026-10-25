@@ -14,7 +14,7 @@ from typing import Any
 from . import stats
 from .evaluate import FAMILIES
 
-ARMS = ("sdk", "sdk+anchor", "langgraph")
+ARMS = ("sdk", "sdk+anchor", "sdk-default", "langgraph")
 
 
 def tamper_job(job: tuple[str, int, str]) -> dict[str, Any]:
@@ -23,11 +23,17 @@ def tamper_job(job: tuple[str, int, str]) -> dict[str, Any]:
     case = FAMILIES[family](seed)
     with tempfile.TemporaryDirectory(prefix="trustbench_tamper_") as directory:
         base = Path(directory)
-        if arm in {"sdk", "sdk+anchor"}:
+        if arm in {"sdk", "sdk+anchor", "sdk-default"}:
             from .systems.nailong import run_sdk
             from .systems.nailong_tamper import tamper_sdk
 
-            run = run_sdk(case, None, base / "run", anchored=arm == "sdk+anchor")
+            run = run_sdk(
+                case,
+                None,
+                base / "run",
+                anchored=arm == "sdk+anchor",
+                default_anchor=arm == "sdk-default",
+            )
             report = tamper_sdk(run, base / "work")
         elif arm == "langgraph":
             from .systems.langgraph_arm import run_langgraph

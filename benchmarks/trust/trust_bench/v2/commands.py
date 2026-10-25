@@ -55,7 +55,7 @@ SOURCE_PROPERTIES: dict[str, list[str]] = {
         "tests/tools/test_authority_hardening.py::"
         "test_an_approval_of_another_run_or_node_never_authorizes_a_call",
     ],
-    "an authorizer on the agent decides before a custom executor": [
+    "an authorizer on the agent decides before a custom executor; none is refused by default": [
         "tests/tools/test_authorization_boundary.py",
         "tests/agent/test_graph_authority.py",
     ],
@@ -73,6 +73,9 @@ SOURCE_PROPERTIES: dict[str, list[str]] = {
         "tests/tools/test_artifact_anchor.py",
         "tests/tools/test_artifact_durability.py",
     ],
+    "a service opened with no checkpointer anchors by default, outside the run root": [
+        "tests/agent/test_default_anchor.py",
+    ],
     "the graph run record is anchored": ["tests/state/test_run_anchor.py"],
     "periodic checkpoints and graph-node anchoring": [
         "tests/agent/test_periodic_checkpoints.py",
@@ -87,6 +90,10 @@ SOURCE_PROPERTIES: dict[str, list[str]] = {
     ],
     "an OTLP export with a ledger sends each record once; bounds follow the unit": [
         "tests/observability/test_otlp_idempotence.py",
+        "tests/developer_tools/test_export_otlp.py",
+    ],
+    "the capped search seeds from the adaptive fill, equal to the greedy selection": [
+        "tests/foundations/test_optimization_solvers.py",
     ],
     "graph edges cannot be changed in place and the index follows a switch": [
         "tests/state/test_graph_edge_mutation.py",

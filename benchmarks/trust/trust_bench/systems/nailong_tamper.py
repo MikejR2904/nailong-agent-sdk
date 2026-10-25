@@ -63,7 +63,7 @@ def verify(run_id: str, root: Path, workspace: Path, anchor: Path | None) -> tup
             if link.state is not TerminalLinkState.LINKED:
                 failures.append(f"terminal-link:{link.state.value}")
             if anchor is not None:
-                signer = HmacSha256Signer(CHECKPOINT_KEY, signer_id="trust-bench")
+                signer = HmacSha256Signer(CHECKPOINT_KEY, signer_id="local-anchor")
                 report = check_run_heads(
                     ledgers.telemetry, ledgers.audit, run_id, FileCheckpointSink(anchor), signer
                 )
@@ -80,7 +80,7 @@ def verify(run_id: str, root: Path, workspace: Path, anchor: Path | None) -> tup
         if not history.ok:
             failures.append(f"artifact-history:line-{history.broken_at}")
         if anchor is not None:
-            signer = HmacSha256Signer(CHECKPOINT_KEY, signer_id="trust-bench")
+            signer = HmacSha256Signer(CHECKPOINT_KEY, signer_id="local-anchor")
             anchored = verify_artifact_anchor(
                 store, FileCheckpointSink(anchor), artifact_anchor_name(run_id), signer
             )

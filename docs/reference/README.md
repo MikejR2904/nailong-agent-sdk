@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **170 files, 622 classes and 2,211 functions** (methods and nested closures included).
+covers **170 files, 623 classes and 2,221 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -219,10 +219,12 @@ BLOCKED), then asks the agent's **tool authorizer**, if it has one, and only the
 `ToolExecutor` and the post-tool hooks, all under the tool watchdog. The authorizer is the point
 where authority is decided: an authorizer that denies stops a custom executor before it is
 called, one that raises refuses the call (`TOOL_AUTHORIZATION_FAILED`), and
-`require_tool_authorization=True` fails a run that has none (`TOOL_AUTHORIZER_MISSING`).
+`require_tool_authorization` defaults to true and fails a call (`TOOL_AUTHORIZER_MISSING`) whose
+executor neither enforces authorization itself (`HarnessToolExecutor` does) nor has an authorizer.
 `AgentTaskRunner` always sets one; a graph node sets one through
-`GraphAgentBinding.tool_authorizer_factory`; an agent built by hand with an executor of its own
-and no authorizer is not governed by the SDK (see "Trust boundaries").
+`GraphAgentBinding.tool_authorizer_factory` or uses a `HarnessToolExecutor`; a host that passes
+`require_tool_authorization=False` with an executor of its own has chosen to run ungoverned (see
+"Trust boundaries").
 
 `CapabilityToolAuthorizer` (`tools/authorization.py`), which `HarnessToolExecutor` also holds and
 whose stamp the executor accepts instead of asking twice, decides in this order: the tool must be
@@ -339,7 +341,7 @@ specification: that belongs to the interface that calls the agent.
 | Graph run-record anchors | outside the run root, in the same `CheckpointSink` (`<run>.run.checkpoints.jsonl`) | an HMAC-SHA256 signature over the run's history length, the hash of that history prefix and the record hash, appended when `HarnessCoordinator(anchorer=)` finishes `execute_run` and checked by `verify_run_anchor`; without it a record re-saved with consistent hashes passes the store's own check |
 | Artifact write-log anchors | outside the workspace, in the same `CheckpointSink` (`<run>.artifacts.checkpoints.jsonl`) | an HMAC-SHA256 signature over the log's record count and head hash, appended when a task run ends (`anchor_artifacts_after_run`), every `checkpoint_interval_seconds` while it runs and when a graph node finishes (`GraphAgentBinding.artifact_store_factory`), and checked by `verify_artifact_anchor`; without it the log is tamper-evident only |
 
-Each chain detects an edit in the middle; the artifact write log (`.agent-artifacts/history/writes.jsonl`) is chained the same way and checked by `ArtifactStore.verify_history`. The removal of the newest entries, or a rewrite that reseals a chain, is detected only against a record kept outside the run root: the tombstone anchor for the retention log, a signed anchor of the artifact write log (`anchor_artifact_log`) and a signed run-head checkpoint (`export_run_head_checkpoint`, `nailong-agent-sdk-dev checkpoint-run`) for a run. At the end of a run its `agent.profile-completed` event records the audit chain's head and a final `terminal-link` audit entry records that event's hash, so one intact store vouches for the other (`verify_terminal_link`); the link is an entry of its own so that a small audit payload bound cannot cut it. A run that retention pruned verifies as `pruned`, not `truncated`, when its tombstone holds the checkpoint's final heads. Nothing is checkpointed unless asked: by `checkpoint-run`, or by the runtime when `AgentRuntimeServices.open(checkpointer=...)` (the MCP service: `AGENT_RUNTIME_CHECKPOINT_DIR` and `AGENT_RUNTIME_CHECKPOINT_KEY_FILE`) names a `RunHeadCheckpointer`.
+Each chain detects an edit in the middle; the artifact write log (`.agent-artifacts/history/writes.jsonl`) is chained the same way and checked by `ArtifactStore.verify_history`. The removal of the newest entries, or a rewrite that reseals a chain, is detected only against a record kept outside the run root: the tombstone anchor for the retention log, a signed anchor of the artifact write log (`anchor_artifact_log`) and a signed run-head checkpoint (`export_run_head_checkpoint`, `nailong-agent-sdk-dev checkpoint-run`) for a run. At the end of a run its `agent.profile-completed` event records the audit chain's head and a final `terminal-link` audit entry records that event's hash, so one intact store vouches for the other (`verify_terminal_link`); the link is an entry of its own so that a small audit payload bound cannot cut it. A run that retention pruned verifies as `pruned`, not `truncated`, when its tombstone holds the checkpoint's final heads. The runtime checkpoints by default: `AgentRuntimeServices.open` and `create_mcp_server` use `RunHeadCheckpointer.local` (a random key in `NAILONG_ANCHOR_HOME`, a sink per run root beside it) unless `checkpointer=` names another `RunHeadCheckpointer` (the MCP service: `AGENT_RUNTIME_CHECKPOINT_DIR` and `AGENT_RUNTIME_CHECKPOINT_KEY_FILE`) or `None` switches it off; `checkpoint-run` does it by hand.
 
 Verifying the chains says whether the evidence can be trusted, not what the run did.
 `nailong-agent-sdk-dev diagnose-run <root> <run-id>` (`diagnose_run`) reads the same ledgers and,
@@ -382,11 +384,11 @@ does all three in different places, and only inside the boundaries below.
 
 | What | How it works | Where it holds | Where it stops |
 |---|---|---|---|
-| No governed tool call runs without authority | `CapabilityToolAuthorizer` decides before the executor; a state-changing call consumes its approval first | Calls through `BaseAgent` with a `tool_authorizer` (always the case for `AgentTaskRunner`) and calls through `HarnessToolExecutor` | An agent built with a `ToolExecutor` of the host's and no authorizer (`require_tool_authorization=True` fails such a run); a graph node whose binding has no `tool_authorizer_factory`; tools of MCP servers, whose side-effect class is what the caller declared; whatever a registered command does with the host process's own privileges; a network call or a file write made outside the SDK's tools |
+| No governed tool call runs without authority | `CapabilityToolAuthorizer` decides before the executor; a state-changing call consumes its approval first | Calls through `BaseAgent` with a `tool_authorizer` (always the case for `AgentTaskRunner`) and calls through `HarnessToolExecutor`; an agent or graph node with any other executor and no authorizer is refused by default | A host that passes `require_tool_authorization=False`; a custom tool whose side-effect class the host declared wrongly (tools bridged from MCP servers are classified `PROCESS`); whatever a registered command does with the host process's own privileges; a network call or a file write made outside the SDK's tools |
 | A single-use approval allows one call | Consumption inside the registry's transaction (a cross-process lock on the approvals file) | One machine and one file system with working advisory locks; across threads and across registry instances on one file | Hosts that do not share the file; file systems without usable locks; an in-memory registry, which belongs to one process |
 | An agent cannot grant or revoke its own approvals | No registered tool grants, revokes or authorizes; granting and revoking are host operations (`submit`, `revoke`, the approver credential over MCP) | The tools the SDK registers | A host that wires the approver credential or the registry into a tool it gives the agent |
 | A changed record is noticed | Hash chains over telemetry, audit, artifact writes and graph history | An edit, insertion, deletion or reorder inside a record | Rewriting the whole chain (the hashes are unkeyed) and cutting the newest records |
-| A rewritten or shortened record is noticed | Signed anchors and checkpoints kept outside the writer's reach | Everything up to the newest anchor, taken at run end, every few seconds with `checkpoint_interval_seconds`, and at graph-node end | Writes after the newest anchor; an attacker who can rewrite both the evidence and the key or the sink; a sink on the same disk and under the same OS user is separate only in name |
+| A rewritten or shortened record is noticed | Signed anchors and checkpoints kept outside the run root; `AgentRuntimeServices.open` and the MCP service create a local one by default (random key and sink under `NAILONG_ANCHOR_HOME`, `~/.nailong-agent-sdk` unless set) | Everything up to the newest anchor, taken at run end, every few seconds with `checkpoint_interval_seconds`, and at graph-node end | Writes after the newest anchor; an attacker who can rewrite both the evidence and the key or the sink; the default key and sink belong to the same OS user as the writer, so they cover a change made to the run root and not a process that can also read the anchor home; `checkpointer=None` or an unusable anchor home (logged with the path and the exception) leaves the run tamper-evident only |
 | A crash does not corrupt the evidence | A torn final record is read as ending before it and discarded on the next append, with an `audit.tail-repaired` entry for the audit log; the artifact store can sync blob, manifests and log line (`durable=True`, set by the task runner when a checkpointer exists); audit entries and checkpoints are synced as written | Process death at any point of a write | A power loss can still drop what the operating system had not written; writes since the last checkpoint stay unprotected after any crash |
 | A trace names where a defect came from | `attribute_lineage` over the tool-result journal, with every relation labelled observed or inferred | The retrievals the journal recorded: artifact reads, stored results, command outputs, fetched pages and searches | Data that reached a run by another path; an exact textual match is a hint and never causal; it needs the caller's checks |
 
@@ -671,7 +673,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 170 files, 622 classes and 2211 functions (including methods and nested closures), each with a written description.*
+*Coverage: 170 files, 623 classes and 2221 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 
