@@ -20,6 +20,7 @@ async def run_many(services, prefix, count, calls=CALLS):
         subject = services.create_agent(
             definition(tools=[tool("echo")], max_iterations=calls + 3),
             ScriptedModel(turns_for(calls)),
+            require_tool_authorization=False,
             tool_executor=FnExecutor(lambda t, c: ok({"v": c.call.id})),
         )
         return await subject.run(task(f"{prefix}-{index}"))

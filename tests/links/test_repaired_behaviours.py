@@ -146,7 +146,10 @@ def test_tool_call_turn_listing_dependencies_fails_with_the_field_named():
             }
 
     subject = BaseAgent(
-        definition(tools=[tool("echo")]), RawModel(), tool_executor=FnExecutor(lambda t, c: ok({}))
+        definition(tools=[tool("echo")]),
+        RawModel(),
+        require_tool_authorization=False,
+        tool_executor=FnExecutor(lambda t, c: ok({})),
     )
     result = arun(subject.run(task()))
     assert result.status is AgentRunStatus.FAILED

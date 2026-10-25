@@ -112,7 +112,7 @@ def test_a_refused_checkpoint_names_the_run_and_the_reason(tmp_path):
 
 
 def test_without_a_checkpointer_nothing_is_written_or_recorded(tmp_path):
-    services = AgentRuntimeServices.open(tmp_path / "run")
+    services = AgentRuntimeServices.open(tmp_path / "run", checkpointer=None)
     try:
         run_checkpointed_task(services)
         types = {event.event_type for event in services.telemetry.list_events("t1", limit=500)}

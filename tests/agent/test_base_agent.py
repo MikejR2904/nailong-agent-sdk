@@ -102,7 +102,12 @@ def test_invalid_tool_arguments_reach_the_model_with_the_tool_and_json_path():
         return final()
 
     executor = echo_executor()
-    subject = BaseAgent(definition(tools=[strict]), DynamicModel(respond), tool_executor=executor)
+    subject = BaseAgent(
+        definition(tools=[strict]),
+        DynamicModel(respond),
+        require_tool_authorization=False,
+        tool_executor=executor,
+    )
     result = arun(subject.run(task()))
     assert result.status is AgentRunStatus.COMPLETED, result.reason
     observation = seen[1]["c1"]

@@ -160,6 +160,10 @@ class HarnessToolExecutor(ToolExecutor):
         )
 
     @property
+    def enforces_authorization(self) -> bool:
+        return True
+
+    @property
     def authorizer(self) -> CapabilityToolAuthorizer:
         return self._authorizer
 

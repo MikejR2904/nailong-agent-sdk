@@ -134,6 +134,7 @@ def agent(turns, *, executor=None, definition_=None, **kwargs):
     return BaseAgent(
         definition_ or definition(),
         model,
+        require_tool_authorization=False,
         tool_executor=executor,
         **kwargs,
     ), model

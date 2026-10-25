@@ -159,6 +159,7 @@ def continuing_run(behaviour, **options):
     subject = BaseAgent(
         definition(tools=[tool("probe")]),
         Continuing(behaviour),
+        require_tool_authorization=False,
         tool_executor=executor,
         **options,
     )

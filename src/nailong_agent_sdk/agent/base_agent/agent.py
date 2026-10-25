@@ -160,7 +160,7 @@ class BaseAgent:
         episode_history_limit: int | None = None,
         price_table: PriceTable | None = None,
         tool_authorizer: ToolAuthorizer | None = None,
-        require_tool_authorization: bool = False,
+        require_tool_authorization: bool | None = None,
     ) -> None:
         if episode_history_limit is not None and episode_history_limit < 1:
             raise ValueError(
@@ -178,7 +178,9 @@ class BaseAgent:
         self.model = model
         self.tool_executor = tool_executor
         self.tool_authorizer = tool_authorizer
-        self.require_tool_authorization = require_tool_authorization
+        self.require_tool_authorization = (
+            True if require_tool_authorization is None else require_tool_authorization
+        )
         self.verification_gates = verification_gates or VerificationGateRegistry()
         self.pre_tool_hooks = tuple(pre_tool_hooks)
         self.post_tool_hooks = tuple(post_tool_hooks)
@@ -1643,12 +1645,17 @@ class BaseAgent:
                 iteration,
                 terminal_status=AgentRunStatus.FAILED,
             )
-        if self.require_tool_authorization and self.tool_authorizer is None:
+        if (
+            self.require_tool_authorization
+            and self.tool_authorizer is None
+            and not getattr(self.tool_executor, "enforces_authorization", False)
+        ):
             failure = AgentFailure(
                 code="TOOL_AUTHORIZER_MISSING",
                 message=(
                     f'Tool "{call.name}" was not run: this agent requires every tool call to be '
-                    "authorized and has no tool_authorizer, so the executor alone cannot decide."
+                    "authorized and has neither a tool_authorizer nor an executor that enforces "
+                    "authorization; pass require_tool_authorization=False to run it ungoverned."
                 ),
                 details={"tool": call.name, "tool_call_id": call.id},
             )

@@ -68,6 +68,7 @@ def agent_with(model, **options):
     return BaseAgent(
         definition(tools=[READ, APPLY], max_iterations=12),
         model,
+        require_tool_authorization=False,
         tool_executor=executor(),
         context_projection_policy=POLICY,
         **options,

@@ -13,6 +13,7 @@ def recorded(tmp_path):
     subject = services.create_agent(
         definition(tools=[tool("echo")], max_iterations=6),
         UsageTurns([tool_call("c1", "echo", {"q": 1}), final()], usage),
+        require_tool_authorization=False,
         tool_executor=FnExecutor(lambda t, c: ok({"echo": c.call.arguments})),
     )
     result = arun(subject.run(task("otlp-1")))

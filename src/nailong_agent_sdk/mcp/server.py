@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from mcp.server import MCPServer
 
 from ..agent.retention import RunRetention
-from ..agent.run_checkpointer import RunHeadCheckpointer
+from ..agent.run_checkpointer import LOCAL_ANCHOR, RunHeadCheckpointer, resolve_checkpointer
 from ..agent.runtime import AgentRuntimeServices
 from ..agent.task_runner import AgentTaskRunner
 from ..foundations.errors import AgentSdkError
@@ -50,7 +50,7 @@ def create_mcp_server(
     audit_max_open_handles: int | None = None,
     audit_max_payload_chars: int | None = None,
     authority: McpAuthorityPolicy | None = None,
-    checkpointer: RunHeadCheckpointer | None = None,
+    checkpointer: RunHeadCheckpointer | None = LOCAL_ANCHOR,  # type: ignore[assignment]
 ) -> MCPServer:
     """Build the BaseAgent and typed harness MCP surface without a network listener."""
 
@@ -59,6 +59,7 @@ def create_mcp_server(
     from mcp.server import MCPServer
 
     resolved_run_root = run_root or Path(os.environ.get("AGENT_RUNTIME_RUN_ROOT", ".agent-runtime"))
+    checkpointer = resolve_checkpointer(checkpointer, resolved_run_root)
     if checkpointer is not None:
         checkpointer.require_outside(resolved_run_root.resolve())
     telemetry = TelemetryStore(resolved_run_root)
@@ -182,7 +183,7 @@ def main() -> None:
             audit_max_open_handles=settings.audit_max_open_handles,
             audit_max_payload_chars=settings.audit_max_payload_chars,
             authority=settings.authority_policy(),
-            checkpointer=settings.checkpointer(),
+            checkpointer=settings.checkpointer() or LOCAL_ANCHOR,
         )
     except (AgentSdkError, OSError, ValueError) as error:
         print(f"nailong-agent-sdk MCP server cannot start: {error}", file=sys.stderr)

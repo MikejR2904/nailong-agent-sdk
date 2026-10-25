@@ -38,6 +38,7 @@ def run_task(services, task_id, calls=2):
     subject = services.create_agent(
         definition(tools=[tool("echo")], max_iterations=calls + 3),
         ScriptedModel([*turns, final()]),
+        require_tool_authorization=False,
         tool_executor=FnExecutor(lambda t, c: ok({"echo": c.call.arguments})),
     )
     result = arun(subject.run(task(task_id)))

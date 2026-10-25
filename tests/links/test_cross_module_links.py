@@ -129,6 +129,7 @@ def test_governed_run_end_to_end_with_durable_services(tmp_path):
         subject = services.create_agent(
             definition(tools=list(CORE.values()), max_iterations=8),
             DynamicModel(script),
+            require_tool_authorization=False,
             tool_executor=executor,
         )
         result = arun(subject.run(agent_task("T1")))

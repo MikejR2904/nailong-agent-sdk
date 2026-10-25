@@ -80,6 +80,7 @@ def test_streaming_roundtrip_deltas_usage_and_tool_calls(server):
             model="fake-1",
             streaming_transport=HttpxStreamingJsonTransport(),
         ),
+        require_tool_authorization=False,
         tool_executor=FnExecutor(lambda t, c: ok(c.call.arguments)),
         on_model_stream=listener,
     )

@@ -179,7 +179,12 @@ def test_a_blocked_call_in_a_batch_ends_the_run_with_that_calls_code():
 
 
 def test_an_unresolvable_batch_names_the_calls_that_cannot_start():
-    subject = BaseAgent(definition(tools=[ECHO]), ScriptedModel([]), tool_executor=echo_executor())
+    subject = BaseAgent(
+        definition(tools=[ECHO]),
+        ScriptedModel([]),
+        require_tool_authorization=False,
+        tool_executor=echo_executor(),
+    )
     subject.profiler.begin_run("t1", "t1", "audit-agent")
     stuck = ToolBatchTurn.model_construct(
         type="tool-batch",

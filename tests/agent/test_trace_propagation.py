@@ -68,6 +68,7 @@ def run_agent(tmp_path, turns=None, *, context=None, model=None, task_id="trace-
             subject = BaseAgent(
                 definition(tools=[ECHO], max_iterations=6),
                 model,
+                require_tool_authorization=False,
                 tool_executor=executor,
                 telemetry=store,
                 telemetry_context=context,

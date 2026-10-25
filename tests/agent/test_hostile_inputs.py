@@ -70,6 +70,7 @@ def test_long_dependency_chain_in_a_tool_batch_does_not_escape_run():
     subject = BaseAgent(
         definition(tools=[ECHO]),
         RawModel([{"type": "tool-batch", "calls": chain}]),
+        require_tool_authorization=False,
         tool_executor=FnExecutor(lambda t, c: ok()),
     )
     outcome = outcome_of(subject.run(task()))
@@ -170,7 +171,10 @@ def test_unknown_consumed_episode_ids_are_rejected_before_the_action_runs():
         return final()
 
     subject = BaseAgent(
-        definition(tools=[write]), DynamicModel(respond), tool_executor=FnExecutor(handler)
+        definition(tools=[write]),
+        DynamicModel(respond),
+        require_tool_authorization=False,
+        tool_executor=FnExecutor(handler),
     )
     result = arun(subject.run(task()))
     assert side_effects == []
@@ -207,6 +211,7 @@ def test_compacted_consumed_episode_ids_do_not_crash_the_run():
     subject = BaseAgent(
         definition(tools=[read, write], max_iterations=50),
         Model(),
+        require_tool_authorization=False,
         tool_executor=FnExecutor(lambda t, c: ok({"data": "y" * 300})),
         context_projection_policy=policy,
     )

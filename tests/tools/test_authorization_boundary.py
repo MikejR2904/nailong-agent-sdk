@@ -53,8 +53,15 @@ def run_agent(authorizer=None, **options):
     return arun(subject.run(task())), executor
 
 
-def test_without_an_authorizer_a_custom_executor_alone_decides_what_runs():
+def test_without_an_authorizer_a_custom_executor_is_refused_by_default():
     result, executor = run_agent()
+    assert executor.calls == []
+    assert result.status is AgentRunStatus.FAILED
+    assert "TOOL_AUTHORIZER_MISSING" in {f.code for f in [result.failure] if f}
+
+
+def test_a_host_can_opt_out_and_a_custom_executor_alone_decides_what_runs():
+    result, executor = run_agent(require_tool_authorization=False)
     assert result.status is AgentRunStatus.COMPLETED
     assert [call.call.id for call in executor.calls] == ["c1"]
 

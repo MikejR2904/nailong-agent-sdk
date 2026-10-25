@@ -95,6 +95,7 @@ def test_cancelling_interrupts_a_tool_call_and_records_it_as_interrupted():
     subject = BaseAgent(
         definition(tools=[tool("slow")]),
         ScriptedModel([tool_call("c1", "slow"), final()]),
+        require_tool_authorization=False,
         tool_executor=FnExecutor(slow),
     )
     result = run_cancelled(subject)
@@ -117,6 +118,7 @@ def test_cancelling_interrupts_every_call_of_a_parallel_batch():
     subject = BaseAgent(
         definition(tools=[tool("slow", concurrency=ToolConcurrency.PARALLEL_SAFE)]),
         ScriptedModel([batch(call("a", "slow"), call("b", "slow"), call("c", "slow")), final()]),
+        require_tool_authorization=False,
         tool_executor=FnExecutor(slow),
     )
     result = run_cancelled(subject)
@@ -171,6 +173,7 @@ def test_cancelling_interrupts_a_provider_continuation():
     subject = BaseAgent(
         definition(tools=[tool("probe")]),
         model,
+        require_tool_authorization=False,
         tool_executor=FnExecutor(lambda tool_definition, context: ok({"seen": True})),
     )
     result = run_cancelled(subject)

@@ -154,6 +154,7 @@ def test_kept_spans_never_point_at_an_omitted_parent(tmp_path, monkeypatch):
             UsageTurns(
                 [tool_call("c1", "echo"), tool_call("c2", "echo"), final()], ProviderUsage()
             ),
+            require_tool_authorization=False,
             tool_executor=FnExecutor(lambda t, c: ok({})),
         )
         arun(subject.run(task("pruned-profile")))

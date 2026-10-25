@@ -64,7 +64,7 @@ def script():
 
 
 def test_an_interval_without_a_checkpointer_is_refused_before_the_run_starts(tmp_path):
-    services = AgentRuntimeServices.open(tmp_path / "run")
+    services = AgentRuntimeServices.open(tmp_path / "run", checkpointer=None)
     subject = AgentTaskRunner(services, transport=ScriptedChatTransport([final_chat()]))
     with pytest.raises(TaskOptionError, match="checkpoint_interval_seconds.*RunHeadCheckpointer"):
         arun(subject.run(SLEEPER, task(), options(checkpoint_interval_seconds=0.5)))

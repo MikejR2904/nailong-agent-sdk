@@ -149,6 +149,7 @@ def factory_for(ledger, *, idempotent, crash=None):
             model_factory=model_factory,
             tool_executor_factory=lambda node, node_context: Counting(ledger, node_id),
             idempotent=idempotent(context),
+            require_tool_authorization=False,
         )
 
     return factory

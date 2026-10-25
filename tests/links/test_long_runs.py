@@ -27,6 +27,7 @@ def long_run(count, *, with_services=False, tmp_path=None):
         subject = services.create_agent(
             definition(tools=[tool("echo")], max_iterations=count + 5),
             ScriptedModel(turns),
+            require_tool_authorization=False,
             tool_executor=executor,
         )
     else:

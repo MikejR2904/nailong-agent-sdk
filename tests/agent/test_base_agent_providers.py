@@ -53,6 +53,7 @@ def test_watchdogs_model_tool_and_run_deadline():
     deadline_agent = BaseAgent(
         definition(tools=[ECHO], max_iterations=50),
         Plodding(),
+        require_tool_authorization=False,
         tool_executor=echo_executor(),
         watchdog_policy=AgentWatchdogPolicy(run_deadline_seconds=1.5),
     )

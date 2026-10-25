@@ -77,7 +77,7 @@ class GraphAgentBinding:
     episode_store_factory: Callable[[], InMemoryEpisodeStore] | None = None
     escalate_elastic_overflow: bool = False
     tool_authorizer_factory: GraphToolAuthorizerFactory | None = None
-    require_tool_authorization: bool = False
+    require_tool_authorization: bool | None = None
     artifact_store_factory: GraphArtifactStoreFactory | None = None
 
     @property

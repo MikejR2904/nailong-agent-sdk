@@ -214,6 +214,7 @@ def test_langgraph_node_and_graph_with_real_langgraph(tmp_path):
             task_adapter=lambda env: task(env.task_id or "lg-task"),
             model_factory=lambda env: ScriptedModel(turns),
             tool_executor_factory=lambda env: FnExecutor(lambda td, c: ok({"ok": True})),
+            require_tool_authorization=False,
         )
 
     def envelope_factory(state):
@@ -351,6 +352,7 @@ def test_claim_7_langgraph_sdk_node_with_message_and_token_output_keys_is_not_re
             task_adapter=lambda env: task(env.task_id or "lg-task"),
             model_factory=lambda env: ScriptedModel([{"type": "final", "output": output}]),
             tool_executor_factory=lambda env: FnExecutor(lambda td, c: ok({})),
+            require_tool_authorization=False,
         )
         node = LangGraphSdkNode(
             services,

@@ -39,7 +39,7 @@ from ..tools.tools import ToolAuthorizer, ToolExecutor
 from .base_agent import AgentWatchdogPolicy, BaseAgent, PostToolHook, PreToolHook
 from .model import AgentModel
 from .retention import RunRetention
-from .run_checkpointer import RunHeadCheckpointer
+from .run_checkpointer import LOCAL_ANCHOR, RunHeadCheckpointer, resolve_checkpointer
 from .verification import VerificationGateRegistry
 
 _logger = get_logger("runtime")
@@ -69,11 +69,12 @@ class AgentRuntimeServices:
         *,
         audit_max_open_handles: int = 32,
         audit_max_payload_chars: int | None = None,
-        checkpointer: RunHeadCheckpointer | None = None,
+        checkpointer: RunHeadCheckpointer | None = LOCAL_ANCHOR,  # type: ignore[assignment]
     ) -> AgentRuntimeServices:
         """Create or reopen SDK-owned durable stores below ``run_root``."""
 
         resolved = run_root.resolve()
+        checkpointer = resolve_checkpointer(checkpointer, resolved)
         if checkpointer is not None:
             checkpointer.require_outside(resolved)
         resolved.mkdir(parents=True, exist_ok=True)
@@ -185,7 +186,7 @@ class AgentRuntimeServices:
         *,
         tool_executor: ToolExecutor | None = None,
         tool_authorizer: ToolAuthorizer | None = None,
-        require_tool_authorization: bool = False,
+        require_tool_authorization: bool | None = None,
         verification_gates: VerificationGateRegistry | None = None,
         pre_tool_hooks: Sequence[PreToolHook] = (),
         post_tool_hooks: Sequence[PostToolHook] = (),

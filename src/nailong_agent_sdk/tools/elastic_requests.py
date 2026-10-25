@@ -125,6 +125,10 @@ class ElasticRequestToolExecutor:
         self._inner = inner
         self._buffer = buffer
 
+    @property
+    def enforces_authorization(self) -> bool:
+        return self._inner is None or bool(getattr(self._inner, "enforces_authorization", False))
+
     async def execute(
         self, tool: ToolDefinition, context: ToolInvocationContext
     ) -> ToolExecutionResult:

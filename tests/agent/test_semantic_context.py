@@ -76,6 +76,7 @@ def agent_for(model, *, tools=(READ,), iterations=8, factory=None, policy=POLICY
     return BaseAgent(
         definition(tools=list(tools), max_iterations=iterations),
         model,
+        require_tool_authorization=False,
         tool_executor=kwargs.pop("executor", FnExecutor(reader)),
         context_projection_policy=policy,
         episode_store_factory=factory,
@@ -404,6 +405,7 @@ def test_with_background_summarization_digests_reach_later_turns_once_jobs_finis
     subject = BaseAgent(
         definition(tools=[READ], max_iterations=10),
         model,
+        require_tool_authorization=False,
         tool_executor=slow,
         context_projection_policy=POLICY,
         episode_store_factory=semantic_factory(created=created, background_summarization=True),

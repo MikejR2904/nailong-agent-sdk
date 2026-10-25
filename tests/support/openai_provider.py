@@ -108,5 +108,11 @@ ECHO = tool(
 
 def run_agent(url, definition_, transport=None, **kwargs):
     executor = kwargs.pop("executor", FnExecutor(lambda t, c: ok({"echo": c.call.arguments})))
-    subject = BaseAgent(definition_, model_for(url, transport), tool_executor=executor, **kwargs)
+    subject = BaseAgent(
+        definition_,
+        model_for(url, transport),
+        require_tool_authorization=False,
+        tool_executor=executor,
+        **kwargs,
+    )
     return arun(subject.run(task()))

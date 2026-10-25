@@ -320,6 +320,7 @@ def test_spans_the_profile_event_did_not_keep_are_counted_as_omitted(tmp_path, m
         subject = services.create_agent(
             definition(tools=[tool("echo")], max_iterations=6),
             UsageTurns([tool_call("c1", "echo"), final()], ProviderUsage()),
+            require_tool_authorization=False,
             tool_executor=FnExecutor(lambda t, c: ok({})),
         )
         result = arun(subject.run(task("omitted")))

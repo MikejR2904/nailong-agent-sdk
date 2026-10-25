@@ -86,11 +86,24 @@ def test_a_node_that_must_be_authorized_fails_when_nothing_authorizes_it(tmp_pat
         close(services)
 
 
-def test_a_node_without_either_still_runs_its_executor_unprotected_and_the_sdk_says_so(tmp_path):
+def test_a_node_without_an_authorizer_fails_closed_unless_it_opts_out(tmp_path):
     services = services_in(tmp_path)
     try:
         custom = FnExecutor(lambda t, c: ok({"wrote": True}))
         graph = run_graph(services, writing_binding("root", custom))
+        assert custom.calls == []
+        assert graph.status("root") is GraphNodeStatus.FAILED
+    finally:
+        close(services)
+
+
+def test_a_node_that_opts_out_runs_its_executor_unprotected(tmp_path):
+    services = services_in(tmp_path)
+    try:
+        custom = FnExecutor(lambda t, c: ok({"wrote": True}))
+        graph = run_graph(
+            services, writing_binding("root", custom, require_tool_authorization=False)
+        )
         assert [c.call.id for c in custom.calls] == ["c1"]
         assert graph.status("root") is GraphNodeStatus.COMPLETED
         assert custom.calls[0].authorization is None
