@@ -398,6 +398,93 @@ request it should refuse. The batteries in `benchmarks/trust` (pre-registration 
 rows above with scripted solvers and injected faults; a live-model run is a separate piece of
 evidence that has not been made.
 
+## Threat model - which evidence is protected, for how long, and what must live elsewhere
+
+This section states what the SDK's integrity machinery assumes and what it cannot do. It
+describes the code as it is; where a stronger guarantee needs something the SDK does not ship,
+it says so.
+
+### What each kind of protection means
+
+* **Tamper evidence.** Every ledger is a hash chain (telemetry events, audit entries, artifact
+  write log, graph run history). A change in the middle of a chain, an insertion, a reorder or a
+  deletion in the middle is noticed by anyone who recomputes it. The hashes are unkeyed, so
+  whoever can write the files can also recompute the whole chain: a rewrite that reseals it, and
+  a cut that removes the newest records, leave a chain that verifies.
+* **Anchoring.** A signed record of a chain's length and head hash, kept somewhere the writer of
+  the chain cannot rewrite. Against it, a reseal, a truncation and a deletion of the newest
+  records are noticed (`truncated`, `rewritten`, `missing`). Anchoring is what turns tamper
+  evidence into detection of a rewrite.
+* **Durability.** Surviving a crash is a separate property. Audit entries and checkpoints are
+  synced as written, a torn final record is read as ending before it and repaired, and the
+  artifact store syncs blob, manifests and log line when it runs with `durable=True` (the task
+  runner does so whenever a checkpointer exists). A hash chain with no durable checkpoint cannot
+  show that its newest records were lost in a crash.
+
+### What is protected, and how long after the last checkpoint
+
+| Evidence | Anchored by | Covered up to | Not covered |
+|---|---|---|---|
+| Telemetry chain and audit transcript of a run | signed run-head checkpoint (`RunHeadCheckpointer`) | the newest checkpoint: taken when a task run ends, when a graph node agent returns, and every `checkpoint_interval_seconds` while a task runs (no interval by default) | everything written after it. If the process dies before the first checkpoint, nothing outside the run root vouches for the run; with no interval a crash loses the whole run's protection. Cutting back exactly to a checkpoint is not detected (266 of 266 undetected in the crash battery) |
+| Artifact write log | signed anchor (`anchor_artifact_log`) taken with the checkpoint | the newest anchor | writes after it; a file changed by anything but `ArtifactStore` has no record |
+| Graph run record | `anchor_run_record`, taken when `execute_run` finishes | the final record of that execution | changes made while it runs |
+| Tool-result journal | content hashes held by project-state evidence, checked by `verify_project_evidence` | an edit or deletion of a journal file whose hash a project-state event holds | the project-state events are not anchored: rewriting a file and the event that names it is not detected; a handle no event names has no hash to check |
+| Retention | a hash-chained tombstone with final chain heads | the entries it covers | entries written after it; the tombstone is as independent as its place |
+
+A change to evidence the checkpoint covers is detected only if the verifier has the key and the
+sink the checkpoint was written with.
+
+### Where the signing key and the anchors must live
+
+The SDK signs with HMAC-SHA256: the same secret signs and verifies, so whoever holds it can
+forge a checkpoint that matches rewritten evidence. Protection therefore reaches exactly as far as
+the key and the sink are out of the writer's reach.
+
+* **The default anchor** (`RunHeadCheckpointer.local`, used by `AgentRuntimeServices.open` and
+  the MCP service when nothing else is passed) keeps a random key and the records under
+  `NAILONG_ANCHOR_HOME`, outside the run root, owned by the same operating-system user that runs
+  the agent. It protects against changes made to the run root alone: a bug, a tool or a model
+  whose writes are bounded to the workspace, an editor, a restore of an old copy. It does not
+  protect against a process of the same user, a compromised host, or anyone who can read that
+  directory.
+* **A host that must withstand a compromised host or a hostile operator** should not rely on a
+  key readable by the writer's OS user. It should supply (a) a `CheckpointSigner` whose private key
+  the writer cannot export, for example an asymmetric signer backed by a key-management service
+  or hardware module, with only the public key given to verifiers, and (b) a `CheckpointSink`
+  that appends to a remote service under credentials that can add records but not rewrite or
+  delete them (an append-only or write-once store, or a transparency log). The signer and the
+  sink are protocols (`CheckpointSigner`, `CheckpointSink`); the SDK ships only the HMAC signer
+  and a local file sink, so this is the host's to build and its security is the security of what
+  it plugs in. The MCP service takes a key file and a directory
+  (`AGENT_RUNTIME_CHECKPOINT_KEY_FILE`, `AGENT_RUNTIME_CHECKPOINT_DIR`) and exits at start-up if
+  the directory is inside the run root.
+* **Trust anchors are not self-certifying.** An attacker who can rewrite both the evidence and its
+  anchor is not resisted, whichever signer is used: keep the key and the sink on a machine or in
+  a service the agent's host cannot write to, and keep the verifier's trust in the key outside
+  the writer's reach as well.
+* **If the anchor cannot be created** the service logs the path and the exception and runs
+  tamper-evident only; `checkpointer=None` does the same on purpose.
+
+### What is outside the SDK's control
+
+* Anything done with the host process's own privileges: a tool the host registered, a command
+  the host allowed, a library call, a network request, a file written outside `ArtifactStore`.
+  The SDK sees only what passes its tool dispatch boundary, and only governs what the host puts
+  behind it: a host that passes `require_tool_authorization=False` with an executor of its own
+  has chosen to run ungoverned.
+* A compromised host: root or the agent's own OS user can read the default key, delete the
+  anchors, stop the process before the next checkpoint, replace the SDK or the verifier.
+* Approvals across machines. Single-use consumption relies on a cross-process lock on the
+  approvals file, so it holds on one machine and file system, not across hosts.
+* Who an approver is. The approver credential separates roles, not people.
+* What a model decides. The SDK records a turn and can link a failure to it; it does not judge the
+  reasoning and cannot make a live model refuse. A live-model run supports no claim about how the
+  boundary holds against a model that tries to cross it unless the model tried; the live runs so
+  far did not.
+* Power loss and storage that does not honour `fsync`.
+* Confidentiality. Evidence is integrity-protected, not encrypted; audit payloads are redacted
+  by pattern, and a long payload is kept by hash and preview (item 10 of "Still open").
+
 ## Workflow 8 - calling the agent from a backend (`AgentTaskRunner`)
 
 A backend sends three things to MCP `run_agent_task` (or `AgentTaskRunner.run`): an
