@@ -17,3 +17,13 @@ changed, why, and which results it affects, and is written before the affected r
   output is kept as `results/interrupted/test_judge_acceptance_in_partial.jsonl` and nothing was sent
   to a model. The `allocation` questions were not prepared. No judge call has been made on the test
   split. The diagnosis questions (6,600 for 3,800 jobs) were prepared offline.
+
+## 2026-10-30: code added under the lock after the test split was run
+
+`src/nailong_agent_sdk/developer_tools/attribute_root_cause.py` and the `attribute-root-cause`
+command (and their exports in `developer_tools/__init__.py` and `cli.py`) were added after the
+locked test split and the judge arm had run. The lock (commit `2ce3ab6`, `LOCK.json`) therefore no
+longer matches the tree: `verify-lock` reports the system hash as changed. The results in
+`reports/test.md` stay bound to commit `2ce3ab6` and are not affected, because no job ran against the
+new code and the new module is not called by any Trust Profile battery. Any further test-split
+claim needs a new lock; the test split is spent for the jobs already run.
