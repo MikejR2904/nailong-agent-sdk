@@ -23,6 +23,14 @@ from .attribute_result import (
     attribute_result_defect,
     result_check,
 )
+from .attribute_root_cause import (
+    CauseBasis,
+    CauseKind,
+    RootCauseAnalysis,
+    RootCauseCandidate,
+    attribute_root_cause,
+    text_checks,
+)
 from .catalog import (
     PublicApiCatalog,
     PublicApiSymbol,
@@ -55,6 +63,8 @@ from .validate import (
 
 __all__ = [
     "BlockedAttribution",
+    "CauseBasis",
+    "CauseKind",
     "DecisionRef",
     "DefectAttribution",
     "DefectWriter",
@@ -72,6 +82,8 @@ __all__ = [
     "QualityCheckReport",
     "ResultAttribution",
     "RootAttribution",
+    "RootCauseAnalysis",
+    "RootCauseCandidate",
     "RunDiagnosis",
     "RunInspection",
     "ValidationIssue",
@@ -81,12 +93,14 @@ __all__ = [
     "attribute_failure",
     "attribute_graph",
     "attribute_result_defect",
+    "attribute_root_cause",
     "build_public_api_catalog",
     "check_source_quality",
     "content_check",
     "diagnose_run",
     "inspect_run",
     "result_check",
+    "text_checks",
     "supported_contract_types",
     "validate_contract_file",
     "verify_project_evidence",

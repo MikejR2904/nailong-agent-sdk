@@ -46,6 +46,7 @@ from ..state.run_state_store import RunStateStore
 from .attribute_defect import attribute_defect, content_check
 from .attribute_failure import attribute_failure
 from .attribute_result import attribute_result_defect, result_check
+from .attribute_root_cause import attribute_root_cause, text_checks
 from .catalog import build_public_api_catalog, write_public_api_catalog
 from .diagnose import diagnose_run
 from .inspect import inspect_run, verify_project_evidence
@@ -79,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         "attribute-failure": lambda: _attribute_failure(arguments),
         "attribute-defect": lambda: _attribute_defect(arguments),
         "attribute-result": lambda: _attribute_result(arguments),
+        "attribute-root-cause": lambda: _attribute_root_cause(arguments),
         "verify-evidence": lambda: _verify_evidence(arguments),
         "quality": lambda: _quality(arguments),
         "prune-runs": lambda: _prune_runs(arguments),
@@ -184,6 +186,45 @@ def _parser() -> argparse.ArgumentParser:
     rejected.add_argument("--lacks", help="A result is defective when its JSON lacks this text.")
     rejected.add_argument("--matches", help="A result is defective when this regex matches it.")
     outcome.add_argument("--tool", help="Check only the results of this tool.")
+
+    cause = subparsers.add_parser(
+        "attribute-root-cause",
+        help="Rank where a failed run began: what stopped it, the model turn behind it and, when "
+        "you give checks, the first bad result, the write that introduced a bad artifact and the "
+        "earliest origin of bad data; reads only.",
+    )
+    cause.add_argument("run_root", type=Path)
+    cause.add_argument("run_id")
+    cause.add_argument(
+        "--workspace",
+        type=Path,
+        help="The directory that holds .agent-artifacts; needed for the artifact checks.",
+    )
+    cause.add_argument(
+        "--artifact",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="An artifact path whose write history to search; repeatable.",
+    )
+    for name in ("contains", "lacks", "matches", "sha256"):
+        cause.add_argument(
+            f"--artifact-{name}",
+            help="The artifact check: an artifact is defective when this holds for its content "
+            "(one of the four; it also drives the data trace).",
+        )
+    for name in ("contains", "lacks", "matches"):
+        cause.add_argument(
+            f"--result-{name}",
+            help="The result check: a tool result is defective when this holds for its JSON "
+            "(one of the three).",
+        )
+    cause.add_argument(
+        "--strategy",
+        choices=[item.value for item in SuffixStrategy],
+        default=SuffixStrategy.CONFIRMED.value,
+    )
+    cause.add_argument("--max-runs", type=int, default=5)
 
     evidence = subparsers.add_parser(
         "verify-evidence",
@@ -401,6 +442,40 @@ def _attribute_result(arguments: argparse.Namespace) -> object:
         is_defective,
         tool=arguments.tool,
         check=description,
+    )
+
+
+def _attribute_root_cause(arguments: argparse.Namespace) -> object:
+    artifact_given = {
+        name: getattr(arguments, f"artifact_{name}")
+        for name in ("contains", "lacks", "matches", "sha256")
+        if getattr(arguments, f"artifact_{name}") is not None
+    }
+    result_given = {
+        name: getattr(arguments, f"result_{name}")
+        for name in ("contains", "lacks", "matches")
+        if getattr(arguments, f"result_{name}") is not None
+    }
+    artifact_check = content_check_for_lineage = None
+    if artifact_given:
+        artifact_check, content_check_for_lineage, _ = text_checks(**artifact_given)
+    elif arguments.artifact:
+        raise ValueError(
+            "--artifact names a path to search but no artifact check was given: pass one of "
+            "--artifact-contains, --artifact-lacks, --artifact-matches or --artifact-sha256."
+        )
+    result_check_function = result_check(**result_given)[0] if result_given else None
+    return attribute_root_cause(
+        arguments.run_root,
+        arguments.run_id,
+        workspace=arguments.workspace,
+        artifact_checks=(
+            dict.fromkeys(arguments.artifact, artifact_check) if artifact_check else None
+        ),
+        content_check=content_check_for_lineage,
+        result_check=result_check_function,
+        strategy=arguments.strategy,
+        max_runs=arguments.max_runs,
     )
 
 
