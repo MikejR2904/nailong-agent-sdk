@@ -22,6 +22,8 @@ MODELS = (
 )
 NATURAL_DEV_SEEDS = (*range(1001, 1007), *range(2001, 2007))
 NATURAL_TEST_SEEDS = (*range(1101, 1113), *range(2101, 2113))
+DERIVED_DEV_SEEDS = tuple(range(3001, 3007))
+DERIVED_TEST_SEEDS = tuple(range(3101, 3113))
 DEV_SEEDS = (1, 2)
 TEST_SEEDS = (3, 4, 5, 6)
 KINDS = ("read", "write")
@@ -79,20 +81,32 @@ def one(case: Case, out: Path) -> dict[str, Any]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", type=Path, default=Path("results/corpus"))
+    parser.add_argument("--out", type=Path)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--split", default="")
-    parser.add_argument("--set", dest="which", default="planted", choices=("planted", "natural"))
+    parser.add_argument(
+        "--set", dest="which", default="planted", choices=("planted", "natural", "derived")
+    )
     arguments = parser.parse_args(argv)
-    pool = natural_cases() if arguments.which == "natural" else cases()
+    if arguments.which == "derived":
+        pool = natural_cases(DERIVED_DEV_SEEDS, DERIVED_TEST_SEEDS)
+    elif arguments.which == "natural":
+        pool = natural_cases()
+    else:
+        pool = cases()
+    out = arguments.out or Path(
+        {"planted": "results/corpus", "natural": "results/corpus_natural"}.get(
+            arguments.which, "results/corpus_derived"
+        )
+    )
     chosen = [c for c in pool if not arguments.split or c.split == arguments.split]
     if arguments.limit:
         chosen = chosen[: arguments.limit]
-    arguments.out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     done = 0
     with ProcessPoolExecutor(max_workers=arguments.workers) as pool:
-        futures = {pool.submit(one, case, arguments.out): case for case in chosen}
+        futures = {pool.submit(one, case, out): case for case in chosen}
         for future in as_completed(futures):
             row = future.result()
             done += 1

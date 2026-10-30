@@ -44,6 +44,7 @@ REGIONS = ("north", "south", "east")
 HARD_REGIONS = ("north", "south", "east", "west", "central")
 HARD_FROM_SEED = 1000
 TOTALS_FROM_SEED = 2000
+DERIVED_FROM_SEED = 3000
 MAX_ITERATIONS = 8
 MAX_TOKENS = 2_000
 HARD_MAX_TOKENS = 16_000
@@ -103,7 +104,50 @@ HARD_INSTRUCTIONS = {
 }
 
 
+DERIVED_INSTRUCTIONS = {
+    **HARD_INSTRUCTIONS,
+    "B": (
+        "Read the facts (artifact id {artifact_id}) with read_artifact. Work out the grand total "
+        "over all the regions, which region has the largest total, the margin (the largest total "
+        "minus the second largest total) and the average (the grand total divided by the number "
+        "of regions, rounded down to a whole number). Write analysis.md with write_draft: one "
+        "line 'TOTAL: <number>', one line 'TOP: <region>', one line 'MARGIN: <number>', one line "
+        "'AVERAGE: <number>', and one line per region with its total. When it is written, finish "
+        "with a final reply of exactly {FINAL}"
+    ),
+    "C": (
+        "Read the analysis (artifact id {artifact_id}) with read_artifact. Write summary.txt "
+        "with write_draft containing exactly one line of the form "
+        "TOTAL=<number>;TOP=<region>;MARGIN=<number> taken from the analysis. When it is "
+        "written, finish with a final reply of exactly {FINAL}"
+    ),
+}
+FILE_SPEC = (
+    "- facts.json: a JSON object with the sum of the amount column for each region\n"
+    "- analysis.md: a line 'TOTAL: <grand total of all amounts>', a line 'TOP: <region with the\n"
+    "  largest total>' and one line per region with its total\n"
+    "- summary.txt: the single line TOTAL=<grand total>;TOP=<top region>"
+)
+DERIVED_FILE_SPEC = (
+    "- facts.json: a JSON object with the sum of the amount column for each region\n"
+    "- analysis.md: lines 'TOTAL: <grand total>', 'TOP: <region with the largest total>',\n"
+    "  'MARGIN: <largest total minus second largest total>', 'AVERAGE: <grand total divided by\n"
+    "  the number of regions, rounded down>' and one line per region with its total\n"
+    "- summary.txt: the single line TOTAL=<grand total>;TOP=<top region>;MARGIN=<margin>"
+)
+
+
+def derived(seed: int) -> bool:
+    return seed >= DERIVED_FROM_SEED
+
+
+def file_spec(seed: int) -> str:
+    return DERIVED_FILE_SPEC if derived(seed) else FILE_SPEC
+
+
 def instructions_for(node: str, seed: int) -> str:
+    if derived(seed):
+        return DERIVED_INSTRUCTIONS[node]
     return (HARD_INSTRUCTIONS if hard(seed) else INSTRUCTIONS)[node]
 
 
@@ -155,7 +199,7 @@ def regions_for(seed: int) -> tuple[str, ...]:
 
 def sales(seed: int) -> list[tuple[str, str, int]]:
     rng = random.Random(f"sales:{seed}")
-    if seed >= TOTALS_FROM_SEED:
+    if TOTALS_FROM_SEED <= seed < DERIVED_FROM_SEED:
         return one_row_per_region(seed, rng)
     months, low, high = (6, 10_000, 99_999) if hard(seed) else (4, 120, 980)
     while True:
@@ -192,7 +236,18 @@ def sales_csv(rows: list[tuple[str, str, int]]) -> str:
 def truth(seed: int) -> dict[str, Any]:
     totals = region_totals(sales(seed), seed)
     top = max(totals, key=lambda region: totals[region])
-    return {"per_region": totals, "total": sum(totals.values()), "top": top}
+    found = {"per_region": totals, "total": sum(totals.values()), "top": top}
+    if derived(seed):
+        ordered = sorted(totals.values(), reverse=True)
+        found["margin"] = ordered[0] - ordered[1]
+        found["average"] = found["total"] // len(totals)
+    return found
+
+
+def answer_line(seed: int) -> str:
+    expected = truth(seed)
+    line = f"TOTAL={expected['total']};TOP={expected['top']}"
+    return f"{line};MARGIN={expected['margin']}" if derived(seed) else line
 
 
 def corrupt(path: str, content: str, seed: int) -> str:
@@ -236,13 +291,20 @@ def artifact_defective(path: str, content: str, seed: int) -> bool:
             return {k: int(v) for k, v in json.loads(content).items()} != expected["per_region"]
         if path == "analysis.md":
             top = re.search(r"TOP:\s*(\w+)", content)
-            return (
+            wrong = (
                 _number(content, r"TOTAL:\s*(\d+)") != expected["total"]
                 or top is None
                 or top.group(1).lower() != expected["top"]
             )
+            if derived(seed):
+                wrong = (
+                    wrong
+                    or _number(content, r"MARGIN:\s*(\d+)") != expected["margin"]
+                    or _number(content, r"AVERAGE:\s*(\d+)") != expected["average"]
+                )
+            return wrong
         if path == "summary.txt":
-            return content.strip() != f"TOTAL={expected['total']};TOP={expected['top']}"
+            return content.strip() != answer_line(seed)
     except (ValueError, TypeError, AttributeError):
         return True
     return False

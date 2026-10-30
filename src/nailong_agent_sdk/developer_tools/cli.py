@@ -237,6 +237,12 @@ def _parser() -> argparse.ArgumentParser:
         "that returned or stored something other than what the store holds; needs --workspace.",
     )
     cause.add_argument(
+        "--trace-unchecked",
+        action="store_true",
+        help="When no content check is given, list the runs that wrote the artifacts the failing "
+        "run read as unchecked candidates, earliest first; needs --workspace.",
+    )
+    cause.add_argument(
         "--related-run",
         action="append",
         default=[],
@@ -498,6 +504,7 @@ def _attribute_root_cause(arguments: argparse.Namespace) -> object:
         assume_fault=arguments.assume_fault,
         verify_records=arguments.verify_records,
         related_runs=arguments.related_run,
+        trace_unchecked=arguments.trace_unchecked,
     )
 
 

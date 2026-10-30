@@ -390,3 +390,32 @@ def test_the_command_takes_assume_fault_verify_records_and_related_runs(tmp_path
     report = json.loads(done.stdout)
     assert report["primary"]["kind"] == "record-inconsistency"
     assert report["primary"]["subject"] == "read_artifact call c1"
+
+
+def test_unchecked_upstream_writers_are_listed_but_never_named_the_origin(tmp_path):
+    failed_run(tmp_path)
+    data_flow(tmp_path)
+    analysis = attribute_root_cause(
+        tmp_path,
+        "r1",
+        workspace=tmp_path,
+        artifact_checks={"out.txt": bad_content},
+        trace_unchecked=True,
+    )
+    unchecked = [item for item in analysis.candidates if item.basis is CauseBasis.UNCHECKED]
+    assert len(unchecked) == 1 and unchecked[0].kind is CauseKind.UPSTREAM_ORIGIN
+    assert unchecked[0].writer.agent_run_id == "r0" and unchecked[0].writer.tool_call_id == "c0"
+    assert "nothing checked that file" in unchecked[0].summary
+    assert analysis.primary.kind is CauseKind.DEFECTIVE_WRITE
+    assert analysis.candidates.index(unchecked[0]) > analysis.candidates.index(analysis.primary)
+
+
+def test_unchecked_tracing_is_off_by_default_and_needs_a_workspace(tmp_path):
+    failed_run(tmp_path)
+    data_flow(tmp_path)
+    plain = attribute_root_cause(
+        tmp_path, "r1", workspace=tmp_path, artifact_checks={"out.txt": bad_content}
+    )
+    assert all(item.basis is not CauseBasis.UNCHECKED for item in plain.candidates)
+    skipped = attribute_root_cause(tmp_path, "r1", trace_unchecked=True)
+    assert any("trace_unchecked follows the artifacts" in line for line in skipped.not_examined)

@@ -21,7 +21,11 @@ from corpus.methods import load_label, predict
 from corpus.prediction import Prediction
 from corpus.trace import load_steps
 
-ROOTS = {"planted": Path("results/corpus"), "natural": Path("results/corpus_natural")}
+ROOTS = {
+    "planted": Path("results/corpus"),
+    "natural": Path("results/corpus_natural"),
+    "derived": Path("results/corpus_derived"),
+}
 LLM_FAMILIES = ("ww-all", "ww-step", "ww-binary", "falat")
 
 
@@ -30,7 +34,7 @@ class TokenCap(RuntimeError):
 
 
 def eligible(label: dict[str, Any], dataset: str) -> bool:
-    kinds = {"planted": {"read", "write"}, "natural": {"natural"}}[dataset]
+    kinds = {"planted": {"read", "write"}, "natural": {"natural"}, "derived": {"natural"}}[dataset]
     return bool(
         label.get("kind") in kinds
         and label.get("pipeline_complete")
@@ -51,6 +55,7 @@ def methods(arguments: argparse.Namespace) -> list[str]:
         names += [f"ww-step:{arguments.stepwise}", f"ww-step+gt:{arguments.stepwise}"]
     names += [
         "sdk-structural",
+        "sdk-structural+trace",
         "sdk-integrity",
         "sdk-oracle",
         f"sdk-llmcheck:{arguments.sdk_judge}",
@@ -60,6 +65,66 @@ def methods(arguments: argparse.Namespace) -> list[str]:
         wanted = set(arguments.only.split(","))
         names = [name for name in names if name.split(":")[0] in wanted]
     return names
+
+
+def control_methods(names: list[str]) -> list[str]:
+    return [
+        name
+        for name in names
+        if name.startswith("sdk-") or (name.startswith("ww-step") and "+gt" not in name)
+    ]
+
+
+def is_control(label: dict[str, Any], dataset: str) -> bool:
+    kinds = {"planted": {"none"}, "natural": {"natural"}, "derived": {"natural"}}[dataset]
+    return bool(
+        label.get("kind") in kinds
+        and label.get("pipeline_complete")
+        and not label.get("outcome_failed")
+    )
+
+
+def score_control(
+    name: str, case_dir: Path, label: dict[str, Any], key: str, cap: int
+) -> dict[str, Any]:
+    error = None
+    with track() as cost:
+        try:
+            if cap and USAGE.prompt + USAGE.completion > cap:
+                raise TokenCap(f"the {cap:,}-token cap on new model calls was reached")
+            prediction = predict(name, case_dir, label, key)
+        except Exception as failure:
+            prediction = Prediction(None, None, "error")
+            error = f"{type(failure).__name__}: {str(failure)[:200]}"
+    return {
+        "case_id": label["case_id"],
+        "method": name,
+        "model": short(label["model"]),
+        "predicted_call": prediction.call_id,
+        "note": prediction.note,
+        "error": error,
+        "false_attribution": prediction.call_id is not None,
+        "calls": cost.calls,
+        "prompt_tokens": cost.prompt_tokens,
+        "completion_tokens": cost.completion_tokens,
+    }
+
+
+def control_table(rows: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "| method | fault-free runs | a step named | rate | 95% | errors | tokens per run |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for name in dict.fromkeys(row["method"] for row in rows):
+        cell = [row for row in rows if row["method"] == name]
+        named = sum(1 for row in cell if row["false_attribution"])
+        low, high = stats.wilson(named, len(cell))
+        tokens = sum(row["prompt_tokens"] + row["completion_tokens"] for row in cell) / len(cell)
+        lines.append(
+            f"| {name} | {len(cell)} | {named} | {named / len(cell):.2f} | [{low:.2f}, {high:.2f}] "
+            f"| {sum(1 for row in cell if row['error'])} | {tokens:,.0f} |"
+        )
+    return lines
 
 
 def is_llm(name: str) -> bool:
@@ -219,7 +284,11 @@ def trace_length(row: dict[str, Any]) -> str:
 
 
 def render(
-    rows: list[dict[str, Any]], names: list[str], arguments: argparse.Namespace, skipped: int
+    rows: list[dict[str, Any]],
+    names: list[str],
+    arguments: argparse.Namespace,
+    skipped: int,
+    controls: list[dict[str, Any]] | None = None,
 ) -> str:
     cases = len({r["case_id"] for r in rows})
     lines = [
@@ -247,6 +316,18 @@ def render(
     ):
         lines += ["", f"## {title} (step correct / cases)", ""]
         lines += breakdown(rows, names, key_of)
+    if controls:
+        lines += [
+            "",
+            "## Fault-free controls",
+            "",
+            "Runs whose final answer is correct, given to the methods that can decline to name a "
+            "step. The prompts and the SDK call still say the output is wrong (`assume_fault`), "
+            "as for the failed runs, so a step named here is a false attribution. All-at-once, "
+            "binary search and FALAT always name a step and are not listed.",
+            "",
+            *control_table(controls),
+        ]
     repeated = stability(rows, names)
     if len(repeated) > 2:
         lines += ["", "## Stability across repeats", "", *repeated]
@@ -276,6 +357,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--repeat-methods", default="falat,ww-all")
     parser.add_argument("--token-cap", type=int, default=0)
+    parser.add_argument("--controls", action="store_true")
     arguments = parser.parse_args(argv)
     root = arguments.root or ROOTS[arguments.dataset]
     key = api_key()
@@ -283,8 +365,8 @@ def main(argv: list[str]) -> int:
         label
         for label in (load_label(path.parent) for path in sorted(root.glob("*/label.json")))
         if label.get("split") == arguments.split
-        and label.get("kind") in {"read", "write", "natural"}
-        and (label["kind"] == "natural") == (arguments.dataset == "natural")
+        and label.get("kind") in {"read", "write", "natural", "none"}
+        and (label["kind"] == "natural") == (arguments.dataset != "planted")
     ]
     chosen = [label for label in labels if eligible(label, arguments.dataset)]
     names = methods(arguments)
@@ -313,10 +395,28 @@ def main(argv: list[str]) -> int:
             rows.append(future.result())
             if count % 25 == 0:
                 print(f"{count}/{len(jobs)}", flush=True)
+    control_rows: list[dict[str, Any]] = []
+    if arguments.controls:
+        pairs = [
+            (name, label)
+            for label in labels
+            if is_control(label, arguments.dataset)
+            for name in control_methods(names)
+        ]
+        with ThreadPoolExecutor(max_workers=arguments.workers) as pool:
+            control_rows = list(
+                pool.map(
+                    lambda pair: score_control(
+                        pair[0], root / pair[1]["case_id"], pair[1], key, arguments.token_cap
+                    ),
+                    pairs,
+                )
+            )
     arguments.out.write_text(
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8"
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in [*rows, *control_rows]),
+        encoding="utf-8",
     )
-    text = render(rows, names, arguments, len(labels) - len(chosen))
+    text = render(rows, names, arguments, len(labels) - len(chosen), control_rows)
     report = arguments.report or Path(
         f"reports/corpus_eval_{arguments.dataset}_{arguments.split}.md"
     )

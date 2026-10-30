@@ -43,6 +43,7 @@ class CauseBasis(StrEnum):
     RECORDED = "recorded"
     CHECKED_EXACT = "checked-exact"
     CHECKED_ASSUMED = "checked-assumed"
+    UNCHECKED = "unchecked"
     TRACED = "traced"
     AMBIGUOUS = "ambiguous"
 
@@ -103,6 +104,7 @@ def attribute_root_cause(
     assume_fault: bool = False,
     verify_records: bool = False,
     related_runs: Sequence[str] = (),
+    trace_unchecked: bool = False,
 ) -> RootCauseAnalysis:
     if max_runs < 1:
         raise ValueError(f"max_runs must be at least 1, got {max_runs}.")
@@ -139,6 +141,17 @@ def attribute_root_cause(
             )
             candidates.extend(found)
             traced_runs.extend(item for item in hops if item not in traced_runs)
+    if trace_unchecked and content_check is None:
+        if workspace is None:
+            not_examined.append(
+                "trace_unchecked follows the artifacts a run read to the runs that wrote them, "
+                "which lives in a workspace; none was given, so no writer was listed."
+            )
+        else:
+            for investigated_run in investigated:
+                candidates.extend(
+                    _unchecked_candidates(run_root, workspace, investigated_run, not_examined)
+                )
     if verify_records:
         if workspace is None:
             not_examined.append(
@@ -447,6 +460,38 @@ def _lineage_candidates(
     return candidate, hop_runs
 
 
+def _unchecked_candidates(
+    run_root: Path, workspace: Path, run_id: str, not_examined: list[str]
+) -> list[RootCauseCandidate]:
+    try:
+        traced = attribute_lineage(run_root, workspace, run_id, lambda path, content: True)
+    except ValueError as error:
+        not_examined.append(f'Run "{run_id}": upstream writers were not listed: {error}')
+        return []
+    found: list[RootCauseCandidate] = []
+    for hop in traced.hops:
+        read = hop.defective_read
+        if read is None or not read.unique:
+            continue
+        writer = read.candidates[0]
+        if writer.agent_run_id is None or writer.tool_call_id is None:
+            continue
+        found.append(
+            _candidate(
+                CauseKind.UPSTREAM_ORIGIN,
+                CauseBasis.UNCHECKED,
+                writer.tool_call_id,
+                writer.agent_run_id,
+                f'Run "{hop.run_id}" read "{read.path}", written by call "{writer.tool_call_id}" '
+                f'of run "{writer.agent_run_id}"; nothing checked that file, so it is listed as '
+                "a place the failure may have come from, not as a finding.",
+                writer=writer,
+                evidence=[f"journaled read {read.position} of run {hop.run_id}"],
+            )
+        )
+    return found
+
+
 def _candidate(
     kind: CauseKind,
     basis: CauseBasis,
@@ -528,6 +573,7 @@ def _ranked(candidates: list[RootCauseCandidate]) -> list[RootCauseCandidate]:
             item.basis not in _PRIMARY_BASES,
             _depth(item, candidates),
             -(item.responsibility or 0.0),
+            item.writer.written_at_utc if item.writer is not None else "",
             item.subject,
         ),
     )

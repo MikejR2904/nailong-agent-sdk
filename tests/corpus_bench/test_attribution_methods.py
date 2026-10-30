@@ -132,3 +132,37 @@ def test_mcnemar_is_exact_and_the_bootstrap_difference_matches_the_counts():
     with pytest.raises(ValueError, match="equal lengths"):
         stats.mcnemar_exact([True], [True, False])
     assert stats.agreement([[1, 2, 3], [1, 2, 4]]) == pytest.approx(2 / 3)
+
+
+def test_the_derived_profile_adds_margin_and_average_to_the_truth_and_the_checks():
+    from corpus import pipeline
+
+    seed = pipeline.DERIVED_FROM_SEED + 1
+    expected = pipeline.truth(seed)
+    ordered = sorted(expected["per_region"].values(), reverse=True)
+    assert expected["margin"] == ordered[0] - ordered[1]
+    assert expected["average"] == expected["total"] // len(expected["per_region"])
+    assert pipeline.answer_line(seed).endswith(f";MARGIN={expected['margin']}")
+    assert "MARGIN" not in pipeline.answer_line(1001)
+    analysis = (
+        f"TOTAL: {expected['total']}\nTOP: {expected['top']}\n"
+        f"MARGIN: {expected['margin']}\nAVERAGE: {expected['average']}\n"
+    )
+    assert not pipeline.artifact_defective("analysis.md", analysis, seed)
+    wrong = analysis.replace(f"AVERAGE: {expected['average']}", "AVERAGE: 1")
+    assert pipeline.artifact_defective("analysis.md", wrong, seed)
+    assert pipeline.artifact_defective("summary.txt", pipeline.answer_line(1001), seed)
+    assert "MARGIN" in pipeline.instructions_for("B", seed)
+    assert "MARGIN" not in pipeline.instructions_for("B", 1001)
+    assert "MARGIN" in pipeline.file_spec(seed)
+
+
+def test_only_the_methods_that_can_decline_are_run_on_fault_free_controls():
+    from corpus.evaluate import control_methods, is_control
+
+    names = ["ww-all:x", "ww-step:x", "ww-step+gt:x", "falat:x", "sdk-structural", "sdk-oracle"]
+    assert control_methods(names) == ["ww-step:x", "sdk-structural", "sdk-oracle"]
+    label = {"kind": "natural", "pipeline_complete": True, "outcome_failed": False}
+    assert is_control(label, "natural") and not is_control(label, "planted")
+    assert not is_control({**label, "outcome_failed": True}, "natural")
+    assert is_control({**label, "kind": "none"}, "planted")

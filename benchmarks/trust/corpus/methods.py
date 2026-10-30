@@ -16,12 +16,13 @@ the journal, the artifact store and the same ledgers.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from corpus import falat, whowhen
-from corpus.llm import ask, json_object
-from corpus.pipeline import OUTPUT_FILE, artifact_defective, truth
+from corpus.llm import ask
+from corpus.pipeline import OUTPUT_FILE, answer_line, artifact_defective, file_spec
 from corpus.prediction import Prediction
 from corpus.trace import Step, load_steps, pipeline_preamble
 from nailong_agent_sdk.developer_tools.attribute_root_cause import (
@@ -34,6 +35,7 @@ from nailong_agent_sdk.tools.artifacts import ArtifactStore
 MODEL_PATH = "accounts/fireworks/models/"
 SDK_FAMILIES = (
     "sdk-structural",
+    "sdk-structural+trace",
     "sdk-integrity",
     "sdk-oracle",
     "sdk-llmcheck",
@@ -51,8 +53,7 @@ def node_of(run_id: str | None) -> str | None:
 
 
 def expected_answer(seed: int) -> str:
-    expected = truth(seed)
-    return f"TOTAL={expected['total']};TOP={expected['top']}"
+    return answer_line(seed)
 
 
 def last_step(steps: list[Step]) -> Prediction:
@@ -69,34 +70,35 @@ SOURCE TABLE (csv):
 {source}
 
 The pipeline writes files that must contain:
-- facts.json: a JSON object with the sum of the amount column for each region
-- analysis.md: a line 'TOTAL: <grand total of all amounts>', a line 'TOP: <region with the
-  largest total>' and one line per region with its total
-- summary.txt: the single line TOTAL=<grand total>;TOP=<top region>
+{spec}
 
 FILE {path}:
 {content}
 
 Compute from the source table what this file should contain and compare. Is any number or the
-top region in the file wrong? Answer with one JSON object and nothing else:
+top region in the file wrong, or is any line the description requires missing? Work out every
+needed sum row by row before you judge; the last line of your reply must be one JSON object:
 {{"defective": true or false}}"""
+VOTES = 3
 
 
 class LlmChecker:
-    def __init__(self, workspace: Path, judge: str, key: str) -> None:
+    def __init__(self, workspace: Path, judge: str, key: str, seed: int) -> None:
         store = ArtifactStore(workspace, read_only=True)
         history = store.history("sales.csv")
         self.source = store.read_bytes(history[0].sha256).decode("utf-8")
-        self.judge, self.key = judge, key
+        self.judge, self.key, self.spec = judge, key, file_spec(seed)
 
     def defective(self, path: str, content: str) -> bool:
         if path == "sales.csv":
             return False
-        reply = ask(
-            self.judge, CHECK.format(source=self.source, path=path, content=content), self.key
-        )
-        found = json_object(reply)
-        return bool(found and found.get("defective") is True)
+        prompt = CHECK.format(source=self.source, spec=self.spec, path=path, content=content)
+        votes = 0
+        for vote in range(VOTES):
+            reply = ask(self.judge, f"{prompt}\n(independent check {vote + 1})", self.key)
+            verdicts = re.findall(r'"defective"\s*:\s*(true|false)', reply)
+            votes += bool(verdicts and verdicts[-1] == "true")
+        return votes * 2 > VOTES
 
 
 def sdk_checks(mode: str, seed: int, workspace: Path, judge: str, key: str) -> dict[str, Any]:
@@ -111,7 +113,7 @@ def sdk_checks(mode: str, seed: int, workspace: Path, judge: str, key: str) -> d
         def decide(path: str, content: str) -> bool:
             return artifact_defective(path, content, seed)
     else:
-        decide = LlmChecker(workspace, judge, key).defective
+        decide = LlmChecker(workspace, judge, key, seed).defective
 
     def artifact(path: str):
         return lambda content, version: decide(path, content.decode("utf-8"))
@@ -158,20 +160,18 @@ def sdk_method(
     mode: str, case_dir: Path, seed: int, judge: str, key: str, **extra: Any
 ) -> Prediction:
     workspace = case_dir / "workspace"
-    integrity = mode == "sdk-integrity" or mode.endswith("+integrity")
-    base = "sdk-structural" if mode == "sdk-integrity" else mode.split("+")[0]
+    base, *flags = mode.split("+")
+    if base == "sdk-integrity":
+        base, flags = "sdk-structural", [*flags, "integrity"]
     checks = sdk_checks(base, seed, workspace, judge, key)
     options: dict[str, Any] = {}
-    if integrity:
+    if "integrity" in flags:
         options = {"verify_records": True, "related_runs": ["node-A", "node-B"]}
+    if "trace" in flags:
+        options["trace_unchecked"] = True
+    options.setdefault("assume_fault", True)
     analysis = attribute_root_cause(
-        case_dir / "service",
-        "node-C",
-        workspace=workspace,
-        assume_fault=True,
-        **checks,
-        **options,
-        **extra,
+        case_dir / "service", "node-C", workspace=workspace, **checks, **options, **extra
     )
     return prediction_of(analysis)
 
