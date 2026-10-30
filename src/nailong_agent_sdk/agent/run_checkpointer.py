@@ -24,6 +24,7 @@ from ..observability.run_checkpoints import (
     export_run_head_checkpoint,
 )
 from ..observability.telemetry_store import TelemetryStore
+from ..observability.transparency import publish_run_tree_heads
 from .retention import pruned_heads_lookup
 
 _logger = get_logger("run-checkpointer")
@@ -46,6 +47,7 @@ class RunHeadCheckpointer:
 
     signer: CheckpointSigner
     sink: CheckpointSink
+    tree_heads: bool = False
 
     def require_outside(self, run_root: Path) -> None:
         if self.sink.is_inside(run_root):
@@ -64,7 +66,7 @@ class RunHeadCheckpointer:
         audit: AuditTranscriptStore,
         run_id: str,
     ) -> RunHeadCheckpoint:
-        return export_run_head_checkpoint(
+        checkpoint = export_run_head_checkpoint(
             telemetry,
             audit,
             run_id,
@@ -72,6 +74,9 @@ class RunHeadCheckpointer:
             self.sink,
             pruned_lookup=pruned_heads_lookup(run_root),
         )
+        if self.tree_heads:
+            publish_run_tree_heads(telemetry, audit, run_id, self.sink, self.signer)
+        return checkpoint
 
     def check(
         self,

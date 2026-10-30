@@ -83,6 +83,29 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
+### `observability/ed25519.py` - an Ed25519 checkpoint signer with a verify-only form
+
+*140 lines · depends on: `foundations/errors.py` · used by: `observability/witness.py`, tests · not re-exported at the package root*
+
+**Role in the workflow.** An asymmetric signer for checkpoints. The HMAC signer shares one secret between the process that signs and the one that verifies, so whoever can verify can forge. An Ed25519 verifier holds only the public key, which makes it possible to hand verification (or a remote witness) no secret at all. It needs the optional `cryptography` package (`pip install 'nailong-agent-sdk[signatures]'`).
+
+**Contents**
+
+- `_primitives() -> Any` - Imports the `cryptography` pieces on first use; their absence raises `ED25519_UNAVAILABLE` naming the package to install.
+- `_key_bytes(value: bytes | str, label: str) -> bytes` - A key as 32 bytes from bytes or hex; any other length raises `ED25519_KEY_INVALID` with the length.
+- **class `Ed25519Signer`** *(class)* - A `CheckpointSigner` backed by Ed25519. With a private key it signs and verifies; `verifier()` returns a copy that holds only the public key and can verify but never sign, so a verifier or a remote witness need hold no secret.
+  - `Ed25519Signer.__init__(self, private_key: bytes | str | None=None, *, public_key: bytes | str | None=None, signer_id: str | None=None) -> None` - Takes a 32-byte private key, a 32-byte public key (bytes or hex) or both; neither raises `ED25519_KEY_MISSING`, a wrong length `ED25519_KEY_INVALID`, a public key that does not belong to the private key `ED25519_KEY_MISMATCH` and a blank or overlong `signer_id` `ED25519_SIGNER_ID_INVALID`. The default id is `ed25519:` and the first 16 hex characters of the public key's SHA-256.
+  - `Ed25519Signer.generate(cls, signer_id: str | None=None) -> Ed25519Signer` - A new random key pair.
+  - `Ed25519Signer.signer_id(self) -> str` - The id written into every record this signer signs.
+  - `Ed25519Signer.public_key_hex(self) -> str` - The public key in hex, what a verifier is given.
+  - `Ed25519Signer.can_sign(self) -> bool` - True when a private key is held.
+  - `Ed25519Signer.verifier(self) -> Ed25519Signer` - A verify-only signer with the same id and public key.
+  - `Ed25519Signer.sign(self, message: bytes) -> str` - The hex Ed25519 signature of a message. A verify-only signer raises `ED25519_SIGNING_KEY_MISSING` naming its id.
+  - `Ed25519Signer.verify(self, message: bytes, signature: str) -> bool` - True only for a well-formed 64-byte signature that this public key made over exactly this message.
+
+**Algorithms & invariants.** The signature is deterministic and covers the canonical JSON of the record with an empty signature field. The verifier never needs the private key; `Ed25519Signer.verifier()` drops it.
+
+---
 ### `observability/metric_definitions.py` - the SDK's standard metric catalogue
 
 *450 lines · depends on: `observability/telemetry_models.py` · used by: `observability/metrics.py` · re-exported at the package root: 1 name(s)*
@@ -100,6 +123,41 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
+### `observability/merkle.py` - Merkle tree hashing with inclusion and consistency proofs
+
+*225 lines · depends on: none · used by: `observability/transparency.py` · not re-exported at the package root*
+
+**Role in the workflow.** The hash tree under the signed heads: RFC 6962 and RFC 9162 Merkle hashing with domain-separated leaves and nodes, an append-only accumulator that keeps the root in O(log n) space, and the inclusion and consistency proofs and their verifiers. It knows nothing about ledgers; it hashes bytes. The roots for 1 to 8 leaves match the published Certificate Transparency test vectors.
+
+**Contents**
+
+- `hash_leaf(data: bytes) -> bytes` - `SHA-256(0x00 || data)`: the prefix keeps a leaf from being read as an inner node.
+- `hash_children(left: bytes, right: bytes) -> bytes` - `SHA-256(0x01 || left || right)`.
+- `empty_root() -> bytes` - The root of a tree with no leaves, `SHA-256('')`.
+- `split_point(size: int) -> int` - The largest power of two strictly below `size`, the left subtree's width in RFC 9162. A size below 2 raises.
+- **class `MerkleTree`** *(class)* - A tree over a fixed list of leaves that answers its root, an inclusion proof and a consistency proof for any prefix size. Intermediate subtree roots are memoised, so repeated proofs over one log cost O(n) once.
+  - `MerkleTree.__init__(self, leaves: Sequence[bytes]) -> None` - Hashes every leaf with the leaf prefix `0x00`.
+  - `MerkleTree.from_leaf_hashes(cls, leaf_hashes: Sequence[bytes]) -> MerkleTree` - Builds a tree from leaf hashes that were already computed with `hash_leaf`.
+  - `MerkleTree.size(self) -> int` - The number of leaves held.
+  - `MerkleTree.root(self, size: int | None=None) -> bytes` - The root of the first `size` leaves (all by default); the SHA-256 of the empty string for none. A size beyond the leaves held raises `Tree size N is outside the M leaves held.`
+  - `MerkleTree.inclusion_proof(self, index: int, size: int | None=None) -> list[bytes]` - The audit path of RFC 9162 section 2.1.3 for one leaf: the sibling hashes from the leaf level up. An index outside the tree raises naming the valid range.
+  - `MerkleTree.consistency_proof(self, first: int, second: int | None=None) -> list[bytes]` - The consistency proof of RFC 9162 section 2.1.4 between the first `first` leaves and the first `second`: empty when the sizes are equal, otherwise the node hashes that let a holder of both roots check that the older tree is a prefix of the newer. `first` below 1 or above `second` raises naming both.
+  - `MerkleTree._require_size(self, count: int) -> None` - Raises when a requested tree size is outside the leaves held.
+  - `MerkleTree._range_root(self, low: int, high: int) -> bytes` - The root of leaves `[low, high)` split at the largest power of two below the width, memoised.
+  - `MerkleTree._path(self, index: int, low: int, high: int) -> list[bytes]` - The sibling hashes for one leaf, collected from the top of the tree down and returned leaf-first.
+  - `MerkleTree._subproof(self, first: int, low: int, high: int, complete: bool) -> list[bytes]` - The recursive `SUBPROOF` of RFC 9162 as a loop: it descends, adds the sibling at each split and, once the older tree is a complete subtree, adds its root unless the proof starts at a complete subtree.
+- **class `MerkleAccumulator`** *(class)* - Keeps only the roots of the complete subtrees of an append-only log (at most log2 n of them), so an append is amortised constant and the root is O(log n) whatever the log's length.
+  - `MerkleAccumulator.__init__(self) -> None` - Starts empty.
+  - `MerkleAccumulator.size(self) -> int` - The number of leaves appended.
+  - `MerkleAccumulator.append(self, data: bytes) -> None` - Adds one leaf and merges equal-width subtrees on the right edge.
+  - `MerkleAccumulator.root(self) -> bytes` - Folds the stored subtrees from the right into the root; the empty-string hash for no leaves.
+- `merkle_root(leaves: Sequence[bytes]) -> bytes` - The root of a sequence of leaves, computed with the accumulator.
+- `verify_inclusion(leaf_data: bytes, index: int, size: int, proof: Sequence[bytes], root: bytes) -> bool` - RFC 9162 section 2.1.3.2: recomputes the root from a leaf, its index, the tree size and the audit path and compares it with the root. An index outside the tree, a path that is too long or too short, or a wrong leaf returns False. The size fixes only the tree's shape, so binding a proof to a size is the signed head's job.
+- `verify_consistency(first: int, second: int, first_root: bytes, second_root: bytes, proof: Sequence[bytes]) -> bool` - RFC 9162 section 2.1.4.2: from the two roots and sizes and a proof, recomputes both and accepts only if the older tree is a prefix of the newer. Equal sizes need equal roots and no proof; a first size of 0 needs no proof; a first size that is a power of two uses its own root as the first proof element.
+
+**Algorithms & invariants.** The tree of n leaves splits at the largest power of two below n, so the shape is fixed by n alone and an appended leaf never changes the root of an earlier prefix. The root of the first m leaves is therefore a function of those m records, which is what lets a size-m head be checked against a longer log. An inclusion proof has about log2 n hashes and a consistency proof at most 2 log2 n.
+
+---
 ### `observability/metrics.py` - record metric values against the standard catalogue
 
 *131 lines · depends on: `observability/metric_definitions.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/base_agent/agent.py`, `mcp/server.py`, `specifications/retrieval.py`, `state/controller_runtime.py` · re-exported at the package root: 3 name(s)*
@@ -303,6 +361,43 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
+### `observability/transparency.py` - signed Merkle tree heads over a run's ledgers, with inclusion and extension proofs
+
+*359 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/audit_log.py`, `observability/merkle.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `agent/run_checkpointer.py` · not re-exported at the package root*
+
+**Role in the workflow.** Signed Merkle tree heads over a run's telemetry and audit ledgers. A head fixes the size and root of the record hashes. Against it the ledger itself is checked for truncation, rewriting and resealing, and, from the proofs alone, a verifier checks that one record is in the log (`verify_event_inclusion`) or that a newer head extends an older one (`verify_extension`) without reading either log. `RunHeadCheckpointer(tree_heads=True)` publishes the heads with every checkpoint.
+
+**Contents**
+
+- `tree_head_name(run_id: str, store: str) -> str` - The sink name of one ledger's heads, `<run>.<store>.merkle`.
+- **class `TreeHeadVerdict`** *(StrEnum)* - The outcome of checking a ledger against its signed Merkle heads: `matches`, `advanced` (records after the newest head, not yet covered), `truncated`, `diverged` (rewritten or resealed), `chain-broken`, `signature-invalid`, `no-head` and `unreadable`.
+- **class `MerkleTreeHead`** *(pydantic model; bases: StrictModel)* - A signed statement that a ledger of `size` records had Merkle root `root` at `published_at_utc`, under `signer_id`.
+  - fields: `schema_version`, `name`, `size`, `root`, `published_at_utc`, `signer_id`, `signature`
+  - `MerkleTreeHead.signed_message(self) -> bytes` - The canonical JSON of the head with an empty signature, what the signer signs.
+- **class `TreeHeadVerification`** *(pydantic model; bases: StrictModel)* - A verdict with the number of heads read, the newest published size, the ledger's current size and a sentence saying what was found.
+  - fields: `verdict`, `heads`, `published_size`, `current_size`, `detail`
+  - `TreeHeadVerification.ok(self) -> bool` - True for `matches` and `advanced`.
+- **class `ConsistencyProof`** *(pydantic model; bases: StrictModel)* - The sizes and the proof hashes (hex) that show a newer head extends an older one.
+  - fields: `first_size`, `second_size`, `hashes`
+- **class `InclusionProof`** *(pydantic model; bases: StrictModel)* - A record's index, the tree size and the audit path hashes (hex).
+  - fields: `index`, `size`, `hashes`
+- **class `ProofCheck`** *(pydantic model; bases: StrictModel)* - Whether a proof held and one sentence saying why or why not.
+  - fields: `ok`, `detail`
+- `leaf_data(record_hash: str) -> bytes` - A record's hex integrity hash as the leaf bytes; a non-hexadecimal hash raises naming it.
+- `run_hashes(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str) -> dict[str, list[str]]` - The integrity hashes of a run's telemetry events and audit entries, in order.
+- `publish_tree_head(hashes: Sequence[str], sink: CheckpointSink, name: str, signer: CheckpointSigner, *, now: datetime | None=None) -> MerkleTreeHead` - Accumulates the hashes, signs the size and root and appends the head to the sink.
+- `publish_run_tree_heads(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, sink: CheckpointSink, signer: CheckpointSigner, *, now: datetime | None=None) -> dict[str, MerkleTreeHead]` - Publishes a head for the telemetry ledger and one for the audit ledger of a run; a ledger whose chain is broken is never signed (`TREE_HEAD_CHAIN_BROKEN`).
+- `verify_tree_heads(hashes: Sequence[str], sink: CheckpointSink, name: str, verifier: CheckpointSigner) -> TreeHeadVerification` - Reads every head of a name, refuses an invalid signature, then checks each against the ledger: fewer records than a head is `truncated`, a different root for the same prefix is `diverged`. The newest head decides `matches` or `advanced`.
+- `verify_run_tree_heads(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, sink: CheckpointSink, verifier: CheckpointSigner) -> dict[str, TreeHeadVerification]` - `verify_tree_heads` for both ledgers of a run; an otherwise passing ledger whose chain is broken becomes `chain-broken`.
+- `prove_extension(hashes: Sequence[str], first_size: int, second_size: int | None=None) -> ConsistencyProof` - The consistency proof between two prefix sizes of a hash list (the whole list by default).
+- `verify_extension(first: MerkleTreeHead, second: MerkleTreeHead, proof: ConsistencyProof, verifier: CheckpointSigner) -> ProofCheck` - Checks two signed heads and a proof without the log: both signatures, the sizes the proof is for, then the RFC 9162 consistency check. Fails with a sentence naming a rewrite or fork.
+- `prove_inclusion(hashes: Sequence[str], index: int, size: int | None=None) -> InclusionProof` - The inclusion proof of one record in a hash list.
+- `verify_event_inclusion(record_hash: str, proof: InclusionProof, head: MerkleTreeHead, verifier: CheckpointSigner) -> ProofCheck` - Checks that one record hash is in the log a signed head covers, from the proof alone: the signature, the size and the audit path.
+- `_verdict(kind: TreeHeadVerdict, detail: str) -> TreeHeadVerification` - A `TreeHeadVerification` from a verdict, a sentence and the counts.
+
+**Algorithms & invariants.** The leaves are the ledgers' own integrity hashes, so a head adds no per-event storage. An attacker who edits an event and recomputes the chain changes every later hash, so the prefix root no longer equals a head published before the edit (`diverged`); one who cuts the newest records leaves fewer records than the head covers (`truncated`). Records written after the newest head are not covered until the next head is published, and a log cut back exactly to a head is indistinguishable from the log at that moment. A head fixes a size and a root; an inclusion proof is checked against the head's size, because the audit path alone does not bind it.
+
+---
 ### `observability/telemetry_helpers.py` - tiny constructors for timestamps and metric observations, and the shared hash-chain checker
 
 *99 lines · depends on: `observability/telemetry_models.py` · used by: `agent/retention.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/telemetry_store.py` · re-exported at the package root: 1 name(s)*
@@ -457,3 +552,39 @@ Three independent records of a run, all written outside the model's context: the
 
 **Algorithms & invariants.** Nothing here imports OpenTelemetry: the formats are the W3C Trace Context ones, so the `trace_id`, `span_id` and `parent_span_id` of `TelemetryContext`, `AgentRunProfile` and the `agent.profile-completed` payload can be passed to an OTLP exporter unchanged. A trace id is 32 lowercase hex characters and a span id 16, neither all zeros; `TelemetryContext` refuses anything else, naming the field. Measured on the development machine, `new_span_id` takes about 0.2 microseconds, `format_traceparent` about 0.9 and `parse_traceparent` about 1.8; a run formats one header per model turn and per tool call, and builds the process resource once. The SDK records every run, so the header it sends is always sampled (`01`), whatever flags arrived on the one that started the run; the incoming flag is parsed and reported, not propagated. `tracestate` is neither read nor sent. Derived ids make a run's trace survive a crash, a resume and another process with nothing persisted: executing the same run again continues the same trace. Only the graph-run trace and span are derived; every agent run's own root span id is random, so a node that runs twice after a crash appears as two spans in the trace, never as a duplicate id.
 
+### `observability/witness.py` - an append-only remote witness for checkpoints
+
+*256 lines · depends on: `foundations/errors.py` · used by: tests, `benchmarks/trust/overhead_merkle.py` · not re-exported at the package root*
+
+**Role in the workflow.** A remote place for checkpoints that the writer cannot rewrite. `HttpWitnessSink` is a `CheckpointSink` whose append token can add records but not read, replace or delete them; the verifier reads with a second token. `WitnessServer` is a reference implementation of the protocol used by the tests; a deployment points the sink at its own append-only service.
+
+**Contents**
+
+- **class `HttpWitnessSink`** *(class)* - A `CheckpointSink` that appends to a remote witness over HTTP with a bearer token that can add records but not read, change or delete them; reading needs a second token held by the verifier.
+  - `HttpWitnessSink.__init__(self, base_url: str, *, append_token: str, read_token: str | None=None, timeout_seconds: float=10.0, allow_insecure_http: bool=False) -> None` - Refuses a URL that is not http(s), plain http unless it is a loopback address and `allow_insecure_http` is set, a missing append token and a non-positive timeout, each naming the value.
+  - `HttpWitnessSink.location(self, run_id: str) -> str` - The record URL of one run id.
+  - `HttpWitnessSink.append(self, run_id: str, record: str) -> None` - POSTs the record; any status but 200 or 201 raises `WITNESS_WRITE_FAILED` with the URL, status and the start of the body.
+  - `HttpWitnessSink.read_all(self, run_id: str) -> list[str]` - GETs the records with the read token. Without one it raises `WITNESS_READ_TOKEN_MISSING`; 404 is an empty list; another status raises `WITNESS_READ_FAILED`; a body that is not a list of strings raises `WITNESS_RESPONSE_INVALID`.
+  - `HttpWitnessSink.is_inside(self, root: Path) -> bool` - Always False: a remote witness is never inside the run root.
+  - `HttpWitnessSink._call(self, method: str, url: str, token: str, body: bytes | None) -> tuple[int, str]` - One HTTP call; an HTTP error returns its status and body, a network failure raises `WITNESS_UNREACHABLE` with the URL.
+- **class `WitnessServer`** *(class)* - A reference witness on the standard library: POST adds a record under the append token, GET lists them under the read token, and PUT, PATCH and DELETE are refused with 405. Records can be persisted to a directory with an fsync per record and are reloaded on start. It is a reference for the protocol and tests, not a hardened service.
+  - `WitnessServer.__init__(self, *, append_token: str, read_token: str, directory: Path | None=None, host: str='127.0.0.1', port: int=0) -> None` - Requires two different non-empty tokens, loads any persisted records and binds the port (0 picks a free one).
+  - `WitnessServer.url(self) -> str` - The base URL the server listens on.
+  - `WitnessServer.start(self) -> None` - Serves on a daemon thread.
+  - `WitnessServer.stop(self) -> None` - Stops serving and joins the thread.
+  - `WitnessServer.records(self, run_id: str) -> list[str]` - A copy of the records held for a run id.
+  - `WitnessServer._store(self, run_id: str, record: str) -> None` - Appends a record in memory and, with a directory, to the run's JSONL file with an fsync.
+  - `WitnessServer._handler(self) -> type[BaseHTTPRequestHandler]` - Builds the request handler class bound to this server.
+- **class `WitnessServer._handler.Handler`** *(class)* - Routes `/v1/records/<run id>`.
+  - `WitnessServer._handler.Handler.log_message(self, format: str, *args) -> None` - Silences the access log.
+  - `WitnessServer._handler.Handler._reply(self, status: int, payload: dict[str, Any]) -> None` - Writes a JSON reply with its status.
+  - `WitnessServer._handler.Handler._run_id(self) -> str | None` - The run id in the path, or None for any other path.
+  - `WitnessServer._handler.Handler._authorised(self, token: str) -> bool` - Constant-time comparison of the bearer token with the one required.
+  - `WitnessServer._handler.Handler._body(self) -> bytes | None` - Reads the request body (every method does, so a reply never leaves unread bytes that reset the connection) or returns None for a body above the limit.
+  - `WitnessServer._handler.Handler.do_POST(self) -> None` - Appends a `{record}` body under the append token: 413 for an oversize body, 404 for an unknown path, 403 for a wrong token, 400 for a body that is not a non-empty string record, 201 when stored.
+  - `WitnessServer._handler.Handler.do_GET(self) -> None` - Lists a run's records under the read token; 404 when there are none.
+  - `WitnessServer._handler.Handler._refuse(self) -> None` - Answers PUT, PATCH and DELETE with 405: the witness is append-only.
+
+**Algorithms & invariants.** The protocol is two calls on `/v1/records/<run id>`: POST `{record}` with the append token and GET with the read token; nothing else is accepted. The security of the arrangement is that the process holding the append token cannot change what it already wrote, and that the verifier can read what the writer cannot. The sink refuses plain http except to a loopback address. The reference server is not hardened (no TLS, no rate limits).
+
+---

@@ -49,6 +49,9 @@ langchain = [
 jev = [
     "typesafe-sdk>=0.7,<1",
 ]
+signatures = [
+    "cryptography>=43",
+]
 redis-cache = [
     "redis>=5,<7",
 ]
@@ -61,6 +64,7 @@ interop = [
 
 [dependency-groups]
 dev = [
+  "cryptography>=43",
   "pytest>=8.3,<9",
   "ruff>=0.16.8",
 ]

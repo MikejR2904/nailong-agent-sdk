@@ -734,7 +734,7 @@
 
 **Contents**
 
-- **class `RunHeadCheckpointer`** *(dataclass)* - A `CheckpointSigner` and a `CheckpointSink`: what the runtime needs to sign and keep a run's heads. Pass it to `AgentRuntimeServices.open(checkpointer=...)`. · *Instantiated by:* `mcp/security.py::HttpServiceSettings.checkpointer`
+- **class `RunHeadCheckpointer`** *(dataclass)* - A `CheckpointSigner` and a `CheckpointSink`: what the runtime needs to sign and keep a run's heads. With `tree_heads=True` each checkpoint also publishes signed Merkle tree heads of the telemetry and audit ledgers (`observability/transparency.py`). Pass it to `AgentRuntimeServices.open(checkpointer=...)`. · *Instantiated by:* `mcp/security.py::HttpServiceSettings.checkpointer`
   - fields: `signer`, `sink`
   - `RunHeadCheckpointer.require_outside(run_root: Path) -> None` - Raises `RUN_CHECKPOINT_INSIDE_RUN_ROOT` when the sink stores its records under the run root; `AgentRuntimeServices.open` and `create_mcp_server` call it at start-up. · *Called by:* `agent/runtime.py::AgentRuntimeServices.open`, `mcp/server.py::create_mcp_server`
   - `RunHeadCheckpointer.export(run_root: Path, telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str) -> RunHeadCheckpoint` - `export_run_head_checkpoint` with this signer and sink and the tombstone lookup of the run root.
