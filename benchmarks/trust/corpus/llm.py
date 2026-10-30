@@ -14,6 +14,8 @@ from typing import Any
 BASE_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 CACHE = Path("results/corpus_llm_cache")
 MAX_ATTEMPTS = 5
+DEFAULT_MAX_TOKENS = 8_000
+RETRY_MAX_TOKENS = 24_000
 
 
 class Usage:
@@ -22,6 +24,7 @@ class Usage:
         self.completion = 0
         self.calls = 0
         self.cached = 0
+        self.truncated = 0
         self._lock = threading.Lock()
 
     def add(self, prompt: int, completion: int, cached: bool) -> None:
@@ -38,7 +41,12 @@ USAGE = Usage()
 
 
 def ask(
-    model: str, prompt: str, key: str, *, max_tokens: int = 1_500, temperature: float = 0.0
+    model: str,
+    prompt: str,
+    key: str,
+    *,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    temperature: float = 0.0,
 ) -> str:
     digest = hashlib.sha256(
         json.dumps([model, prompt, max_tokens, temperature]).encode("utf-8")
@@ -78,7 +86,15 @@ def ask(
         time.sleep(min(30, 2**attempt))
     else:
         raise RuntimeError(f"The provider did not answer for {model} after {MAX_ATTEMPTS}: {last}")
-    text = str(data["choices"][0]["message"].get("content") or "")
+    choice = data["choices"][0]
+    text = str(choice["message"].get("content") or "")
+    if (
+        not text.strip()
+        and choice.get("finish_reason") == "length"
+        and max_tokens < RETRY_MAX_TOKENS
+    ):
+        USAGE.truncated += 1
+        return ask(model, prompt, key, max_tokens=RETRY_MAX_TOKENS, temperature=temperature)
     usage = data.get("usage") or {}
     USAGE.add(int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0)), False)
     path.parent.mkdir(parents=True, exist_ok=True)

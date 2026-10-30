@@ -161,3 +161,19 @@ It shows how systems behave on seeded tasks with scripted solvers and injected f
 not show that failures are absent, that live models behave the same, or that results carry to
 task families outside the sample. See `PREREGISTRATION.md` for the claims that are made and
 section 11 of it for the known limitations.
+
+### Failure corpus and the attribution comparison
+
+`corpus/` holds a labelled corpus of failed multi-agent runs and the methods compared on it; the
+plan was committed before the test split existed (`corpus/PLAN.md`) and the result is in
+`reports/corpus_comparison.md`. Calling the models costs money; both commands are resumable.
+
+```bash
+python -m corpus.build --split dev --workers 6      # 42 pipelines of three real agents
+python -m corpus.evaluate --split dev --out results/corpus_eval_dev.jsonl
+```
+
+The raw ledgers of every case are written under `results/corpus/` (ignored by git); the reports
+are committed. `tamper_protocol.py` (agents that tamper with their own traces, against the
+recorder) and `overhead_merkle.py` (the cost of the signed Merkle tree heads) are separate scripts
+with their own reports.

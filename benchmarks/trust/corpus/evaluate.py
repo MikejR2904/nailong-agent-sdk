@@ -159,7 +159,9 @@ def render(rows: list[dict[str, Any]], names: list[str], split: str, skipped: in
     lines += [
         "",
         f"LLM calls made: {USAGE.calls} ({USAGE.cached} answered from the cache); "
-        f"tokens sent {USAGE.prompt:,} and received {USAGE.completion:,}.",
+        f"tokens sent {USAGE.prompt:,} and received {USAGE.completion:,}; "
+        f"{USAGE.truncated} reply(ies) ran out of the token budget and were asked again with a "
+        "larger one.",
         "",
     ]
     return "\n".join(lines)
