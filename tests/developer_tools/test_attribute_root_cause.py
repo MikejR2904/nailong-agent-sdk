@@ -246,3 +246,147 @@ def test_the_command_refuses_an_artifact_path_without_an_artifact_check(tmp_path
     done = cli("attribute-root-cause", tmp_path, "r1", "--workspace", tmp_path, "--artifact", "x")
     assert done.returncode != 0
     assert "--artifact names a path to search but no artifact check was given" in done.stderr
+
+
+def test_a_completed_run_the_caller_rejects_is_still_traced_when_assume_fault_is_set(tmp_path):
+    record(tmp_path, "r1", [final()])
+    data_flow(tmp_path)
+    kwargs = dict(workspace=tmp_path, content_check=lineage_check)
+    assert attribute_root_cause(tmp_path, "r1", **kwargs).ok
+    traced = attribute_root_cause(tmp_path, "r1", assume_fault=True, **kwargs)
+    assert not traced.ok and traced.verdict == "completed"
+    assert traced.primary.kind is CauseKind.UPSTREAM_ORIGIN
+    assert traced.primary.writer.agent_run_id == "r0"
+
+
+def test_results_are_scanned_in_the_runs_the_trace_passes_through(tmp_path):
+    record(tmp_path, "r1", [final()])
+    data_flow(tmp_path)
+    journal = FileToolResultJournal(tmp_path)
+    journal_call(journal, "r0", "c5", "fetch_rates", {"q": "x"}, {"rate": "BAD 9"})
+    analysis = attribute_root_cause(
+        tmp_path,
+        "r1",
+        workspace=tmp_path,
+        content_check=lineage_check,
+        result_check=bad_result,
+        assume_fault=True,
+    )
+    scanned = [item for item in analysis.candidates if item.kind is CauseKind.DEFECTIVE_RESULT]
+    assert ("r0", "fetch_rates call c5") in [(item.run_id, item.subject) for item in scanned]
+    assert {item.run_id for item in scanned} == {"r0", "r1"}
+
+
+def test_a_defective_result_read_before_the_defective_write_of_the_same_run_ranks_first(tmp_path):
+    record(tmp_path, "r1", [final()])
+    store, journal = ArtifactStore(tmp_path), FileToolResultJournal(tmp_path)
+    journal.record_for_run(
+        "r0",
+        ToolCall(id="read1", name="fetch_rates", arguments={"q": "x"}),
+        ToolExecutionResult(status="succeeded", output={"rate": "BAD 9"}),
+    )
+    version = store.write_text("out.txt", "report BAD", manifest=writer("r0", "w1", 2))
+    journal_call(journal, "r0", "w1", "write_draft", {"path": "out.txt"}, {"ok": True})
+    journal_call(
+        journal,
+        "r1",
+        "c9",
+        "read_artifact",
+        {"artifact_id": version.artifact_id},
+        {"artifact_id": version.artifact_id, "content": "report BAD"},
+    )
+    analysis = attribute_root_cause(
+        tmp_path,
+        "r1",
+        workspace=tmp_path,
+        content_check=lineage_check,
+        result_check=lambda tool, arguments, result: (
+            tool == "fetch_rates" and "BAD" in canonical_json(result)
+        ),
+        assume_fault=True,
+    )
+    assert analysis.primary.kind in {CauseKind.UPSTREAM_ORIGIN, CauseKind.DEFECTIVE_RESULT}
+    assert analysis.primary.subject == "fetch_rates call read1"
+    assert analysis.primary.run_id == "r0"
+
+
+def stored_and_journaled(tmp_path, *, served, asked, kept):
+    store, journal = ArtifactStore(tmp_path), FileToolResultJournal(tmp_path)
+    version = store.write_text("data.txt", kept, manifest=writer("r0", "w1", 1))
+    journal_call(journal, "r0", "w1", "write_draft", {"path": "data.txt", "content": asked}, {})
+    journal_call(
+        journal,
+        "r1",
+        "c1",
+        "read_artifact",
+        {"artifact_id": version.artifact_id},
+        {"artifact_id": version.artifact_id, "path": "data.txt", "content": served},
+    )
+    return version
+
+
+def test_a_read_that_returned_other_content_than_the_store_holds_is_named_without_any_check(
+    tmp_path,
+):
+    record(tmp_path, "r1", [final()])
+    stored_and_journaled(tmp_path, served="altered", asked="same", kept="same")
+    analysis = attribute_root_cause(
+        tmp_path, "r1", workspace=tmp_path, assume_fault=True, verify_records=True
+    )
+    primary = analysis.primary
+    assert primary.kind is CauseKind.RECORD_INCONSISTENCY and primary.basis is CauseBasis.RECORDED
+    assert primary.subject == "read_artifact call c1" and primary.run_id == "r1"
+    assert "differs from the stored artifact" in primary.summary
+
+
+def test_a_write_that_stored_other_content_than_the_call_asked_for_names_the_writer(tmp_path):
+    record(tmp_path, "r1", [final()])
+    stored_and_journaled(tmp_path, served="stored", asked="asked", kept="stored")
+    analysis = attribute_root_cause(
+        tmp_path,
+        "r1",
+        workspace=tmp_path,
+        assume_fault=True,
+        verify_records=True,
+        related_runs=["r0"],
+    )
+    primary = analysis.primary
+    assert primary.kind is CauseKind.RECORD_INCONSISTENCY
+    assert primary.writer.agent_run_id == "r0" and primary.writer.tool_call_id == "w1"
+    assert primary.run_id == "r0" and "asked to write" in primary.summary
+
+
+def test_records_that_agree_raise_no_inconsistency_and_the_check_needs_a_workspace(tmp_path):
+    record(tmp_path, "r1", [final()])
+    stored_and_journaled(tmp_path, served="same", asked="same", kept="same")
+    clean = attribute_root_cause(
+        tmp_path,
+        "r1",
+        workspace=tmp_path,
+        assume_fault=True,
+        verify_records=True,
+        related_runs=["r0"],
+    )
+    assert all(item.kind is not CauseKind.RECORD_INCONSISTENCY for item in clean.candidates)
+    skipped = attribute_root_cause(tmp_path, "r1", assume_fault=True, verify_records=True)
+    assert any("verify_records compares the journal" in line for line in skipped.not_examined)
+
+
+def test_the_command_takes_assume_fault_verify_records_and_related_runs(tmp_path):
+    record(tmp_path, "r1", [final()])
+    stored_and_journaled(tmp_path, served="altered", asked="same", kept="same")
+    done = cli(
+        "attribute-root-cause",
+        tmp_path,
+        "r1",
+        "--workspace",
+        tmp_path,
+        "--assume-fault",
+        "--verify-records",
+        "--related-run",
+        "r0",
+    )
+    assert done.returncode == 1, done.stderr
+    report = json.loads(done.stdout)
+    assert report["primary"]["kind"] == "record-inconsistency"
+    assert report["primary"]["subject"] == "read_artifact call c1"

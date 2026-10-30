@@ -225,6 +225,25 @@ def _parser() -> argparse.ArgumentParser:
         default=SuffixStrategy.CONFIRMED.value,
     )
     cause.add_argument("--max-runs", type=int, default=5)
+    cause.add_argument(
+        "--assume-fault",
+        action="store_true",
+        help="Analyse a run that completed but whose result your own check rejected.",
+    )
+    cause.add_argument(
+        "--verify-records",
+        action="store_true",
+        help="Compare each journaled read and write with the artifact store and name a tool "
+        "that returned or stored something other than what the store holds; needs --workspace.",
+    )
+    cause.add_argument(
+        "--related-run",
+        action="append",
+        default=[],
+        metavar="RUN_ID",
+        help="Another run of the same pipeline to scan for bad results and record "
+        "inconsistencies; repeatable.",
+    )
 
     evidence = subparsers.add_parser(
         "verify-evidence",
@@ -476,6 +495,9 @@ def _attribute_root_cause(arguments: argparse.Namespace) -> object:
         result_check=result_check_function,
         strategy=arguments.strategy,
         max_runs=arguments.max_runs,
+        assume_fault=arguments.assume_fault,
+        verify_records=arguments.verify_records,
+        related_runs=arguments.related_run,
     )
 
 

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import cast
@@ -13,8 +13,9 @@ from pydantic import Field
 
 from ..foundations.contracts import StrictModel
 from ..foundations.suffix_search import SuffixStrategy
-from ..tools.artifacts import ArtifactVersion
-from .attribute_defect import DefectWriter, attribute_defect, content_check
+from ..memory.context_projection import FileToolResultJournal
+from ..tools.artifacts import ArtifactStore, ArtifactVersion
+from .attribute_defect import DefectWriter, _writer, attribute_defect, content_check
 from .attribute_failure import FailureAttribution, RootAttribution, attribute_failure
 from .attribute_lineage import ContentCheck, InputRef, OriginKind, ResultCheck, attribute_lineage
 from .attribute_result import attribute_result_defect
@@ -29,6 +30,7 @@ _NO_VERSION = cast(ArtifactVersion, None)
 
 
 class CauseKind(StrEnum):
+    RECORD_INCONSISTENCY = "record-inconsistency"
     UPSTREAM_ORIGIN = "upstream-origin"
     DEFECTIVE_WRITE = "defective-write"
     DEFECTIVE_RESULT = "defective-result"
@@ -46,6 +48,7 @@ class CauseBasis(StrEnum):
 
 
 _DEPTH = {
+    CauseKind.RECORD_INCONSISTENCY: -1,
     CauseKind.UPSTREAM_ORIGIN: 0,
     CauseKind.DEFECTIVE_WRITE: 1,
     CauseKind.DEFECTIVE_RESULT: 2,
@@ -70,6 +73,7 @@ class RootCauseCandidate(StrictModel):
     writer: DefectWriter | None = None
     input: InputRef | None = None
     evidence: list[str] = Field(default_factory=list)
+    position: int | None = Field(default=None, ge=1)
 
 
 class RootCauseAnalysis(StrictModel):
@@ -96,6 +100,9 @@ def attribute_root_cause(
     result_check: ResultCheck | None = None,
     strategy: SuffixStrategy | str = SuffixStrategy.CONFIRMED,
     max_runs: int = DEFAULT_MAX_RUNS,
+    assume_fault: bool = False,
+    verify_records: bool = False,
+    related_runs: Sequence[str] = (),
 ) -> RootCauseAnalysis:
     if max_runs < 1:
         raise ValueError(f"max_runs must be at least 1, got {max_runs}.")
@@ -106,7 +113,7 @@ def attribute_root_cause(
         )
     failure = attribute_failure(run_root, run_id)
     not_examined: list[str] = []
-    if failure.ok:
+    if failure.ok and not assume_fault:
         return RootCauseAnalysis(
             run_id=run_id,
             verdict=failure.verdict,
@@ -124,17 +131,26 @@ def attribute_root_cause(
             "No workspace with an artifact check or content check was given, so no write history "
             "was searched and no data was traced upstream."
         )
-    for investigated_run in investigated:
-        if result_check is not None:
-            candidates.extend(
-                _result_candidates(run_root, investigated_run, result_check, not_examined)
+    traced_runs = list(dict.fromkeys([*investigated, *related_runs]))
+    if content_check is not None and workspace is not None:
+        for investigated_run in investigated:
+            found, hops = _lineage_candidates(
+                run_root, workspace, investigated_run, content_check, result_check, not_examined
             )
-        if content_check is not None and workspace is not None:
-            candidates.extend(
-                _lineage_candidates(
-                    run_root, workspace, investigated_run, content_check, result_check, not_examined
-                )
+            candidates.extend(found)
+            traced_runs.extend(item for item in hops if item not in traced_runs)
+    if verify_records:
+        if workspace is None:
+            not_examined.append(
+                "verify_records compares the journal with the artifact store, which lives in a "
+                "workspace; none was given, so no record was compared."
             )
+        else:
+            for traced_run in traced_runs:
+                candidates.extend(_record_candidates(run_root, workspace, traced_run))
+    if result_check is not None:
+        for traced_run in traced_runs:
+            candidates.extend(_result_candidates(run_root, traced_run, result_check, not_examined))
     if workspace is not None and artifact_checks:
         for path, check in artifact_checks.items():
             candidates.extend(_write_candidates(workspace, path, check, strategy, not_examined))
@@ -147,7 +163,7 @@ def attribute_root_cause(
             "The ledgers fail their own integrity check, so every candidate rests on records "
             "that may have been altered."
         )
-    ordered = _ranked(candidates)
+    ordered = _ranked(_positioned(run_root, candidates))
     primary, reason = _primary(ordered, failure.evidence_intact)
     listed = ordered[:MAX_CANDIDATES]
     return RootCauseAnalysis(
@@ -244,12 +260,97 @@ def _result_candidates(
             run_id,
             found.summary,
             decision=item.decision,
+            position=item.position,
             evidence=[
                 f"result {item.position} of {found.results} fails the check ({found.check})",
                 f"{found.evaluations} result(s) examined in the order they were produced",
             ],
         )
     ]
+
+
+def _record_candidates(run_root: Path, workspace: Path, run_id: str) -> list[RootCauseCandidate]:
+    if (
+        not (run_root / ".agent-tool-results").is_dir()
+        or not (workspace / ".agent-artifacts").is_dir()
+    ):
+        return []
+    journal = FileToolResultJournal(run_root, read_only=True)
+    store = ArtifactStore(workspace, read_only=True)
+    try:
+        handles = journal.handles_of(run_id)
+    except (OSError, ValueError):
+        return []
+    versions = [version for path in store.paths() for version in store.history(path)]
+    by_id: dict[str, list[ArtifactVersion]] = {}
+    for version in versions:
+        by_id.setdefault(version.artifact_id, []).append(version)
+    found: list[RootCauseCandidate] = []
+    for position, handle in enumerate(handles, start=1):
+        record = journal.read(handle)
+        call, result = record.get("call"), record.get("result")
+        if not isinstance(call, dict) or not isinstance(result, dict):
+            continue
+        if result.get("status") != "succeeded":
+            continue
+        arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+        output = result.get("output") if isinstance(result.get("output"), dict) else {}
+        call_id = str(call.get("id"))
+        name = str(call.get("name"))
+        if name == "read_artifact" and isinstance(output.get("content"), str):
+            held = by_id.get(str(output.get("artifact_id") or arguments.get("artifact_id")), [])
+            if held and all(
+                store.read_bytes(item.sha256).decode("utf-8", errors="replace") != output["content"]
+                for item in held
+            ):
+                found.append(
+                    _candidate(
+                        CauseKind.RECORD_INCONSISTENCY,
+                        CauseBasis.RECORDED,
+                        f"{name} call {call_id}",
+                        run_id,
+                        f'The content that read_artifact call "{call_id}" of run "{run_id}" '
+                        f'returned differs from the stored artifact "{held[-1].relative_path}" '
+                        "it names.",
+                        position=position,
+                        evidence=[
+                            f"result {position} of the run's journal",
+                            "the journal holds what the agent was shown; the artifact store "
+                            "holds what exists",
+                        ],
+                    )
+                )
+        if name == "write_draft" and isinstance(arguments.get("content"), str):
+            written = [
+                item
+                for item in store.history(str(arguments.get("path", "")))
+                if item.manifest.get("tool_call_id") == call_id
+                and item.manifest.get("agent_run_id") == run_id
+            ]
+            if written and all(
+                store.read_bytes(item.sha256).decode("utf-8", errors="replace")
+                != arguments["content"]
+                for item in written
+            ):
+                found.append(
+                    _candidate(
+                        CauseKind.RECORD_INCONSISTENCY,
+                        CauseBasis.RECORDED,
+                        f"{name} call {call_id}",
+                        run_id,
+                        f'The file "{written[-1].relative_path}" stored by write_draft call '
+                        f'"{call_id}" of run "{run_id}" differs from the content the agent '
+                        "asked to write.",
+                        writer=_writer(written[-1]),
+                        position=position,
+                        evidence=[
+                            f"call {position} of the run's journal",
+                            "the call's arguments hold what the agent asked for; the artifact "
+                            "store holds what was written",
+                        ],
+                    )
+                )
+    return found
 
 
 def _write_candidates(
@@ -293,7 +394,7 @@ def _lineage_candidates(
     content_check: ContentCheck,
     result_check: ResultCheck | None,
     not_examined: list[str],
-) -> list[RootCauseCandidate]:
+) -> tuple[list[RootCauseCandidate], list[str]]:
     try:
         traced = attribute_lineage(
             run_root,
@@ -304,16 +405,16 @@ def _lineage_candidates(
         )
     except ValueError as error:
         not_examined.append(f'Run "{run_id}": data was not traced upstream: {error}')
-        return []
+        return [], []
     if traced.ok:
-        return []
+        return [], []
     ambiguous = any(hop.ambiguous for hop in traced.hops)
     if traced.origin_kind is OriginKind.NONE and not ambiguous:
         not_examined.append(
             f'Run "{run_id}": the data trace found a defective input but no origin: '
             f"{traced.origin_reason}"
         )
-        return []
+        return [], []
     inferred = [item for item in traced.relations if item.basis.value == "inferred"]
     evidence = [
         f"{len(traced.hops)} hop(s) from run {run_id}",
@@ -327,7 +428,10 @@ def _lineage_candidates(
     else:
         read = traced.hops[-1].defective_read
         subject = read.tool_call_id if read is not None else run_id
-    return [
+    hop_runs = [hop.run_id for hop in traced.hops]
+    if traced.origin is not None and traced.origin.agent_run_id is not None:
+        hop_runs.append(traced.origin.agent_run_id)
+    candidate = [
         _candidate(
             CauseKind.UPSTREAM_ORIGIN,
             CauseBasis.AMBIGUOUS if ambiguous else CauseBasis.TRACED,
@@ -340,6 +444,7 @@ def _lineage_candidates(
             evidence=evidence,
         )
     ]
+    return candidate, hop_runs
 
 
 def _candidate(
@@ -354,6 +459,7 @@ def _candidate(
     writer: DefectWriter | None = None,
     origin_input: InputRef | None = None,
     evidence: list[str] | None = None,
+    position: int | None = None,
 ) -> RootCauseCandidate:
     return RootCauseCandidate(
         rank=1,
@@ -367,7 +473,52 @@ def _candidate(
         writer=writer,
         input=origin_input,
         evidence=evidence or [],
+        position=position,
     )
+
+
+def _positioned(run_root: Path, candidates: list[RootCauseCandidate]) -> list[RootCauseCandidate]:
+    if not any(item.writer is not None for item in candidates):
+        return candidates
+    journal = FileToolResultJournal(run_root, read_only=True)
+    positions: dict[tuple[str, str], int] = {}
+    enriched: list[RootCauseCandidate] = []
+    for item in candidates:
+        writer = item.writer
+        if writer is None or writer.agent_run_id is None or writer.tool_call_id is None:
+            enriched.append(item)
+            continue
+        key = (writer.agent_run_id, writer.tool_call_id)
+        if key not in positions:
+            try:
+                handles = journal.handles_of(writer.agent_run_id)
+            except (OSError, ValueError):
+                handles = []
+            for position, handle in enumerate(handles, start=1):
+                call = journal.read(handle).get("call")
+                if isinstance(call, dict) and call.get("id") == writer.tool_call_id:
+                    positions[key] = position
+                    break
+        enriched.append(
+            item.model_copy(update={"position": positions[key]}) if key in positions else item
+        )
+    return enriched
+
+
+def _depth(item: RootCauseCandidate, candidates: list[RootCauseCandidate]) -> float:
+    depth = float(_DEPTH[item.kind])
+    if item.kind is not CauseKind.DEFECTIVE_RESULT or item.position is None:
+        return depth
+    for other in candidates:
+        if (
+            other.kind in {CauseKind.UPSTREAM_ORIGIN, CauseKind.DEFECTIVE_WRITE}
+            and other.writer is not None
+            and other.writer.agent_run_id == item.run_id
+            and other.position is not None
+            and item.position < other.position
+        ):
+            depth = min(depth, _DEPTH[other.kind] - 0.5)
+    return depth
 
 
 def _ranked(candidates: list[RootCauseCandidate]) -> list[RootCauseCandidate]:
@@ -375,7 +526,7 @@ def _ranked(candidates: list[RootCauseCandidate]) -> list[RootCauseCandidate]:
         candidates,
         key=lambda item: (
             item.basis not in _PRIMARY_BASES,
-            _DEPTH[item.kind],
+            _depth(item, candidates),
             -(item.responsibility or 0.0),
             item.subject,
         ),
