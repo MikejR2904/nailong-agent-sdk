@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **175 files, 639 classes and 2,300 functions** (methods and nested closures included).
+covers **177 files, 653 classes and 2,370 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -388,7 +388,7 @@ does all three in different places, and only inside the boundaries below.
 | A single-use approval allows one call | Consumption inside the registry's transaction (a cross-process lock on the approvals file) | One machine and one file system with working advisory locks; across threads and across registry instances on one file | Hosts that do not share the file; file systems without usable locks; an in-memory registry, which belongs to one process |
 | An agent cannot grant or revoke its own approvals | No registered tool grants, revokes or authorizes; granting and revoking are host operations (`submit`, `revoke`, the approver credential over MCP) | The tools the SDK registers | A host that wires the approver credential or the registry into a tool it gives the agent |
 | A changed record is noticed | Hash chains over telemetry, audit, artifact writes and graph history | An edit, insertion, deletion or reorder inside a record | Rewriting the whole chain (the hashes are unkeyed) and cutting the newest records |
-| A rewritten or shortened record is noticed | Signed anchors and checkpoints kept outside the run root; `AgentRuntimeServices.open` and the MCP service create a local one by default (random key and sink under `NAILONG_ANCHOR_HOME`, `~/.nailong-agent-sdk` unless set) `RunHeadCheckpointer(tree_heads=True)` also publishes signed Merkle tree heads (`observability/transparency.py`), so a verifier with only a public key (`Ed25519Signer.verifier()`) can check one record's inclusion or that a newer head extends an older one from a proof of about 20 hashes, without reading the log; `HttpWitnessSink` keeps the heads in a remote append-only witness the writer cannot rewrite. | Everything up to the newest anchor, taken at run end, every few seconds with `checkpoint_interval_seconds`, and at graph-node end | Writes after the newest anchor; an attacker who can rewrite both the evidence and the key or the sink; the default key and sink belong to the same OS user as the writer, so they cover a change made to the run root and not a process that can also read the anchor home; `checkpointer=None` or an unusable anchor home (logged with the path and the exception) leaves the run tamper-evident only |
+| A rewritten or shortened record is noticed | Signed anchors and checkpoints kept outside the run root; `AgentRuntimeServices.open` and the MCP service create a local one by default (random key and sink under `NAILONG_ANCHOR_HOME`, `~/.nailong-agent-sdk` unless set) `RunHeadCheckpointer(tree_heads=True)` also publishes signed Merkle tree heads (`observability/transparency.py`), so a verifier with only a public key (`Ed25519Signer.verifier()`) can check one record's inclusion or that a newer head extends an older one from a proof of about 20 hashes, without reading the log; `HttpWitnessSink` keeps the heads in a remote append-only witness the writer cannot rewrite. `RecorderMirror` copies each record to a recorder in another process (`observability/recorder.py`) that chains, stores and signs its own copy with a key the agent process never holds; `compare_with_recorder` then finds an edit, a deletion or a truncation of anything already sent, even when the local chain was resealed, and reads the lost records back. | Everything up to the newest anchor, taken at run end, every few seconds with `checkpoint_interval_seconds`, and at graph-node end | Writes after the newest anchor; an attacker who can rewrite both the evidence and the key or the sink; the default key and sink belong to the same OS user as the writer, so they cover a change made to the run root and not a process that can also read the anchor home; `checkpointer=None` or an unusable anchor home (logged with the path and the exception) leaves the run tamper-evident only |
 | A crash does not corrupt the evidence | A torn final record is read as ending before it and discarded on the next append, with an `audit.tail-repaired` entry for the audit log; the artifact store can sync blob, manifests and log line (`durable=True`, set by the task runner when a checkpointer exists); audit entries and checkpoints are synced as written | Process death at any point of a write | A power loss can still drop what the operating system had not written; writes since the last checkpoint stay unprotected after any crash |
 | A trace names where a defect came from | `attribute_lineage` over the tool-result journal, with every relation labelled observed or inferred | The retrievals the journal recorded: artifact reads, stored results, command outputs, fetched pages and searches | Data that reached a run by another path; an exact textual match is a hint and never causal; it needs the caller's checks |
 
@@ -458,7 +458,12 @@ the key and the sink are out of the writer's reach.
   `HttpWitnessSink` whose append token cannot read, replace or delete, and a reference
   `WitnessServer`; it does not run a witness for you, and the key custody and the witness's own
   access control are the host's. Signed Merkle tree heads (`tree_heads=True`) let a verifier check
-  a single record or an extension from a short proof. The MCP service takes a key file and a directory
+  a single record or an extension from a short proof. The recorder (`RecorderMirror`, `spawn_recorder`) keeps a signed
+  copy of every record in another process, so a tool the host gave the agent that can edit or
+  delete files under the run root cannot rewrite what the recorder already received; it does not
+  protect against a process of the same account that can kill the recorder or delete its
+  directory, which is why deployment on another account, container or machine is what makes it
+  count. The MCP service takes a key file and a directory
   (`AGENT_RUNTIME_CHECKPOINT_KEY_FILE`, `AGENT_RUNTIME_CHECKPOINT_DIR`) and exits at start-up if
   the directory is inside the run root.
 * **Trust anchors are not self-certifying.** An attacker who can rewrite both the evidence and its
@@ -706,6 +711,7 @@ the run options. Everything else is a parameter too:
 | [`memory/utility_models.py`](memory.md#memoryutility_modelspy---additive-linear-and-mlp-utility-models-with-digest-checked-artifacts) | 293 | additive linear and MLP utility models with digest-checked artifacts |
 | [`memory/utility_training.py`](memory.md#memoryutility_trainingpy---pairwise-logistic-ranking-loss-derivatives-and-explicit-trainers) | 339 | pairwise logistic ranking loss, derivatives and explicit trainers |
 | [`observability/__init__.py`](observability.md#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
+| [`observability/append_listeners.py`](observability.md#observabilityappend_listenerspy---callbacks-a-ledger-runs-after-it-persists-a-record) | 46 | callbacks a ledger runs after it persists a record |
 | [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 550 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/ed25519.py`](observability.md#observabilityed25519py---an-ed25519-checkpoint-signer-with-a-verify-only-form) | 140 | an Ed25519 checkpoint signer with a verify-only form |
 | [`observability/merkle.py`](observability.md#observabilitymerklepy---merkle-tree-hashing-with-inclusion-and-consistency-proofs) | 225 | Merkle tree hashing with inclusion and consistency proofs |
@@ -713,6 +719,7 @@ the run options. Everything else is a parameter too:
 | [`observability/metrics.py`](observability.md#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
 | [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 1000 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
 | [`observability/profiler.py`](observability.md#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
+| [`observability/recorder.py`](observability.md#observabilityrecorderpy---a-recorder-in-another-process-that-keeps-its-own-signed-copy-of-the-ledgers) | 909 | a recorder in another process that keeps its own signed copy of the ledgers |
 | [`observability/run_checkpoints.py`](observability.md#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 890 | signed checkpoints of a run's chain heads, kept outside the run root |
 | [`observability/telemetry_helpers.py`](observability.md#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
 | [`observability/telemetry_models.py`](observability.md#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 261 | telemetry event, context, actor and metric contracts |
@@ -768,7 +775,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 175 files, 639 classes and 2300 functions (including methods and nested closures), each with a written description.*
+*Coverage: 177 files, 653 classes and 2370 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 

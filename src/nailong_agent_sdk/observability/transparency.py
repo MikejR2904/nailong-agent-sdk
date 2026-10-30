@@ -106,6 +106,27 @@ def run_hashes(
     }
 
 
+def sign_tree_head(
+    size: int,
+    root: bytes,
+    sink: CheckpointSink,
+    name: str,
+    signer: CheckpointSigner,
+    *,
+    now: datetime | None = None,
+) -> MerkleTreeHead:
+    draft = MerkleTreeHead(
+        name=name,
+        size=size,
+        root=root.hex(),
+        published_at_utc=(now or datetime.now(UTC)).isoformat(),
+        signer_id=signer.signer_id,
+    )
+    head = draft.model_copy(update={"signature": signer.sign(draft.signed_message())})
+    sink.append(name, head.model_dump_json())
+    return head
+
+
 def publish_tree_head(
     hashes: Sequence[str],
     sink: CheckpointSink,
@@ -117,16 +138,7 @@ def publish_tree_head(
     accumulator = MerkleAccumulator()
     for item in hashes:
         accumulator.append(leaf_data(item))
-    draft = MerkleTreeHead(
-        name=name,
-        size=accumulator.size,
-        root=accumulator.root().hex(),
-        published_at_utc=(now or datetime.now(UTC)).isoformat(),
-        signer_id=signer.signer_id,
-    )
-    head = draft.model_copy(update={"signature": signer.sign(draft.signed_message())})
-    sink.append(name, head.model_dump_json())
-    return head
+    return sign_tree_head(accumulator.size, accumulator.root(), sink, name, signer, now=now)
 
 
 def publish_run_tree_heads(

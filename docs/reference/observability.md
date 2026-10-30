@@ -26,6 +26,24 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
+### `observability/append_listeners.py` - callbacks a ledger runs after it persists a record
+
+*46 lines · depends on: `foundations/logging.py` · used by: `observability/audit_log.py`, `observability/telemetry_store.py` · not re-exported at the package root*
+
+**Role in the workflow.** The seam that lets something outside a ledger see each record the moment it is stored. `observability/recorder.py` uses it to copy records to another process; nothing else in the SDK registers a listener.
+
+**Contents**
+
+- **class `AppendListeners`** *(class)* - The callbacks one ledger runs after it has persisted a record, in the order they were added. A listener sees the persisted record (a `TelemetryEvent` or an `AuditLogEntry`).
+  - `AppendListeners.__init__(self, store: str) -> None` - Names the ledger (`telemetry` or `audit`) for log messages.
+  - `AppendListeners.add(self, listener: AppendListener, *, required: bool=False) -> None` - Registers a listener. A `required` one that raises propagates to the caller of the append, after the record is already stored; any other is logged and contained.
+  - `AppendListeners.remove(self, listener: AppendListener) -> None` - Unregisters a listener by identity.
+  - `AppendListeners.notify(self, record: Any) -> None` - Calls each listener with the record; a non-required failure is logged with the ledger name and exception, a required one is raised.
+
+**Algorithms & invariants.** A listener runs after the record is committed and fsynced and inside the ledger's lock, so listeners see records in the order the ledger holds them. A required listener that fails raises into the caller after the record is stored; it cannot undo it.
+
+---
+
 ### `observability/audit_log.py` - append-only, hash-chained, per-run JSONL audit transcript
 
 *550 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/logging.py`, `foundations/run_fence.py`, `foundations/text.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/retention.py`, `agent/retention_inventory.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/attribute_failure.py`, `developer_tools/cli.py`, `developer_tools/decision_links.py` (+5 more) · re-exported at the package root: 2 name(s)*
@@ -80,6 +98,8 @@ Three independent records of a run, all written outside the model's context: the
 **Algorithms & invariants.** Each entry hashes its own canonical JSON with `integrity_hash` blank and stores the previous entry's hash, so editing, deleting or reordering any entry breaks verification of everything after it. Per-entry `fsync` makes entries durable but is synchronous work done on whichever thread calls `append`. A transcript file belongs to exactly one run id (`file_safe_name` is injective); an entry of another run raises `AUDIT_TRANSCRIPT_RUN_MISMATCH`, and an unreadable last line raises `AUDIT_TRANSCRIPT_CORRUPT` instead of being skipped. Reads are streamed and stop at the requested boundary or limit. A run that retention is pruning is fenced: `append` waits for the fence to lift and re-checks it inside its transaction, and `quiesce` lets retention drain an append that was already in flight, so the footprint it records is the last one.
 
 *Module-level names:* `_LOCK_TIMEOUT_SECONDS`, `_LOCK_POLL_SECONDS`
+  - `AuditTranscriptStore.add_append_listener(self, listener: AppendListener, *, required: bool=False) -> None` - Registers a callback run, inside the append lock, after each entry is written and fsynced; see `AppendListeners`.
+  - `AuditTranscriptStore.remove_append_listener(self, listener: AppendListener) -> None` - Unregisters a callback.
 
 ---
 
@@ -104,6 +124,7 @@ Three independent records of a run, all written outside the model's context: the
   - `Ed25519Signer.verify(self, message: bytes, signature: str) -> bool` - True only for a well-formed 64-byte signature that this public key made over exactly this message.
 
 **Algorithms & invariants.** The signature is deterministic and covers the canonical JSON of the record with an empty signature field. The verifier never needs the private key; `Ed25519Signer.verifier()` drops it.
+  - `Ed25519Signer.private_key_hex(self) -> str` - The private key in hex, for a process that stores its own key; a verify-only signer raises `ED25519_SIGNING_KEY_MISSING`.
 
 ---
 ### `observability/metric_definitions.py` - the SDK's standard metric catalogue
@@ -274,6 +295,96 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
+### `observability/recorder.py` - a recorder in another process that keeps its own signed copy of the ledgers
+
+*909 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `observability/audit_log.py`, `observability/ed25519.py`, `observability/merkle.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/transparency.py` · used by: tests, `benchmarks/trust/tamper_protocol.py` · not re-exported at the package root*
+
+**Role in the workflow.** The ledgers live under the run root, where anything with file access can edit or delete them, and an end-of-run anchor covers whatever state they were in by then. The recorder receives every record as it is written, over a socket, in a process the agent has no handle on; keeps its own durable copy; refuses a record that does not chain to what it holds; and signs Merkle tree heads with a key that never leaves it. `compare_with_recorder` later checks the local ledgers against that copy, so an edit, a deletion or a truncation of anything already sent is found and the lost records can be read back. This separates the agent from the evidence, not the host from it: the recorder is as independent as the account, container or machine it runs in.
+
+**Contents**
+
+- **class `RecordedEntry`** *(pydantic model; bases: StrictModel)* - One record as the recorder holds it: its sequence, its integrity hash, the hash of its predecessor and, when the mirror sends it, the record's full JSON, which is what lets a deleted record be read back.
+  - fields: `sequence`, `hash`, `previous`, `record`
+- **class `RecorderVerdict`** *(StrEnum)* - How a local ledger compares with the recorder's copy: `matches`, `advanced` (more local records than received), `truncated`, `diverged` (a record differs, was removed from the middle or was resealed), `no-record` and `recorder-unverified` (the recorder's own signed heads do not vouch for its copy).
+- **class `RecorderComparison`** *(pydantic model; bases: StrictModel)* - The result for one ledger: the verdict, the counts on both sides, the first differing sequence, how many newest records were removed, how many differ, and a sentence.
+  - fields: `store`, `verdict`, `recorded`, `local`, `first_difference`, `removed_tail`, `differing`, `detail`
+  - `RecorderComparison.ok(self) -> bool` - True for `matches` and `advanced`.
+- **class `RecorderSource`** *(Protocol)* - What `compare_with_recorder` needs of a recorder: its records for a run and ledger and a sink to read its signed heads from. Both `RecorderCore` and `RecorderClient` provide them.
+  - `RecorderSource.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - The recorder's records for one run and ledger, in sequence order.
+  - `RecorderSource.head_sink(self) -> CheckpointSink` - A sink that reads the recorder's signed tree heads.
+- `_fail(code: str, message: str) -> AgentSdkError` - An `AgentSdkError` with a code, a message and details.
+- **class `_Stream`** *(class)* - One run's one ledger as the recorder holds it: its file, its records and a Merkle accumulator.
+- `_Stream.__init__(self, path: Path) -> None` - Starts empty.
+- **class `RecorderCore`** *(class)* - The recorder's state and rules: it accepts a record only if it is the next sequence and chains to the one before, keeps it in its own directory with an fsync, and signs a Merkle tree head every `head_every` records and on `seal`, with a key that never leaves the recorder. The server and the tests both drive it.
+  - `RecorderCore.__init__(self, directory: Path, signer: CheckpointSigner, *, head_every: int=50, durable: bool=True, extra_sinks: Sequence[CheckpointSink]=()) -> None` - Opens `records/` and `heads/` under the directory, reloads every stream it already holds and rebuilds the accumulators. `head_every` below 1 raises naming the value.
+  - `RecorderCore.sink(self) -> FileCheckpointSink` - The file sink the heads are written to.
+  - `RecorderCore.head_sink(self) -> CheckpointSink` - The same sink, as a `RecorderSource` provides it.
+  - `RecorderCore.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - A copy of the records held for a run and ledger; an unknown ledger raises `RECORDER_STORE_UNKNOWN`.
+  - `RecorderCore.run_ids(self) -> list[str]` - The run ids it holds records for.
+  - `RecorderCore.append(self, run_id: str, store: str, sequence: int, record_hash: str, previous_hash: str | None, record: str | None) -> dict[str, Any]` - Takes one record. A repeat of a held record is accepted as a duplicate; a different hash for a held sequence is `RECORDER_CONFLICT` (the local ledger was rewritten after sending) and is also written to `conflicts.jsonl`; a sequence beyond the next is `RECORDER_GAP`; a predecessor that is not the held hash is `RECORDER_CHAIN_BROKEN`; a non-hexadecimal hash is `RECORDER_HASH_INVALID`.
+  - `RecorderCore.seal(self, run_id: str) -> dict[str, MerkleTreeHead]` - Signs and publishes a tree head for each ledger the run has records in, and returns them.
+  - `RecorderCore._require_store(self, store: str) -> None` - Raises `RECORDER_STORE_UNKNOWN` for a ledger that is not `telemetry` or `audit`.
+  - `RecorderCore._stream(self, run_id: str, store: str) -> _Stream` - The stream of a run and ledger, created on first use under `records/`.
+  - `RecorderCore._persist(self, stream: _Stream, entry: RecordedEntry) -> None` - Appends the record's JSON line and, when durable, fsyncs it before the append is acknowledged.
+  - `RecorderCore._note_conflict(self, run_id: str, store: str, sequence: int, held: str, offered: str) -> None` - Writes what was held and what was offered to `conflicts.jsonl` with an fsync.
+  - `RecorderCore._publish(self, run_id: str, store: str, stream: _Stream) -> MerkleTreeHead` - Signs the accumulator's size and root with the recorder's key, appends the head to the heads sink and to any extra sink (a failure of an extra sink is logged).
+  - `RecorderCore._load(self) -> None` - Rebuilds every stream from its JSONL file.
+- **class `_Handler`** *(class)* - The per-connection handler: one JSON request per line, one JSON reply per line.
+- `_Handler.handle(self) -> None` - Reads lines until the peer closes; a line above 1 MiB is refused and ends the connection.
+- `_Handler._send(self, payload: dict[str, Any]) -> None` - Writes one reply line.
+- **class `RecorderServer`** *(class)* - A threaded loopback TCP server around a `RecorderCore`. Appending and sealing need the append token; reading records and heads needs a different read token. Nothing deletes or replaces a record.
+  - `RecorderServer.__init__(self, core: RecorderCore, *, append_token: str, read_token: str, host: str='127.0.0.1', port: int=0) -> None` - Requires two different non-empty tokens, binds the address (port 0 picks a free one).
+  - `RecorderServer.port(self) -> int` - The port it is listening on.
+  - `RecorderServer.dispatch(self, line: bytes) -> dict[str, Any]` - Checks the request and the token with a constant-time comparison and runs the operation; every failure is an `ok: false` reply with a code (`RECORDER_REQUEST_INVALID`, `RECORDER_OPERATION_UNKNOWN`, `RECORDER_TOKEN_REFUSED`, or the core's own).
+  - `RecorderServer._run(self, operation: str, request: dict[str, Any]) -> dict[str, Any]` - The operations: `ping`, `append`, `seal`, `read` (records) and `heads` (the signed head lines of a name).
+- **class `RecorderClient`** *(class)* - The agent-side handle on a recorder. It holds the append token, so it can add records and ask for a seal; reading records or heads needs a read token that only a verifier is given.
+  - `RecorderClient.__init__(self, host: str, port: int, *, append_token: str, read_token: str | None=None, timeout_seconds: float=5.0) -> None` - A non-positive timeout raises naming it.
+  - `RecorderClient.append(self, run_id: str, store: str, sequence: int, record_hash: str, previous_hash: str | None, record: str | None=None) -> dict[str, Any]` - Sends one record; the reply carries the new size and whether it was a duplicate.
+  - `RecorderClient.seal(self, run_id: str) -> dict[str, MerkleTreeHead]` - Asks the recorder to sign heads for a run now and returns them.
+  - `RecorderClient.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - Reads the recorder's records for a run and ledger (needs the read token, else `RECORDER_READ_TOKEN_MISSING`).
+  - `RecorderClient.head_sink(self) -> CheckpointSink` - A read-only sink over the recorder's heads, for `verify_tree_heads` and `compare_with_recorder`.
+  - `RecorderClient.head_lines(self, name: str) -> list[str]` - The signed head lines the recorder holds under a name.
+  - `RecorderClient.close(self) -> None` - Closes the connection.
+  - `RecorderClient._need_read(self) -> str` - The read token, or `RECORDER_READ_TOKEN_MISSING`.
+  - `RecorderClient._drop(self) -> None` - Closes the socket and its reader.
+  - `RecorderClient._call(self, request: dict[str, Any]) -> dict[str, Any]` - One request and reply on a persistent connection, reconnecting once; a failure raises `RECORDER_UNREACHABLE` with the address, and an `ok: false` reply raises its code and detail.
+- **class `_HeadSink`** *(class)* - Adapts a client to the sink interface for reading heads.
+- `_HeadSink.__init__(self, client: RecorderClient) -> None` - Holds the client.
+- `_HeadSink.location(self, run_id: str) -> str` - Where the heads are read from, for messages.
+- `_HeadSink.read_all(self, run_id: str) -> list[str]` - The head lines for a name.
+- `_HeadSink.append(self, run_id: str, record: str) -> None` - Refused: heads are written by the recorder alone (`RECORDER_HEADS_READ_ONLY`).
+- `_HeadSink.is_inside(self, root: Path) -> bool` - Always False.
+- **class `MirrorStats`** *(dataclass)* - What a mirror did: records sent, records that failed, the last error and the run and ledger pairs it stopped mirroring.
+  - fields: `sent`, `failed`, `last_error`, `degraded`
+- **class `RecorderMirror`** *(class)* - Copies each record to a recorder as the ledgers persist it, through the ledgers' append listeners. Synchronous by default (the record is acknowledged before the next step); `asynchronous=True` sends from a queue, which opens a window equal to what is queued. With `required=True` a synchronous failure raises into the run; otherwise it is logged, counted and the run and ledger stop being mirrored, because a recorder cannot take a record after a gap.
+  - `RecorderMirror.__init__(self, client: RecorderClient, *, required: bool=False, include_records: bool=True, asynchronous: bool=False, queue_size: int=10000) -> None` - Starts the sender thread in asynchronous mode.
+  - `RecorderMirror.attach(self, telemetry: TelemetryStore | None=None, audit: AuditTranscriptStore | None=None) -> None` - Registers the mirror on a telemetry store and an audit store.
+  - `RecorderMirror.pending(self) -> int` - How many records are queued and not yet sent.
+  - `RecorderMirror.flush(self, timeout_seconds: float=10.0) -> bool` - Waits until the queue is empty or the timeout passes and says whether it is empty.
+  - `RecorderMirror.finish(self, run_id: str, timeout_seconds: float=10.0) -> dict[str, MerkleTreeHead]` - Flushes and asks the recorder to seal the run's heads.
+  - `RecorderMirror.close(self) -> None` - Stops the sender and closes the client.
+  - `RecorderMirror._on_event(self, event: TelemetryEvent) -> None` - Listener for a telemetry event.
+  - `RecorderMirror._on_entry(self, entry: AuditLogEntry) -> None` - Listener for an audit entry.
+  - `RecorderMirror._send(self, run_id: str, store: str, sequence: int, record_hash: str, previous: str | None, record: str | None) -> None` - Queues the record or delivers it at once; a full queue counts as a failure.
+  - `RecorderMirror._deliver(self, item: tuple[str, str, int, str, str | None, str | None]) -> None` - Sends one record; a failure is noted, and raised only for a required synchronous mirror.
+  - `RecorderMirror._note_failure(self, store: str, run_id: str, error: AgentSdkError) -> None` - Counts the failure, remembers the error and stops mirroring that run and ledger, with a warning that names them.
+  - `RecorderMirror._drain(self) -> None` - The sender thread's loop.
+- `compare_with_recorder(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, source: RecorderSource, verifier: CheckpointSigner) -> dict[str, RecorderComparison]` - Compares both local ledgers of a run with the recorder's copy.
+- `_compare_store(run_id: str, store: str, local: list[str], source: RecorderSource, verifier: CheckpointSigner) -> RecorderComparison` - First checks that the recorder's own signed heads vouch for its copy (else `recorder-unverified`), then compares hash by hash: a difference is `diverged` with the first sequence, fewer local records is `truncated`, more is `advanced`, equal is `matches`.
+- **class `RecorderProcess`** *(dataclass)* - A recorder started as a separate operating-system process: its address, the two tokens, its public key and the process.
+  - fields: `directory`, `host`, `port`, `append_token`, `read_token`, `public_key_hex`, `signer_id`, `process`
+  - `RecorderProcess.client(self, *, with_read: bool=False, timeout_seconds: float=5.0) -> RecorderClient` - A client for it; with `with_read` it carries the read token.
+  - `RecorderProcess.verifier(self) -> Ed25519Signer` - An Ed25519 verifier holding only the recorder's public key.
+  - `RecorderProcess.alive(self) -> bool` - Whether the process is still running.
+  - `RecorderProcess.stop(self) -> None` - Terminates the process, killing it if it does not stop in ten seconds.
+- `spawn_recorder(directory: Path, *, head_every: int=50, durable: bool=True, startup_timeout_seconds: float=30.0) -> RecorderProcess` - Starts `python -m nailong_agent_sdk.observability.recorder` with fresh tokens passed in its environment, waits for its ready line (address, public key) and returns the handle; a recorder that does not report in time raises `RECORDER_START_FAILED` with the end of its stderr.
+- `_load_signer(directory: Path) -> Ed25519Signer` - The recorder's Ed25519 key from `recorder.key`, created with owner-only permissions on first start. It stays in the recorder's directory and is never sent.
+- `main(argv: Sequence[str] | None=None) -> int` - The recorder process: needs both tokens in its environment (else exit status 2 naming them), loads or creates its key, listens and prints one JSON line with its address and public key.
+
+**Algorithms & invariants.** A record is accepted only as the next sequence of its run and ledger with the previous hash the recorder holds, so the recorder's copy is itself a hash chain, and it also refuses a different hash for a sequence it already holds (the local ledger was rewritten after the send) and a gap. A tamper that rewrites a ledger and recomputes its chain therefore fails at the next record sent, during the run, and at the final comparison. The recorder cannot see records the agent process never sent: a synchronous mirror leaves no unsent record, an asynchronous one leaves what is queued, and a mirror that is not required stops after its first failure. The comparison first verifies the recorder's own signed heads, so a recorder whose copy was altered is not trusted. A same-user process that can kill the recorder or delete its directory defeats the arrangement from the host side; deployment on another account, container or machine is what makes that costly.
+
+---
+
 ### `observability/run_checkpoints.py` - signed checkpoints of a run's chain heads, kept outside the run root
 
 *890 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `observability/audit_log.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `mcp/security.py` · re-exported at the package root: 16 name(s)*
@@ -396,6 +507,7 @@ Three independent records of a run, all written outside the model's context: the
 - `_verdict(kind: TreeHeadVerdict, detail: str) -> TreeHeadVerification` - A `TreeHeadVerification` from a verdict, a sentence and the counts.
 
 **Algorithms & invariants.** The leaves are the ledgers' own integrity hashes, so a head adds no per-event storage. An attacker who edits an event and recomputes the chain changes every later hash, so the prefix root no longer equals a head published before the edit (`diverged`); one who cuts the newest records leaves fewer records than the head covers (`truncated`). Records written after the newest head are not covered until the next head is published, and a log cut back exactly to a head is indistinguishable from the log at that moment. A head fixes a size and a root; an inclusion proof is checked against the head's size, because the audit path alone does not bind it.
+- `sign_tree_head(size: int, root: bytes, sink: CheckpointSink, name: str, signer: CheckpointSigner, *, now: datetime | None=None) -> MerkleTreeHead` - Signs a size and a root already computed (by an accumulator) and appends the head to the sink; `publish_tree_head` uses it after accumulating.
 
 ---
 ### `observability/telemetry_helpers.py` - tiny constructors for timestamps and metric observations, and the shared hash-chain checker
@@ -519,6 +631,9 @@ Three independent records of a run, all written outside the model's context: the
 **Algorithms & invariants.** Integrity hash = SHA-256 of the event's canonical JSON with `integrity_hash` blank, which includes `previous_event_hash`; `UNIQUE(run_id, sequence)` prevents two writers from claiming the same slot. All writes serialize on one connection, and each append commits (one fsync under SQLite's default synchronous mode). A run that retention is pruning is fenced: `append` and `record_metric` wait for the fence to lift and re-check it inside their `BEGIN IMMEDIATE` transaction, and `quiesce` lets retention drain a write already in flight. `vacuum` is the only operation that shrinks the file and it is never part of a retention pass.
 
 *Module-level names:* `MAX_EVENT_TYPE_FILTER`
+  - `TelemetryStore.add_append_listener(self, listener: AppendListener, *, required: bool=False) -> None` - Registers a callback run, inside the store lock, after each event is committed; see `AppendListeners`.
+  - `TelemetryStore.remove_append_listener(self, listener: AppendListener) -> None` - Unregisters a callback.
+
 ---
 
 ### `observability/trace_context.py` - W3C Trace Context ids, the traceparent header and the process resource

@@ -21,6 +21,7 @@ from ..foundations.errors import AgentSdkError, redact_secrets
 from ..foundations.hashing import canonical_hash, canonical_json
 from ..foundations.identifiers import file_safe_name
 from ..foundations.run_fence import RunFence
+from .append_listeners import AppendListener, AppendListeners
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import (
     ChainBreak,
@@ -54,6 +55,7 @@ class TelemetryStore:
         self._database_path = self._root / "telemetry.sqlite3"
         self._fence = RunFence(root)
         self._lock = threading.RLock()
+        self._append_listeners = AppendListeners("telemetry")
         if read_only:
             if not self._database_path.is_file():
                 raise FileNotFoundError(
@@ -128,6 +130,12 @@ class TelemetryStore:
         )
         return self.append(event)
 
+    def add_append_listener(self, listener: AppendListener, *, required: bool = False) -> None:
+        self._append_listeners.add(listener, required=required)
+
+    def remove_append_listener(self, listener: AppendListener) -> None:
+        self._append_listeners.remove(listener)
+
     def append(self, event: TelemetryEvent) -> TelemetryEvent:
         """Append one event atomically after assigning its sequence and hash-chain predecessor.
 
@@ -180,6 +188,7 @@ class TelemetryStore:
                 ),
             )
             connection.commit()
+            self._append_listeners.notify(prepared)
             return prepared
 
     def record_metric(self, observation: MetricObservation) -> MetricObservation:

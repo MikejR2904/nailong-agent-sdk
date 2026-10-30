@@ -24,6 +24,7 @@ from ..foundations.identifiers import file_safe_name
 from ..foundations.logging import get_logger
 from ..foundations.run_fence import RunFence
 from ..foundations.text import assert_well_formed_text
+from .append_listeners import AppendListener, AppendListeners
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import ChainBreak
 
@@ -93,6 +94,7 @@ class AuditTranscriptStore:
         self._max_payload_chars = max_payload_chars
         self._max_open_handles = max_open_handles
         self._lock = threading.RLock()
+        self._append_listeners = AppendListeners("audit")
         # A bounded LRU avoids repeated opens for active runs without allowing a
         # long-lived host to retain one descriptor for every historical run.
         self._handles: OrderedDict[str, IO[bytes]] = OrderedDict()
@@ -139,6 +141,12 @@ class AuditTranscriptStore:
             self._handle_evictions,
             self._max_open_handles,
         )
+
+    def add_append_listener(self, listener: AppendListener, *, required: bool = False) -> None:
+        self._append_listeners.add(listener, required=required)
+
+    def remove_append_listener(self, listener: AppendListener) -> None:
+        self._append_listeners.remove(listener)
 
     def append(
         self,
@@ -215,6 +223,7 @@ class AuditTranscriptStore:
         handle.write(b"\n")
         handle.flush()
         os.fsync(handle.fileno())
+        self._append_listeners.notify(complete)
         return complete
 
     def list_entries(

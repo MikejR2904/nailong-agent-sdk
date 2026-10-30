@@ -18,7 +18,8 @@ def test_an_edited_message_signature_or_another_key_fails_verification():
     signer, other = Ed25519Signer.generate(), Ed25519Signer.generate()
     signature = signer.sign(b"message")
     assert not signer.verify(b"messagE", signature)
-    assert not signer.verify(b"message", signature[:-2] + "00")
+    changed = "01" if signature.endswith("00") else "00"
+    assert not signer.verify(b"message", signature[:-2] + changed)
     assert not signer.verify(b"message", "not hex")
     assert not signer.verify(b"message", signature[:20])
     assert not other.verify(b"message", signature)

@@ -112,6 +112,21 @@ class Ed25519Signer:
     def can_sign(self) -> bool:
         return self._private is not None
 
+    def private_key_hex(self) -> str:
+        if self._private is None:
+            raise AgentSdkError(
+                "ED25519_SIGNING_KEY_MISSING",
+                f'Signer "{self._signer_id}" holds only a public key and has no private key to '
+                "export.",
+                {"signer_id": self._signer_id},
+            )
+        _, serialization, _ = _primitives()
+        return self._private.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        ).hex()
+
     def verifier(self) -> Ed25519Signer:
         return Ed25519Signer(public_key=self._public_bytes, signer_id=self._signer_id)
 
