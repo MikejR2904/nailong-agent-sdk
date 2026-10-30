@@ -3,12 +3,15 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
 from nailong_agent_sdk.tools.artifacts import ArtifactStore
 from tests.support.processes import child_environment
 from tests.support.tools import build, call, run
+
+CLOCK_TICK_SECONDS = 0.05
 
 WORKER = r"""
 import sys
@@ -98,6 +101,7 @@ def test_a_store_written_before_the_log_existed_is_read_in_time_order_and_adopte
     store = ArtifactStore(root)
     for index in range(3):
         store.write_text("old.txt", f"v{index}\n", manifest={"n": index})
+        time.sleep(CLOCK_TICK_SECONDS)
     store.write_text("other.txt", "o\n")
     shutil.rmtree(root / ".agent-artifacts" / "history")
     legacy = ArtifactStore(root, read_only=True)
