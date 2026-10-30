@@ -20,6 +20,8 @@ MODELS = (
     "accounts/fireworks/models/deepseek-v4p1-flash",
     "accounts/fireworks/models/minimax-m3p1-flash",
 )
+NATURAL_DEV_SEEDS = (*range(1001, 1007), *range(2001, 2007))
+NATURAL_TEST_SEEDS = (*range(1101, 1113), *range(2101, 2113))
 DEV_SEEDS = (1, 2)
 TEST_SEEDS = (3, 4, 5, 6)
 KINDS = ("read", "write")
@@ -39,6 +41,17 @@ def cases() -> list[Case]:
                         name = f"{short(model)}-{kind}-{node}-s{seed}"
                         found.append(Case(name, model, kind, node, seed, split))
                 found.append(Case(f"{short(model)}-none-s{seed}", model, "none", "-", seed, split))
+    return found
+
+
+def natural_cases(dev_seeds=NATURAL_DEV_SEEDS, test_seeds=NATURAL_TEST_SEEDS) -> list[Case]:
+    found: list[Case] = []
+    for model in MODELS:
+        for split, seeds in (("dev", dev_seeds), ("test", test_seeds)):
+            for seed in seeds:
+                found.append(
+                    Case(f"{short(model)}-natural-s{seed}", model, "natural", "-", seed, split)
+                )
     return found
 
 
@@ -70,8 +83,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--split", default="")
+    parser.add_argument("--set", dest="which", default="planted", choices=("planted", "natural"))
     arguments = parser.parse_args(argv)
-    chosen = [c for c in cases() if not arguments.split or c.split == arguments.split]
+    pool = natural_cases() if arguments.which == "natural" else cases()
+    chosen = [c for c in pool if not arguments.split or c.split == arguments.split]
     if arguments.limit:
         chosen = chosen[: arguments.limit]
     arguments.out.mkdir(parents=True, exist_ok=True)

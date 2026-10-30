@@ -41,8 +41,12 @@ from nailong_agent_sdk.tools.tools import ToolInvocationContext
 BASE_URL = "https://api.fireworks.ai/inference/v1"
 NODES = ("A", "B", "C")
 REGIONS = ("north", "south", "east")
+HARD_REGIONS = ("north", "south", "east", "west", "central")
+HARD_FROM_SEED = 1000
+TOTALS_FROM_SEED = 2000
 MAX_ITERATIONS = 8
 MAX_TOKENS = 2_000
+HARD_MAX_TOKENS = 16_000
 COMPLETE = {
     "type": "object",
     "properties": {"status": {"const": "complete"}},
@@ -81,6 +85,28 @@ INSTRUCTIONS = {
 }
 
 
+HARD_INSTRUCTIONS = {
+    **INSTRUCTIONS,
+    "A": (
+        "Read the sales table (artifact id {artifact_id}) with read_artifact. Add up the amount "
+        "column for each of the five regions and write the five totals to facts.json with "
+        "write_draft as a JSON object mapping each region name to its total, such as "
+        '{{"north": 100, "south": 200}}. When it is written, finish with a final reply of '
+        "exactly {FINAL}"
+    ),
+    "B": (
+        "Read the facts (artifact id {artifact_id}) with read_artifact. Work out the grand total "
+        "over all the regions and which region has the largest total. Write analysis.md with "
+        "write_draft: one line 'TOTAL: <number>', one line 'TOP: <region>', and one line per "
+        "region with its total. When it is written, finish with a final reply of exactly {FINAL}"
+    ),
+}
+
+
+def instructions_for(node: str, seed: int) -> str:
+    return (HARD_INSTRUCTIONS if hard(seed) else INSTRUCTIONS)[node]
+
+
 def tool(name: str, description: str, properties: dict[str, Any]) -> ToolDefinition:
     return ToolDefinition(
         name=name,
@@ -116,25 +142,44 @@ class Case:
 
     @property
     def fault(self) -> tuple[str, str] | None:
-        return None if self.kind == "none" else (self.kind, self.node)
+        return (self.kind, self.node) if self.kind in {"read", "write"} else None
+
+
+def hard(seed: int) -> bool:
+    return seed >= HARD_FROM_SEED
+
+
+def regions_for(seed: int) -> tuple[str, ...]:
+    return HARD_REGIONS if hard(seed) else REGIONS
 
 
 def sales(seed: int) -> list[tuple[str, str, int]]:
     rng = random.Random(f"sales:{seed}")
+    if seed >= TOTALS_FROM_SEED:
+        return one_row_per_region(seed, rng)
+    months, low, high = (6, 10_000, 99_999) if hard(seed) else (4, 120, 980)
     while True:
         rows = [
-            (f"2026-{month:02d}", region, rng.randint(120, 980))
-            for month in range(1, 5)
-            for region in REGIONS
+            (f"2026-{month:02d}", region, rng.randint(low, high))
+            for month in range(1, months + 1)
+            for region in regions_for(seed)
         ]
-        totals = region_totals(rows)
+        totals = region_totals(rows, seed)
         ordered = sorted(totals.values(), reverse=True)
         if ordered[0] != ordered[1]:
             return rows
 
 
-def region_totals(rows: list[tuple[str, str, int]]) -> dict[str, int]:
-    totals = dict.fromkeys(REGIONS, 0)
+def one_row_per_region(seed: int, rng: random.Random) -> list[tuple[str, str, int]]:
+    while True:
+        rows = [("2026-01", region, rng.randint(100_000, 999_999)) for region in regions_for(seed)]
+        ordered = sorted((amount for _, _, amount in rows), reverse=True)
+        if ordered[0] != ordered[1]:
+            return rows
+
+
+def region_totals(rows: list[tuple[str, str, int]], seed: int = 0) -> dict[str, int]:
+    totals = dict.fromkeys(regions_for(seed), 0)
     for _, region, amount in rows:
         totals[region] += amount
     return totals
@@ -145,7 +190,7 @@ def sales_csv(rows: list[tuple[str, str, int]]) -> str:
 
 
 def truth(seed: int) -> dict[str, Any]:
-    totals = region_totals(sales(seed))
+    totals = region_totals(sales(seed), seed)
     top = max(totals, key=lambda region: totals[region])
     return {"per_region": totals, "total": sum(totals.values()), "top": top}
 
@@ -201,6 +246,23 @@ def artifact_defective(path: str, content: str, seed: int) -> bool:
     except (ValueError, TypeError, AttributeError):
         return True
     return False
+
+
+def natural_label(workspace: Path, seed: int) -> dict[str, Any] | None:
+    store = ArtifactStore(workspace, read_only=True)
+    for node in NODES:
+        history = store.history(OUTPUT_FILE[node])
+        if not history:
+            return None
+        latest = history[-1]
+        content = store.read_bytes(latest.sha256).decode("utf-8")
+        if artifact_defective(OUTPUT_FILE[node], content, seed):
+            return {
+                "node": node,
+                "call_id": latest.manifest.get("tool_call_id"),
+                "tool": "write_draft",
+            }
+    return None
 
 
 def outcome_failed(workspace: Path, seed: int) -> bool:
@@ -280,7 +342,7 @@ class NodeExecutor:
         )
 
 
-def definition(node: str, model: str) -> AgentDefinition:
+def definition(node: str, model: str, max_tokens: int = MAX_TOKENS) -> AgentDefinition:
     return AgentDefinition(
         identity=f"node-{node}",
         instructions=VersionedInstructions(version="v1", text=f"You are agent {node}."),
@@ -289,7 +351,7 @@ def definition(node: str, model: str) -> AgentDefinition:
         model_binding=ModelBinding(
             provider="fireworks",
             model=model,
-            parameters={"max_tokens": MAX_TOKENS, "temperature": 0.2},
+            parameters={"max_tokens": max_tokens, "temperature": 0.2},
         ),
         output_schema=COMPLETE,
         memory_scope=MemoryScope.TASK_SCOPED,
@@ -323,7 +385,7 @@ def run_case(case: Case, key: str, directory: Path) -> dict[str, Any]:
                 model=case.model,
             )
             subject = services.create_agent(
-                definition(node, case.model),
+                definition(node, case.model, HARD_MAX_TOKENS if hard(case.seed) else MAX_TOKENS),
                 model,
                 tool_executor=executor,
                 require_tool_authorization=False,
@@ -354,6 +416,8 @@ def run_case(case: Case, key: str, directory: Path) -> dict[str, Any]:
         services.audit_logs.close()
         services.telemetry.close()
     failed = outcome_failed(workspace, case.seed)
+    if case.kind == "natural" and started_ok and failed:
+        fault_call = natural_label(workspace, case.seed)
     return {
         "case_id": case.case_id,
         "model": case.model,

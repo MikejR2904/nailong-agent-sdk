@@ -12,9 +12,10 @@ if BENCHMARK not in sys.path:
     sys.path.insert(0, BENCHMARK)
 
 from corpus import pipeline  # noqa: E402
-from corpus.evaluate import eligible, wilson  # noqa: E402
+from corpus.evaluate import eligible  # noqa: E402
 from corpus.llm import json_object  # noqa: E402
 from corpus.methods import Prediction, node_of  # noqa: E402
+from corpus.stats import wilson  # noqa: E402
 
 from nailong_agent_sdk.tools.artifacts import ArtifactStore  # noqa: E402
 
@@ -124,11 +125,12 @@ def test_scoring_helpers():
     assert json_object('noise {"agent": "A", "step": 2} tail') == {"agent": "A", "step": 2}
     assert json_object("no object") is None and json_object("{broken") is None
     label = {"kind": "read", "pipeline_complete": True, "outcome_failed": True, "fault_call": {}}
-    assert not eligible(label)
+    assert not eligible(label, "planted")
     label["fault_call"] = {"node": "A", "call_id": "c"}
-    assert eligible(label) and not eligible({**label, "kind": "none"})
-    assert not eligible({**label, "pipeline_complete": False})
-    assert not eligible({**label, "outcome_failed": False})
+    assert eligible(label, "planted") and not eligible({**label, "kind": "none"}, "planted")
+    assert not eligible(label, "natural") and eligible({**label, "kind": "natural"}, "natural")
+    assert not eligible({**label, "pipeline_complete": False}, "planted")
+    assert not eligible({**label, "outcome_failed": False}, "planted")
 
 
 def test_the_planted_cells_cover_both_kinds_at_every_node():

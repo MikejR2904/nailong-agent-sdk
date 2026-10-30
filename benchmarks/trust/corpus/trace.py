@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from corpus.pipeline import INSTRUCTIONS, NODES, OUTPUT_FILE
+from corpus.pipeline import NODES, OUTPUT_FILE, instructions_for
 from nailong_agent_sdk.observability.audit_log import AuditTranscriptStore
 
 RESULT_CHARS = 1_200
@@ -64,7 +64,7 @@ def render_step(step: Step, *, chars: int = RESULT_CHARS) -> str:
     )
 
 
-def pipeline_preamble() -> str:
+def pipeline_preamble(seed: int = 0) -> str:
     lines = [
         "A three-agent pipeline processes a sales table (month, region, amount). Agent A "
         "extracts per-region totals, agent B computes a grand total and the top region, and "
@@ -72,7 +72,7 @@ def pipeline_preamble() -> str:
         "read_artifact and write_draft. The instruction given to each agent was:",
     ]
     for node in NODES:
-        text = INSTRUCTIONS[node].format(
+        text = instructions_for(node, seed).format(
             artifact_id="<id of the previous artifact>",
             FINAL="the final reply",
         )
@@ -80,6 +80,6 @@ def pipeline_preamble() -> str:
     return "\n".join(lines)
 
 
-def render_trace(steps: list[Step], upto: int | None = None) -> str:
+def render_trace(steps: list[Step], upto: int | None = None, seed: int = 0) -> str:
     chosen = steps if upto is None else [step for step in steps if step.index <= upto]
-    return pipeline_preamble() + "\n\nLOG\n" + "\n".join(render_step(step) for step in chosen)
+    return pipeline_preamble(seed) + "\n\nLOG\n" + "\n".join(render_step(step) for step in chosen)

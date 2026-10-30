@@ -1,21 +1,29 @@
-"""The attribution methods compared on the corpus.
+"""The attribution methods compared on the corpus, behind one name grammar.
 
-Every method gets the same case: the pipeline, the final symptom (summary.txt is wrong) and the
-SDK's ledgers. The trivial baselines use only the shape of the pipeline. The LLM baselines are the
-two Who&When methods (all at once, step by step) over the flat trace. The SDK methods use the
-structure the SDK recorded, with the defect checks stated per method.
+    last-step | first-step                      the shape of the pipeline only
+    ww-all | ww-step | ww-binary [+gt] : judge   Who&When's three LLM methods (corpus/whowhen.py),
+                                                 +gt gives the correct final answer
+    falat : judge                                FALAT, reimplemented (corpus/falat.py), with the
+                                                 correct final answer as the method defines it
+    sdk-structural | sdk-integrity | sdk-oracle | sdk-llmcheck[+integrity] [: judge]
+                                                 attribute_root_cause with the stated checks
+
+Every method gets the same case: the pipeline, the symptom (summary.txt is wrong) and the SDK's
+ledgers. The LLM methods read the numbered trace built from the audit ledger; the SDK methods read
+the journal, the artifact store and the same ledgers.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from corpus import falat, whowhen
 from corpus.llm import ask, json_object
-from corpus.pipeline import OUTPUT_FILE, artifact_defective
-from corpus.trace import Step, load_steps, render_step, render_trace
+from corpus.pipeline import OUTPUT_FILE, artifact_defective, truth
+from corpus.prediction import Prediction
+from corpus.trace import Step, load_steps, pipeline_preamble
 from nailong_agent_sdk.developer_tools.attribute_root_cause import (
     CauseKind,
     RootCauseAnalysis,
@@ -23,24 +31,28 @@ from nailong_agent_sdk.developer_tools.attribute_root_cause import (
 )
 from nailong_agent_sdk.tools.artifacts import ArtifactStore
 
-SDK_MODES = (
+MODEL_PATH = "accounts/fireworks/models/"
+SDK_FAMILIES = (
     "sdk-structural",
     "sdk-integrity",
     "sdk-oracle",
     "sdk-llmcheck",
     "sdk-llmcheck+integrity",
 )
-
-
-@dataclass(frozen=True)
-class Prediction:
-    node: str | None
-    call_id: str | None
-    note: str = ""
+WHOWHEN = {
+    "ww-all": whowhen.all_at_once,
+    "ww-step": whowhen.step_by_step,
+    "ww-binary": whowhen.binary_search,
+}
 
 
 def node_of(run_id: str | None) -> str | None:
     return run_id.removeprefix("node-") if run_id and run_id.startswith("node-") else None
+
+
+def expected_answer(seed: int) -> str:
+    expected = truth(seed)
+    return f"TOTAL={expected['total']};TOP={expected['top']}"
 
 
 def last_step(steps: list[Step]) -> Prediction:
@@ -49,47 +61,6 @@ def last_step(steps: list[Step]) -> Prediction:
 
 def first_step(steps: list[Step]) -> Prediction:
     return Prediction(steps[0].node, steps[0].call_id, "first step")
-
-
-ALL_AT_ONCE = """{trace}
-
-The pipeline FAILED: its final output summary.txt does not contain the correct answer.
-Find the decisive error: the earliest step whose outcome made the final output wrong. Steps are
-numbered in the log. Answer with one JSON object and nothing else:
-{{"agent": "A" or "B" or "C", "step": <step number>, "reason": "<one sentence>"}}"""
-
-STEP_BY_STEP = """{trace}
-
-The pipeline FAILED: its final output summary.txt does not contain the correct answer. You are
-looking at the log up to step {step} only. Is step {step} the decisive error, the earliest step
-whose outcome made the final output wrong? Answer with one JSON object and nothing else:
-{{"decisive": true or false, "reason": "<one sentence>"}}"""
-
-
-def llm_all_at_once(steps: list[Step], judge: str, key: str) -> Prediction:
-    reply = ask(judge, ALL_AT_ONCE.format(trace=render_trace(steps)), key)
-    found = json_object(reply)
-    if not found:
-        return Prediction(None, None, "unparseable")
-    try:
-        index = int(found["step"])
-    except (KeyError, TypeError, ValueError):
-        return Prediction(None, None, "no step")
-    chosen = next((step for step in steps if step.index == index), None)
-    if chosen is None:
-        return Prediction(str(found.get("agent") or "") or None, None, f"step {index} not in log")
-    return Prediction(chosen.node, chosen.call_id, "all-at-once")
-
-
-def llm_step_by_step(steps: list[Step], judge: str, key: str) -> Prediction:
-    for step in steps:
-        reply = ask(
-            judge, STEP_BY_STEP.format(trace=render_trace(steps, step.index), step=step.index), key
-        )
-        found = json_object(reply)
-        if found and found.get("decisive") is True:
-            return Prediction(step.node, step.call_id, "step-by-step")
-    return Prediction(steps[-1].node, steps[-1].call_id, "step-by-step, none flagged")
 
 
 CHECK = """A sales table is the source of a three-step pipeline.
@@ -140,8 +111,7 @@ def sdk_checks(mode: str, seed: int, workspace: Path, judge: str, key: str) -> d
         def decide(path: str, content: str) -> bool:
             return artifact_defective(path, content, seed)
     else:
-        checker = LlmChecker(workspace, judge, key)
-        decide = checker.defective
+        decide = LlmChecker(workspace, judge, key).defective
 
     def artifact(path: str):
         return lambda content, version: decide(path, content.decode("utf-8"))
@@ -162,18 +132,26 @@ def sdk_checks(mode: str, seed: int, workspace: Path, judge: str, key: str) -> d
     }
 
 
+def _call_of(candidate: Any) -> str | None:
+    if candidate.writer is not None:
+        return candidate.writer.tool_call_id
+    if candidate.kind in {CauseKind.DEFECTIVE_RESULT, CauseKind.RECORD_INCONSISTENCY}:
+        return candidate.subject.rsplit(" call ", 1)[-1]
+    return None
+
+
 def prediction_of(analysis: RootCauseAnalysis) -> Prediction:
+    ranked: list[str] = []
+    for candidate in analysis.candidates:
+        call = _call_of(candidate)
+        if call and call not in ranked:
+            ranked.append(call)
     primary = analysis.primary
     if primary is None:
-        return Prediction(None, None, "no primary")
-    if primary.writer is not None:
-        return Prediction(
-            node_of(primary.writer.agent_run_id), primary.writer.tool_call_id, primary.kind.value
-        )
-    if primary.kind in {CauseKind.DEFECTIVE_RESULT, CauseKind.RECORD_INCONSISTENCY}:
-        call_id = primary.subject.rsplit(" call ", 1)[-1]
-        return Prediction(node_of(primary.run_id), call_id, primary.kind.value)
-    return Prediction(node_of(primary.run_id), None, primary.kind.value)
+        return Prediction(None, None, "no primary", tuple(ranked[:3]))
+    call = _call_of(primary)
+    node = node_of(primary.writer.agent_run_id if primary.writer else primary.run_id)
+    return Prediction(node, call, primary.kind.value, tuple(ranked[:3]))
 
 
 def sdk_method(
@@ -198,23 +176,35 @@ def sdk_method(
     return prediction_of(analysis)
 
 
+def split_name(name: str) -> tuple[str, bool, str]:
+    family, _, judge = name.partition(":")
+    ground_truth = family.endswith("+gt")
+    return family.removesuffix("+gt"), ground_truth, judge
+
+
+def predict(name: str, case_dir: Path, label: dict[str, Any], key: str) -> Prediction:
+    steps = load_steps(case_dir)
+    family, ground_truth, judge = split_name(name)
+    judge_id = MODEL_PATH + judge if judge else ""
+    seed = label["seed"]
+    if family == "last-step":
+        return last_step(steps)
+    if family == "first-step":
+        return first_step(steps)
+
+    def chat(prompt: str) -> str:
+        return ask(judge_id, prompt, key)
+
+    preamble = pipeline_preamble(seed)
+    if family in WHOWHEN:
+        answer = expected_answer(seed) if ground_truth else None
+        return WHOWHEN[family](steps, chat, answer, preamble)
+    if family == "falat":
+        return falat.falat(steps, chat, expected_answer(seed), preamble)
+    if family in SDK_FAMILIES:
+        return sdk_method(family, case_dir, seed, judge_id, key)
+    raise ValueError(f'unknown method "{name}".')
+
+
 def load_label(case_dir: Path) -> dict[str, Any]:
     return json.loads((case_dir / "label.json").read_text("utf-8"))
-
-
-def load_case_steps(case_dir: Path) -> list[Step]:
-    return load_steps(case_dir)
-
-
-__all__ = [
-    "SDK_MODES",
-    "Prediction",
-    "first_step",
-    "last_step",
-    "llm_all_at_once",
-    "llm_step_by_step",
-    "load_case_steps",
-    "load_label",
-    "render_step",
-    "sdk_method",
-]
