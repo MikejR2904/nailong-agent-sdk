@@ -26,6 +26,9 @@ benchmarks/dfl/results/**/synthetic_results.json
 benchmarks/dfl/*.log
 benchmarks/dfl/results/**/outcomes-*.jsonl
 benchmarks/dfl/results/**/live_results.json
+benchmarks/dfl/results/**/seed*__*.json
+benchmarks/dfl/results/**/tiered_rows.json
+benchmarks/dfl/results/**/live_*results.json
 benchmarks/dfl/results/live_pilot/
 benchmarks/dfl/results/live_discarded/
 benchmarks/dfl/results/live_degenerate_split/
