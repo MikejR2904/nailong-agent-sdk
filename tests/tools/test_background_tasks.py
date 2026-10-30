@@ -222,7 +222,8 @@ def test_start_agent_task_outside_a_loop_closes_the_coroutine_it_was_given():
     pending = work()
     with pytest.raises(RuntimeError, match="must be called from code running inside an asyncio"):
         manager.start_agent_task("x", pending)
-    assert pending.cr_frame is None
+    with pytest.raises(RuntimeError, match="cannot reuse already awaited coroutine"):
+        pending.send(None)
     assert manager.list_tasks() == []
 
 

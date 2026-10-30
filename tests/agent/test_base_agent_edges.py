@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 from decimal import Decimal
 
 import pytest
@@ -116,7 +117,9 @@ def test_an_adapter_that_reports_no_usage_leaves_every_token_metric_unavailable(
         )
 
 
-def test_an_expired_run_deadline_fails_the_run_before_any_model_call():
+def test_an_expired_run_deadline_fails_the_run_before_any_model_call(monkeypatch):
+    ticks = itertools.count()
+    monkeypatch.setattr(asyncio.base_events.BaseEventLoop, "time", lambda self: float(next(ticks)))
     subject, model = agent(
         [final()], watchdog_policy=AgentWatchdogPolicy(run_deadline_seconds=1e-9)
     )
