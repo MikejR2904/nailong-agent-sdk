@@ -9,12 +9,15 @@ from collections.abc import Mapping, Sequence
 from pydantic import Field
 
 from ...foundations.contracts import StrictModel
-from ..contracts import ExternalDecisionProvider, InteropFailureMode, InteropOperationStatus
+from ...foundations.identifiers import require_unique
+from ..contracts import InteropFailureMode, InteropOperationStatus
 from .models import (
     _JEV_ANSWER_ADAPTER,
+    MAX_CHOICE_CRITERIA,
     JevAnswer,
     JevChoiceAnswer,
     JevChoiceQuestion,
+    JevDecisionProvider,
     JevDecisionRequest,
     JevDecisionResult,
     JevQuestionSpec,
@@ -43,12 +46,17 @@ class JevExplorationAdvisor:
 
     def __init__(
         self,
-        evaluator: ExternalDecisionProvider,
+        evaluator: JevDecisionProvider,
         *,
         model: str,
         max_candidates: int = 64,
         on_unavailable: InteropFailureMode = InteropFailureMode.FALLBACK_DETERMINISTIC,
     ) -> None:
+        if not 2 <= max_candidates <= MAX_CHOICE_CRITERIA:
+            raise ValueError(
+                f"max_candidates {max_candidates} must be between 2 and {MAX_CHOICE_CRITERIA}, "
+                "the number of choices a Jev question can carry."
+            )
         self._evaluator = evaluator
         self._model = model
         self._max_candidates = max_candidates
@@ -62,10 +70,19 @@ class JevExplorationAdvisor:
         instructions: str,
         deadline_seconds: float = 20,
     ) -> JevExplorationAdvice:
-        if not candidates:
-            raise ValueError("At least one exploration candidate is required.")
+        if len(candidates) < 2:
+            raise ValueError(
+                f"Jev exploration prioritisation needs at least two candidates, got "
+                f"{len(candidates)}; with fewer there is nothing to prioritise, so select the "
+                "only candidate directly."
+            )
         if len(candidates) > self._max_candidates:
-            raise ValueError("Exploration candidate count exceeds the declared Jev bound.")
+            raise ValueError(
+                f"Exploration candidate count {len(candidates)} exceeds the declared Jev bound "
+                f"of {self._max_candidates}."
+            )
+        identifiers = [candidate.candidate_id for candidate in candidates]
+        require_unique(identifiers, "Exploration candidate ids")
         ordered = sorted(
             candidates,
             key=lambda candidate: (candidate.deterministic_rank, candidate.candidate_id),

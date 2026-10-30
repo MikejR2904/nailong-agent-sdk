@@ -4,13 +4,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any
 
 from pydantic import Field
 
 from ..foundations.contracts import StrictModel
+from ..foundations.hashing import sha256_hex, strict_canonical_json
 from .planning import PlanValidationReport
 
 
@@ -40,6 +39,4 @@ def _hash_run(
         "plan_validation": validation.model_dump(mode="json"),
         "cancelled": cancelled,
     }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return sha256_hex(strict_canonical_json(payload))

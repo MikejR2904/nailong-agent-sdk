@@ -1,19 +1,42 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Exact and greedy PCKP solvers.
+"""Prerequisite-Constrained Knapsack solvers for context retention.
 
-The exact solver uses a fixed-order, exact-arithmetic branch-and-bound search,
-or the exact capacity-indexed tree dynamic program when the instance is a
-rooted forest. Neither solver makes model calls or uses random ordering, so
-both are reusable by episode retention and source-evidence packing.
+When an agent's context grows past its budget, something has to be evicted
+and something has to be retained. This is called the
+Prerequisite-Constrained Knapsack Problem (PCKP). It looks
+like a standard 0/1 knapsack (maximize a utility sum subject to a cost
+budget) with one addition: items may declare prerequisites. Selecting
+an item requires selecting its entire prerequisite closure. Some items
+may also be marked mandatory, meaning their closure must be selected
+regardless of budget. If the mandatory closure does not fit, the problem
+is infeasible.
+
+This module provides two solvers:
+- ExactPckpSolver: finds the optimal set (using tree DP for simple cases, or
+  branch-and-bound search for general DAGs). Always deterministic.
+- GreedyPckpBaseline: a simpler density-first heuristic, used for comparison.
+
+Both are deterministic (no randomness, no model calls) so the same input always
+produces the same selection. They are used for episode retention and evidence
+packing (deciding which pieces can fit within the limited context window), but
+the underlying problem is common.
+
+Credit to: https://dlnext.acm.org/doi/10.5555/3182683.3183062 and
+https://www.sciencedirect.com/science/article/abs/pii/S0377221706010642
 """
 
 from __future__ import annotations
 
+import heapq
 from collections.abc import Iterable
 from fractions import Fraction
 
+from ..hashing import sha256_hex, strict_canonical_json
 from .models import PckpItem, PckpProblem, PckpSolution, PckpStatus
+
+GREEDY_SEED_MAX_ITEMS = 400
+ADAPTIVE_FILL_MAX_CLOSURE_ENTRIES = 3_000_000
 
 
 class ExactPckpSolver:
@@ -63,7 +86,7 @@ class ExactPckpSolver:
 
         if (
             self._enable_tree_dynamic_program
-            and problem.token_budget <= self._max_tree_token_budget
+            and _frontier_bound(problem) <= self._max_tree_token_budget
             and _is_rooted_forest(items.values())
         ):
             return _solve_rooted_forest(problem, mandatory, problem_hash)
@@ -89,32 +112,40 @@ class ExactPckpSolver:
                 value.item_id,
             ),
         )
-        incumbent_selection = set(mandatory)
+        incumbent_selection = (
+            set(GreedyPckpBaseline().solve(problem).selected_item_ids)
+            if len(items) <= GREEDY_SEED_MAX_ITEMS
+            else _seed_fill(mandatory, items, density_order, problem.token_budget)
+        )
         incumbent_utility = _utility(incumbent_selection, items)
+        incumbent_cost = _cost(incumbent_selection, items)
         branch_nodes = 0
         exhausted = True
         root_upper = _fractional_upper_bound(
-            incumbent_selection, set(), items, density_order, problem.token_budget
+            set(mandatory), set(), items, density_order, problem.token_budget
         )
 
-        def visit(selected: set[str], excluded: set[str]) -> None:
-            nonlocal incumbent_selection, incumbent_utility, branch_nodes, exhausted
+        stack: list[tuple[set[str], set[str]]] = [(set(mandatory), set())]
+        while stack:
+            selected, excluded = stack.pop()
             if self._max_branch_nodes is not None and branch_nodes >= self._max_branch_nodes:
                 exhausted = False
-                return
+                break
             branch_nodes += 1
             normalized = _propagate(selected, excluded, items, dependents)
             if normalized is None:
-                return
+                continue
             selected_now, excluded_now = normalized
             selected_cost = _cost(selected_now, items)
             if selected_cost > problem.token_budget:
-                return
+                continue
             upper = _fractional_upper_bound(
                 selected_now, excluded_now, items, density_order, problem.token_budget
             )
             if upper < incumbent_utility:
-                return
+                continue
+            if upper == incumbent_utility and selected_cost > incumbent_cost:
+                continue
             undecided = next(
                 (
                     item_id
@@ -127,16 +158,16 @@ class ExactPckpSolver:
                 candidate_utility = _utility(selected_now, items)
                 if candidate_utility > incumbent_utility or (
                     candidate_utility == incumbent_utility
-                    and tuple(sorted(selected_now)) < tuple(sorted(incumbent_selection))
+                    and (selected_cost, tie_key(selected_now))
+                    < (incumbent_cost, tie_key(incumbent_selection))
                 ):
                     incumbent_selection = selected_now
                     incumbent_utility = candidate_utility
-                return
-            # Exclusion first gives stable search traces; final tie resolution is explicit.
-            visit(set(selected_now), {*excluded_now, undecided})
-            visit({*selected_now, undecided}, set(excluded_now))
+                    incumbent_cost = selected_cost
+                continue
+            stack.append(({*selected_now, undecided}, set(excluded_now)))
+            stack.append((set(selected_now), {*excluded_now, undecided}))
 
-        visit(set(mandatory), set())
         status = PckpStatus.OPTIMAL if exhausted else PckpStatus.BEST_EFFORT
         certified_upper = Fraction(incumbent_utility) if exhausted else root_upper
         gap = Fraction(0) if exhausted else max(Fraction(0), root_upper - incumbent_utility)
@@ -219,19 +250,71 @@ class GreedyPckpBaseline:
         )
 
 
+def tie_key(selected: Iterable[str]) -> tuple[tuple[int, str], ...]:
+    return (*((0, item_id) for item_id in sorted(selected)), (1, ""))
+
+
+class _Selection:
+    __slots__ = ("_ids", "_key", "_left", "_right")
+
+    def __init__(
+        self,
+        ids: tuple[str, ...] = (),
+        left: _Selection | None = None,
+        right: _Selection | None = None,
+    ) -> None:
+        self._ids = ids
+        self._left = left
+        self._right = right
+        self._key: tuple[tuple[int, str], ...] | None = None
+
+    @classmethod
+    def join(cls, left: _Selection, right: _Selection) -> _Selection:
+        if left._left is None and not left._ids:
+            return right
+        if right._left is None and not right._ids:
+            return left
+        return cls(left=left, right=right)
+
+    @property
+    def ids(self) -> tuple[str, ...]:
+        collected: list[str] = []
+        pending = [self]
+        while pending:
+            node = pending.pop()
+            if node._left is None or node._right is None:
+                collected.extend(node._ids)
+            else:
+                pending.append(node._right)
+                pending.append(node._left)
+        return tuple(collected)
+
+    @property
+    def key(self) -> tuple[tuple[int, str], ...]:
+        if self._key is None:
+            self._key = tie_key(self.ids)
+        return self._key
+
+
+_States = dict[int, tuple[int, _Selection]]
+
+
 def _solve_rooted_forest(
     problem: PckpProblem,
     mandatory: set[str],
     problem_hash: str,
 ) -> PckpSolution:
-    """Exact capacity-indexed DP for a verified rooted forest.
+    """Exact Pareto-frontier DP for a verified rooted forest.
 
-    Edges point from a child to its sole parent/prerequisite.  Every feasible
-    retained set is therefore ancestor-closed.  The DP stores only the best
-    utility/tie-break selection for each exact cost, then combines root trees.
+    Edges point from a child to its sole parent/prerequisite. Every feasible
+    retained set is therefore ancestor-closed. Each subtree keeps only the
+    states no cheaper state matches in utility, so the table is bounded by the
+    number of distinct utilities rather than by the token budget. Among equal
+    utilities the cheaper selection wins, then the lexicographically smaller one.
     """
 
     items = {item.item_id: item for item in problem.items}
+    budget = problem.token_budget
     children: dict[str, list[str]] = {item_id: [] for item_id in items}
     roots: list[str] = []
     for item in items.values():
@@ -243,75 +326,39 @@ def _solve_rooted_forest(
         value.sort()
     roots.sort()
 
-    def better(
-        current: tuple[int, tuple[str, ...]] | None,
-        candidate: tuple[int, tuple[str, ...]],
-    ) -> tuple[int, tuple[str, ...]]:
-        if current is None:
-            return candidate
-        if candidate[0] > current[0] or (candidate[0] == current[0] and candidate[1] < current[1]):
-            return candidate
-        return current
-
-    def selected_states(item_id: str) -> dict[int, tuple[int, tuple[str, ...]]]:
-        item = items[item_id]
-        states: dict[int, tuple[int, tuple[str, ...]]] = {
-            item.token_cost: (item.utility, (item_id,))
-        }
-        for child_id in children[item_id]:
-            child_states = selected_states(child_id)
-            child_mandatory = child_id in mandatory
-            next_states: dict[int, tuple[int, tuple[str, ...]]] = {}
-            for left_cost, left in states.items():
-                if not child_mandatory:
-                    next_states[left_cost] = better(next_states.get(left_cost), left)
-                for right_cost, right in child_states.items():
-                    total_cost = left_cost + right_cost
-                    if total_cost > problem.token_budget:
-                        continue
-                    candidate = (
-                        left[0] + right[0],
-                        tuple(sorted((*left[1], *right[1]))),
-                    )
-                    next_states[total_cost] = better(next_states.get(total_cost), candidate)
-            states = _prune_dominated(next_states, better)
-        return states
-
-    states: dict[int, tuple[int, tuple[str, ...]]] = {0: (0, ())}
-    for root_id in roots:
-        root_states = selected_states(root_id)
-        root_mandatory = root_id in mandatory
-        next_states: dict[int, tuple[int, tuple[str, ...]]] = {}
-        for left_cost, left in states.items():
-            if not root_mandatory:
-                next_states[left_cost] = better(next_states.get(left_cost), left)
-            for right_cost, right in root_states.items():
-                total_cost = left_cost + right_cost
-                if total_cost > problem.token_budget:
-                    continue
-                candidate = (
-                    left[0] + right[0],
-                    tuple(sorted((*left[1], *right[1]))),
+    def subtree_states(root_id: str) -> _States:
+        preorder: list[str] = []
+        pending = [root_id]
+        while pending:
+            node_id = pending.pop()
+            preorder.append(node_id)
+            pending.extend(children[node_id])
+        computed: dict[str, _States] = {}
+        for item_id in reversed(preorder):
+            item = items[item_id]
+            states: _States = {item.token_cost: (item.utility, _Selection((item_id,)))}
+            for child_id in children[item_id]:
+                states = _merge_states(
+                    states, computed.pop(child_id), budget, keep_left=child_id not in mandatory
                 )
-                next_states[total_cost] = better(next_states.get(total_cost), candidate)
-        states = _prune_dominated(next_states, better)
+            computed[item_id] = states
+        return computed.pop(root_id)
 
-    best: tuple[int, tuple[str, ...]] = max(
-        states.values(),
-        key=lambda value: (value[0], tuple(-ord(char) for char in "".join(value[1]))),
-    )
-    # The preceding max handles utility; resolve lexicographic ties explicitly.
-    for candidate in states.values():
-        if candidate[0] > best[0] or (candidate[0] == best[0] and candidate[1] < best[1]):
-            best = candidate
-    selected = set(best[1])
+    states: _States = {0: (0, _Selection(()))}
+    for root_id in roots:
+        states = _merge_states(
+            states, subtree_states(root_id), budget, keep_left=root_id not in mandatory
+        )
+
+    best_utility, best_selection = states[max(states)]
+    selected = set(best_selection.ids)
     return PckpSolution(
         status=PckpStatus.OPTIMAL,
         selected_item_ids=sorted(selected),
         mandatory_item_ids=sorted(mandatory),
         token_cost=_cost(selected, items),
-        utility=best[0],
-        upper_bound=str(best[0]),
+        utility=best_utility,
+        upper_bound=str(best_utility),
         optimality_gap="0",
         branch_nodes=0,
         solver="tree-dynamic-program",
@@ -319,23 +366,138 @@ def _solve_rooted_forest(
     )
 
 
-def _prune_dominated(
-    states: dict[int, tuple[int, tuple[str, ...]]],
-    better,
-) -> dict[int, tuple[int, tuple[str, ...]]]:
-    """Discard a state dominated by a no-costlier, higher-utility state."""
+def _offer(states: _States, cost: int, utility: int, selection: _Selection) -> None:
+    existing = states.get(cost)
+    if (
+        existing is None
+        or utility > existing[0]
+        or (utility == existing[0] and selection.key < existing[1].key)
+    ):
+        states[cost] = (utility, selection)
 
-    retained: dict[int, tuple[int, tuple[str, ...]]] = {}
-    best_prior: tuple[int, tuple[str, ...]] | None = None
+
+def _merge_states(left: _States, right: _States, budget: int, *, keep_left: bool) -> _States:
+    merged: _States = {}
+    for left_cost, (left_utility, left_selection) in left.items():
+        if keep_left:
+            _offer(merged, left_cost, left_utility, left_selection)
+        for right_cost, (right_utility, right_selection) in right.items():
+            total_cost = left_cost + right_cost
+            if total_cost > budget:
+                continue
+            utility = left_utility + right_utility
+            existing = merged.get(total_cost)
+            if existing is not None and existing[0] > utility:
+                continue
+            _offer(merged, total_cost, utility, _Selection.join(left_selection, right_selection))
+    return _prune_dominated(merged)
+
+
+def _prune_dominated(states: _States) -> _States:
+    retained: _States = {}
+    best_utility = -1
     for cost in sorted(states):
-        state = states[cost]
-        if best_prior is not None and best_prior[0] > state[0]:
-            continue
-        if best_prior is not None and best_prior[0] == state[0] and best_prior[1] <= state[1]:
-            continue
-        retained[cost] = state
-        best_prior = better(best_prior, state)
+        utility, selection = states[cost]
+        if utility > best_utility:
+            retained[cost] = (utility, selection)
+            best_utility = utility
     return retained
+
+
+def _seed_fill(
+    mandatory: set[str],
+    items: dict[str, PckpItem],
+    density_order: list[PckpItem],
+    budget: int,
+) -> set[str]:
+    adaptive = _adaptive_fill(mandatory, items, budget)
+    if adaptive is not None:
+        return adaptive
+    return _density_fill(mandatory, items, density_order, budget)
+
+
+def _adaptive_fill(mandatory: set[str], items: dict[str, PckpItem], budget: int) -> set[str] | None:
+    closures: dict[str, set[str]] = {}
+    entries = 0
+    for item_id in sorted(items):
+        closures[item_id] = _closure({item_id}, items)
+        entries += len(closures[item_id])
+        if entries > ADAPTIVE_FILL_MAX_CLOSURE_ENTRIES:
+            return None
+    containing: dict[str, list[str]] = {}
+    for item_id, closure in closures.items():
+        for member in closure:
+            containing.setdefault(member, []).append(item_id)
+    selected = set(mandatory)
+    remaining_cost = {}
+    remaining_utility = {}
+    for item_id, closure in closures.items():
+        outside = closure - selected
+        remaining_cost[item_id] = _cost(outside, items)
+        remaining_utility[item_id] = _utility(outside, items)
+    version = dict.fromkeys(items, 0)
+    spent = _cost(selected, items)
+    heap: list[tuple[Fraction, int, int, str, int]] = []
+
+    def push(item_id: str) -> None:
+        utility = remaining_utility[item_id]
+        if item_id in selected or utility <= 0:
+            return
+        cost = remaining_cost[item_id]
+        heapq.heappush(
+            heap, (-Fraction(utility, cost or 1), -utility, cost, item_id, version[item_id])
+        )
+
+    for item_id in sorted(items):
+        push(item_id)
+    while heap:
+        _, _, cost, item_id, stamp = heapq.heappop(heap)
+        if stamp != version[item_id] or item_id in selected:
+            continue
+        if spent + cost > budget:
+            continue
+        added = closures[item_id] - selected
+        selected |= added
+        spent += cost
+        touched: set[str] = set()
+        for member in added:
+            cost_of = items[member].token_cost
+            utility_of = items[member].utility
+            for owner in containing[member]:
+                remaining_cost[owner] -= cost_of
+                remaining_utility[owner] -= utility_of
+                touched.add(owner)
+        for owner in touched:
+            version[owner] += 1
+            push(owner)
+    return selected
+
+
+def _density_fill(
+    mandatory: set[str],
+    items: dict[str, PckpItem],
+    density_order: list[PckpItem],
+    budget: int,
+) -> set[str]:
+    """One pass over the items by fixed density, adding each with the prerequisites it needs."""
+
+    selected = set(mandatory)
+    spent = _cost(selected, items)
+    for item in density_order:
+        if item.item_id in selected or item.utility <= 0:
+            continue
+        additions = _closure({item.item_id}, items) - selected
+        cost = _cost(additions, items)
+        if spent + cost <= budget:
+            selected |= additions
+            spent += cost
+    return selected
+
+
+def _frontier_bound(problem: PckpProblem) -> int:
+    total_cost = sum(item.token_cost for item in problem.items)
+    total_utility = sum(item.utility for item in problem.items)
+    return min(problem.token_budget, total_cost, total_utility + 1)
 
 
 def _dependents(items: Iterable[PckpItem]) -> dict[str, set[str]]:
@@ -424,13 +586,7 @@ def _is_rooted_forest(items: Iterable[PckpItem]) -> bool:
 
 
 def _problem_hash(problem: PckpProblem) -> str:
-    import hashlib
-    import json
-
-    payload = problem.model_dump(mode="json")
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return sha256_hex(strict_canonical_json(problem.model_dump(mode="json")))
 
 
 def _fraction_text(value: Fraction) -> str:

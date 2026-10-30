@@ -1,59 +1,102 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Stable error categories and safe failure-detail handling for the Python runtime."""
+"""Stable error categories and safe failure-detail handling for the Python runtime.
+Categories reported:
+- AgentSdkError: a contract or runtime failure that can be returned as typed agent state.
+- TransientProviderError: a provider failure that is likely to succeed on retry (429, 5xx, or a
+  connection drop).
+
+Failure details are sanitized to redact secrets, bound to a max length, and remove private
+reasoning before durable result exposure. The redaction patterns are best-effort and may not
+catch all secrets, but they cover common credential shapes and key names.
+"""
 
 from __future__ import annotations
 
-import hashlib
-import json
+import bisect
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from .hashing import canonical_json, sha256_hex
+from .text import scrub_surrogates
+
 _SECRET_KEY = re.compile(
-    r"(authorization|api[_-]?key|password|secret"
+    r"(authorization|api[_-]?key|passw(?:or)?d|passphrase|secret|access[_-]?key|signing[_-]?key"
     r"|token(?!_?budget|_?cost|s\b)|cookie|credential|private[_-]?key)",
     re.IGNORECASE,
 )
 _HIDDEN_REASONING_KEYS = {"chain_of_thought", "hidden_reasoning", "reasoning_trace", "scratchpad"}
 _MAX_FAILURE_DETAIL_CHARS = 2_048
 
-# Free-text patterns for the credentials a key-name check cannot see — e.g. a
-# subprocess that prints its own environment, or an error message that quotes
-# a connection string. This is a best-effort net for well-known credential
-# shapes, not a general secret scanner: it will not catch a bespoke or
-# high-entropy token that matches none of these shapes. Each pattern is
-# anchored on a distinctive literal prefix before a bounded/simple quantified
-# class, so none of them can backtrack more than linearly — the
-# ``KEYWORD=value`` case that needs an unanchored identifier boundary is
-# handled separately by ``_redact_assignments`` instead of a regex here; see
-# that function's docstring for why.
+# Patterns to catch secrets in free text (like environment dumps or error messages).
+# Covers common shapes (API keys, tokens, PEM blocks, etc.) but not every possible secret.
+# Each regex is anchored to a clear prefix and kept simple to avoid slow backtracking.
+# ``KEYWORD=value`` cases are handled separately in ``_redact_assignments``.
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+_RUN_START = r"(?<![A-Za-z0-9_-])"
 _SECRET_CONTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"\bsk-[A-Za-z0-9]{20,}"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(rf"{_RUN_START}sk-[A-Za-z0-9_-]{{20,}}+"),
+    re.compile(rf"{_RUN_START}sk_(?:live|test)_[A-Za-z0-9]{{16,}}+"),
+    re.compile(rf"{_RUN_START}(?:AKIA|ASIA)[0-9A-Z]{{16}}\b"),
+    re.compile(rf"{_RUN_START}gh[pousr]_[A-Za-z0-9]{{30,}}+"),
+    re.compile(rf"{_RUN_START}github_pat_[A-Za-z0-9_]{{20,}}+"),
+    re.compile(rf"{_RUN_START}glpat-[A-Za-z0-9_-]{{20,}}+"),
+    re.compile(rf"{_RUN_START}hf_[A-Za-z0-9]{{30,}}+"),
+    re.compile(rf"{_RUN_START}AIza[0-9A-Za-z_-]{{35}}"),
+    re.compile(rf"{_RUN_START}npm_[A-Za-z0-9]{{36}}"),
+    re.compile(rf"{_RUN_START}fw_[A-Za-z0-9]{{20,}}+"),
+    re.compile(rf"{_RUN_START}xox[baprs]-[A-Za-z0-9-]{{10,}}+"),
+    re.compile(rf"{_RUN_START}eyJ[A-Za-z0-9_-]{{8,}}+\.[A-Za-z0-9_-]{{8,}}+\.[A-Za-z0-9_-]{{8,}}+"),
     re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{10,}=*"),
 )
-_ASSIGNMENT_TAIL = re.compile(r"\s*[:=]\s*['\"]?[^\s'\";,}]{4,}")
-_IDENTIFIER_CHAR = re.compile(r"[A-Za-z0-9_]")
+_URL_CREDENTIAL = re.compile(r"(://[^/\s:@]+:)[^/\s@]+(@)")
+_ASSIGNMENT_TAIL = re.compile(
+    r"['\"]?\s*[:=]\s*(?:\"[^\"\r\n]{4,}\"|'[^'\r\n]{4,}'|(?P<value>[^\s'\";,}]{4,}))"
+)
+_AUTHORIZATION_SCHEMES = frozenset(
+    {
+        "basic",
+        "bearer",
+        "digest",
+        "negotiate",
+        "ntlm",
+        "token",
+        "apikey",
+        "hmac",
+        "aws4-hmac-sha256",
+    }
+)
+_AUTHORIZATION_CREDENTIAL = re.compile(r"[ \t]+[^\s'\";,}]{4,}")
+_IDENTIFIER_RUN = re.compile(r"[A-Za-z0-9_-]+")
 # Lowercase literal substrings every pattern above (and _SECRET_KEY, used by
 # _redact_assignments) requires; used as the fast pre-filter in _redact_content.
 _CONTENT_HINT_SUBSTRINGS = (
     "-----begin",
     "sk-",
+    "sk_",
     "akia",
+    "asia",
     "ghp_",
     "gho_",
     "ghu_",
     "ghs_",
     "ghr_",
+    "github_pat_",
+    "glpat-",
+    "hf_",
+    "aiza",
+    "npm_",
+    "fw_",
     "xox",
+    "eyj",
+    "://",
     "bearer",
     "authorization",
     "key",
-    "password",
+    "passw",
+    "passphrase",
     "secret",
     "token",
     "cookie",
@@ -89,110 +132,135 @@ class TransientProviderError(AgentSdkError):
 def sanitize_failure_details(details: dict[str, Any] | None) -> dict[str, Any]:
     """Redact, bound, and remove private reasoning before durable result exposure."""
 
-    redacted = _redact_failure_value(details or {})
-    encoded = json.dumps(redacted, sort_keys=True, separators=(",", ":"), default=str)
+    redacted = _redact_value(details or {}, hide_reasoning_keys=True)
+    encoded = canonical_json(redacted)
     if len(encoded) <= _MAX_FAILURE_DETAIL_CHARS:
         return redacted if isinstance(redacted, dict) else {"value": redacted}
     return {
         "truncated": True,
-        "content_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "content_hash": sha256_hex(encoded),
         "original_chars": len(encoded),
         "preview": encoded[:_MAX_FAILURE_DETAIL_CHARS],
     }
 
 
-def _redact_failure_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            str(key): (
-                "[REDACTED]"
-                if _SECRET_KEY.search(str(key)) or str(key).lower() in _HIDDEN_REASONING_KEYS
-                else _redact_failure_value(item)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_failure_value(item) for item in value]
-    if isinstance(value, str):
-        return _redact_content(value)
-    return value
-
-
 def redact_secrets(value: Any) -> Any:
-    """Recursively redact credential-shaped dict keys and free-text content.
-
-    Shared by every durable record (audit log, telemetry) so a fix to a
-    detection pattern — e.g. excluding ``token_budget``/``input_tokens`` from
-    the ``token`` match — applies everywhere at once instead of drifting
-    across independent copies. A dict key match redacts the whole value; a
-    plain string is scanned for the free-text patterns in
-    ``_SECRET_CONTENT_PATTERNS`` and only the matched span is masked, so
-    surrounding context (e.g. captured tool output) survives.
+    """Recursively mask secrets in dicts, strings, and collections.
+    - Dict keys that look like credentials are replaced with "[REDACTED]".
+    - Strings are scanned for known secret patterns;
+      only the matched span is masked so surrounding text remains.
+    - Lists, tuples, sets, and bytes are walked and redacted element by element.
+    Used across audit logs and telemetry so secret detection stays consistent everywhere.
     """
 
+    return _redact_value(value, hide_reasoning_keys=False)
+
+
+def _redact_value(value: Any, *, hide_reasoning_keys: bool) -> Any:
     if isinstance(value, dict):
         return {
-            str(key): "[REDACTED]" if _SECRET_KEY.search(str(key)) else redact_secrets(item)
+            scrub_surrogates(str(key)): "[REDACTED]"
+            if _SECRET_KEY.search(str(key))
+            or (hide_reasoning_keys and str(key).lower() in _HIDDEN_REASONING_KEYS)
+            else _redact_value(item, hide_reasoning_keys=hide_reasoning_keys)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [redact_secrets(item) for item in value]
+        return [_redact_value(item, hide_reasoning_keys=hide_reasoning_keys) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_value(item, hide_reasoning_keys=hide_reasoning_keys) for item in value)
+    if isinstance(value, set | frozenset):
+        return type(value)(
+            _redact_value(item, hide_reasoning_keys=hide_reasoning_keys) for item in value
+        )
+    if isinstance(value, bytes | bytearray):
+        return _redact_content(bytes(value).decode("utf-8", errors="replace"))
     if isinstance(value, str):
         return _redact_content(value)
     return value
+
+
+def contains_secret_text(text: str) -> bool:
+    return _redact_content(text) != scrub_surrogates(text)
 
 
 def _redact_content(text: str) -> str:
-    # Every pattern below requires at least one of these literal substrings,
-    # so a miss here means none of them can possibly match. Plain substring
-    # search is far cheaper than even a "safe" regex engine's per-character,
-    # per-alternative cost, and on a large string with nothing to redact —
-    # the common case for captured tool output — this skips the regex work
-    # entirely instead of paying to prove there is nothing to find.
+    text = scrub_surrogates(text)
     lowered = text.lower()
     if not any(hint in lowered for hint in _CONTENT_HINT_SUBSTRINGS):
         return text
+    text = _redact_pem_blocks(text)
     for pattern in _SECRET_CONTENT_PATTERNS:
         text = pattern.sub("[REDACTED]", text)
+    text = _URL_CREDENTIAL.sub(r"\1[REDACTED]\2", text)
     return _redact_assignments(text)
 
 
-def _redact_assignments(text: str) -> str:
-    """Redact a ``SOME_SECRET_NAME=value`` / ``"api_key": "value"`` style assignment.
-
-    This used to be one regex: an unanchored ``[A-Za-z0-9_]*`` run wrapped
-    around the keyword alternation, so it could match a keyword embedded
-    anywhere inside a longer identifier (``AWS_SECRET_ACCESS_KEY``). Measured
-    on a realistic 60KB captured-output string, that pattern cost ~15ms per
-    call — regex engines backtrack that leading run character-by-character at
-    every position when nothing matches, which is most of a long string of
-    ordinary text. This reaches the same result in linear time instead: find
-    the cheap keyword match first (the same fast ``_SECRET_KEY`` alternation
-    used for dict keys), extend it left/right through identifier characters
-    by hand, then check whether an assignment immediately follows.
-    """
-
+def _redact_pem_blocks(text: str) -> str:
+    if "-----BEGIN" not in text:
+        return text
+    ends = list(_PEM_END.finditer(text))
+    if not ends:
+        return text
+    end_starts = [match.start() for match in ends]
     pieces: list[str] = []
     cursor = 0
-    for match in _SECRET_KEY.finditer(text):
-        if match.start() < cursor:
-            continue  # inside a span this loop already consumed.
-        start, end = match.start(), match.end()
-        while start > 0 and _IDENTIFIER_CHAR.match(text[start - 1]):
-            start -= 1
-        while end < len(text) and _IDENTIFIER_CHAR.match(text[end]):
-            end += 1
-        tail = _ASSIGNMENT_TAIL.match(text, end)
-        if tail is None:
+    for begin in _PEM_BEGIN.finditer(text):
+        if begin.start() < cursor:
             continue
-        pieces.append(text[cursor:start])
+        index = bisect.bisect_left(end_starts, begin.end())
+        if index == len(ends):
+            break
+        pieces.append(text[cursor : begin.start()])
         pieces.append("[REDACTED]")
-        cursor = tail.end()
+        cursor = ends[index].end()
     pieces.append(text[cursor:])
     return "".join(pieces)
 
 
-def assert_no_hidden_reasoning(value: Any) -> None:
+def _redact_assignments(text: str) -> str:
+    pieces: list[str] = []
+    cursor = 0
+    for run in _IDENTIFIER_RUN.finditer(text):
+        if run.start() < cursor or _SECRET_KEY.search(run.group()) is None:
+            continue
+        tail = _ASSIGNMENT_TAIL.match(text, run.end())
+        if tail is None:
+            continue
+        end = tail.end()
+        value = tail.group("value")
+        if (
+            value is not None
+            and value.lower() in _AUTHORIZATION_SCHEMES
+            and "authorization" in run.group().lower()
+        ):
+            credential = _AUTHORIZATION_CREDENTIAL.match(text, end)
+            if credential is not None:
+                end = credential.end()
+        pieces.append(text[cursor : run.start()])
+        pieces.append("[REDACTED]")
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def redact_hidden_reasoning(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key).lower() in _HIDDEN_REASONING_KEYS:
+                redacted[f"{key}_redacted"] = "[REDACTED]"
+            else:
+                redacted[str(key)] = redact_hidden_reasoning(item)
+        return redacted
+    if isinstance(value, list | tuple):
+        return [redact_hidden_reasoning(item) for item in value]
+    if isinstance(value, set | frozenset):
+        return [redact_hidden_reasoning(item) for item in sorted(value, key=repr)]
+    return value
+
+
+def assert_no_hidden_reasoning(value: Any, path: str = "$") -> None:
     """Raise if ``value`` contains a key reserved for private model reasoning.
 
     Telemetry and the audit log are permanent, review-facing records; unlike
@@ -203,8 +271,14 @@ def assert_no_hidden_reasoning(value: Any) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if str(key).lower() in _HIDDEN_REASONING_KEYS:
-                raise ValueError("Durable records must not persist hidden model reasoning.")
-            assert_no_hidden_reasoning(item)
-    elif isinstance(value, list):
-        for item in value:
-            assert_no_hidden_reasoning(item)
+                raise ValueError(
+                    f'Durable records must not persist hidden model reasoning: key "{key}" at '
+                    f"{path}."
+                )
+            assert_no_hidden_reasoning(item, f"{path}.{key}")
+    elif isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            assert_no_hidden_reasoning(item, f"{path}[{index}]")
+    elif isinstance(value, set | frozenset):
+        for index, item in enumerate(sorted(value, key=repr)):
+            assert_no_hidden_reasoning(item, f"{path}[{index}]")

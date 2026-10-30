@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -15,11 +14,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, ValidationInfo, field_validator
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import exclusive_file_lock, replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
-from ..foundations.errors import assert_no_hidden_reasoning, redact_secrets
+from ..foundations.errors import AgentSdkError, assert_no_hidden_reasoning, redact_secrets
+from ..foundations.hashing import canonical_hash, canonical_json, sha256_hex
+from ..foundations.identifiers import file_safe_name
+from ..foundations.logging import get_logger
+from ..foundations.run_fence import RunFence
+from ..foundations.text import assert_well_formed_text
+from .telemetry_helpers import first_chain_break
+from .telemetry_models import ChainBreak
+
+_TAIL_CHUNK_BYTES = 65_536
+_logger = get_logger("audit")
 
 
 class AuditLogEntry(StrictModel):
@@ -34,11 +43,24 @@ class AuditLogEntry(StrictModel):
     previous_hash: str | None = None
     integrity_hash: str = ""
 
+    @field_validator("event_type", "run_id", "task_id")
+    @classmethod
+    def identifiers_are_well_formed(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return None if value is None else assert_well_formed_text(value, info.field_name)
+
     @field_validator("payload")
     @classmethod
     def safe_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
         assert_no_hidden_reasoning(payload)
         return payload
+
+
+class AuditFootprint(StrictModel):
+    run_id: str
+    entries: int = Field(ge=0)
+    bytes: int = Field(ge=0)
+    head_hash: str | None = None
+    last_at_utc: str | None = None
 
 
 class AuditTranscriptStore:
@@ -52,20 +74,45 @@ class AuditTranscriptStore:
     _append_locks_guard = threading.Lock()
 
     def __init__(
-        self, root: Path, *, max_payload_chars: int = 8_192, max_open_handles: int = 32
+        self,
+        root: Path,
+        *,
+        max_payload_chars: int = 8_192,
+        max_open_handles: int = 32,
+        read_only: bool = False,
     ) -> None:
         if max_payload_chars < 256:
             raise ValueError("max_payload_chars must be at least 256.")
         if max_open_handles < 1:
             raise ValueError("max_open_handles must be at least 1.")
         self._root = root.resolve() / ".agent-audit-logs"
-        self._root.mkdir(parents=True, exist_ok=True)
+        self._fence = RunFence(root)
+        self._read_only = read_only
+        if not read_only:
+            self._root.mkdir(parents=True, exist_ok=True)
         self._max_payload_chars = max_payload_chars
         self._max_open_handles = max_open_handles
         self._lock = threading.RLock()
         # A bounded LRU avoids repeated opens for active runs without allowing a
         # long-lived host to retain one descriptor for every historical run.
         self._handles: OrderedDict[str, IO[bytes]] = OrderedDict()
+        self._handle_evictions = 0
+        self._eviction_reported = False
+
+    @property
+    def handle_evictions(self) -> int:
+        return self._handle_evictions
+
+    @property
+    def fence(self) -> RunFence:
+        return self._fence
+
+    def _require_writable(self, operation: str) -> None:
+        if self._read_only:
+            raise RuntimeError(
+                f'Audit store at "{self._root}" was opened read-only; "{operation}" is '
+                "not available."
+            )
 
     def _handle_for(self, run_id: str) -> IO[bytes]:
         cached = self._handles.get(run_id)
@@ -75,9 +122,23 @@ class AuditTranscriptStore:
         if len(self._handles) >= self._max_open_handles:
             _evicted_run_id, evicted_handle = self._handles.popitem(last=False)
             evicted_handle.close()
+            self._count_eviction()
         handle = self._jsonl_path(run_id).open("a+b")
         self._handles[run_id] = handle
         return handle
+
+    def _count_eviction(self) -> None:
+        self._handle_evictions += 1
+        if self._eviction_reported or self._handle_evictions < self._max_open_handles:
+            return
+        self._eviction_reported = True
+        _logger.warning(
+            "Audit transcript store evicted %d append handles: more than max_open_handles=%d "
+            "runs append at once, so each append past that reopens its file. Raise "
+            "max_open_handles (the MCP service reads AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES).",
+            self._handle_evictions,
+            self._max_open_handles,
+        )
 
     def append(
         self,
@@ -88,31 +149,73 @@ class AuditTranscriptStore:
         task_id: str | None = None,
         iteration: int | None = None,
     ) -> AuditLogEntry:
+        self._require_writable("append")
+        self._fence.wait_until_open(run_id, "append an audit entry")
         with self._lock:
             with self._append_transaction(run_id):
+                self._fence.raise_if_fenced(run_id, "append an audit entry")
                 # Append-mode writes use the true end even after tail inspection.
                 handle = self._handle_for(run_id)
+                label = self._jsonl_path(run_id).name
                 handle.seek(0, os.SEEK_END)
-                end = handle.tell()
-                previous, sequence = _parse_tail(handle, end)
-                prepared = AuditLogEntry(
-                    sequence=sequence + 1,
-                    event_type=event_type,
-                    occurred_at_utc=datetime.now(UTC).isoformat(),
-                    run_id=run_id,
-                    task_id=task_id,
-                    iteration=iteration,
-                    payload=_bound_and_redact(payload, self._max_payload_chars),
-                    previous_hash=previous,
+                end, torn = _complete_end(handle, handle.tell())
+                tail = _read_tail_entry(handle, end, label)
+                _require_transcript_owner(tail, run_id, label)
+                if not torn and end:
+                    handle.seek(end - 1)
+                    if handle.read(1) != b"\n":
+                        handle.write(b"\n")
+                if torn:
+                    discarded = _discard_torn_tail(handle, end)
+                    tail = self._write_entry(
+                        handle,
+                        run_id,
+                        tail,
+                        "audit.tail-repaired",
+                        {
+                            "discarded_bytes": len(discarded),
+                            "discarded_sha256": sha256_hex(discarded),
+                            "reason": (
+                                "The transcript ended in an unterminated line that is not a "
+                                "valid entry, the mark of a write interrupted by a crash; "
+                                "nothing in it was acknowledged to a caller."
+                            ),
+                        },
+                        None,
+                        None,
+                    )
+                return self._write_entry(
+                    handle, run_id, tail, event_type, payload, task_id, iteration
                 )
-                complete = prepared.model_copy(
-                    update={"integrity_hash": _hash(prepared.model_dump(mode="json"))}
-                )
-                handle.write(complete.model_dump_json().encode("utf-8"))
-                handle.write(b"\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-                return complete
+
+    def _write_entry(
+        self,
+        handle: IO[bytes],
+        run_id: str,
+        tail: AuditLogEntry | None,
+        event_type: str,
+        payload: dict[str, Any],
+        task_id: str | None,
+        iteration: int | None,
+    ) -> AuditLogEntry:
+        prepared = AuditLogEntry(
+            sequence=(tail.sequence if tail is not None else 0) + 1,
+            event_type=event_type,
+            occurred_at_utc=datetime.now(UTC).isoformat(),
+            run_id=run_id,
+            task_id=task_id,
+            iteration=iteration,
+            payload=_bound_and_redact(payload, self._max_payload_chars),
+            previous_hash=tail.integrity_hash if tail is not None else None,
+        )
+        complete = prepared.model_copy(
+            update={"integrity_hash": canonical_hash(prepared.model_dump(mode="json"))}
+        )
+        handle.write(complete.model_dump_json().encode("utf-8"))
+        handle.write(b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        return complete
 
     def list_entries(
         self,
@@ -123,17 +226,58 @@ class AuditTranscriptStore:
     ) -> list[AuditLogEntry]:
         if limit < 1 or limit > 10_000:
             raise ValueError("Audit-log page size must be between 1 and 10000.")
+        entries: list[AuditLogEntry] = []
+        for entry in self.iter_entries(run_id, through_sequence=through_sequence):
+            entries.append(entry)
+            if len(entries) >= limit:
+                break
+        return entries
+
+    def quiesce(self, run_id: str) -> None:
+        """Wait for an append already inside its transaction to finish."""
+
+        self._require_writable("quiesce")
+        with self._lock:
+            with self._append_transaction(run_id):
+                return
+
+    def footprint(self, run_id: str) -> AuditFootprint:
         path = self._jsonl_path(run_id)
-        if not path.exists():
-            return []
-        entries = [
-            AuditLogEntry.model_validate_json(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line
-        ]
-        if through_sequence is not None:
-            entries = [entry for entry in entries if entry.sequence <= through_sequence]
-        return entries[:limit]
+        rendered = self._root / f"{file_safe_name(run_id)}.transcript.md"
+        size = sum(item.stat().st_size for item in (path, rendered) if item.is_file())
+        tail = None
+        with self._lock:
+            if path.is_file() and path.stat().st_size:
+                with path.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    end, _torn = _complete_end(handle, handle.tell())
+                    tail = _read_tail_entry(handle, end, path.name)
+                _require_transcript_owner(tail, run_id, path.name)
+        return AuditFootprint(
+            run_id=run_id,
+            entries=tail.sequence if tail is not None else 0,
+            bytes=size,
+            head_hash=tail.integrity_hash if tail is not None else None,
+            last_at_utc=tail.occurred_at_utc if tail is not None else None,
+        )
+
+    def prune_run(self, run_id: str, *, dry_run: bool = False) -> AuditFootprint:
+        if not dry_run:
+            self._require_writable("prune_run")
+        footprint = self.footprint(run_id)
+        if dry_run or footprint.bytes == 0:
+            return footprint
+        path = self._jsonl_path(run_id)
+        rendered = self._root / f"{file_safe_name(run_id)}.transcript.md"
+        with self._lock:
+            with self._append_transaction(run_id):
+                handle = self._handles.pop(run_id, None)
+                if handle is not None:
+                    handle.close()
+                for target in (path, rendered):
+                    target.unlink(missing_ok=True)
+        path.with_suffix(".lock").unlink(missing_ok=True)
+        return footprint
 
     def snapshot_sequence(self, run_id: str) -> int:
         """Return the local append sequence used as a verification boundary."""
@@ -151,10 +295,13 @@ class AuditTranscriptStore:
         path = self._jsonl_path(run_id)
         if not path.exists():
             return
-        with path.open(encoding="utf-8") as handle:
+        with path.open(encoding="utf-8", newline="\n") as handle:
             for line in handle:
                 if line.strip():
+                    if not line.endswith("\n") and _is_torn(line.encode("utf-8")):
+                        return
                     entry = AuditLogEntry.model_validate_json(line)
+                    _require_transcript_owner(entry, run_id, path.name)
                     if entry.sequence > boundary:
                         return
                     yield entry
@@ -165,33 +312,33 @@ class AuditTranscriptStore:
         return sum(1 for _ in self.iter_entries(run_id, through_sequence=through_sequence))
 
     def verify(self, run_id: str) -> bool:
+        return self.chain_break(run_id) is None
+
+    def chain_break(self, run_id: str) -> ChainBreak | None:
         boundary = self.snapshot_sequence(run_id)
-        return self._verify_entries(self.iter_entries(run_id, through_sequence=boundary))
+        return _entries_chain_break(self.iter_entries(run_id, through_sequence=boundary))
 
     @staticmethod
     def _verify_entries(entries: Iterator[AuditLogEntry]) -> bool:
-        previous: str | None = None
-        for entry in entries:
-            expected = _hash(
-                entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
-            )
-            if entry.previous_hash != previous or entry.integrity_hash != expected:
-                return False
-            previous = entry.integrity_hash
-        return True
+        return _entries_chain_break(entries) is None
 
     def render_markdown(self, run_id: str) -> Path:
+        self._require_writable("render_markdown")
         boundary = self.snapshot_sequence(run_id)
         entries = self.list_entries(run_id, through_sequence=boundary)
-        entry_count = self.entry_count(run_id, through_sequence=boundary)
-        integrity_valid = self._verify_entries(self.iter_entries(run_id, through_sequence=boundary))
-        path = self._root / f"{_safe_name(run_id)}.transcript.md"
+        failure = _entries_chain_break(self.iter_entries(run_id, through_sequence=boundary))
+        verified_count = _verified_entry_count(
+            self.iter_entries(run_id, through_sequence=boundary), failure
+        )
+        integrity_valid = failure is None
+        path = self._root / f"{file_safe_name(run_id)}.transcript.md"
         lines = [
             f"# Agent audit transcript: `{run_id}`",
             "",
             f"Integrity chain valid: `{integrity_valid}`",
-            f"Verified transcript entries: `{entry_count}`",
-            f"Verified through sequence: `{boundary}`",
+            *([] if failure is None else [f"First integrity failure: {failure.message}"]),
+            f"Verified transcript entries: `{verified_count}`",
+            f"Verified through sequence: `{boundary if failure is None else failure.sequence - 1}`",
             f"Rendered entries: `{len(entries)}`",
             "",
         ]
@@ -218,11 +365,14 @@ class AuditTranscriptStore:
             return None, 0
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
-            end = handle.tell()
-            return _parse_tail(handle, end)
+            end, _torn = _complete_end(handle, handle.tell())
+            tail = _read_tail_entry(handle, end, path.name)
+        if tail is None:
+            return None, 0
+        return tail.integrity_hash, tail.sequence
 
     def _jsonl_path(self, run_id: str) -> Path:
-        return self._root / f"{_safe_name(run_id)}.jsonl"
+        return self._root / f"{file_safe_name(run_id)}.jsonl"
 
     def close(self) -> None:
         """Close cached append handles; repeated calls are safe.
@@ -246,7 +396,10 @@ class AuditTranscriptStore:
         """
 
         path = self._jsonl_path(run_id).resolve()
-        with self._local_append_lock(path), _interprocess_lock(path.with_suffix(".lock")):
+        with (
+            self._local_append_lock(path),
+            exclusive_file_lock(path.with_suffix(".lock"), timeout_code="AUDIT_LOCK_TIMEOUT"),
+        ):
             yield
 
     @classmethod
@@ -260,79 +413,138 @@ class AuditTranscriptStore:
 
 def _bound_and_redact(value: Any, max_chars: int) -> dict[str, Any]:
     redacted = redact_secrets(value)
-    encoded = _canonical_json(redacted)
+    encoded = canonical_json(redacted)
     if len(encoded) <= max_chars:
         if isinstance(redacted, dict):
             return redacted
         return {"value": redacted}
     return {
         "truncated": True,
-        "content_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "content_hash": sha256_hex(encoded),
         "original_chars": len(encoded),
         "preview": encoded[:max_chars],
     }
 
 
-def _parse_tail(handle: Any, end: int) -> tuple[str | None, int]:
-    """Read the last line from an already-open handle positioned at ``end``."""
+def _last_line(handle: IO[bytes], end: int) -> bytes:
+    chunks: list[bytes] = []
+    position = end
+    seen_content = False
+    while position > 0:
+        size = min(_TAIL_CHUNK_BYTES, position)
+        position -= size
+        handle.seek(position)
+        chunk = handle.read(size)
+        if not seen_content:
+            chunk = chunk.rstrip()
+            if not chunk:
+                continue
+            seen_content = True
+        boundary = chunk.rfind(b"\n")
+        if boundary != -1:
+            chunks.append(chunk[boundary + 1 :])
+            break
+        chunks.append(chunk)
+    return b"".join(reversed(chunks))
+
+
+def _is_torn(line: bytes) -> bool:
+    try:
+        AuditLogEntry.model_validate_json(line)
+    except ValidationError:
+        return True
+    return False
+
+
+def _complete_end(handle: IO[bytes], end: int) -> tuple[int, int]:
+    """Where the last complete line ends, and how many bytes of an interrupted write follow it.
+
+    A final line with no newline that is not a valid entry is the half of a write that a crash
+    cut off. It was never acknowledged, so readers ignore it and the next append discards it.
+    """
 
     if end == 0:
-        return None, 0
-    seek = max(0, end - 65_536)
-    handle.seek(seek)
-    lines = handle.read().decode("utf-8", errors="replace").splitlines()
-    if not lines:
-        return None, 0
-    tail = AuditLogEntry.model_validate_json(lines[-1])
-    return tail.integrity_hash, tail.sequence
+        return 0, 0
+    handle.seek(end - 1)
+    if handle.read(1) == b"\n":
+        return end, 0
+    position = end
+    last_break = -1
+    while position > 0 and last_break == -1:
+        size = min(_TAIL_CHUNK_BYTES, position)
+        position -= size
+        handle.seek(position)
+        chunk = handle.read(size)
+        found = chunk.rfind(b"\n")
+        if found != -1:
+            last_break = position + found
+    start = last_break + 1
+    handle.seek(start)
+    unterminated = handle.read(end - start)
+    return (start, end - start) if _is_torn(unterminated) else (end, 0)
 
 
-@contextmanager
-def _interprocess_lock(path: Path) -> Iterator[None]:
-    """Serialize one audit append across processes without widening tool authority."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        if os.name == "nt":
-            import msvcrt
-
-            handle.seek(0)
-            if not handle.read(1):
-                handle.seek(0)
-                handle.write(b"0")
-                handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            try:
-                yield
-            finally:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+def _discard_torn_tail(handle: IO[bytes], keep: int) -> bytes:
+    handle.seek(keep)
+    discarded = handle.read()
+    handle.truncate(keep)
+    handle.flush()
+    os.fsync(handle.fileno())
+    handle.seek(0, os.SEEK_END)
+    return discarded
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+def _read_tail_entry(handle: IO[bytes], end: int, label: str) -> AuditLogEntry | None:
+    line = _last_line(handle, end)
+    if not line:
+        return None
+    try:
+        return AuditLogEntry.model_validate_json(line)
+    except ValidationError as error:
+        first = error.errors()[0]
+        raise AgentSdkError(
+            "AUDIT_TRANSCRIPT_CORRUPT",
+            f'The last line of audit transcript "{label}" is not a valid audit entry '
+            f"({first['type']}: {first['msg']}), so nothing can be appended after it until the "
+            "transcript is repaired or archived.",
+            {"transcript": label, "line_bytes": len(line)},
+        ) from error
 
 
-def _hash(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+def _require_transcript_owner(entry: AuditLogEntry | None, run_id: str, label: str) -> None:
+    if entry is not None and entry.run_id != run_id:
+        raise AgentSdkError(
+            "AUDIT_TRANSCRIPT_RUN_MISMATCH",
+            f'Audit transcript "{label}" holds entries of run "{entry.run_id}", so run '
+            f'"{run_id}" cannot share it: the two ids map to the same file on this file system.',
+            {"transcript": label, "stored_run_id": entry.run_id, "requested_run_id": run_id},
+        )
 
 
-def _safe_name(value: str) -> str:
-    return "".join(
-        character if character.isalnum() or character in "-_." else "_" for character in value
+def _verified_entry_count(entries: Iterator[AuditLogEntry], failure: ChainBreak | None) -> int:
+    count = 0
+    try:
+        for entry in entries:
+            if failure is not None and entry.sequence >= failure.sequence:
+                break
+            count += 1
+    except ValueError:
+        pass
+    return count
+
+
+def _entries_chain_break(entries: Iterator[AuditLogEntry]) -> ChainBreak | None:
+    return first_chain_break(
+        entries,
+        noun="audit entry",
+        previous_attribute="previous_hash",
+        expected_hash=lambda entry: canonical_hash(
+            entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
+        ),
     )
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
+    temporary = unique_temporary_path(path)
     temporary.write_text(content, encoding="utf-8")
     replace_atomic(temporary, path)

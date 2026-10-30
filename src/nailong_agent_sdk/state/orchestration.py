@@ -6,10 +6,26 @@ from __future__ import annotations
 
 import hashlib
 import os
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
-from ..foundations.atomic_io import replace_atomic
+from ..foundations.atomic_io import (
+    Fingerprint,
+    file_fingerprint,
+    read_text_retrying,
+    replace_atomic,
+    unique_temporary_path,
+)
+from ..foundations.errors import AgentSdkError
+from ..foundations.identifiers import (
+    is_valid_identifier,
+    reserve_sequential_identifier,
+    validate_identifier,
+)
+from ..foundations.record_locks import RecordLocks
+from ..observability.telemetry_models import DecisionSource
+from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .orchestration_models import (
     ComplexityRouter,
     ComplexityRoutingRules,
@@ -37,6 +53,8 @@ class ControllerStateMachine:
         *,
         project_state_id: str,
         max_repair_attempts: int,
+        elastic_depth_ceiling: int = MAX_ELASTIC_DEPTH_LIMIT,
+        elastic_nodes_ceiling: int = MAX_ELASTIC_NODES_LIMIT,
     ) -> None:
         if profile.source_snapshot_id != snapshot.snapshot_id or not profile.source_read_only:
             raise ValueError("Controller profile must bind the immutable source snapshot.")
@@ -49,6 +67,8 @@ class ControllerStateMachine:
             profile=profile,
             snapshot=snapshot,
             max_repair_attempts=max_repair_attempts,
+            elastic_depth_ceiling=elastic_depth_ceiling,
+            elastic_nodes_ceiling=elastic_nodes_ceiling,
         )
         self._emit("controller-started", {"gap_metadata": gap_metadata.model_dump(mode="json")})
 
@@ -61,6 +81,16 @@ class ControllerStateMachine:
 
     def submit_plan(self, plan: Plan) -> ControllerRecord:
         self._require(ControllerPhase.PLANNING, ControllerPhase.REPAIR_REQUIRED)
+        for name, ceiling in (
+            ("max_elastic_depth", self.record.elastic_depth_ceiling),
+            ("max_elastic_nodes", self.record.elastic_nodes_ceiling),
+        ):
+            declared = getattr(plan, name)
+            if declared > ceiling:
+                raise ValueError(
+                    f'Plan "{plan.plan_id}" declares {name} {declared}, above the ceiling '
+                    f'{name} {ceiling} of controller "{self.record.controller_id}".'
+                )
         validation = self._validator.validate(plan)
         self.record = self.record.model_copy(
             update={
@@ -100,13 +130,26 @@ class ControllerStateMachine:
             return self.record
         raise ValueError("Architecture selection may not lower a deterministic route.")
 
-    def approve_plan(self, approved: bool, reason: str | None = None) -> ControllerRecord:
+    def approve_plan(
+        self,
+        approved: bool,
+        reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
+    ) -> ControllerRecord:
         self._require(ControllerPhase.AWAITING_PLAN_APPROVAL)
         if self.record.plan_validation is None or not self.record.plan_validation.valid:
             raise ValueError("Only a deterministically valid plan can be approved for dispatch.")
         phase = ControllerPhase.DISPATCH_READY if approved else ControllerPhase.PLANNING
         self.record = self.record.model_copy(update={"plan_approved": approved, "phase": phase})
-        self._emit("plan-approval-recorded", {"approved": approved, "reason": reason})
+        self._emit(
+            "plan-approval-recorded",
+            {
+                "approved": approved,
+                "reason": reason,
+                **(source.fields() if source is not None else {}),
+            },
+        )
         return self.record
 
     def begin_dispatch(self) -> ControllerRecord:
@@ -146,9 +189,15 @@ class ControllerStateMachine:
         self._emit("controller-completed", {})
         return self.record
 
-    def cancel(self, reason: str) -> ControllerRecord:
+    def require_cancellable(self) -> None:
         if self.record.phase in {ControllerPhase.COMPLETED, ControllerPhase.CANCELLED}:
-            raise ValueError("Terminal controller runs cannot be cancelled again.")
+            raise ValueError(
+                f'Controller "{self.record.controller_id}" is already {self.record.phase.value}, '
+                "a terminal phase, so it cannot be cancelled."
+            )
+
+    def cancel(self, reason: str) -> ControllerRecord:
+        self.require_cancellable()
         self.record = self.record.model_copy(update={"phase": ControllerPhase.CANCELLED})
         self._emit("controller-cancelled", {"reason": reason})
         return self.record
@@ -188,9 +237,44 @@ class ControllerStateStore:
     def __init__(self, root: Path) -> None:
         self._root = root.resolve() / ".agent-controllers"
         self._root.mkdir(parents=True, exist_ok=True)
+        self._claims = self._root / ".claims"
+        self._locks = RecordLocks(self._root / ".locks", timeout_code="CONTROLLER_LOCK_TIMEOUT")
+        self._seen: dict[str, Fingerprint] = {}
         self._persisted_event_counts: dict[str, int] = {}
 
+    def reserve_controller_id(self, *, start: int = 1) -> tuple[str, int]:
+        return reserve_sequential_identifier(self._claims, "controller", self.exists, start=start)
+
+    def locked(self, controller_id: str) -> AbstractContextManager[None]:
+        return self._locks.hold(validate_identifier(controller_id, "Controller id"))
+
     def save(self, record: ControllerRecord) -> None:
+        with self.locked(record.controller_id):
+            self._require_unchanged(record.controller_id)
+            self._save_locked(record)
+            fingerprint = self.fingerprint(record.controller_id)
+            if fingerprint is not None:
+                self._seen[record.controller_id] = fingerprint
+
+    def changed_since_read(self, controller_id: str) -> bool:
+        return self._seen.get(controller_id) != self.fingerprint(controller_id)
+
+    def fingerprint(self, controller_id: str) -> Fingerprint | None:
+        return file_fingerprint(self._record_path(controller_id))
+
+    def _require_unchanged(self, controller_id: str) -> None:
+        seen = self._seen.get(controller_id)
+        if seen is None or self.fingerprint(controller_id) == seen:
+            return
+        raise AgentSdkError(
+            "CONTROLLER_STATE_CONFLICT",
+            f'Controller "{controller_id}" was changed on disk by another writer after this '
+            "store last read or wrote it, so saving now would overwrite that change. Reload "
+            "the controller with ControllerRuntime.get_controller before changing it.",
+            {"controller_id": controller_id},
+        )
+
+    def _save_locked(self, record: ControllerRecord) -> None:
         persisted = self._persisted_event_counts.get(record.controller_id)
         if persisted is None:
             persisted = self._committed_event_count(record.controller_id)
@@ -205,8 +289,8 @@ class ControllerStateStore:
         event_count, event_hash = _event_boundary(event_path)
         if event_count != len(record.events):
             raise ValueError("Controller event boundary does not match the record event count.")
-        target = self._root / f"{record.controller_id}.json"
-        temporary = target.with_name(f".{target.name}.tmp")
+        target = self._record_path(record.controller_id)
+        temporary = unique_temporary_path(target)
         snapshot = record.model_copy(
             update={
                 "events": [],
@@ -218,11 +302,16 @@ class ControllerStateStore:
         _replace_with_retry(temporary, target)
         self._persisted_event_counts[record.controller_id] = len(record.events)
 
+    def exists(self, controller_id: str) -> bool:
+        return is_valid_identifier(controller_id) and self._record_path(controller_id).is_file()
+
     def load(self, controller_id: str) -> ControllerRecord:
-        target = self._root / f"{controller_id}.json"
-        if not target.is_file():
+        target = self._record_path(controller_id)
+        fingerprint = file_fingerprint(target)
+        if fingerprint is None:
             raise ValueError(f'Controller "{controller_id}" is unknown.')
-        snapshot = ControllerRecord.model_validate_json(target.read_text(encoding="utf-8"))
+        snapshot = ControllerRecord.model_validate_json(read_text_retrying(target))
+        self._seen[controller_id] = fingerprint
         if snapshot.events_integrity_hash is None:
             self._persisted_event_counts[controller_id] = 0
             return snapshot
@@ -241,8 +330,12 @@ class ControllerStateStore:
         self._persisted_event_counts[controller_id] = len(events)
         return record
 
+    def _record_path(self, controller_id: str) -> Path:
+        return self._root / f"{validate_identifier(controller_id, 'Controller id')}.json"
+
     def _events_path(self, controller_id: str) -> Path:
-        return self._root / f"{controller_id}.events.jsonl"
+        validated = validate_identifier(controller_id, "Controller id")
+        return self._root / f"{validated}.events.jsonl"
 
     def _append_events(self, controller_id: str, events: list[ControllerEvent]) -> None:
         path = self._events_path(controller_id)
@@ -255,7 +348,7 @@ class ControllerStateStore:
 
     def _write_events(self, controller_id: str, events: list[ControllerEvent]) -> None:
         path = self._events_path(controller_id)
-        temporary = path.with_name(f".{path.name}.tmp")
+        temporary = unique_temporary_path(path)
         with temporary.open("w", encoding="utf-8") as handle:
             for event in events:
                 handle.write(event.model_dump_json())
@@ -281,10 +374,10 @@ class ControllerStateStore:
         return events, _event_hash(events)
 
     def _committed_event_count(self, controller_id: str) -> int:
-        target = self._root / f"{controller_id}.json"
+        target = self._record_path(controller_id)
         if not target.is_file():
             return 0
-        snapshot = ControllerRecord.model_validate_json(target.read_text(encoding="utf-8"))
+        snapshot = ControllerRecord.model_validate_json(read_text_retrying(target))
         if snapshot.events_integrity_hash is None:
             return 0
         events, event_hash = self._read_events(

@@ -1,11 +1,14 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Serializable BaseAgent contract and task/result types.
-
-The project framework specifies a common BaseAgent contract with identity,
-instructions, typed input/output, narrow tools, model binding, memory,
-termination, and an optional deterministic verification gate (systems-design
-framework, updated PDF, p. 50–51).
+"""
+Serializable BaseAgent contract models and validation.
+This module defines the structured types that describe how agents run:
+- Agent definitions (identity, instructions, schemas, tools, model binding).
+- Task payloads, tool calls, turns, results, and lifecycle events.
+- Enums for memory scope, escalation, concurrency, run status, episode kind.
+- Validation helpers for JSON Schema, ensuring inputs/outputs match contracts.
+- Failure types with safe redaction so secrets and hidden reasoning never leak.
+Together these models form the durable contract between agent runtime and storage.
 """
 
 from __future__ import annotations
@@ -13,14 +16,20 @@ from __future__ import annotations
 import functools
 import json
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Never
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
+from jsonschema_specifications import REGISTRY as _SCHEMA_SPECIFICATIONS
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from referencing import Registry
+from referencing.exceptions import NoSuchResource, Unresolvable
 
+from .dependency_graph import deterministic_cycles
 from .errors import AgentSdkError, sanitize_failure_details
+from .identifiers import require_unique
+from .json_limits import assert_json_depth
 
 
 class StrictModel(BaseModel):
@@ -30,6 +39,8 @@ class StrictModel(BaseModel):
 
 
 class MemoryScope(StrEnum):
+    # Task-scoped is a temporary memory for just one task
+    # Cross-session is a persistent memory shared across tasks and sessions
     NONE = "none"
     TASK_SCOPED = "task-scoped"
     CROSS_SESSION = "cross-session"
@@ -81,7 +92,8 @@ class ModelBinding(FallbackModelBinding):
             key = (fallback.provider, fallback.model)
             if key in seen:
                 raise ValueError(
-                    "model fallback bindings must be distinct and exclude the primary model"
+                    f'model fallback binding "{fallback.provider}/{fallback.model}" '
+                    "must be distinct from the primary model and from every other fallback"
                 )
             seen.add(key)
         return self
@@ -110,6 +122,15 @@ class ToolDefinition(StrictModel):
 class AgentDefinition(StrictModel):
     """The data-only BaseAgent definition; runtime dependencies are injected separately."""
 
+    # identity: unique agent name, must be one line
+    # instructions: versioned text
+    # input_schema/output_schema: JSON Schema for inputs/outputs
+    # tools: list of tool definitions
+    # model_binding: primary model + fallbacks
+    # memory_scope/rationale: how memory is used
+    # termination_policy: max iterations, escalation target
+    # verification_gate_id: optional deterministic check
+
     identity: str = Field(min_length=1)
     instructions: VersionedInstructions
     input_schema: dict[str, Any]
@@ -137,8 +158,7 @@ class AgentDefinition(StrictModel):
     @model_validator(mode="after")
     def validate_definition_invariants(self) -> AgentDefinition:
         tool_names = [tool.name for tool in self.tools]
-        if len(tool_names) != len(set(tool_names)):
-            raise ValueError("tool names must be unique")
+        require_unique(tool_names, "tool names")
         if self.memory_scope is MemoryScope.CROSS_SESSION and not self.memory_rationale:
             raise ValueError("cross-session memory requires memory_rationale")
         return self
@@ -181,12 +201,16 @@ class ToolCall(StrictModel):
     consumed_episode_ids: list[str] = Field(default_factory=list)
     depends_on_call_ids: list[str] = Field(default_factory=list)
 
+    @field_validator("arguments")
+    @classmethod
+    def arguments_are_bounded(cls, arguments: dict[str, Any]) -> dict[str, Any]:
+        return assert_json_depth(arguments, "tool call arguments")
+
     @model_validator(mode="after")
     def dependencies_are_unique_and_external(self) -> ToolCall:
-        if len(self.depends_on_call_ids) != len(set(self.depends_on_call_ids)):
-            raise ValueError("tool-call dependencies must be unique")
+        require_unique(self.depends_on_call_ids, "tool-call dependencies")
         if self.id in self.depends_on_call_ids:
-            raise ValueError("tool call cannot depend on itself")
+            raise ValueError(f'tool call "{self.id}" cannot depend on itself')
         return self
 
 
@@ -213,10 +237,25 @@ class ToolExecutionResult(StrictModel):
     error: str | None = None
     failure: AgentFailure | None = None
 
+    @field_validator("output")
+    @classmethod
+    def output_is_bounded(cls, output: Any) -> Any:
+        return assert_json_depth(output, "tool result output")
+
 
 class ToolCallTurn(StrictModel):
     type: Literal["tool-call"] = "tool-call"
     call: ToolCall
+
+    @field_validator("call")
+    @classmethod
+    def call_declares_no_batch_dependencies(cls, call: ToolCall) -> ToolCall:
+        if call.depends_on_call_ids:
+            raise ValueError(
+                f'tool call "{call.id}" lists depends_on_call_ids {call.depends_on_call_ids} '
+                "but a tool-call turn holds one call; use a tool-batch turn to declare dependencies"
+            )
+        return call
 
 
 class ToolBatchTurn(StrictModel):
@@ -228,8 +267,7 @@ class ToolBatchTurn(StrictModel):
     @model_validator(mode="after")
     def batch_dependencies_are_declared_and_acyclic(self) -> ToolBatchTurn:
         call_ids = [call.id for call in self.calls]
-        if len(call_ids) != len(set(call_ids)):
-            raise ValueError("tool batch call IDs must be unique")
+        require_unique(call_ids, "tool batch call IDs")
         known = set(call_ids)
         for call in self.calls:
             unknown = set(call.depends_on_call_ids) - known
@@ -237,29 +275,22 @@ class ToolBatchTurn(StrictModel):
                 raise ValueError(
                     f'tool call "{call.id}" depends on unknown batch call IDs: {sorted(unknown)}'
                 )
-        visiting: set[str] = set()
-        visited: set[str] = set()
-        by_id = {call.id: call for call in self.calls}
-
-        def visit(call_id: str) -> None:
-            if call_id in visited:
-                return
-            if call_id in visiting:
-                raise ValueError("tool batch dependencies must be acyclic")
-            visiting.add(call_id)
-            for dependency_id in by_id[call_id].depends_on_call_ids:
-                visit(dependency_id)
-            visiting.remove(call_id)
-            visited.add(call_id)
-
-        for call_id in call_ids:
-            visit(call_id)
+        edges = [
+            (call.id, dependency) for call in self.calls for dependency in call.depends_on_call_ids
+        ]
+        if deterministic_cycles(call_ids, edges):
+            raise ValueError("tool batch dependencies must be acyclic")
         return self
 
 
 class FinalTurn(StrictModel):
     type: Literal["final"] = "final"
     output: Any
+
+    @field_validator("output")
+    @classmethod
+    def output_is_bounded(cls, output: Any) -> Any:
+        return assert_json_depth(output, "final output")
 
 
 class BlockedTurn(StrictModel):
@@ -274,9 +305,9 @@ AgentTurn = Annotated[
 
 
 class RuntimeOptions(StrictModel):
-    """Options intentionally limited to deterministic execution until a model is selected."""
+    """Per-run limits and budgets; scripted turns drive a run that has no model endpoint."""
 
-    mode: Literal["deterministic"] = "deterministic"
+    mode: Literal["deterministic"] | None = None
     scripted_turns: list[AgentTurn] = Field(default_factory=list)
     run_deadline_seconds: float | None = Field(default=None, gt=0, le=86_400)
     model_turn_timeout_seconds: float | None = Field(default=None, gt=0, le=86_400)
@@ -303,6 +334,22 @@ class EpisodeSummary(StrictModel):
     summary: str
     created_at: str
     dependency_ids: list[str] = Field(default_factory=list)
+
+
+class CompactedEpisodeStub(StrictModel):
+    """Minimal summary of a compacted episode.
+    Keeps a one-line residue (ID, kind, summary, optional tool info and status) so
+    the model can still see the episode's existence without storing the full transcript.
+    """
+
+    episode_id: str = Field(min_length=1)
+    kind: EpisodeKind
+    summary: str
+    tool_name: str | None = None
+    status: Literal["succeeded", "failed", "blocked"] | None = None
+    iteration: int | None = Field(default=None, ge=1)
+    handle_id: str | None = None
+    restore_tokens: int | None = Field(default=None, ge=0)
 
 
 class ModelObservation(StrictModel):
@@ -339,6 +386,9 @@ class ContextProjectionMetadata(StrictModel):
     episode_token_budget: int = Field(ge=0)
     compacted_episode_ids: list[str] = Field(default_factory=list)
     omitted_observation_count: int = Field(default=0, ge=0)
+    omitted_compacted_count: int = Field(default=0, ge=0)
+    semantic_summary_ids: list[str] = Field(default_factory=list)
+    omitted_summary_count: int = Field(default=0, ge=0)
 
 
 class AgentLifecycleEvent(StrictModel):
@@ -349,12 +399,17 @@ class AgentLifecycleEvent(StrictModel):
         "state-updated",
         "context-projected",
         "context-compacted",
+        "semantic-compaction",
+        "episodes-rehydrated",
         "turn-started",
         "tool-batch-requested",
         "tool-batch-completed",
         "tool-requested",
         "tool-completed",
         "provider-tool-results-forwarded",
+        "model-turn-retrying",
+        "model-turn-cancelled",
+        "stream-listener-failed",
         "output-rejected",
         "verification-completed",
         "terminated",
@@ -382,6 +437,8 @@ class AgentResult(StrictModel):
     context: AgentPrompt | None = None
     project_state: dict[str, Any] | None = None
     episodes: list[EpisodeSummary] = Field(default_factory=list)
+    episodes_total: int | None = Field(default=None, ge=0)
+    episodes_omitted: int = Field(default=0, ge=0)
     projection_history: list[ContextProjectionMetadata] = Field(default_factory=list)
     events: list[AgentLifecycleEvent] = Field(default_factory=list)
     profile: dict[str, Any] | None = None
@@ -419,16 +476,36 @@ def _check_schema_cached(canonical_schema: str) -> None:
     Draft202012Validator.check_schema(json.loads(canonical_schema))
 
 
+def _refuse_retrieval(uri: str) -> Never:
+    raise NoSuchResource(ref=uri)
+
+
+_LOCAL_REFERENCES_ONLY = _SCHEMA_SPECIFICATIONS.combine(Registry(retrieve=_refuse_retrieval))
+
+
+def _new_validator(schema: dict[str, Any]) -> Draft202012Validator:
+    return Draft202012Validator(schema, registry=_LOCAL_REFERENCES_ONLY)
+
+
 @functools.lru_cache(maxsize=512)
 def _validator_for(canonical_schema: str) -> Draft202012Validator:
-    return Draft202012Validator(json.loads(canonical_schema))
+    return _new_validator(json.loads(canonical_schema))
 
 
 def _validate_instance(schema: dict[str, Any], instance: Any, label: str) -> None:
     canonical = _canonical_json_schema(schema)
-    validator = Draft202012Validator(schema) if canonical is None else _validator_for(canonical)
+    validator = _new_validator(schema) if canonical is None else _validator_for(canonical)
     try:
         validator.validate(instance)
+    except Unresolvable as error:
+        raise AgentSdkError(
+            "SCHEMA_REFERENCE_UNRESOLVABLE",
+            f'{label} could not be checked: its schema references "{error.ref}", which is not '
+            "inside the schema itself. Only references inside the schema itself (for example "
+            '"#/$defs/name" or its own $id) and the JSON Schema metaschemas are supported, and '
+            "no document is ever fetched from a URL or file.",
+            {"reference": error.ref},
+        ) from error
     except JsonSchemaValidationError as error:
         location = error.json_path if error.path else f"{error.json_path} (root)"
         raise AgentSdkError(

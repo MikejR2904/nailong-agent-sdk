@@ -6,22 +6,25 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from dataclasses import dataclass, replace
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter
 
 from ..foundations.contracts import (
     AgentPrompt,
     AgentTurn,
+    CompactedEpisodeStub,
     ContextProjectionMetadata,
     EpisodeSummary,
+    FallbackModelBinding,
     ModelBinding,
     ModelObservation,
     ScopedAgentTask,
 )
 from ..foundations.errors import AgentSdkError, TransientProviderError
 from ..foundations.logging import get_logger
+from ..memory.episode_models import SemanticSummaryView
 from ..state.project_state_models import ProjectStateView
 
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
@@ -50,6 +53,27 @@ class ProviderUsage:
             value = getattr(self, name)
             if value is not None and value < 0:
                 raise ValueError(f"{name} must be non-negative when reported.")
+
+
+@dataclass(frozen=True)
+class RequestDiagnostics:
+    """SDK estimates about one outbound request; never provider-reported.
+
+    ``estimated_shared_prefix_tokens`` is the length of the common prefix with the previous request
+    of the same task, an upper bound on what a provider prefix cache could reuse.
+    """
+
+    estimated_request_tokens: int
+    estimated_stable_prefix_tokens: int
+    estimated_shared_prefix_tokens: int
+    previous_request_tokens: int | None
+
+
+@runtime_checkable
+class RequestDiagnosticsSource(Protocol):
+    """Optional adapter capability: report the estimates for the latest request of a task."""
+
+    def request_diagnostics(self, task_id: str) -> RequestDiagnostics | None: ...
 
 
 @dataclass(frozen=True)
@@ -120,6 +144,9 @@ class ModelContext:
     # request, so a host cannot silently use a client for a different model.
     model_binding: ModelBinding | None = None
     output_schema: dict[str, Any] | None = None
+    compacted_episodes: Sequence[CompactedEpisodeStub] = ()
+    trace_parent: str | None = None
+    semantic_summaries: Sequence[SemanticSummaryView] = ()
 
 
 @dataclass(frozen=True)
@@ -147,6 +174,53 @@ class ProviderToolResultConsumer(Protocol):
         continuation: ProviderContinuation,
         results: Sequence[ProviderToolResult],
     ) -> ProviderContinuation: ...
+
+
+TransportCancellation = Literal["connection-closed", "detached", "not-started", "unreported"]
+ProviderCancellation = Literal["confirmed", "requested", "unsupported", "unreported"]
+
+
+@dataclass(frozen=True)
+class ModelCancellationOutcome:
+    """What cancelling an in-flight model request actually did.
+
+    The task is always logically cancelled: its result is discarded and nothing a late response
+    carries can commit. ``transport`` says whether the request itself was aborted
+    (``connection-closed``), kept running on a detached thread until it finishes or times out
+    (``detached``) or never left (``not-started``). ``provider`` says whether the provider
+    acknowledged stopping the work: only a host-supplied provider cancellation can report
+    ``confirmed``; closing a connection is never treated as confirmation, and a provider may
+    keep generating, and billing for, a request nobody is waiting for.
+    """
+
+    transport: TransportCancellation
+    provider: ProviderCancellation
+    request_id: str | None = None
+    detail: str = ""
+
+    def details(self) -> dict[str, Any]:
+        return {
+            "logical": "cancelled",
+            "transport": self.transport,
+            "provider": self.provider,
+            "request_id": self.request_id,
+            "late_response": "discarded",
+            "detail": self.detail,
+        }
+
+
+UNREPORTED_CANCELLATION = ModelCancellationOutcome(
+    transport="unreported",
+    provider="unreported",
+    detail="the model adapter does not report how a cancelled request ended",
+)
+
+
+@runtime_checkable
+class CancellationReportingModel(Protocol):
+    """Optional adapter capability: say how the last cancelled request of a task ended."""
+
+    def cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome | None: ...
 
 
 class AgentModel(Protocol):
@@ -190,6 +264,9 @@ class ScriptedModel:
         return self._turns[index]
 
 
+_MAX_RETAINED_ATTEMPTS = 1_000
+
+
 @dataclass(frozen=True)
 class ModelFailoverAttempt:
     index: int
@@ -219,12 +296,16 @@ class FailoverAgentModel:
     streaming attempt; an adapter in the list that does not itself support
     streaming is called through its plain ``next_turn`` for its turn in the
     rotation rather than treated as an error.
+
+    ``bindings`` (one per adapter, primary first) gives each adapter its own model binding in
+    the context it receives, so adapters that validate the binding accept a fallback.
     """
 
     def __init__(
         self,
         models: Sequence[AgentModel],
         *,
+        bindings: Sequence[FallbackModelBinding] | None = None,
         max_retries_per_model: int = 2,
         base_backoff_seconds: float = 1.0,
         max_backoff_seconds: float = 20.0,
@@ -236,7 +317,13 @@ class FailoverAgentModel:
             raise ValueError("max_retries_per_model may not be negative.")
         if base_backoff_seconds < 0 or max_backoff_seconds < 0:
             raise ValueError("Backoff durations may not be negative.")
+        if bindings is not None and len(bindings) != len(models):
+            raise ValueError(
+                f"FailoverAgentModel received {len(bindings)} binding(s) for {len(models)} "
+                "adapter(s); pass exactly one binding per adapter, primary first."
+            )
         self._models = tuple(models)
+        self._bindings = tuple(bindings) if bindings is not None else None
         self._max_retries_per_model = max_retries_per_model
         self._base_backoff_seconds = base_backoff_seconds
         self._max_backoff_seconds = max_backoff_seconds
@@ -244,30 +331,54 @@ class FailoverAgentModel:
         self.attempts: list[ModelFailoverAttempt] = []
 
     async def next_turn(self, context: ModelContext) -> AgentTurn | ModelTurnResponse:
-        return await self._call_with_failover(lambda model: model.next_turn(context))
+        return await self._call_with_failover(
+            lambda model, index: model.next_turn(self._context_for(context, index))
+        )
 
     async def stream_turn(
         self, context: ModelContext, on_delta: ModelStreamListener
     ) -> AgentTurn | ModelTurnResponse:
-        async def call_one(model: AgentModel) -> AgentTurn | ModelTurnResponse:
+        async def call_one(model: AgentModel, index: int) -> AgentTurn | ModelTurnResponse:
+            attempt_context = self._context_for(context, index)
             if isinstance(model, StreamingAgentModel):
-                return await model.stream_turn(context, on_delta)
-            return await model.next_turn(context)
+                return await model.stream_turn(attempt_context, on_delta)
+            return await model.next_turn(attempt_context)
 
         return await self._call_with_failover(call_one)
 
+    def cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome | None:
+        for model in self._models:
+            if isinstance(model, CancellationReportingModel):
+                outcome = model.cancellation_outcome(task_id)
+                if outcome is not None:
+                    return outcome
+        return None
+
+    def _context_for(self, context: ModelContext, index: int) -> ModelContext:
+        if self._bindings is None or index == 0:
+            return context
+        binding = self._bindings[index]
+        return replace(
+            context,
+            model_binding=ModelBinding(
+                provider=binding.provider, model=binding.model, parameters=binding.parameters
+            ),
+        )
+
     async def _call_with_failover(
-        self, call_model: Callable[[AgentModel], Awaitable[Any]]
+        self, call_model: Callable[[AgentModel, int], Awaitable[Any]]
     ) -> Any:
+        call_attempts: list[ModelFailoverAttempt] = []
         for index, model in enumerate(self._models):
             for retry_number in range(self._max_retries_per_model + 1):
                 try:
-                    return await call_model(model)
+                    return await call_model(model, index)
                 except TransientProviderError as error:
                     self._record(
                         ModelFailoverAttempt(
                             index=index, error=str(error), retryable=True, retry_number=retry_number
-                        )
+                        ),
+                        call_attempts,
                     )
                     if retry_number >= self._max_retries_per_model:
                         break  # Retries exhausted for this model; fall over to the next one.
@@ -276,10 +387,11 @@ class FailoverAgentModel:
                     self._record(
                         ModelFailoverAttempt(
                             index=index, error=str(error), retry_number=retry_number
-                        )
+                        ),
+                        call_attempts,
                     )
                     break
-        last_attempt = self.attempts[-1] if self.attempts else None
+        last_attempt = call_attempts[-1] if call_attempts else None
         last_detail = (
             f" Last error (adapter index {last_attempt.index}, "
             f"retry {last_attempt.retry_number}): {last_attempt.error}"
@@ -289,7 +401,7 @@ class FailoverAgentModel:
         raise AgentSdkError(
             "MODEL_FALLBACK_EXHAUSTED",
             f"Primary model and all {len(self._models) - 1} configured fallback adapter(s) "
-            f"failed after {len(self.attempts)} attempt(s) total.{last_detail}",
+            f"failed after {len(call_attempts)} attempt(s) total.{last_detail}",
             {
                 "attempts": [
                     {
@@ -298,13 +410,18 @@ class FailoverAgentModel:
                         "retryable": attempt.retryable,
                         "retry_number": attempt.retry_number,
                     }
-                    for attempt in self.attempts
+                    for attempt in call_attempts
                 ]
             },
         )
 
-    def _record(self, attempt: ModelFailoverAttempt) -> None:
+    def _record(
+        self, attempt: ModelFailoverAttempt, call_attempts: list[ModelFailoverAttempt]
+    ) -> None:
+        call_attempts.append(attempt)
         self.attempts.append(attempt)
+        if len(self.attempts) > _MAX_RETAINED_ATTEMPTS:
+            del self.attempts[:-_MAX_RETAINED_ATTEMPTS]
         if self._on_attempt is None:
             return
         try:

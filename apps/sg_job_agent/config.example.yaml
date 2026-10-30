@@ -1,0 +1,89 @@
+# Copy to config.yaml (git-ignored) and fill in. Nothing here is guessed by the agent.
+
+candidate:
+  full_name: "Your Name"
+  email: "you@example.com"
+  phone: "+65 9123 4567"
+  location: "Singapore"
+  linkedin_url: "https://www.linkedin.com/in/your-handle"
+  github_url: "https://github.com/your-handle"
+  portfolio_url: ""
+  current_company: ""
+  work_authorization: "Singapore Citizen"      # or "Permanent Resident", "Employment Pass holder", ...
+  notice_period: "1 month"
+  expected_salary_sgd: "Negotiable"
+  # Screening answers, matched case-insensitively against form question labels.
+  answers:
+    sponsorship: "No"
+    legally authorized: "Yes"
+    notice period: "1 month"
+    how did you hear: "Company careers page"
+
+# The experience bank: everything the tailor may draw on beyond the one-page resume.
+# Every source is optional; run `sg-job-agent ingest` after changing any of them.
+knowledge:
+  documents:                 # dump everything here: projects, stories, metrics (.md .txt .tex .pdf .docx)
+    - "~/career/everything-i-have-done.md"
+  github_username: "your-handle"          # all public, non-fork repos: README, languages, topics
+  github_extra_repos: []                  # owner/repo outside your account, e.g. course or org repos
+  github_include_forks: false
+  github_token_env: "GITHUB_TOKEN"        # optional; raises the API rate limit
+  linkedin_export: ""                     # LinkedIn data export ZIP (Settings > Data privacy >
+                                          # Get a copy of your data) or the profile's "Save to PDF"
+  website_urls: []                        # personal site / blog, crawled within its own domain
+  max_website_pages: 15
+
+search:
+  location: "Singapore"
+  roles: []                 # empty = infer from your resume (e.g. AI Engineer, Quant Dev, SWE, ...)
+  max_roles: 6
+  max_jobs_per_role: 15
+  max_web_calls_per_role: 8 # web_search + web_fetch budget per role (DuckDuckGo rate-limits bursts)
+  min_fit_score: 60
+  exclude_companies: []
+  exclude_title_keywords: ["intern", "internship", "part-time", "part time", "contract"]
+  sources:
+    mycareersfuture: true   # Singapore government job portal (public search API)
+    web_search: true        # site: searches over LinkedIn, eFinancialCareers, JobStreet, ATS boards
+    web_search_sites:
+      - linkedin.com/jobs/view
+      - efinancialcareers.sg
+      - sg.jobstreet.com
+      - boards.greenhouse.io
+      - jobs.lever.co
+      - jobs.ashbyhq.com
+    # Public ATS boards scanned directly for Singapore roles. Use each company's
+    # board slug, e.g. boards.greenhouse.io/<slug>, jobs.lever.co/<slug>,
+    # jobs.ashbyhq.com/<slug>. Unknown slugs are skipped with a warning.
+    greenhouse_boards: []
+    lever_companies: []
+    ashby_boards: []
+
+model:
+  # Default: Claude through the official anthropic SDK (native adapter).
+  provider: "anthropic"
+  model: "claude-opus-5-5"
+  api_key_env: "ANTHROPIC_API_KEY"
+  effort: "high"             # low | medium | high | xhigh | max
+  max_tokens: 64000
+  timeout_seconds: 600
+  # Any other provider uses the SDK's OpenAI-compatible adapter, e.g.:
+  # provider: "fireworks"
+  # base_url: "https://api.fireworks.ai/inference/v1"
+  # model: "accounts/fireworks/models/deepseek-v4p1-flash"   # DeepSeek V4.1 Flash
+  # api_key_env: "FIREWORKS_API_KEY"
+  # reasoning_effort: "none"   # skip hidden reasoning tokens: ~7x faster tailoring (measured)
+  # max_tokens: 32000
+
+tailoring:
+  max_pages: 1
+  latex_engine: auto        # auto | tectonic | latexmk | pdflatex | texlive_net | none
+                            # texlive_net compiles online at texlive.net (uploads your resume text)
+  polish_pass: false          # extra proofreading agent loop: slower, optional
+  write_cover_letter: true
+
+apply:
+  mode: review              # manual | review | auto
+  max_applications_per_run: 10
+  headless: false            # only used in auto mode; review mode always shows the browser
+  browser_executable: ""     # optional Chrome/Chromium path, e.g. your installed Google Chrome

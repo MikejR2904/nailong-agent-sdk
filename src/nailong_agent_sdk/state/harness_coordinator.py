@@ -11,12 +11,22 @@ lateral-state persistence channel.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import functools
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
+from typing import Concatenate
 
-from ..tools.approvals import ApprovalRegistry, ApprovalRequest
+from ..foundations.logging import get_logger
+from ..observability.telemetry_models import DecisionSource
+from ..tools.approvals import (
+    ApprovalEventSink,
+    ApprovalRegistry,
+    ApprovalRequest,
+    ApprovalStatus,
+)
 from .coordination_records import RunRecord, _hash_run
-from .graph import StateGraph
+from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
+from .graph import StateGraph, resolve_parallelism
 from .graph_models import (
     GraphNode,
     GraphNodeKind,
@@ -24,10 +34,38 @@ from .graph_models import (
     GraphNodeStatus,
     GraphSharedState,
     NodeExecutor,
+    ReplayPolicy,
 )
-from .planning import Plan, PlanValidationReport, PlanValidator
+from .planning import Plan, PlanValidationReport, PlanValidator, render_plan_errors
+from .run_anchor import AnchorTarget, anchor_run_record
 from .run_state_store import RunStateStore
 from .shared_state import ExploratoryDiscovery, LateralDependencyRequest, SharedStateWrite
+
+
+def _serialized[**P, R](
+    method: Callable[Concatenate[HarnessCoordinator, str, P], R],
+) -> Callable[Concatenate[HarnessCoordinator, str, P], R]:
+    @functools.wraps(method)
+    def wrapper(self: HarnessCoordinator, run_id: str, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        if not self._store.exists(run_id):
+            return method(self, run_id, *args, **kwargs)
+        with self._store.locked(run_id):
+            return method(self, run_id, *args, **kwargs)
+
+    return wrapper
+
+
+_logger = get_logger("harness-coordinator")
+
+
+def _approvals_resolved(requests: list[ApprovalRequest]) -> bool:
+    if not requests:
+        return False
+    if any(request.status is ApprovalStatus.PENDING for request in requests):
+        return False
+    return any(
+        request.status in {ApprovalStatus.APPROVED, ApprovalStatus.CONSUMED} for request in requests
+    )
 
 
 class HarnessCoordinator:
@@ -39,21 +77,38 @@ class HarnessCoordinator:
     lateral-state persistence channel.
     """
 
-    def __init__(self, run_root: Path) -> None:
+    def __init__(
+        self,
+        run_root: Path,
+        *,
+        approval_sink: ApprovalEventSink | None = None,
+        anchorer: AnchorTarget | None = None,
+    ) -> None:
+        self._anchorer = anchorer
         self._store = RunStateStore(run_root)
+        self._approval_sink = approval_sink
         self._validator = PlanValidator()
         self._graphs: dict[str, StateGraph] = {}
         self._approvals: dict[str, ApprovalRegistry] = {}
+        self._fingerprints: dict[str, tuple[int, int, int] | None] = {}
+        self._cancelled: set[str] = set()
         self._counter = 1
 
-    def start_run(self, plan: Plan, *, shared_state: GraphSharedState | None = None) -> RunRecord:
+    def start_run(
+        self,
+        plan: Plan,
+        *,
+        shared_state: GraphSharedState | None = None,
+        elastic_depth_ceiling: int = MAX_ELASTIC_DEPTH_LIMIT,
+        elastic_nodes_ceiling: int = MAX_ELASTIC_NODES_LIMIT,
+    ) -> RunRecord:
         validation = self._validator.validate(plan)
         if not validation.valid:
-            raise ValueError("Plan is invalid; start_run requires a valid deterministic plan.")
-        while self._store.exists(f"run-{self._counter}"):
-            self._counter += 1
-        run_id = f"run-{self._counter}"
-        self._counter += 1
+            raise ValueError(
+                f'Plan "{plan.plan_id}" is invalid; start_run requires a valid deterministic '
+                f"plan: {render_plan_errors(validation.errors)}"
+            )
+        run_id, self._counter = self._store.reserve_run_id(start=self._counter)
         graph = StateGraph(
             [
                 GraphNode(
@@ -68,24 +123,22 @@ class HarnessCoordinator:
             shared_state=shared_state,
             max_elastic_depth=plan.max_elastic_depth,
             max_elastic_nodes=plan.max_elastic_nodes,
+            elastic_depth_ceiling=elastic_depth_ceiling,
+            elastic_nodes_ceiling=elastic_nodes_ceiling,
         )
         self._graphs[run_id] = graph
-        self._approvals[run_id] = ApprovalRegistry()
+        self._approval_registry(run_id)
         return self._save(run_id, plan.plan_id, graph, validation)
 
     def get_run_state(self, run_id: str) -> RunRecord:
-        if run_id in self._graphs:
-            stored = self._store.load(run_id)
-            return self._save(
-                run_id,
-                stored.plan_id,
-                self._graphs[run_id],
-                stored.plan_validation,
-                stored.cancelled,
-            )
+        fingerprint = self._store.fingerprint(run_id)
         stored = self._store.load(run_id)
-        self._graphs[run_id] = StateGraph.from_snapshot(stored.graph)
-        self._approvals.setdefault(run_id, ApprovalRegistry())
+        if run_id not in self._graphs or self._fingerprints.get(run_id) != fingerprint:
+            self._graphs[run_id] = StateGraph.from_snapshot(stored.graph)
+        self._fingerprints[run_id] = fingerprint
+        self._approval_registry(run_id)
+        if stored.cancelled:
+            self._cancelled.add(run_id)
         return stored
 
     def shared_state(self, run_id: str) -> GraphSharedState:
@@ -94,28 +147,15 @@ class HarnessCoordinator:
         self.get_run_state(run_id)
         return self._graphs[run_id].shared_state
 
+    @_serialized
     def cancel_run(self, run_id: str) -> RunRecord:
         record = self.get_run_state(run_id)
-        graph = self._graphs.get(run_id)
-        if graph is not None:
-            for node in graph.runnable():
-                graph.mark_started(node.node_id)
-                graph.mark_terminal(
-                    node.node_id,
-                    GraphNodeResult(status=GraphNodeStatus.CANCELLED, reason="Run was cancelled."),
-                )
-            return self._save(run_id, record.plan_id, graph, record.plan_validation, cancelled=True)
-        return RunRecord(
-            run_id=record.run_id,
-            plan_id=record.plan_id,
-            graph=record.graph,
-            plan_validation=record.plan_validation,
-            cancelled=True,
-            run_hash=_hash_run(
-                record.run_id, record.plan_id, record.graph, record.plan_validation, True
-            ),
-        )
+        graph = self._graphs[run_id]
+        self._cancelled.add(run_id)
+        self._cancel_runnable_nodes(graph)
+        return self._save(run_id, record.plan_id, graph, record.plan_validation, cancelled=True)
 
+    @_serialized
     def publish_discovery(self, run_id: str, discovery: ExploratoryDiscovery) -> RunRecord:
         """Persist a source-backed discovery in the graph snapshot."""
 
@@ -124,6 +164,7 @@ class HarnessCoordinator:
         graph.publish_discovery(discovery)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def write_shared_value(self, run_id: str, state_write: SharedStateWrite) -> RunRecord:
         """Persist an immutable typed shared value in the graph snapshot."""
 
@@ -132,6 +173,7 @@ class HarnessCoordinator:
         graph.write_shared_value(state_write)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def request_lateral_dependency(
         self, run_id: str, request: LateralDependencyRequest
     ) -> RunRecord:
@@ -142,6 +184,7 @@ class HarnessCoordinator:
         graph.request_lateral_dependency(request)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
     def add_lateral_dependency(
         self,
         run_id: str,
@@ -152,12 +195,36 @@ class HarnessCoordinator:
         """Compatibility wrapper; graph shared state must already carry the discovery."""
 
         record = self.get_run_state(run_id)
-        graph = self._graphs.get(run_id)
-        if graph is None:
-            raise ValueError("Lateral graph updates require an active coordinator process.")
+        graph = self._graphs[run_id]
         graph.add_lateral_dependency(producer_node_id, consumer_node_id, discovery_episode_id)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
+    @_serialized
+    def grant_elastic_capacity(
+        self,
+        run_id: str,
+        *,
+        max_elastic_depth: int | None = None,
+        max_elastic_nodes: int | None = None,
+        reason: str,
+    ) -> RunRecord:
+        record = self.get_run_state(run_id)
+        graph = self._graphs[run_id]
+        graph.grant_elastic_capacity(
+            max_elastic_depth=max_elastic_depth,
+            max_elastic_nodes=max_elastic_nodes,
+            reason=reason,
+        )
+        return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
+
+    @_serialized
+    def decline_elastic_requests(self, run_id: str, parent_node_id: str, reason: str) -> RunRecord:
+        record = self.get_run_state(run_id)
+        graph = self._graphs[run_id]
+        graph.decline_elastic_requests(parent_node_id, reason)
+        return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
+
+    @_serialized
     def record_node_result(
         self,
         run_id: str,
@@ -179,10 +246,35 @@ class HarnessCoordinator:
         *,
         max_parallelism: int | None = None,
     ) -> RunRecord:
+        record = await self._execute_run(run_id, executors, max_parallelism=max_parallelism)
+        self._anchor_run(run_id)
+        return record
+
+    def _anchor_run(self, run_id: str) -> None:
+        if self._anchorer is None:
+            return
+        try:
+            anchor_run_record(self._store, self._anchorer.sink, run_id, self._anchorer.signer)
+        except Exception as error:
+            _logger.warning(
+                'The record of run "%s" could not be anchored: %s: %s',
+                run_id,
+                type(error).__name__,
+                error,
+            )
+
+    async def _execute_run(
+        self,
+        run_id: str,
+        executors: Mapping[GraphNodeKind, NodeExecutor],
+        *,
+        max_parallelism: int | None = None,
+    ) -> RunRecord:
         """Execute graph waves while persisting starts and terminal commits.
 
         The scheduler commits terminal results in canonical node-ID order after
-        each wave. A persisted `RUNNING` state is therefore always recoverable
+        each wave, and one save persists them together with the start of the
+        next wave. A persisted `RUNNING` state is therefore always recoverable
         by ``recover_interrupted_run`` rather than being silently replayed.
         """
 
@@ -190,51 +282,46 @@ class HarnessCoordinator:
         if record.cancelled:
             return record
         graph = self._graphs[run_id]
-        if max_parallelism is not None and max_parallelism < 1:
-            raise ValueError("max_parallelism must be at least one.")
-        while wave := graph.start_runnable_wave(max_parallelism=max_parallelism):
+        limit = resolve_parallelism(max_parallelism)
+        unsaved = False
+        while True:
+            if run_id in self._cancelled:
+                self._cancel_runnable_nodes(graph)
+                return self._save(run_id, record.plan_id, graph, record.plan_validation, True)
+            wave = graph.start_runnable_wave(max_parallelism=limit)
+            if not wave:
+                if unsaved:
+                    return self._save(
+                        run_id, record.plan_id, graph, record.plan_validation, record.cancelled
+                    )
+                return record
             record = self._save(
                 run_id, record.plan_id, graph, record.plan_validation, record.cancelled
             )
             wave_state = graph.shared_state
-
-            async def execute_one(node: GraphNode) -> GraphNodeResult:
-                executor = executors.get(node.kind)
-                if executor is None:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'No executor is registered for node kind "{node.kind.value}".',
-                    )
-                try:
-                    return await executor(
-                        node,
-                        graph.execution_context(node.node_id, shared_state=wave_state),
-                    )
-                except Exception as error:
-                    return GraphNodeResult(
-                        status=GraphNodeStatus.FAILED,
-                        reason=f'Node "{node.node_id}" ({node.kind.value}) executor raised '
-                        f"{type(error).__name__}: {error}",
-                    )
-
-            results = await asyncio.gather(*(execute_one(node) for node in wave))
+            results = await asyncio.gather(
+                *(
+                    graph.execute_node(node, executors, shared_state=wave_state, run_id=run_id)
+                    for node in wave
+                )
+            )
             for node, result in zip(wave, results, strict=True):
                 graph.mark_terminal(node.node_id, result)
-                record = self._save(
-                    run_id, record.plan_id, graph, record.plan_validation, record.cancelled
-                )
-        return record
+            unsaved = True
 
+    @_serialized
     def recover_interrupted_run(
         self,
         run_id: str,
-        replayable_node_ids: set[str] = frozenset(),
+        replayable_node_ids: Collection[str] = frozenset(),
+        *,
+        is_replayable: ReplayPolicy | None = None,
     ) -> RunRecord:
         """Persist a conservative recovery of interrupted graph agent nodes."""
 
         record = self.get_run_state(run_id)
         graph = self._graphs[run_id]
-        graph.recover_interrupted(replayable_node_ids)
+        graph.recover_interrupted(replayable_node_ids, is_replayable=is_replayable)
         return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
 
     def submit_approval(
@@ -243,24 +330,75 @@ class HarnessCoordinator:
         approval_id: str,
         approved: bool,
         reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
     ) -> ApprovalRequest:
-        registry = self._approvals.get(run_id)
-        if registry is None:
-            raise ValueError(
-                "Approval registry is unavailable after process restart in this increment."
-            )
-        return registry.submit(approval_id, approved, reason)
+        return self.approvals(run_id).submit(approval_id, approved, reason, source=source)
+
+    def revoke_approval(
+        self,
+        run_id: str,
+        approval_id: str,
+        reason: str,
+        *,
+        source: DecisionSource | None = None,
+    ) -> ApprovalRequest:
+        return self.approvals(run_id).revoke(approval_id, reason, source=source)
 
     def approvals(self, run_id: str) -> ApprovalRegistry:
+        if not self._store.exists(run_id):
+            raise ValueError(f'Run "{run_id}" is unknown.')
+        return self._approval_registry(run_id)
+
+    @_serialized
+    def resume_run(self, run_id: str) -> RunRecord:
+        """Re-read and integrity-verify the run, then re-open nodes whose approvals are decided.
+
+        A node that ended blocked is re-opened once every approval it requested
+        has a decision and at least one was granted, so ``execute_run`` can retry it.
+        """
+
+        record = self.get_run_state(run_id)
+        if record.cancelled:
+            return record
+        registry = self._approval_registry(run_id)
+        graph = self._graphs[run_id]
+        decided = [
+            node_id
+            for node_id in graph.blocked_nodes()
+            if _approvals_resolved(
+                [item for item in registry.list(run_id) if item.node_id == node_id]
+            )
+        ]
+        if not decided:
+            return record
+        graph.reopen_blocked(decided)
+        return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
+
+    @_serialized
+    def reopen_blocked_nodes(self, run_id: str, node_ids: list[str] | None = None) -> RunRecord:
+        record = self.get_run_state(run_id)
+        graph = self._graphs[run_id]
+        graph.reopen_blocked(node_ids)
+        return self._save(run_id, record.plan_id, graph, record.plan_validation, record.cancelled)
+
+    def _approval_registry(self, run_id: str) -> ApprovalRegistry:
         registry = self._approvals.get(run_id)
         if registry is None:
-            raise ValueError(f'Run "{run_id}" is not active in this coordinator.')
+            registry = ApprovalRegistry(
+                self._store.approvals_path(run_id), sink=self._approval_sink
+            )
+            self._approvals[run_id] = registry
         return registry
 
-    def resume_run(self, run_id: str) -> RunRecord:
-        """Re-read and integrity-verify the persisted graph state before reporting it."""
-
-        return self.get_run_state(run_id)
+    @staticmethod
+    def _cancel_runnable_nodes(graph: StateGraph) -> None:
+        for node in graph.runnable():
+            graph.mark_started(node.node_id)
+            graph.mark_terminal(
+                node.node_id,
+                GraphNodeResult(status=GraphNodeStatus.CANCELLED, reason="Run was cancelled."),
+            )
 
     def _save(
         self,
@@ -270,6 +408,7 @@ class HarnessCoordinator:
         validation: PlanValidationReport,
         cancelled: bool = False,
     ) -> RunRecord:
+        cancelled = cancelled or run_id in self._cancelled
         snapshot = graph.snapshot()
         record = RunRecord(
             run_id=run_id,
@@ -279,5 +418,11 @@ class HarnessCoordinator:
             cancelled=cancelled,
             run_hash=_hash_run(run_id, plan_id, snapshot, validation, cancelled),
         )
-        self._store.save(record)
+        try:
+            self._store.save(record)
+        except BaseException:
+            self._graphs.pop(run_id, None)
+            self._fingerprints.pop(run_id, None)
+            raise
+        self._fingerprints[run_id] = self._store.fingerprint(run_id)
         return record

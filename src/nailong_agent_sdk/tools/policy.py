@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import Field
 
 from ..foundations.contracts import StrictModel
+from ..foundations.paths import relative_to_base
 from .approvals import ApprovalRequest, ApprovalStatus
 
 # Credential and key-material locations that are always denied, independent of
@@ -29,7 +30,28 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "*/.netrc",
     "*/id_rsa",
     "*/id_ed25519",
+    "*/id_ecdsa",
+    "*/id_dsa",
+    "*/.env",
+    "*/.env.*",
+    "*/.npmrc",
+    "*/.pypirc",
+    "*/.git-credentials",
+    "*/.pgpass",
+    "*.pem",
+    "*.p12",
+    "*.pfx",
 )
+
+
+def sensitive_pattern_for(path: Path | str) -> str | None:
+    posix = str(path).replace("\\", "/").lower()
+    for pattern in SENSITIVE_PATH_PATTERNS:
+        if any(
+            fnmatch.fnmatchcase(candidate, pattern.lower()) for candidate in (posix, posix + "/")
+        ):
+            return pattern
+    return None
 
 
 class SideEffectClass(StrEnum):
@@ -58,6 +80,12 @@ class CapabilityPolicy:
     def __init__(self, grants: list[CapabilityGrant]) -> None:
         self._grants = {grant.role: grant for grant in grants}
 
+    def read_scope(self, role: str) -> tuple[str, ...]:
+        grant = self._grants.get(role)
+        if grant is None or "filesystem.read" not in grant.capabilities:
+            return ()
+        return tuple(grant.allowed_paths)
+
     def evaluate(
         self,
         *,
@@ -67,6 +95,7 @@ class CapabilityPolicy:
         run_root: Path,
         requested_paths: list[str] = (),
         approval: ApprovalRequest | None = None,
+        arguments_digest: str | None = None,
     ) -> PolicyDecision:
         for requested_path in requested_paths:
             sensitive_match = self._sensitive_pattern_match(requested_path, run_root)
@@ -103,8 +132,32 @@ class CapabilityPolicy:
                 allowed=False,
                 reason="Approval capability does not match the requested action.",
             )
+        if approval.arguments_digest is not None and approval.arguments_digest != arguments_digest:
+            return PolicyDecision(
+                allowed=False,
+                reason=(
+                    f'Approval "{approval.approval_id}" was granted for different arguments '
+                    f'than this call of capability "{capability}".'
+                ),
+                approval_required=True,
+            )
         if approval.status is ApprovalStatus.APPROVED:
             return PolicyDecision(allowed=True, reason="Typed approval is present.")
+        if approval.status is ApprovalStatus.REVOKED:
+            return PolicyDecision(
+                allowed=False,
+                reason=approval.decision_reason
+                or f'Approval "{approval.approval_id}" was revoked.',
+            )
+        if approval.status is ApprovalStatus.CONSUMED:
+            return PolicyDecision(
+                allowed=False,
+                reason=(
+                    f'Single-use approval "{approval.approval_id}" for capability '
+                    f'"{capability}" was already used; a new approval is required.'
+                ),
+                approval_required=True,
+            )
         if approval.status is ApprovalStatus.REJECTED:
             return PolicyDecision(
                 allowed=False,
@@ -126,12 +179,7 @@ class CapabilityPolicy:
         patterns like ``*/.ssh/*``.
         """
 
-        resolved = str((run_root.resolve() / requested_path).resolve()).replace("\\", "/")
-        candidates = (resolved, resolved + "/")
-        for pattern in SENSITIVE_PATH_PATTERNS:
-            if any(fnmatch.fnmatch(candidate, pattern) for candidate in candidates):
-                return pattern
-        return None
+        return sensitive_pattern_for((run_root.resolve() / requested_path).resolve())
 
     @staticmethod
     def _path_is_allowed(requested_path: str, allowed_paths: list[str], run_root: Path) -> bool:
@@ -140,13 +188,13 @@ class CapabilityPolicy:
         root = run_root.resolve()
         candidate = (root / requested_path).resolve()
         try:
-            candidate.relative_to(root)
+            relative_to_base(candidate, root)
         except ValueError:
             return False
         for allowed_path in allowed_paths:
             allowed = (root / allowed_path).resolve()
             try:
-                candidate.relative_to(allowed)
+                relative_to_base(candidate, allowed)
                 return True
             except ValueError:
                 continue

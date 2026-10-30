@@ -8,16 +8,19 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from ..agent.retention import RetentionPolicy
+from ..agent.retention_inventory import DEFAULT_MAX_ITEMS, inventory_run_root
 from ..observability.telemetry_models import MetricDefinition, MetricObservation
 from ._shared import McpContext, _validation_errors
+from .authority import McpOperation
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
 
 
 def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="list_telemetry_runs", structured_output=True)
-    async def list_telemetry_runs(limit: int = 100) -> dict[str, Any]:
+    @ctx.tool(server, "list_telemetry_runs", exclusive=False, operation=McpOperation.READ)
+    def list_telemetry_runs(limit: int = 100) -> dict[str, Any]:
         """List durable Python runtime telemetry runs without exposing hidden reasoning."""
 
         try:
@@ -30,56 +33,65 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_telemetry_events", structured_output=True)
-    async def get_telemetry_events(
+    @ctx.tool(server, "get_telemetry_events", exclusive=False, operation=McpOperation.READ)
+    def get_telemetry_events(
         run_id: str,
         after_sequence: int = 0,
         limit: int = 250,
+        event_types: list[str] | None = None,
     ) -> dict[str, Any]:
         """Read an ordered, integrity-linked page of runtime telemetry events."""
 
         try:
-            events = ctx.telemetry.list_events(run_id, after_sequence=after_sequence, limit=limit)
+            events = ctx.telemetry.list_events(
+                run_id, after_sequence=after_sequence, limit=limit, event_types=event_types
+            )
+            failure = ctx.telemetry.chain_break(run_id)
             return {
                 "ok": True,
                 "events": [item.model_dump(mode="json") for item in events],
-                "integrity_chain_valid": ctx.telemetry.verify_run_chain(run_id),
+                "integrity_chain_valid": failure is None,
+                "integrity_failure": failure.model_dump(mode="json") if failure else None,
             }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_audit_log", structured_output=True)
-    async def get_audit_log(run_id: str, limit: int = 1_000) -> dict[str, Any]:
+    @ctx.tool(server, "get_audit_log", exclusive=False, operation=McpOperation.READ)
+    def get_audit_log(run_id: str, limit: int = 1_000) -> dict[str, Any]:
         """Read bounded, redacted public interaction logs outside model working memory."""
 
         try:
             entries = ctx.audit_logs.list_entries(run_id, limit=limit)
+            failure = ctx.audit_logs.chain_break(run_id)
             return {
                 "ok": True,
                 "events": [entry.model_dump(mode="json") for entry in entries],
-                "integrity_chain_valid": ctx.audit_logs.verify(run_id),
+                "integrity_chain_valid": failure is None,
+                "integrity_failure": failure.model_dump(mode="json") if failure else None,
             }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="render_audit_transcript", structured_output=True)
-    async def render_audit_transcript(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "render_audit_transcript", exclusive=False)
+    def render_audit_transcript(run_id: str) -> dict[str, Any]:
         """Render a readable Markdown review transcript from hash-linked audit entries."""
 
         try:
             path = ctx.audit_logs.render_markdown(run_id)
+            failure = ctx.audit_logs.chain_break(run_id)
             return {
                 "ok": True,
                 "report": {
                     "transcript_path": str(path.relative_to(ctx.run_root.resolve())),
-                    "integrity_chain_valid": ctx.audit_logs.verify(run_id),
+                    "integrity_chain_valid": failure is None,
+                    "integrity_failure": failure.model_dump(mode="json") if failure else None,
                 },
             }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="register_metric_definition", structured_output=True)
-    async def register_metric_definition(definition: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "register_metric_definition", exclusive=False)
+    def register_metric_definition(definition: dict[str, Any]) -> dict[str, Any]:
         """Register a versioned metric formula before observations are interpreted."""
 
         try:
@@ -92,8 +104,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="list_metric_definitions", structured_output=True)
-    async def list_metric_definitions() -> dict[str, Any]:
+    @ctx.tool(server, "list_metric_definitions", exclusive=False, operation=McpOperation.READ)
+    def list_metric_definitions() -> dict[str, Any]:
         """List metric formulas and missing-data rules known to the telemetry store."""
 
         return {
@@ -103,8 +115,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
             ],
         }
 
-    @server.tool(name="record_metric_observation", structured_output=True)
-    async def record_metric_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "record_metric_observation", exclusive=False)
+    def record_metric_observation(observation: dict[str, Any]) -> dict[str, Any]:
         """Record an observed or explicitly unavailable metric; values are never synthesized."""
 
         try:
@@ -115,8 +127,8 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_telemetry_metrics", structured_output=True)
-    async def get_telemetry_metrics(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "get_telemetry_metrics", exclusive=False, operation=McpOperation.READ)
+    def get_telemetry_metrics(run_id: str) -> dict[str, Any]:
         """Return recorded metric observations and their explicit availability states."""
 
         try:
@@ -129,11 +141,72 @@ def register_telemetry_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="create_telemetry_report", structured_output=True)
-    async def create_telemetry_report(run_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "prune_runs", exclusive=False)
+    def prune_runs(
+        older_than_seconds: float,
+        dry_run: bool = True,
+        keep_most_recent: int = 0,
+        max_runs: int | None = None,
+        include_unfinished: bool = False,
+        export_reports: bool = False,
+    ) -> dict[str, Any]:
+        """Delete whole finished runs idle for older_than_seconds; defaults to a dry run.
+
+        Each pruned run's telemetry events and metrics, audit transcript and tool-result files
+        are removed after a hash-chained tombstone records their final chain heads and every
+        tool-result hash. Runs with a broken chain, no `agent.terminated` event (unless
+        `include_unfinished`) or recent activity are kept.
+        """
+
+        policy = RetentionPolicy(
+            older_than_seconds=older_than_seconds,
+            keep_most_recent=keep_most_recent,
+            max_runs=max_runs,
+            include_unfinished=include_unfinished,
+            export_reports=export_reports,
+        )
+        report = ctx.retention.prune(policy, dry_run=dry_run)
+        return {"ok": True, "report": report.model_dump(mode="json")}
+
+    @ctx.tool(server, "inventory_retention", exclusive=False)
+    def inventory_retention(
+        older_than_seconds: float,
+        keep_most_recent: int = 0,
+        max_runs: int | None = None,
+        include_unfinished: bool = False,
+        max_items: int = DEFAULT_MAX_ITEMS,
+    ) -> dict[str, Any]:
+        """Report every persistent resource class under the run root and what a retention
+        policy would do with it, without changing anything.
+
+        Each item names its owner, what references it, and whether it is `prunable` (the
+        next `prune_runs` pass removes it), `reclaimable` (finished and unreferenced, but no
+        SDK operation removes it yet) or `protected` with the rule that protects it. Class
+        totals cover every item; `items` is cut to `max_items`.
+        """
+
+        try:
+            policy = RetentionPolicy(
+                older_than_seconds=older_than_seconds,
+                keep_most_recent=keep_most_recent,
+                max_runs=max_runs,
+                include_unfinished=include_unfinished,
+            )
+            inventory = inventory_run_root(ctx.run_root, policy, max_items=max_items)
+            return {"ok": True, "inventory": inventory.model_dump(mode="json")}
+        except ValidationError as error:
+            return {"ok": False, "errors": _validation_errors(error)}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
+    @ctx.tool(server, "create_telemetry_report", exclusive=False)
+    def create_telemetry_report(run_id: str, include_event_hashes: bool = False) -> dict[str, Any]:
         """Create a reproducible trace and metric-completeness report from observed facts."""
 
         try:
-            return {"ok": True, "report": ctx.telemetry.create_run_report(run_id)}
+            report = ctx.telemetry.create_run_report(
+                run_id, include_event_hashes=include_event_hashes
+            )
+            return {"ok": True, "report": report}
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}

@@ -1,0 +1,51 @@
+ledger: 12 support tasks, 24 query tasks
+  tuned static on support: UsageTotals(calls=3, cached=39, input_tokens=8589, output_tokens=266, output_failures=0, retries=0)
+  support candidates measured: UsageTotals(calls=147, cached=231, input_tokens=398071, output_tokens=13729, output_failures=2, retries=0)
+  adapted: UsageTotals(calls=150, cached=381, input_tokens=406603, output_tokens=13943, output_failures=2, retries=0)
+  evaluated; validity {'all_evidence_mean': 1.0, 'no_fact_evidence_mean': 0.0, 'tasks': 24}; UsageTotals(calls=165, cached=603, input_tokens=450460, output_tokens=15139, output_failures=2, retries=0)
+deploy: 12 support tasks, 24 query tasks
+  tuned static on support: UsageTotals(calls=168, cached=654, input_tokens=459049, output_tokens=15310, output_failures=2, retries=0)
+  support candidates measured: UsageTotals(calls=423, cached=795, input_tokens=1103256, output_tokens=39268, output_failures=5, retries=0)
+  adapted: UsageTotals(calls=426, cached=885, input_tokens=1112202, output_tokens=39433, output_failures=5, retries=0)
+  evaluated; validity {'all_evidence_mean': 1.0, 'no_fact_evidence_mean': 0.0, 'tasks': 24}; UsageTotals(calls=426, cached=1005, input_tokens=1112202, output_tokens=39433, output_failures=5, retries=0)
+triage: 12 support tasks, 24 query tasks
+  tuned static on support: UsageTotals(calls=426, cached=1053, input_tokens=1112202, output_tokens=39433, output_failures=5, retries=0)
+  support candidates measured: UsageTotals(calls=695, cached=1180, input_tokens=1796724, output_tokens=61377, output_failures=6, retries=0)
+  adapted: UsageTotals(calls=704, cached=1297, input_tokens=1820643, output_tokens=62055, output_failures=6, retries=0)
+  evaluated; validity {'all_evidence_mean': 1.0, 'no_fact_evidence_mean': 0.0, 'tasks': 24}; UsageTotals(calls=707, cached=1462, input_tokens=1827291, output_tokens=62294, output_failures=6, retries=0)
+# Live few-shot adaptation
+
+> MEASURED EVIDENCE: outcomes are real model answers scored by a deterministic verifier on generated tool-call histories.
+
+## Held-out family quality (verifier score, query tasks)
+
+| method | ledger | deploy | triage | mean | worst family |
+|---|---|---|---|---|---|
+| adapt-listwise-static | 0.824 | 1.000 | 0.889 | 0.904 | 0.824 |
+| adapt-regression-static | 0.690 | 1.000 | 0.806 | 0.832 | 0.690 |
+| static-pckp | 0.435 | 1.000 | 0.806 | 0.747 | 0.435 |
+| tuned-static-support | 0.435 | 1.000 | 0.806 | 0.747 | 0.435 |
+
+## Change against static on the same task
+
+| method | mean change | worst-family change | negative-transfer | deviation rate |
+|---|---|---|---|---|
+| adapt-listwise-static | +0.157 | +0.000 | 0.04 | 0.56 |
+| adapt-regression-static | +0.085 | +0.000 | 0.00 | 0.26 |
+| tuned-static-support | +0.000 | +0.000 | 0.00 | 0.00 |
+
+## Paired comparisons (template-clustered bootstrap)
+
+| comparison | mean diff | 95% CI | p | Holm p | clusters |
+|---|---|---|---|---|---|
+| adapt-listwise-static vs tuned-static-support | +0.157 | [+0.062, +0.261] | 0.0005 | 0.0020 | 12 |
+| adapt-listwise-static vs static-pckp | +0.157 | [+0.062, +0.261] | 0.0005 | 0.0020 | 12 |
+| adapt-regression-static vs tuned-static-support | +0.085 | [+0.020, +0.156] | 0.0150 | 0.0300 | 12 |
+| adapt-regression-static vs static-pckp | +0.085 | [+0.020, +0.156] | 0.0150 | 0.0300 | 12 |
+
+## Measurement validity (relaxed budget; positive and negative controls)
+
+- ledger: {'all_evidence_mean': 1.0, 'no_fact_evidence_mean': 0.0, 'tasks': 24}
+- deploy: {'all_evidence_mean': 1.0, 'no_fact_evidence_mean': 0.0, 'tasks': 24}
+- triage: {'all_evidence_mean': 1.0, 'no_fact_evidence_mean': 0.0, 'tasks': 24}
+

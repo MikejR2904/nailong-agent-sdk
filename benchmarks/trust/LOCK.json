@@ -1,0 +1,152 @@
+{
+  "commit": "2ce3ab69fb589808e22cfcd09f5ed5005601c151",
+  "created_utc": "2026-10-25T15:06:36+00:00",
+  "harness_sha256": "8b2904b7caaafd07ce095ac84049985250b6f01a280c8d138eddff1d5f98e3bb",
+  "preregistration_sha256": "8d286e209738de8176172729a3ef2e36dadfa98c08ffa6c4184e6b36492226c5",
+  "system_sha256": "553a352c319dd416445f2db37e04b943aacbecae58f4222c23637fa263772c97",
+  "test_plan": {
+    "arms": [
+      "sdk",
+      "langgraph"
+    ],
+    "attack_arms": [
+      "sdk",
+      "langgraph"
+    ],
+    "attack_families": [
+      "doc",
+      "data"
+    ],
+    "attack_seeds": [
+      1000000,
+      1000099
+    ],
+    "authority_allocations": [
+      "rule",
+      "model",
+      "all-human",
+      "none",
+      "random"
+    ],
+    "authority_arms": [
+      "sdk",
+      "langgraph",
+      "langgraph-plain",
+      "sdk-preapproved"
+    ],
+    "authority_families": [
+      "ops"
+    ],
+    "authority_seeds": [
+      1000000,
+      1000099
+    ],
+    "chain_arms": [
+      "sdk",
+      "langgraph"
+    ],
+    "chain_families": [
+      "ops"
+    ],
+    "chain_seeds": [
+      1000000,
+      1000099
+    ],
+    "families": [
+      "data",
+      "doc",
+      "plan"
+    ],
+    "judge_arms": [
+      "sdk",
+      "langgraph"
+    ],
+    "judge_budget": {
+      "max_calls": 12000,
+      "max_input_tokens": 40000000
+    },
+    "judge_families": [
+      "data",
+      "doc",
+      "plan"
+    ],
+    "judge_model": "jev-1.13.0",
+    "judge_seeds": [
+      1000000,
+      1000099
+    ],
+    "judge_tasks": [
+      "diagnosis",
+      "acceptance",
+      "allocation"
+    ],
+    "operators": [
+      "decision_wrong_node:actuals",
+      "decision_wrong_node:budget",
+      "decision_wrong_node:variance",
+      "decision_wrong_stage:clean",
+      "decision_wrong_stage:revenue",
+      "decision_wrong_stage:summary",
+      "decision_wrong_total:off_by_one",
+      "decision_wrong_total:sign_flip",
+      "env_corrupt:digit_swap",
+      "env_corrupt:scale10",
+      "env_unreadable",
+      "limit"
+    ],
+    "seeds": [
+      1000000,
+      1000099
+    ],
+    "tamper_arms": [
+      "sdk",
+      "sdk+anchor",
+      "sdk-default",
+      "langgraph"
+    ],
+    "tamper_families": [
+      "doc",
+      "data"
+    ],
+    "tamper_seeds": [
+      1000000,
+      1000079
+    ],
+    "verify_arms": [
+      "sdk",
+      "langgraph"
+    ],
+    "verify_families": [
+      "data",
+      "doc",
+      "plan"
+    ],
+    "verify_operators": [
+      "decision_wrong_form:truncate",
+      "decision_wrong_node:actuals",
+      "decision_wrong_node:budget",
+      "decision_wrong_node:variance",
+      "decision_wrong_stage:clean",
+      "decision_wrong_stage:revenue",
+      "decision_wrong_stage:summary",
+      "decision_wrong_total:off_by_one",
+      "decision_wrong_total:sign_flip",
+      "env_corrupt:digit_swap",
+      "env_corrupt:scale10",
+      "env_unreadable",
+      "limit"
+    ],
+    "verify_seeds": [
+      1000000,
+      1000099
+    ]
+  },
+  "versions": {
+    "langchain-core": "1.6.5",
+    "langgraph": "1.2.12",
+    "langgraph-prebuilt": "1.1.0",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.13.1",
+    "typesafe-sdk": "0.7.5"
+  }
+}

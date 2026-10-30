@@ -1,0 +1,12 @@
+seed0__lofo_aligned-short.json: 190s failures={}
+seed0__lofo_shifted-short.json: 188s failures={}
+seed0__lofo_aligned-long.json: 165s failures={}
+seed0__lofo_shifted-long.json: 168s failures={}
+seed0__lofo_additive-deep.json: 187s failures={}
+seed0__lofo_uninformative.json: 189s failures={}
+seed1__lofo_aligned-short.json: 183s failures={}
+seed1__lofo_shifted-short.json: 183s failures={}
+seed1__lofo_aligned-long.json: 159s failures={}
+seed1__lofo_shifted-long.json: 160s failures={}
+seed1__lofo_additive-deep.json: 182s failures={}
+seed1__lofo_uninformative.json: 184s failures={}

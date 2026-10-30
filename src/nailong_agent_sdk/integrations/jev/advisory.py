@@ -14,15 +14,20 @@ from ...agent.verification import (
     VerificationDecision,
     VerificationGate,
     VerificationReturn,
+    clip_evidence_text,
+    normalize_verification_return,
 )
 from ...foundations.contracts import StrictModel
-from ..contracts import (
-    ExternalDecisionProvider,
-    ExternalDecisionResult,
-    InteropFailureMode,
-    InteropOperationStatus,
+from ...observability.telemetry_models import TelemetryAuthority
+from ..contracts import InteropFailureMode, InteropOperationStatus
+from .models import (
+    _JEV_ANSWER_ADAPTER,
+    JevAnswer,
+    JevDecisionProvider,
+    JevDecisionRequest,
+    JevDecisionResult,
+    JevNoulAnswer,
 )
-from .models import _JEV_ANSWER_ADAPTER, JevAnswer, JevDecisionRequest, JevNoulAnswer
 
 
 class JevAdvisoryPolicy(StrictModel):
@@ -35,6 +40,8 @@ class JevAdvisoryPolicy(StrictModel):
 
 
 JevRequestFactory = Callable[[VerificationContext], JevDecisionRequest]
+JEV_ADVISORY_VERIFIER_ID = "jev-advisory"
+_EVIDENCE_TEXT_CHARS = 512
 
 
 class JevAdvisoryVerificationGate:
@@ -48,7 +55,7 @@ class JevAdvisoryVerificationGate:
     def __init__(
         self,
         deterministic_gate: VerificationGate,
-        evaluator: ExternalDecisionProvider,
+        evaluator: JevDecisionProvider,
         request_factory: JevRequestFactory,
         policy: JevAdvisoryPolicy,
     ) -> None:
@@ -61,14 +68,16 @@ class JevAdvisoryVerificationGate:
         local = self._deterministic_gate.verify(context)
         if inspect.isawaitable(local):
             local = await local
-        normalized = _normalize_verification(local)
+        normalized = normalize_verification_return(local)
         if not normalized.passed:
             return normalized
         request = self._request_factory(context)
         result = await self._evaluator.evaluate(request)
-        return self._apply_policy(result)
+        return self._apply_policy(result, normalized)
 
-    def _apply_policy(self, result: ExternalDecisionResult) -> VerificationDecision:
+    def _apply_policy(
+        self, result: JevDecisionResult, local: VerificationDecision
+    ) -> VerificationDecision:
         if result.status is not InteropOperationStatus.SUCCEEDED:
             return _unavailable_decision(self._policy.on_unavailable, result.unavailable_reason)
         answer = result.answers.get(self._policy.question_id)
@@ -86,31 +95,49 @@ class JevAdvisoryVerificationGate:
                 self._policy.on_unavailable,
                 f'Jev question "{self._policy.question_id}" must return a noul answer.',
             )
+        evidence: dict[str, str | float] = {
+            "question_id": clip_evidence_text(self._policy.question_id, _EVIDENCE_TEXT_CHARS),
+            "noul": parsed.noul,
+            "minimum_noul": self._policy.minimum_noul,
+            "policy_version": clip_evidence_text(self._policy.policy_version, _EVIDENCE_TEXT_CHARS),
+        }
+        if local.verifier_id is not None:
+            evidence["local_verifier_id"] = local.verifier_id
         if parsed.noul >= self._policy.minimum_noul:
             return VerificationDecision(
                 True,
                 f"Jev advisory probability {parsed.noul:.3f} met policy.",
+                verifier_id=JEV_ADVISORY_VERIFIER_ID,
+                authority=TelemetryAuthority.MODEL_MEDIATED,
+                evidence=evidence,
             )
         return VerificationDecision(
             False,
             f"Jev advisory probability {parsed.noul:.3f} is below {self._policy.minimum_noul:.3f}.",
+            verifier_id=JEV_ADVISORY_VERIFIER_ID,
+            authority=TelemetryAuthority.MODEL_MEDIATED,
+            evidence=evidence,
         )
-
-
-def _normalize_verification(value: VerificationReturn) -> VerificationDecision:
-    if isinstance(value, VerificationDecision):
-        return value
-    if isinstance(value, bool):
-        return VerificationDecision(value)
-    if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], bool):
-        return VerificationDecision(value[0], value[1])
-    raise TypeError("Deterministic verification gate returned an invalid value.")
 
 
 def _unavailable_decision(mode: InteropFailureMode, reason: str | None) -> VerificationDecision:
     detail = reason or "Jev advisory evaluation is unavailable."
+    evidence = {
+        "unavailable": clip_evidence_text(detail, _EVIDENCE_TEXT_CHARS),
+        "on_unavailable": mode.value,
+    }
     if mode is InteropFailureMode.FALLBACK_DETERMINISTIC:
-        return VerificationDecision(True, f"Deterministic gate accepted; Jev fallback: {detail}")
+        return _fallback(True, f"Deterministic gate accepted; Jev fallback: {detail}", evidence)
     if mode is InteropFailureMode.ESCALATE:
-        return VerificationDecision(False, f"Escalation required: {detail}")
-    return VerificationDecision(False, f"Rejected because Jev is unavailable: {detail}")
+        return _fallback(False, f"Escalation required: {detail}", evidence)
+    return _fallback(False, f"Rejected because Jev is unavailable: {detail}", evidence)
+
+
+def _fallback(passed: bool, reason: str, evidence: dict[str, str]) -> VerificationDecision:
+    return VerificationDecision(
+        passed,
+        reason,
+        verifier_id=JEV_ADVISORY_VERIFIER_ID,
+        authority=TelemetryAuthority.DETERMINISTIC,
+        evidence=evidence,
+    )

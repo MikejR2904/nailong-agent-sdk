@@ -1,0 +1,49 @@
+{
+ "size": 12,
+ "instances": 6,
+ "repeats": 30,
+ "methods": {
+  "static-pckp": {
+   "median_ms": 1.5535,
+   "p10_ms": 0.8002,
+   "p90_ms": 3.271,
+   "samples": 180
+  },
+  "greedy-pask": {
+   "median_ms": 2.4821,
+   "p10_ms": 0.945,
+   "p90_ms": 3.0887,
+   "samples": 180
+  },
+  "linear-dfl": {
+   "median_ms": 2.43595,
+   "p10_ms": 1.5588,
+   "p90_ms": 3.9116,
+   "samples": 180
+  },
+  "mlp-dfl": {
+   "median_ms": 2.0038,
+   "p10_ms": 1.7908,
+   "p90_ms": 2.4286,
+   "samples": 180
+  }
+ },
+ "predictor_only": {
+  "linear-dfl": {
+   "median_ms": 0.57765,
+   "p10_ms": 0.4984,
+   "p90_ms": 0.681
+  },
+  "mlp-dfl": {
+   "median_ms": 0.8469,
+   "p10_ms": 0.783,
+   "p90_ms": 1.0163
+  }
+ },
+ "environment": {
+  "python": "3.13.1",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "wall_seconds": 2.372869799961336,
+  "command": "C:\\dev\\nailong-agent-sdk\\benchmarks\\dfl\\dfl_bench\\perf.py latency --out results/perf"
+ }
+}

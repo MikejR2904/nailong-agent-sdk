@@ -13,6 +13,14 @@ from typing import Any
 from .telemetry_models import MetricDefinition
 
 
+def _instrument_for(unit: str, aggregation: str) -> str:
+    if unit == "milliseconds":
+        return "histogram"
+    if aggregation == "sum":
+        return "counter"
+    return "gauge"
+
+
 def _definition(
     metric_id: str,
     name: str,
@@ -21,6 +29,7 @@ def _definition(
     formula: str,
     **kwargs: Any,
 ) -> MetricDefinition:
+    kwargs.setdefault("instrument", _instrument_for(unit, kwargs.get("aggregation", "")))
     return MetricDefinition(
         metric_id=metric_id,
         name=name,
@@ -337,6 +346,56 @@ STANDARD_METRIC_DEFINITIONS: tuple[MetricDefinition, ...] = (
         source_description="Provider adapter",
     ),
     _definition(
+        "model.estimated_request_tokens",
+        "SDK-estimated request tokens",
+        "tokens",
+        "lower",
+        "sum(estimated tokens of each outbound request)",
+        aggregation="sum",
+        missing_data_rule="unavailable unless the model adapter reports request diagnostics",
+        source_description="Model adapter estimate (characters per token), not provider usage",
+    ),
+    _definition(
+        "model.estimated_shared_prefix_tokens",
+        "SDK-estimated prefix shared with the previous request",
+        "tokens",
+        "higher",
+        "sum(common-prefix tokens between consecutive requests of a task)",
+        aggregation="sum",
+        missing_data_rule="unavailable unless the model adapter reports request diagnostics",
+        source_description="Model adapter estimate; an upper bound on provider prefix-cache reuse",
+    ),
+    _definition(
+        "model.cost",
+        "Priced model cost",
+        "currency",
+        "lower",
+        "sum(price(fresh input) + price(cached input) + price(output))",
+        aggregation="sum",
+        missing_data_rule="unavailable without a host price table and complete provider usage",
+        source_description="Provider usage priced with the host price table",
+    ),
+    _definition(
+        "model.cache_savings",
+        "Cost saved by cached input",
+        "currency",
+        "higher",
+        "sum(uncached cost - actual cost)",
+        aggregation="sum",
+        missing_data_rule="unavailable without a host price table and complete provider usage",
+        source_description="Provider usage priced with the host price table",
+    ),
+    _definition(
+        "model.cache_hit_ratio",
+        "Cached share of input tokens",
+        "ratio",
+        "higher",
+        "cached_input_tokens / input_tokens",
+        aggregation="last",
+        missing_data_rule="unavailable without a host price table and complete provider usage",
+        source_description="Provider usage priced with the host price table",
+    ),
+    _definition(
         "model.provider_reasoning_tokens",
         "Provider-reported reasoning tokens",
         "tokens",
@@ -387,95 +446,5 @@ STANDARD_METRIC_DEFINITIONS: tuple[MetricDefinition, ...] = (
         aggregation="sum",
         missing_data_rule="unavailable for non-process tools",
         source_description="ProcessSupervisor",
-    ),
-    _definition(
-        "research.ppa_drift_rate",
-        "PPA drift rate",
-        "ratio",
-        "lower",
-        "explicit experiment formula",
-        aggregation="mean",
-        missing_data_rule="unavailable until measured by an EDA wrapper",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.wns_gap_ns",
-        "Worst negative slack gap",
-        "nanoseconds",
-        "lower",
-        "explicit experiment formula",
-        aggregation="mean",
-        missing_data_rule="unavailable until OpenSTA/OpenROAD evidence is parsed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.drc_lvs_clean_rate",
-        "DRC/LVS clean rate",
-        "ratio",
-        "higher",
-        "clean checks / total checks",
-        aggregation="mean",
-        missing_data_rule="unavailable until signoff evidence is parsed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.interface_mismatch_count",
-        "Interface mismatch count",
-        "count",
-        "lower",
-        "explicit experiment count",
-        aggregation="sum",
-        missing_data_rule="unavailable until interface comparison is observed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.human_correction_rate",
-        "Human correction rate",
-        "ratio",
-        "lower",
-        "character difference(first draft, approved version) / first draft characters",
-        aggregation="mean",
-        missing_data_rule="unavailable until attributable drafts and approvals exist",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.first_pass_acceptance_rate",
-        "First-pass acceptance rate",
-        "ratio",
-        "higher",
-        "accepted first drafts / all first drafts",
-        aggregation="mean",
-        missing_data_rule="unavailable until human approvals are observed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.downstream_rework_cost_seconds",
-        "Downstream rework cost",
-        "seconds",
-        "lower",
-        "measured physical/synthesis rework duration",
-        aggregation="sum",
-        missing_data_rule="unavailable until EDA execution evidence is parsed",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.insight_accuracy",
-        "Physical-feedback insight accuracy",
-        "ratio",
-        "higher",
-        "human-verified correct diagnostic insights / reviewed insights",
-        aggregation="mean",
-        missing_data_rule="unavailable until human review is recorded",
-        source_description="Research evaluation input",
-    ),
-    _definition(
-        "research.retrieval_precision",
-        "Exact-signal retrieval precision",
-        "ratio",
-        "higher",
-        "correct retrieved exact signal names / retrieved signal names",
-        aggregation="mean",
-        missing_data_rule="unavailable until labelled retrieval evaluation exists",
-        source_description="Research evaluation input",
     ),
 )

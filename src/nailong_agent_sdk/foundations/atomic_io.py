@@ -1,12 +1,40 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Small, dependency-free primitives for atomic local file replacement."""
+"""Atomic file operations and cross-platform locks.
+This module provides small, dependency-free helpers for safe local file handling:
+- `file_fingerprint`: detect if a file has changed (inode, mtime, size).
+- `replace_atomic`: atomically swap a prepared temp file into place, retrying on transient errors.
+- `fsync_directory`: make a rename in a directory durable (a no-op on Windows).
+- `read_text_retrying`: read a UTF-8 file with retries if another process briefly blocks access.
+- `unique_temporary_path`: generate a collision-free temp filename next to a target.
+- `claim_exclusive`: create a file only if it doesn't already exist (used to claim resources).
+- `exclusive_file_lock`: context manager for advisory file locks, with POSIX and Windows support.
+These primitives are used to ensure durability and prevent corruption when multiple
+processes or threads interact with the same files.
+"""
 
 from __future__ import annotations
 
 import os
 import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+
+from .errors import AgentSdkError
+
+_LOCK_POLL_SECONDS = 0.005
+
+Fingerprint = tuple[int, int, int]
+
+
+def file_fingerprint(path: Path) -> Fingerprint | None:
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    return status.st_ino, status.st_mtime_ns, status.st_size
 
 
 def replace_atomic(temporary: Path, target: Path, *, attempts: int = 5) -> None:
@@ -27,3 +55,120 @@ def replace_atomic(temporary: Path, target: Path, *, attempts: int = 5) -> None:
             if attempt == attempts - 1:
                 raise
             time.sleep(0.01 * (attempt + 1))
+
+
+def read_text_retrying(path: Path, *, attempts: int = 10) -> str:
+    if attempts < 1:
+        raise ValueError("attempts must be at least one.")
+    for attempt in range(attempts - 1):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            time.sleep(0.005 * (attempt + 1))
+    return path.read_text(encoding="utf-8")
+
+
+def fsync_directory(directory: Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def unique_temporary_path(target: Path) -> Path:
+    return target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
+
+
+def claim_exclusive(path: Path) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    os.close(descriptor)
+    return True
+
+
+@contextmanager
+def exclusive_file_lock(
+    path: Path, *, timeout_seconds: float = 30.0, timeout_code: str = "FILE_LOCK_TIMEOUT"
+) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        descriptor = handle.fileno()
+        if os.name == "nt":
+            _acquire_windows_lock(descriptor, path, timeout_seconds, timeout_code)
+            try:
+                yield
+            finally:
+                _release_windows_lock(descriptor)
+        else:  # posix/linux/macOS
+            _acquire_posix_lock(descriptor, path, timeout_seconds, timeout_code)
+            try:
+                yield
+            finally:
+                _release_posix_lock(descriptor)
+
+
+def _lock_timeout(path: Path, timeout_seconds: float, timeout_code: str) -> AgentSdkError:
+    return AgentSdkError(
+        timeout_code,
+        f'Could not acquire the lock "{path.name}" within {timeout_seconds:g}s: '
+        "another process is holding it, most likely a writer that hung mid-operation "
+        "or software scanning the lock file.",
+        {"lock_path": str(path), "timeout_seconds": timeout_seconds},
+    )
+
+
+def _acquire_posix_lock(
+    descriptor: int, path: Path, timeout_seconds: float, timeout_code: str
+) -> None:
+    import fcntl
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError as error:
+            if time.monotonic() >= deadline:
+                raise _lock_timeout(path, timeout_seconds, timeout_code) from error
+            time.sleep(_LOCK_POLL_SECONDS)
+
+
+def _release_posix_lock(descriptor: int) -> None:
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+def _acquire_windows_lock(
+    descriptor: int, path: Path, timeout_seconds: float, timeout_code: str
+) -> None:
+    import msvcrt
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            return
+        except PermissionError as error:
+            if time.monotonic() >= deadline:
+                raise _lock_timeout(path, timeout_seconds, timeout_code) from error
+            time.sleep(_LOCK_POLL_SECONDS)
+
+
+def _release_windows_lock(descriptor: int) -> None:
+    import msvcrt
+
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)

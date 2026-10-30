@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import inspect
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Any
@@ -22,6 +23,7 @@ from ...foundations.contracts import (
     AgentRunStatus,
     AgentTurn,
     ContextProjectionMetadata,
+    EpisodeKind,
     MemoryScope,
     ModelObservation,
     ScopedAgentTask,
@@ -34,15 +36,18 @@ from ...foundations.contracts import (
     validate_task_input,
     validate_tool_arguments,
 )
-from ...foundations.errors import AgentSdkError, TransientProviderError
+from ...foundations.detached import run_detached
+from ...foundations.errors import AgentSdkError, TransientProviderError, redact_hidden_reasoning
+from ...foundations.hashing import canonical_hash, canonical_json, estimate_tokens
 from ...memory.context import assemble_initial_context
 from ...memory.context_projection import (
     ContextProjectionPolicy,
     ContextProjector,
     InMemoryToolResultJournal,
     ToolResultJournal,
+    journal_for_run,
 )
-from ...memory.episode_models import CompactionStatus, CompactionStrategy
+from ...memory.episode_models import CompactionStatus, CompactionStrategy, EpisodeState
 from ...memory.episode_store import InMemoryEpisodeStore
 from ...memory.episodes import InMemoryEpisodeGraph
 from ...observability.audit_log import AuditTranscriptStore
@@ -65,6 +70,7 @@ from ...observability.telemetry_models import (
     TelemetrySeverity,
 )
 from ...observability.telemetry_store import TelemetryStore
+from ...observability.trace_context import format_traceparent, resource_attributes
 from ...state.project_state_engine import ProjectStateProjector, ProjectStateReducer
 from ...state.project_state_models import (
     ProjectState,
@@ -73,9 +79,18 @@ from ...state.project_state_models import (
     StageStateSchema,
 )
 from ...state.project_state_store import InMemoryProjectStateStore
-from ...tools.tools import ToolExecutor, ToolInvocationContext
+from ...tools.tools import (
+    ToolAuthorization,
+    ToolAuthorizer,
+    ToolExecutor,
+    ToolInvocationContext,
+)
+from ..cost_model import PriceTable, RunCostLedger, price_usage
 from ..model import (
+    UNREPORTED_CANCELLATION,
     AgentModel,
+    CancellationReportingModel,
+    ModelCancellationOutcome,
     ModelContext,
     ModelStreamListener,
     ModelTurnResponse,
@@ -83,21 +98,35 @@ from ..model import (
     ProviderToolResult,
     ProviderToolResultConsumer,
     ProviderUsage,
+    RequestDiagnosticsSource,
     StreamingAgentModel,
 )
-from ..verification import VerificationGateRegistry
+from ..verification import VerificationDecision, VerificationGateRegistry
 from .types import (
     AgentWatchdogPolicy,
     CancellationToken,
     PostToolHook,
     PreToolHook,
+    RunCancelled,
     ToolBatchExecution,
     ToolCallOutcome,
+    WatchdogExpired,
 )
 
 # AgentTurn is a fixed discriminated union, so one module-level adapter safely
 # reuses identical validation state for every untrusted model response.
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
+_STATE_SUMMARY_HEADROOM_CHARS = 512
+_CANCELLATION_POLL_SECONDS = 0.05
+_PROFILE_EVENT_SPAN_LIMIT = 512
+_SPAN_ATTRIBUTE_TEXT_CHARS = 256
+_OUTCOME_ERROR_CHARS = 300
+_COST_METRICS = (
+    ("model.cost", "currency"),
+    ("model.cache_savings", "currency"),
+    ("model.cache_hit_ratio", "ratio"),
+)
+_DECLARED_TOOLS_LISTED = 20
 
 
 class BaseAgent:
@@ -128,15 +157,30 @@ class BaseAgent:
         audit_logs: AuditTranscriptStore | None = None,
         profiler: AgentRunProfiler | None = None,
         on_model_stream: ModelStreamListener | None = None,
+        episode_history_limit: int | None = None,
+        price_table: PriceTable | None = None,
+        tool_authorizer: ToolAuthorizer | None = None,
+        require_tool_authorization: bool | None = None,
     ) -> None:
+        if episode_history_limit is not None and episode_history_limit < 1:
+            raise ValueError(
+                f"episode_history_limit must be at least 1 when set, got {episode_history_limit}."
+            )
         if definition.memory_scope is MemoryScope.CROSS_SESSION:
             raise AgentSdkError(
                 "CROSS_SESSION_STORE_REQUIRED",
-                "Cross-session memory requires an injected persistent episode store.",
+                "Cross-session memory is not supported by BaseAgent yet: it keeps one episode "
+                "graph and store per run and has no path for attaching a persistent episode "
+                "store, so injecting an episode_store_factory does not lift this restriction; "
+                "declare the definition's memory_scope as task-scoped.",
             )
         self.definition = definition
         self.model = model
         self.tool_executor = tool_executor
+        self.tool_authorizer = tool_authorizer
+        self.require_tool_authorization = (
+            True if require_tool_authorization is None else require_tool_authorization
+        )
         self.verification_gates = verification_gates or VerificationGateRegistry()
         self.pre_tool_hooks = tuple(pre_tool_hooks)
         self.post_tool_hooks = tuple(post_tool_hooks)
@@ -149,6 +193,11 @@ class BaseAgent:
         self.result_journal = result_journal or InMemoryToolResultJournal()
         self.project_state_store = project_state_store or InMemoryProjectStateStore()
         self._episode_store_factory = episode_store_factory or InMemoryEpisodeStore
+        self._episode_history_limit = episode_history_limit
+        self.price_table = price_table
+        self._rehydrated_tokens = 0
+        self.cost_ledger = RunCostLedger()
+        self._active_memory: InMemoryEpisodeStore | None = None
         self._active_project_id: str | None = None
         self._active_project_state: ProjectState | None = None
         self.telemetry = telemetry
@@ -159,6 +208,11 @@ class BaseAgent:
         self._profile_root_span: ProfileSpanHandle | None = None
         self._provider_usage_reported = False
         self._active_audit_run_id: str | None = None
+        self._active_journal: ToolResultJournal | None = None
+        self._active_cancellation: CancellationToken | None = None
+        self._active_telemetry_context: TelemetryContext | None = None
+        self._owns_profiler = profiler is None
+        self._telemetry_start_sequence = 0
 
     async def run(
         self,
@@ -169,40 +223,102 @@ class BaseAgent:
 
         if self._active_project_id is not None:
             raise RuntimeError("A BaseAgent instance may execute only one task at a time.")
+        try:
+            return await self._run(task, cancellation)
+        except BaseException:
+            self._clear_active_run()
+            raise
+
+    def _clear_active_run(self) -> None:
+        memory, self._active_memory = self._active_memory, None
+        close = getattr(memory, "close_background", None)
+        if callable(close):
+            close()
+        self._active_project_id = None
+        self._active_project_state = None
+        self._profile_root_span = None
+        self._active_audit_run_id = None
+        self._active_journal = None
+        self._active_cancellation = None
+        self._active_telemetry_context = None
+
+    def _trace_parent_for(self, span_id: str) -> str | None:
+        trace_id = self.profiler.trace_id
+        return None if trace_id is None else format_traceparent(trace_id, span_id)
+
+    async def _run(
+        self,
+        task: ScopedAgentTask,
+        cancellation: CancellationToken | None,
+    ) -> AgentResult:
         validate_task_input(self.definition, task)
         prompt = assemble_initial_context(self.definition, task)
-        episodes = InMemoryEpisodeGraph(self._now)
+        episodes = InMemoryEpisodeGraph(self._now, retained_limit=self._episode_history_limit)
         memory = self._episode_store_factory()
+        self._active_memory = memory
         events: list[AgentLifecycleEvent] = []
         observations: list[ModelObservation] = []
         projection_history: list[ContextProjectionMetadata] = []
         continuation: ProviderContinuation | None = None
         self._provider_usage_reported = False
+        self._rehydrated_tokens = 0
+        self.cost_ledger = RunCostLedger()
         protected_episode_ids: frozenset[str] = frozenset()
+        caller_context = self.telemetry_context or TelemetryContext(
+            run_id=task.id,
+            task_id=task.id,
+            agent_id=self.definition.identity,
+        )
+        caller_span_id = caller_context.span_id or caller_context.parent_span_id
+        if self._owns_profiler:
+            self.profiler = AgentRunProfiler()
+        try:
+            root_span = self.profiler.begin_run(
+                caller_context.run_id,
+                task.id,
+                self.definition.identity,
+                trace_id=caller_context.trace_id,
+                parent_span_id=caller_span_id,
+            )
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"This BaseAgent was given an AgentRunProfiler that already profiled a run "
+                f"({error}); pass a new profiler or create a new BaseAgent for each task."
+            ) from error
+        telemetry_context = caller_context.model_copy(
+            update={
+                "trace_id": self.profiler.trace_id,
+                "span_id": root_span.span_id,
+                "parent_span_id": caller_span_id,
+            }
+        )
+        self._active_telemetry_context = telemetry_context
         project_id = self._project_id_for(task)
         project_state = self.project_state_store.ensure(project_id, self._stage_schema_for(task))
         self._active_project_id = project_id
         self._active_project_state = project_state
+        self._profile_root_span = root_span
         deadline = (
             asyncio.get_running_loop().time() + self.watchdog_policy.run_deadline_seconds
             if self.watchdog_policy.run_deadline_seconds is not None
             else None
         )
-        telemetry_context = self.telemetry_context or TelemetryContext(
-            run_id=task.id,
-            task_id=task.id,
-            agent_id=self.definition.identity,
-        )
         self._active_audit_run_id = telemetry_context.run_id
-        self._profile_root_span = self.profiler.begin_run(
-            telemetry_context.run_id,
-            task.id,
-            self.definition.identity,
-        )
+        self._active_journal = journal_for_run(self.result_journal, telemetry_context.run_id)
+        self._active_cancellation = cancellation
         if self.telemetry is not None:
             register_standard_metric_definitions(self.telemetry)
+            self._telemetry_start_sequence = self.telemetry.run_snapshot_sequence(
+                telemetry_context.run_id
+            )
 
-        def emit(event_type: str, iteration: int, **details: Any) -> None:
+        def emit(
+            event_type: str,
+            iteration: int,
+            *,
+            authority: TelemetryAuthority = TelemetryAuthority.DETERMINISTIC,
+            **details: Any,
+        ) -> None:
             event = AgentLifecycleEvent(
                 type=event_type,
                 task_id=task.id,
@@ -219,20 +335,20 @@ class BaseAgent:
                     actor=TelemetryActor(
                         kind="agent", identifier=self.definition.identity, role="base-agent"
                     ),
-                    authority=TelemetryAuthority.DETERMINISTIC,
+                    authority=authority,
                     status=event_type,
                     severity=TelemetrySeverity.ERROR
                     if event_type in {"terminated", "escalated"}
                     and details.get("status") != "completed"
                     else TelemetrySeverity.INFO,
-                    payload={"iteration": iteration, "details": details},
+                    payload={"iteration": iteration, "details": redact_hidden_reasoning(details)},
                 )
             if self.audit_logs is not None:
                 self.audit_logs.append(
                     telemetry_context.run_id,
                     event_type,
                     {
-                        "details": details,
+                        "details": redact_hidden_reasoning(details),
                         "telemetry_event_id": telemetry_event.event_id if telemetry_event else None,
                     },
                     task_id=task.id,
@@ -244,12 +360,14 @@ class BaseAgent:
             self.audit_logs.append(
                 telemetry_context.run_id,
                 "task-received",
-                {
-                    "identity": self.definition.identity,
-                    "task_instructions": task.instructions,
-                    "acceptance_criteria": task.acceptance_criteria,
-                    "scope": task.scope.model_dump(mode="json"),
-                },
+                redact_hidden_reasoning(
+                    {
+                        "identity": self.definition.identity,
+                        "task_instructions": task.instructions,
+                        "acceptance_criteria": task.acceptance_criteria,
+                        "scope": task.scope.model_dump(mode="json"),
+                    }
+                ),
                 task_id=task.id,
                 iteration=0,
             )
@@ -262,6 +380,7 @@ class BaseAgent:
             state_hash=project_state.state_hash,
         )
 
+        transient_failures = 0
         for iteration in range(1, self.definition.termination_policy.max_iterations + 1):
             if deadline is not None and asyncio.get_running_loop().time() >= deadline:
                 run_deadline_seconds = self.watchdog_policy.run_deadline_seconds
@@ -307,13 +426,47 @@ class BaseAgent:
                 attributes={"iteration": iteration},
             )
             try:
-                projection = self.context_projector.project(
+                projection = await self._project_context(
+                    prompt, observations, episodes, memory, protected_episode_ids, task, deadline
+                )
+            except RunCancelled:
+                self.profiler.finish_span(projection_span, ProfileSpanStatus.CANCELLED)
+                return self._terminate(
+                    AgentRunStatus.CANCELLED,
+                    task,
+                    iteration - 1,
+                    "Execution was cancelled while the episode memory was being summarized.",
                     prompt,
-                    observations,
-                    episodes.list(),
-                    memory,
-                    protected_episode_ids,
-                    relevance_query=self._pask_relevance_query(task),
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
+                )
+            except WatchdogExpired:
+                self.profiler.finish_span(projection_span, ProfileSpanStatus.TIMED_OUT)
+                run_deadline_seconds = self.watchdog_policy.run_deadline_seconds
+                failure = AgentFailure(
+                    code="WATCHDOG_RUN_DEADLINE",
+                    message=f"Agent run exceeded its {run_deadline_seconds}s overall run "
+                    f"deadline while the episode memory was being summarized, after "
+                    f"{iteration - 1} completed iteration(s); a summarizer that needs "
+                    "longer than the remaining deadline should be faster or the deadline longer.",
+                    details={
+                        "run_deadline_seconds": run_deadline_seconds,
+                        "completed_iterations": iteration - 1,
+                    },
+                )
+                return self._terminate(
+                    AgentRunStatus.FAILED,
+                    task,
+                    iteration - 1,
+                    failure.message,
+                    prompt,
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
+                    failure=failure,
                 )
             except Exception:
                 self.profiler.finish_span(projection_span, ProfileSpanStatus.FAILED)
@@ -334,7 +487,40 @@ class BaseAgent:
                 estimated_tokens=projection.metadata.estimated_tokens,
                 context_token_budget=projection.metadata.context_token_budget,
                 omitted_observation_count=projection.metadata.omitted_observation_count,
+                compacted_stub_count=len(projection.compacted_episodes),
+                omitted_compacted_count=projection.metadata.omitted_compacted_count,
+                **(
+                    {
+                        "semantic_summary_count": len(projection.summaries),
+                        "omitted_summary_count": projection.metadata.omitted_summary_count,
+                    }
+                    if projection.summaries or projection.metadata.omitted_summary_count
+                    else {}
+                ),
             )
+            semantic = projection.compaction.dossier.get("semantic_compaction")
+            if isinstance(semantic, dict) and semantic.get("outcomes"):
+                emit(
+                    "semantic-compaction",
+                    iteration,
+                    policy_hash=semantic.get("policy_hash"),
+                    summarizer_id=semantic.get("summarizer_id"),
+                    committed_summary_ids=semantic.get("committed_summary_ids", []),
+                    consolidated_summary_ids=semantic.get("consolidated_summary_ids", []),
+                    released_without_summary=semantic.get("released_without_summary", []),
+                    evicted_episode_ids=semantic.get("evicted_episode_ids", []),
+                    pending_episode_count=len(semantic.get("pending_episode_ids", [])),
+                    groups=[
+                        {
+                            "group_id": outcome.get("group_id"),
+                            "level": outcome.get("level"),
+                            "status": outcome.get("status"),
+                            "input_hash": outcome.get("input_hash"),
+                            "reason": outcome.get("reason"),
+                        }
+                        for outcome in semantic["outcomes"]
+                    ],
+                )
             if self.telemetry is not None:
                 metric_details = {"iteration": iteration, "kind": "sdk-estimate"}
                 record_metric_value(
@@ -432,7 +618,8 @@ class BaseAgent:
                     )
             if (
                 self.telemetry is not None
-                and projection.compaction.strategy is CompactionStrategy.EXACT_PCKP
+                and projection.compaction.strategy
+                in (CompactionStrategy.EXACT_PCKP, CompactionStrategy.LEARNED_PCKP)
                 and isinstance(projection.compaction.dossier.get("solver"), dict)
             ):
                 dossier = projection.compaction.dossier
@@ -497,56 +684,88 @@ class BaseAgent:
                             details=metric_details,
                         )
             if projection.compaction.status is CompactionStatus.CONTEXT_DEADLOCK:
+                failure = AgentFailure(
+                    code="CONTEXT_DEADLOCK",
+                    message="CONTEXT_DEADLOCK: no closed, dependency-free episode can be "
+                    "compacted within the configured episode budget.",
+                    details={
+                        "episode_token_budget": projection.metadata.episode_token_budget,
+                        "estimated_tokens": projection.metadata.estimated_tokens,
+                    },
+                )
                 return self._terminate(
                     AgentRunStatus.BLOCKED,
                     task,
                     iteration - 1,
-                    "CONTEXT_DEADLOCK: no closed, dependency-free, manifest-complete episode "
-                    "can be compacted within the configured episode budget.",
+                    failure.message,
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
+                    failure=failure,
                 )
             emit("turn-started", iteration)
             try:
                 project_state = self._active_project_state or project_state
                 project_state_view = self.project_state_projector.project(project_state)
                 if project_state_view.over_budget:
+                    failure = AgentFailure(
+                        code="PROJECT_STATE_BUDGET_EXCEEDED",
+                        message="PROJECT_STATE_BUDGET_EXCEEDED: mandatory current-state fields "
+                        "exceed the configured state token budget.",
+                        details={
+                            "estimated_tokens": project_state_view.estimated_tokens,
+                            "token_budget": project_state_view.token_budget,
+                        },
+                    )
                     return self._terminate(
                         AgentRunStatus.BLOCKED,
                         task,
                         iteration - 1,
-                        "PROJECT_STATE_BUDGET_EXCEEDED: mandatory current-state fields exceed "
-                        "the configured state token budget.",
+                        failure.message,
                         prompt,
                         episodes,
                         events,
                         emit,
                         projection_history,
+                        failure=failure,
                     )
                 model_context_tokens = self._estimate_model_context_tokens(
                     prompt, project_state_view
                 )
                 if model_context_tokens > projection.metadata.context_token_budget:
+                    failure = AgentFailure(
+                        code="CONTEXT_BUDGET_EXCEEDED",
+                        message="CONTEXT_BUDGET_EXCEEDED: immutable prompt plus bounded project "
+                        "state exceed the configured context token budget.",
+                        details={
+                            "estimated_tokens": model_context_tokens,
+                            "context_token_budget": projection.metadata.context_token_budget,
+                        },
+                    )
                     return self._terminate(
                         AgentRunStatus.BLOCKED,
                         task,
                         iteration - 1,
-                        "CONTEXT_BUDGET_EXCEEDED: immutable prompt plus bounded project state "
-                        "exceed the configured context token budget.",
+                        failure.message,
                         prompt,
                         episodes,
                         events,
                         emit,
                         projection_history,
+                        failure=failure,
                     )
                 model_span = self.profiler.start_span(
                     ProfileSpanKind.MODEL_TURN,
                     "model-turn",
                     parent_span_id=self._profile_root_span.span_id,
-                    attributes={"iteration": iteration},
+                    attributes={
+                        "iteration": iteration,
+                        "gen_ai.operation.name": "chat",
+                        "gen_ai.provider.name": self.definition.model_binding.provider,
+                        "gen_ai.request.model": self.definition.model_binding.model,
+                    },
                 )
                 model_context = ModelContext(
                     task=task,
@@ -559,12 +778,13 @@ class BaseAgent:
                     projection=projection.metadata,
                     model_binding=self.definition.model_binding,
                     output_schema=self.definition.output_schema,
+                    compacted_episodes=projection.compacted_episodes,
+                    trace_parent=self._trace_parent_for(model_span.span_id),
+                    semantic_summaries=projection.summaries,
                 )
-                streaming_ready = self._on_model_stream is not None and isinstance(
-                    self.model, StreamingAgentModel
-                )
-                if streaming_ready:
-                    model_call = self.model.stream_turn(model_context, self._on_model_stream)
+                stream_listener = self._guarded_stream_listener(emit, iteration)
+                if stream_listener is not None and isinstance(self.model, StreamingAgentModel):
+                    model_call = self.model.stream_turn(model_context, stream_listener)
                 else:
                     model_call = self.model.next_turn(model_context)
                 try:
@@ -573,42 +793,92 @@ class BaseAgent:
                         self.watchdog_policy.model_turn_timeout_seconds,
                         deadline,
                     )
-                except TimeoutError:
+                except WatchdogExpired:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.TIMED_OUT)
+                    raise
+                except RunCancelled:
+                    outcome = self._model_cancellation_outcome(task.id)
+                    self.profiler.finish_span(
+                        model_span,
+                        ProfileSpanStatus.CANCELLED,
+                        attributes={
+                            "nailong.cancellation.transport": outcome.transport,
+                            "nailong.cancellation.provider": outcome.provider,
+                        },
+                    )
+                    emit("model-turn-cancelled", iteration, **outcome.details())
                     raise
                 except Exception:
                     self.profiler.finish_span(model_span, ProfileSpanStatus.FAILED)
                     raise
                 else:
-                    self.profiler.finish_span(model_span, ProfileSpanStatus.COMPLETED)
-            except TimeoutError:
-                turn_timeout = self.watchdog_policy.model_turn_timeout_seconds
-                timeout_detail = (
-                    f"its {turn_timeout}s per-turn watchdog timeout"
-                    if turn_timeout is not None
-                    else "the run's configured deadline"
-                )
+                    self.profiler.finish_span(
+                        model_span,
+                        ProfileSpanStatus.COMPLETED,
+                        attributes=_model_turn_attributes(response),
+                    )
+                transient_failures = 0
+            except RunCancelled:
                 return self._terminate(
-                    AgentRunStatus.FAILED,
+                    AgentRunStatus.CANCELLED,
                     task,
                     iteration,
-                    f"WATCHDOG_MODEL_TIMEOUT: model turn exceeded {timeout_detail}; "
-                    "the provider may be overloaded, the request may be too large for its "
-                    "current response time, or the network path may be degraded.",
+                    "Execution was cancelled while the model turn was running.",
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
                 )
+            except WatchdogExpired as expired:
+                reason = (
+                    "WATCHDOG_MODEL_TIMEOUT: model turn exceeded "
+                    f"{_watchdog_detail(expired, 'per-turn watchdog timeout')}; "
+                    "the provider may be overloaded, the request may be too large for its "
+                    "current response time, or the network path may be degraded."
+                )
+                failure = AgentFailure(
+                    code="WATCHDOG_MODEL_TIMEOUT",
+                    message=reason,
+                    details={
+                        "limit": expired.source,
+                        "watchdog_seconds": expired.seconds,
+                        "completed_iterations": iteration - 1,
+                    },
+                )
+                return self._terminate(
+                    AgentRunStatus.FAILED,
+                    task,
+                    iteration,
+                    reason,
+                    prompt,
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
+                    failure=failure,
+                )
             except TransientProviderError as error:
+                transient_failures += 1
+                delay = self._transient_retry_delay(error, transient_failures)
                 observations.append(
                     ModelObservation(
                         kind="agent-error",
                         iteration=iteration,
-                        message=f"Model turn failed, retrying ({error.code}): {error.message}",
+                        message=(
+                            f"Model turn failed, retrying in {delay:g}s "
+                            f"({error.code}): {error.message}"
+                        ),
                     )
                 )
+                emit(
+                    "model-turn-retrying",
+                    iteration,
+                    code=error.code,
+                    attempt=transient_failures,
+                    delay_seconds=delay,
+                )
+                await self._sleep_before_retry(delay, deadline, cancellation)
                 continue
             except AgentSdkError as error:
                 return self._terminate(
@@ -647,14 +917,18 @@ class BaseAgent:
                 if usage is not None:
                     self._provider_usage_reported = True
                     self._record_provider_usage(telemetry_context, usage, iteration)
+                    self._record_cost(telemetry_context, usage, iteration)
+                self._record_request_diagnostics(task.id, telemetry_context, iteration)
                 if self.audit_logs is not None:
                     self.audit_logs.append(
                         telemetry_context.run_id,
                         "model-turn",
-                        {
-                            "turn": turn.model_dump(mode="json"),
-                            "provider_usage_reported": usage is not None,
-                        },
+                        redact_hidden_reasoning(
+                            {
+                                "turn": turn.model_dump(mode="json"),
+                                "provider_usage_reported": usage is not None,
+                            }
+                        ),
                         task_id=task.id,
                         iteration=iteration,
                     )
@@ -683,6 +957,7 @@ class BaseAgent:
                     events,
                     emit,
                     projection_history,
+                    failure=AgentFailure(code="MODEL_REPORTED_BLOCKED", message=turn.reason),
                 )
             if turn.type == "final":
                 accepted = await self._accept_final_turn(
@@ -728,17 +1003,24 @@ class BaseAgent:
                         self.watchdog_policy.model_turn_timeout_seconds,
                         deadline,
                     )
-                except TimeoutError:
-                    turn_timeout = self.watchdog_policy.model_turn_timeout_seconds
-                    timeout_detail = (
-                        f"its {turn_timeout}s per-turn watchdog timeout"
-                        if turn_timeout is not None
-                        else "the run's configured deadline"
+                except RunCancelled:
+                    return self._terminate(
+                        AgentRunStatus.CANCELLED,
+                        task,
+                        iteration,
+                        "Execution was cancelled while forwarding tool results to the provider.",
+                        prompt,
+                        episodes,
+                        events,
+                        emit,
+                        projection_history,
                     )
+                except WatchdogExpired as expired:
+                    timeout_detail = _watchdog_detail(expired, "per-turn watchdog timeout")
                     failure = AgentFailure(
                         code="WATCHDOG_MODEL_TIMEOUT",
                         message=f"Provider tool-result continuation exceeded {timeout_detail}.",
-                        details={"watchdog_seconds": turn_timeout},
+                        details={"limit": expired.source, "watchdog_seconds": expired.seconds},
                     )
                     return self._terminate(
                         AgentRunStatus.FAILED,
@@ -799,18 +1081,24 @@ class BaseAgent:
                     ],
                 )
 
+        failure = AgentFailure(
+            code="MAX_ITERATIONS_REACHED",
+            message="Maximum iteration limit "
+            f"({self.definition.termination_policy.max_iterations}) "
+            "reached without accepted output.",
+            details={"max_iterations": self.definition.termination_policy.max_iterations},
+        )
         return self._terminate(
             AgentRunStatus.FAILED,
             task,
             self.definition.termination_policy.max_iterations,
-            "Maximum iteration limit "
-            f"({self.definition.termination_policy.max_iterations}) "
-            "reached without accepted output.",
+            failure.message,
             prompt,
             episodes,
             events,
             emit,
             projection_history,
+            failure=failure,
         )
 
     def _normalize_model_response(
@@ -856,9 +1144,11 @@ class BaseAgent:
         try:
             validate_candidate_output(self.definition, output)
         except AgentSdkError as error:
-            emit("output-rejected", iteration, reason=error.message)
+            emit("output-rejected", iteration, reason=error.message, failure_code=error.code)
             return ModelObservation(kind="agent-error", iteration=iteration, message=error.message)
         if self.definition.verification_gate_id:
+            gate_id = self.definition.verification_gate_id
+            output_digest = canonical_hash(output)
             verification_span = self.profiler.start_span(
                 ProfileSpanKind.VERIFICATION,
                 self.definition.verification_gate_id,
@@ -876,14 +1166,24 @@ class BaseAgent:
                     self.watchdog_policy.verification_timeout_seconds,
                     deadline,
                 )
-            except TimeoutError:
-                self.profiler.finish_span(verification_span, ProfileSpanStatus.TIMED_OUT)
-                verification_timeout = self.watchdog_policy.verification_timeout_seconds
-                timeout_detail = (
-                    f"its {verification_timeout}s verification watchdog timeout"
-                    if verification_timeout is not None
-                    else "the run's configured deadline"
+            except RunCancelled:
+                self.profiler.finish_span(verification_span, ProfileSpanStatus.CANCELLED)
+                return self._terminate(
+                    AgentRunStatus.CANCELLED,
+                    task,
+                    iteration,
+                    f"Execution was cancelled while verification gate "
+                    f"{self.definition.verification_gate_id!r} was running.",
+                    prompt,
+                    episodes,
+                    events,
+                    emit,
+                    projection_history,
                 )
+            except WatchdogExpired as expired:
+                self.profiler.finish_span(verification_span, ProfileSpanStatus.TIMED_OUT)
+                verification_timeout = expired.seconds
+                timeout_detail = _watchdog_detail(expired, "verification watchdog timeout")
                 reason = (
                     f"WATCHDOG_VERIFICATION_TIMEOUT: verification gate "
                     f"{self.definition.verification_gate_id!r} exceeded {timeout_detail}; the "
@@ -895,6 +1195,7 @@ class BaseAgent:
                     message=reason,
                     details={
                         "verification_gate_id": self.definition.verification_gate_id,
+                        "limit": expired.source,
                         "watchdog_seconds": verification_timeout,
                     },
                 )
@@ -904,6 +1205,8 @@ class BaseAgent:
                     passed=False,
                     reason=reason,
                     failure_code=failure.code,
+                    gate_id=gate_id,
+                    output_digest=output_digest,
                 )
                 return self._terminate(
                     AgentRunStatus.FAILED,
@@ -925,6 +1228,8 @@ class BaseAgent:
                     passed=False,
                     reason=error.message,
                     failure_code=error.code,
+                    gate_id=gate_id,
+                    output_digest=output_digest,
                 )
                 return self._terminate(
                     AgentRunStatus.FAILED,
@@ -952,6 +1257,8 @@ class BaseAgent:
                     passed=False,
                     reason=failure.message,
                     failure_code=failure.code,
+                    gate_id=gate_id,
+                    output_digest=output_digest,
                 )
                 return self._terminate(
                     AgentRunStatus.FAILED,
@@ -991,23 +1298,39 @@ class BaseAgent:
                 ProfileSpanStatus.COMPLETED if decision.passed else ProfileSpanStatus.FAILED,
                 attributes={"passed": decision.passed},
             )
+            rejection = None
+            if not decision.passed:
+                rejection = AgentFailure(
+                    code="VERIFICATION_GATE_REJECTED",
+                    message=decision.reason or "Deterministic verification gate rejected output.",
+                    details={
+                        "verification_gate_id": gate_id,
+                        "verifier_id": decision.verifier_id,
+                        "output_digest": output_digest,
+                    },
+                )
             emit(
                 "verification-completed",
                 iteration,
+                authority=decision.authority or TelemetryAuthority.DETERMINISTIC,
                 passed=decision.passed,
                 reason=decision.reason,
+                gate_id=gate_id,
+                output_digest=output_digest,
+                **_verifier_details(decision, rejection),
             )
-            if not decision.passed:
+            if rejection is not None:
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration,
-                    decision.reason or "Deterministic verification gate rejected output.",
+                    rejection.message,
                     prompt,
                     episodes,
                     events,
                     emit,
                     projection_history,
+                    failure=rejection,
                 )
         return self._terminate(
             AgentRunStatus.COMPLETED,
@@ -1039,6 +1362,7 @@ class BaseAgent:
         outcomes: dict[str, ToolCallOutcome] = {}
         ordered_ids = [call.id for call in batch.calls]
         blocked_reason: str | None = None
+        blocked_failure: AgentFailure | None = None
 
         while pending:
             ready = [
@@ -1048,15 +1372,21 @@ class BaseAgent:
                 and all(dependency in outcomes for dependency in call.depends_on_call_ids)
             ]
             if not ready:
+                failure = AgentFailure(
+                    code="TOOL_BATCH_DEPENDENCIES_UNRESOLVED",
+                    message="Tool batch scheduler reached an unresolved dependency state.",
+                    details={"pending_call_ids": sorted(pending)},
+                )
                 return self._terminate(
                     AgentRunStatus.FAILED,
                     task,
                     iteration,
-                    "Tool batch scheduler reached an unresolved dependency state.",
+                    failure.message,
                     prompt,
                     episodes,
                     events,
                     emit,
+                    failure=failure,
                 )
 
             dependency_blocked = [
@@ -1068,17 +1398,32 @@ class BaseAgent:
                 )
             ]
             for call in dependency_blocked:
+                upstream = next(
+                    outcomes[dependency]
+                    for dependency in call.depends_on_call_ids
+                    if outcomes[dependency].result.status != "succeeded"
+                )
+                skipped_reason = (
+                    f'Tool call "{call.id}" ("{call.name}") was not run because its dependency '
+                    f'"{upstream.call.id}" ("{upstream.call.name}") {upstream.result.status}: '
+                    f"{upstream.result.error or 'no reason supplied'}."
+                )
                 outcomes[call.id] = self._record_unexecuted_result(
                     call,
                     ToolExecutionResult(
-                        status="blocked",
-                        error="A declared tool-call dependency did not succeed.",
+                        status="blocked" if upstream.result.status == "blocked" else "failed",
+                        error=skipped_reason,
                     ),
                     iteration,
                 )
                 pending.pop(call.id)
-                blocked_reason = blocked_reason or outcomes[call.id].result.error
-                self._apply_tool_outcome_to_project_state(outcomes[call.id], emit, iteration)
+                if outcomes[call.id].result.status == "blocked":
+                    blocked_reason = blocked_reason or skipped_reason
+                terminal = self._record_tool_outcome(
+                    outcomes[call.id], task, iteration, prompt, episodes, events, emit
+                )
+                if terminal is not None:
+                    return terminal
 
             executable = [call for call in ready if call not in dependency_blocked]
             if not executable:
@@ -1092,7 +1437,11 @@ class BaseAgent:
                 ),
                 None,
             )
-            selected = [serial] if serial is not None else executable
+            selected = (
+                [serial]
+                if serial is not None
+                else executable[: self.watchdog_policy.max_parallel_tool_calls]
+            )
             selected_outcomes = await asyncio.gather(
                 *(
                     self._execute_profiled_tool_call(
@@ -1111,9 +1460,14 @@ class BaseAgent:
             for item in selected_outcomes:
                 outcomes[item.call.id] = item
                 pending.pop(item.call.id)
-                self._apply_tool_outcome_to_project_state(item, emit, iteration)
-                if item.result.status == "blocked":
-                    blocked_reason = blocked_reason or item.result.error
+                terminal = self._record_tool_outcome(
+                    item, task, iteration, prompt, episodes, events, emit
+                )
+                if terminal is not None:
+                    return terminal
+                if item.result.status == "blocked" and not blocked_reason:
+                    blocked_reason = item.result.error
+                    blocked_failure = _naming_call(item.result.failure, item.call)
                 if item.terminal_status is not None:
                     return self._terminate(
                         item.terminal_status,
@@ -1124,7 +1478,7 @@ class BaseAgent:
                         episodes,
                         events,
                         emit,
-                        failure=item.result.failure,
+                        failure=_naming_call(item.result.failure, item.call),
                     )
 
             if blocked_reason is not None:
@@ -1138,17 +1492,18 @@ class BaseAgent:
                         iteration,
                     )
                     pending.pop(call.id)
-                    self._apply_tool_outcome_to_project_state(outcomes[call.id], emit, iteration)
+                    terminal = self._record_tool_outcome(
+                        outcomes[call.id], task, iteration, prompt, episodes, events, emit
+                    )
+                    if terminal is not None:
+                        return terminal
                 break
 
         ordered_outcomes = [outcomes[call_id] for call_id in ordered_ids]
         emit(
             "tool-batch-completed",
             iteration,
-            outcomes=[
-                {"tool_call_id": item.call.id, "tool": item.call.name, "status": item.result.status}
-                for item in ordered_outcomes
-            ],
+            outcomes=[_batch_outcome(item) for item in ordered_outcomes],
         )
         if blocked_reason is not None:
             return self._terminate(
@@ -1160,6 +1515,7 @@ class BaseAgent:
                 episodes,
                 events,
                 emit,
+                failure=blocked_failure,
             )
         return ToolBatchExecution(
             observations=tuple(item.observation for item in ordered_outcomes),
@@ -1181,7 +1537,13 @@ class BaseAgent:
             ProfileSpanKind.TOOL,
             call.name,
             parent_span_id=self._profile_root_span.span_id if self._profile_root_span else None,
-            attributes={"iteration": iteration, "tool_call_id": call.id},
+            attributes={
+                "iteration": iteration,
+                "tool_call_id": _span_attribute_text(call.id),
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": _span_attribute_text(call.name),
+                "gen_ai.tool.call.id": _span_attribute_text(call.id),
+            },
         )
         try:
             outcome = await self._execute_tool_call(
@@ -1193,6 +1555,7 @@ class BaseAgent:
                 memory,
                 emit,
                 deadline,
+                self._trace_parent_for(span.span_id),
             )
         except Exception:
             self.profiler.finish_span(span, ProfileSpanStatus.FAILED)
@@ -1205,6 +1568,40 @@ class BaseAgent:
         self.profiler.finish_span(span, status, attributes={"result_status": outcome.result.status})
         return outcome
 
+    async def _authorize_tool_call(
+        self, tool: ToolDefinition, context: ToolInvocationContext, deadline: float | None
+    ) -> ToolAuthorization | None:
+        if self.tool_authorizer is None:
+            return None
+        try:
+            decision = self.tool_authorizer.authorize(tool, context)
+            if inspect.isawaitable(decision):
+                decision = await self._await_with_watchdog(
+                    decision, self.watchdog_policy.tool_call_timeout_seconds, deadline
+                )
+            return decision
+        except (RunCancelled, WatchdogExpired):
+            raise
+        except Exception as error:
+            message = (
+                f'Tool "{tool.name}" was refused because its authorizer failed: '
+                f"{type(error).__name__}: {error}"
+            )
+            return ToolAuthorization(
+                allowed=False,
+                tool=tool.name,
+                call_id=context.call.id,
+                result=ToolExecutionResult(
+                    status="blocked",
+                    error=message,
+                    failure=AgentFailure(
+                        code="TOOL_AUTHORIZATION_FAILED",
+                        message=message,
+                        details={"tool": tool.name, "tool_call_id": context.call.id},
+                    ),
+                ),
+            )
+
     async def _execute_tool_call(
         self,
         task: ScopedAgentTask,
@@ -1215,25 +1612,56 @@ class BaseAgent:
         memory: InMemoryEpisodeStore,
         emit: Callable[..., None],
         deadline: float | None,
+        trace_parent: str | None = None,
     ) -> ToolCallOutcome:
         tool = self._tool_definition(call)
         if tool is None:
+            failure = AgentFailure(
+                code="TOOL_NOT_DECLARED",
+                message=f'Tool "{call.name}" is not declared for this agent.',
+                details={
+                    "tool": call.name,
+                    "tool_call_id": call.id,
+                    "declared_tools": sorted(item.name for item in self.definition.tools)[
+                        :_DECLARED_TOOLS_LISTED
+                    ],
+                },
+            )
             return self._record_unexecuted_result(
                 call,
-                ToolExecutionResult(
-                    status="failed",
-                    error=f'Tool "{call.name}" is not declared for this agent.',
-                ),
+                ToolExecutionResult(status="failed", error=failure.message, failure=failure),
                 iteration,
                 terminal_status=AgentRunStatus.FAILED,
             )
         if self.tool_executor is None:
+            failure = AgentFailure(
+                code="TOOL_EXECUTOR_MISSING",
+                message=f'No tool executor is configured for declared tool "{call.name}".',
+                details={"tool": call.name, "tool_call_id": call.id},
+            )
             return self._record_unexecuted_result(
                 call,
-                ToolExecutionResult(
-                    status="failed",
-                    error=f'No tool executor is configured for declared tool "{call.name}".',
+                ToolExecutionResult(status="failed", error=failure.message, failure=failure),
+                iteration,
+                terminal_status=AgentRunStatus.FAILED,
+            )
+        if (
+            self.require_tool_authorization
+            and self.tool_authorizer is None
+            and not getattr(self.tool_executor, "enforces_authorization", False)
+        ):
+            failure = AgentFailure(
+                code="TOOL_AUTHORIZER_MISSING",
+                message=(
+                    f'Tool "{call.name}" was not run: this agent requires every tool call to be '
+                    "authorized and has neither a tool_authorizer nor an executor that enforces "
+                    "authorization; pass require_tool_authorization=False to run it ungoverned."
                 ),
+                details={"tool": call.name, "tool_call_id": call.id},
+            )
+            return self._record_unexecuted_result(
+                call,
+                ToolExecutionResult(status="failed", error=failure.message, failure=failure),
                 iteration,
                 terminal_status=AgentRunStatus.FAILED,
             )
@@ -1248,15 +1676,38 @@ class BaseAgent:
                     failure=AgentFailure.from_sdk_error(error),
                 ),
                 iteration,
-                terminal_status=AgentRunStatus.FAILED,
             )
 
         effective_call = self._effective_call(call, prior_outcomes)
+        if tool.episode_kind is EpisodeKind.ACTION:
+            restored = self._rehydrate_consumed(effective_call, memory)
+            if restored:
+                emit(
+                    "episodes-rehydrated",
+                    iteration,
+                    episode_ids=restored,
+                    tool=call.name,
+                    tool_call_id=call.id,
+                    run_rehydrated_tokens=self._rehydrated_tokens,
+                )
+            unavailable = self._unavailable_consumed_episodes(effective_call, episodes, memory)
+            if unavailable:
+                return self._record_unexecuted_result(
+                    call,
+                    ToolExecutionResult(
+                        status="failed",
+                        error=f'Tool "{call.name}" was not run: its consumed_episode_ids refer to '
+                        f"unavailable episodes ({'; '.join(unavailable)}). Consume only "
+                        "exploratory episodes that are still part of the working context.",
+                    ),
+                    iteration,
+                )
         context = ToolInvocationContext(
             agent_identity=self.definition.identity,
             task=task,
             iteration=iteration,
             call=effective_call,
+            trace_parent=trace_parent,
         )
         emit("tool-requested", iteration, tool=call.name, tool_call_id=call.id)
         try:
@@ -1265,9 +1716,15 @@ class BaseAgent:
                     hook(context), self.watchdog_policy.tool_call_timeout_seconds, deadline
                 )
                 if decision and not decision.allowed:
+                    denial = decision.reason or f'Tool "{call.name}" was denied by policy.'
                     result = ToolExecutionResult(
                         status="blocked",
-                        error=decision.reason or f'Tool "{call.name}" was denied by policy.',
+                        error=denial,
+                        failure=AgentFailure(
+                            code="TOOL_DENIED_BY_HOOK",
+                            message=denial,
+                            details={"tool": call.name, "tool_call_id": call.id},
+                        ),
                     )
                     return self._record_unexecuted_result(
                         call,
@@ -1275,27 +1732,46 @@ class BaseAgent:
                         iteration,
                         terminal_status=AgentRunStatus.BLOCKED,
                     )
-            result = await self._await_with_watchdog(
-                self.tool_executor.execute(tool, context),
-                self.watchdog_policy.tool_call_timeout_seconds,
-                deadline,
-            )
+            authorization = await self._authorize_tool_call(tool, context, deadline)
+            if authorization is not None and authorization.allowed:
+                context = replace(context, authorization=authorization)
+            if authorization is not None and not authorization.allowed:
+                result = authorization.result or ToolExecutionResult(
+                    status="blocked",
+                    error=f'Tool "{call.name}" was refused by its authorizer.',
+                )
+            else:
+                result = await self._await_with_watchdog(
+                    self.tool_executor.execute(tool, context),
+                    self.watchdog_policy.tool_call_timeout_seconds,
+                    deadline,
+                )
             for hook in self.post_tool_hooks:
                 await self._await_with_watchdog(
                     hook(context, result), self.watchdog_policy.tool_call_timeout_seconds, deadline
                 )
-        except TimeoutError:
-            tool_timeout = self.watchdog_policy.tool_call_timeout_seconds
-            timeout_detail = (
-                f"its {tool_timeout}s tool-call watchdog timeout"
-                if tool_timeout is not None
-                else "the run's configured deadline"
+        except RunCancelled:
+            result = ToolExecutionResult(
+                status="failed",
+                error=f'Tool "{call.name}" was interrupted because the run was cancelled.',
             )
+            return self._record_unexecuted_result(
+                call,
+                result,
+                iteration,
+                terminal_status=AgentRunStatus.CANCELLED,
+            )
+        except WatchdogExpired as expired:
+            timeout_detail = _watchdog_detail(expired, "tool-call watchdog timeout")
             failure = AgentFailure(
                 code="WATCHDOG_TOOL_TIMEOUT",
                 message=f'Tool "{call.name}" (pre-tool hook, execution, or post-tool hook) '
                 f"exceeded {timeout_detail}.",
-                details={"tool": call.name, "watchdog_seconds": tool_timeout},
+                details={
+                    "tool": call.name,
+                    "limit": expired.source,
+                    "watchdog_seconds": expired.seconds,
+                },
             )
             result = ToolExecutionResult(status="failed", error=failure.message, failure=failure)
             return self._record_unexecuted_result(
@@ -1330,22 +1806,44 @@ class BaseAgent:
                 terminal_status=AgentRunStatus.FAILED,
             )
 
-        outcome = self._record_executed_result(
-            tool, effective_call, result, iteration, episodes, memory
-        )
+        try:
+            outcome = self._record_executed_result(
+                tool, effective_call, result, iteration, episodes, memory
+            )
+        except Exception as error:
+            failure = AgentFailure(
+                code="EPISODE_RECORDING_FAILED",
+                message=f'Tool "{call.name}" (call "{call.id}") ran with status '
+                f"{result.status}, but recording its episode raised {type(error).__name__}: "
+                f"{error}; the tool's side effects were applied.",
+                details={
+                    "tool": call.name,
+                    "tool_call_id": call.id,
+                    "executed_status": result.status,
+                    "error_type": type(error).__name__,
+                },
+            )
+            return self._record_unexecuted_result(
+                call,
+                ToolExecutionResult(status="failed", error=failure.message, failure=failure),
+                iteration,
+                terminal_status=AgentRunStatus.FAILED,
+            )
         if self.audit_logs is not None and self._active_audit_run_id is not None:
             self.audit_logs.append(
                 self._active_audit_run_id,
                 "tool-result",
-                {
-                    "tool": call.name,
-                    "tool_call_id": call.id,
-                    "arguments": effective_call.arguments,
-                    "result": result.model_dump(mode="json"),
-                    "result_handle_id": outcome.observation.result.handle.handle_id
-                    if outcome.observation.result is not None
-                    else None,
-                },
+                redact_hidden_reasoning(
+                    {
+                        "tool": call.name,
+                        "tool_call_id": call.id,
+                        "arguments": effective_call.arguments,
+                        "result": result.model_dump(mode="json"),
+                        "result_handle_id": outcome.observation.result.handle.handle_id
+                        if outcome.observation.result is not None
+                        else None,
+                    }
+                ),
                 task_id=task.id,
                 iteration=iteration,
             )
@@ -1353,6 +1851,73 @@ class BaseAgent:
             "tool-completed", iteration, tool=call.name, tool_call_id=call.id, status=result.status
         )
         return outcome
+
+    async def _project_context(
+        self,
+        prompt: Any,
+        observations: Sequence[ModelObservation],
+        episodes: InMemoryEpisodeGraph,
+        memory: InMemoryEpisodeStore,
+        protected_episode_ids: frozenset[str],
+        task: ScopedAgentTask,
+        deadline: float | None,
+    ) -> Any:
+        arguments = (prompt, observations, episodes.list(), memory, protected_episode_ids)
+        query = self._pask_relevance_query(task)
+        if not getattr(memory, "semantic_compaction_enabled", False):
+            return self.context_projector.project(*arguments, relevance_query=query)
+        guard = memory.guard_compaction()
+        try:
+            return await self._await_with_watchdog(
+                run_detached(self.context_projector.project, *arguments, relevance_query=query),
+                None,
+                deadline,
+            )
+        except BaseException:
+            guard.abandon()
+            raise
+
+    def _rehydrate_consumed(self, call: ToolCall, memory: InMemoryEpisodeStore) -> list[str]:
+        budget = self.context_projector.policy.rehydration_token_budget
+        if budget <= 0 or not callable(getattr(memory, "rehydrate", None)):
+            return []
+        wanted = [
+            episode_id
+            for episode_id in call.consumed_episode_ids
+            if (record := memory.get(episode_id)) is not None
+            and record.state is EpisodeState.COMPACTED
+        ]
+        if not wanted:
+            return []
+        run_budget = self.context_projector.policy.rehydration_run_budget
+        remaining = None if run_budget is None else run_budget - self._rehydrated_tokens
+        if remaining is not None and remaining <= 0:
+            return []
+        result = self.context_projector.rehydrate(memory, wanted, remaining)
+        self._rehydrated_tokens += result.restored_tokens
+        return list(result.restored_episode_ids)
+
+    @staticmethod
+    def _unavailable_consumed_episodes(
+        call: ToolCall,
+        episodes: InMemoryEpisodeGraph,
+        memory: InMemoryEpisodeStore,
+    ) -> list[str]:
+        problems: list[str] = []
+        for episode_id in call.consumed_episode_ids:
+            kind = episodes.kind_of(episode_id)
+            if kind is None:
+                problems.append(f'"{episode_id}" is not an episode of this run')
+            elif kind is not EpisodeKind.EXPLORATORY:
+                problems.append(
+                    f'"{episode_id}" is an {kind.value} episode and actions may consume '
+                    "only exploratory episodes"
+                )
+            else:
+                record = memory.get(episode_id)
+                if record is not None and record.state is EpisodeState.COMPACTED:
+                    problems.append(f'"{episode_id}" was compacted out of the working context')
+        return problems
 
     def _record_executed_result(
         self,
@@ -1366,25 +1931,28 @@ class BaseAgent:
         summary = self._episode_summary_text(call, result)
         payload = {"call": call.model_dump(mode="json"), "result": result.model_dump(mode="json")}
         episode_id: str | None = None
+        memory_episode_id: str | None = None
         if tool.episode_kind.value == "exploratory":
             episode = episodes.add_exploratory(summary, payload)
             memory_episode = memory.open_exploratory(self.definition.identity, content=payload)
             memory.close(memory_episode.id, description=summary)
             episode_id = episode.id
+            memory_episode_id = memory_episode.id
         else:
             episode = episodes.add_action(summary, call.consumed_episode_ids, payload)
             memory.mark_accessed(call.consumed_episode_ids)
-            manifest = result.output.get("manifest") if isinstance(result.output, dict) else None
             memory_episode = memory.open_action(
-                self.definition.identity,
-                call.consumed_episode_ids,
-                content=payload,
-                requires_manifest=call.name.startswith("run_"),
-                eda_manifest=manifest if isinstance(manifest, dict) else None,
+                self.definition.identity, call.consumed_episode_ids, content=payload
             )
             memory.close(memory_episode.id)
             episode_id = episode.id
-        projected = self.context_projector.project_tool_result(call, result, self.result_journal)
+            memory_episode_id = memory_episode.id
+        projected = self.context_projector.project_tool_result(
+            call, result, self._active_journal or self.result_journal
+        )
+        attach = getattr(memory, "attach_source_handle", None)
+        if callable(attach) and memory_episode_id is not None:
+            attach(memory_episode_id, projected.handle.handle_id)
         return ToolCallOutcome(
             call=call,
             result=result,
@@ -1420,7 +1988,9 @@ class BaseAgent:
         iteration: int,
         terminal_status: AgentRunStatus | None = None,
     ) -> ToolCallOutcome:
-        projected = self.context_projector.project_tool_result(call, result, self.result_journal)
+        projected = self.context_projector.project_tool_result(
+            call, result, self._active_journal or self.result_journal
+        )
         return ToolCallOutcome(
             call=call,
             result=result,
@@ -1453,12 +2023,7 @@ class BaseAgent:
         native protocol; it is never appended to the SDK's ordinary observations.
         """
 
-        content = json.dumps(
-            outcome.result.model_dump(mode="json"),
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
+        content = canonical_json(outcome.result.model_dump(mode="json"))
         limit = self.context_projector.policy.tool_result_preview_chars
         truncated = len(content) > limit
         if truncated:
@@ -1490,21 +2055,107 @@ class BaseAgent:
             (candidate for candidate in self.definition.tools if candidate.name == call.name), None
         )
 
-    @staticmethod
     async def _await_with_watchdog(
+        self,
         operation: Awaitable[Any],
         operation_timeout_seconds: float | None,
         deadline: float | None,
     ) -> Any:
         timeout = operation_timeout_seconds
+        source = "operation"
         if deadline is not None:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise TimeoutError
-            timeout = min(timeout, remaining) if timeout is not None else remaining
+                if inspect.iscoroutine(operation):
+                    operation.close()
+                raise WatchdogExpired("run-deadline", None)
+            if timeout is None or remaining < timeout:
+                timeout = remaining
+                source = "run-deadline"
+        cancellation = self._active_cancellation
+        awaited = operation if cancellation is None else _interruptible(operation, cancellation)
         if timeout is None:
-            return await operation
-        return await asyncio.wait_for(operation, timeout=timeout)
+            return await awaited
+        scope = asyncio.timeout(timeout)
+        try:
+            async with scope:
+                result = await awaited
+        except TimeoutError as error:
+            if scope.expired():
+                raise WatchdogExpired(source, operation_timeout_seconds) from error
+            raise
+        if scope.expired():
+            raise WatchdogExpired(source, operation_timeout_seconds)
+        return result
+
+    def _model_cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome:
+        model = self.model
+        if isinstance(model, CancellationReportingModel):
+            outcome = model.cancellation_outcome(task_id)
+            if outcome is not None:
+                return outcome
+        return UNREPORTED_CANCELLATION
+
+    def _transient_retry_delay(self, error: TransientProviderError, attempt: int) -> float:
+        policy = self.watchdog_policy
+        if error.retry_after_seconds is not None:
+            requested = max(error.retry_after_seconds, 0.0)
+        else:
+            requested = policy.transient_retry_base_seconds * 2 ** (attempt - 1)
+        return min(requested, policy.transient_retry_max_seconds)
+
+    @staticmethod
+    async def _sleep_before_retry(
+        delay: float,
+        deadline: float | None,
+        cancellation: CancellationToken | None,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        end = loop.time() + delay
+        if deadline is not None:
+            end = min(end, deadline)
+        while (remaining := end - loop.time()) > 0:
+            if cancellation is not None and cancellation.is_cancelled():
+                return
+            await asyncio.sleep(min(remaining, 0.25))
+
+    def _guarded_stream_listener(
+        self, emit: Callable[..., None], iteration: int
+    ) -> ModelStreamListener | None:
+        listener = self._on_model_stream
+        if listener is None:
+            return None
+        failed = False
+
+        def report(error: Exception) -> None:
+            nonlocal failed
+            failed = True
+            emit(
+                "stream-listener-failed",
+                iteration,
+                error_type=type(error).__name__,
+                message=str(error)[:512],
+            )
+
+        async def finish(pending: Awaitable[Any]) -> None:
+            try:
+                await pending
+            except Exception as error:
+                report(error)
+
+        def guarded(event: Any) -> Awaitable[None] | None:
+            if failed:
+                return None
+            try:
+                outcome = listener(event)
+            except Exception as error:
+                report(error)
+                return None
+            if inspect.isawaitable(outcome):
+                return finish(outcome)
+            return None
+
+        return guarded
 
     def _record_provider_usage(
         self,
@@ -1568,6 +2219,67 @@ class BaseAgent:
                 },
             )
 
+    def _record_cost(
+        self, telemetry_context: TelemetryContext, usage: ProviderUsage, iteration: int
+    ) -> None:
+        if self.price_table is None:
+            return
+        binding = self.definition.model_binding
+        details = {"iteration": iteration, "request_id": usage.request_id}
+        try:
+            price = self.price_table.price_for(binding.provider, binding.model)
+            cost = price_usage(usage, price)
+        except AgentSdkError as error:
+            if self.telemetry is not None:
+                for metric_id, unit in _COST_METRICS:
+                    record_metric_unavailable(
+                        self.telemetry,
+                        telemetry_context,
+                        metric_id,
+                        unit,
+                        f"{error.code}: {error.message}",
+                        details=details,
+                    )
+            return
+        self.cost_ledger.record(cost)
+        if self.telemetry is None:
+            return
+        values = {
+            "model.cost": float(cost.total),
+            "model.cache_savings": float(cost.savings),
+            "model.cache_hit_ratio": float(cost.cache_hit_ratio),
+        }
+        for metric_id, unit in _COST_METRICS:
+            record_metric_value(
+                self.telemetry,
+                telemetry_context,
+                metric_id,
+                values[metric_id],
+                unit,
+                details={**details, "kind": "derived-from-provider-usage"},
+            )
+
+    def _record_request_diagnostics(
+        self, task_id: str, telemetry_context: TelemetryContext, iteration: int
+    ) -> None:
+        if self.telemetry is None or not isinstance(self.model, RequestDiagnosticsSource):
+            return
+        diagnostics = self.model.request_diagnostics(task_id)
+        if diagnostics is None:
+            return
+        for metric_id, value in (
+            ("model.estimated_request_tokens", diagnostics.estimated_request_tokens),
+            ("model.estimated_shared_prefix_tokens", diagnostics.estimated_shared_prefix_tokens),
+        ):
+            record_metric_value(
+                self.telemetry,
+                telemetry_context,
+                metric_id,
+                float(value),
+                "tokens",
+                details={"iteration": iteration, "kind": "sdk-estimate"},
+            )
+
     def _terminate(
         self,
         status: AgentRunStatus,
@@ -1582,6 +2294,25 @@ class BaseAgent:
         output: Any = None,
         failure: AgentFailure | None = None,
     ) -> AgentResult:
+        project_state = self._active_project_state
+        recorded = False
+        if project_state is not None and self._active_project_id is not None:
+            try:
+                project_state = self.project_state_store.apply(
+                    self._active_project_id,
+                    ProjectStateReducer.agent_result_transition(
+                        task.id,
+                        status.value,
+                        project_state_hash_from_result(status, output, reason),
+                    ),
+                )
+            except Exception as error:
+                status, reason, failure = _demote_for_state_failure(
+                    status, reason, failure, _state_update_failure(error)
+                )
+            else:
+                self._active_project_state = project_state
+                recorded = True
         escalation = None
         target = self.definition.termination_policy.escalation
         if status is not AgentRunStatus.COMPLETED and target.value != "none":
@@ -1594,17 +2325,11 @@ class BaseAgent:
             status=status.value,
             reason=reason,
             failure_code=failure.code if failure is not None else None,
+            failure_details=failure.details if failure is not None and failure.details else None,
         )
         if escalation:
             emit("escalated", iterations, target=escalation.target, reason=escalation.reason)
-        project_state = self._active_project_state
-        if project_state is not None and self._active_project_id is not None:
-            result_hash = project_state_hash_from_result(status, output, reason)
-            project_state = self.project_state_store.apply(
-                self._active_project_id,
-                ProjectStateReducer.agent_result_transition(task.id, status.value, result_hash),
-            )
-            self._active_project_state = project_state
+        if recorded and project_state is not None:
             emit(
                 "state-updated",
                 iterations,
@@ -1623,15 +2348,25 @@ class BaseAgent:
             self.profiler.finish_span(
                 self._profile_root_span,
                 profile_status,
-                attributes={"agent_status": status.value, "iterations": iterations},
+                attributes={
+                    "agent_status": status.value,
+                    "iterations": iterations,
+                    "gen_ai.operation.name": "invoke_agent",
+                    "gen_ai.agent.name": _span_attribute_text(self.definition.identity),
+                },
             )
         profile = self.profiler.finish_run(profile_status)
+        profile_dump = profile.model_dump(mode="json")
         if self.telemetry is not None:
-            telemetry_context = self.telemetry_context or TelemetryContext(
+            telemetry_context = self._active_telemetry_context or TelemetryContext(
                 run_id=task.id,
                 task_id=task.id,
                 agent_id=self.definition.identity,
             )
+            audit_head = None
+            if self.audit_logs is not None:
+                footprint = self.audit_logs.footprint(telemetry_context.run_id)
+                audit_head = {"entries": footprint.entries, "head_hash": footprint.head_hash}
             profile_event = self.telemetry.emit(
                 "agent.profile-completed",
                 telemetry_context,
@@ -1641,12 +2376,17 @@ class BaseAgent:
                 authority=TelemetryAuthority.DETERMINISTIC,
                 status=status.value,
                 payload={
+                    **({} if audit_head is None else {"audit_head": audit_head}),
                     "integrity_hash": profile.integrity_hash,
+                    "trace_id": profile.trace_id,
+                    "resource": resource_attributes(),
                     "wall_duration_ns": profile.wall_duration_ns,
                     "process_cpu_duration_ns": profile.process_cpu_duration_ns,
                     "phase_counts": {
                         summary.kind.value: summary.count for summary in profile.summaries
                     },
+                    "span_count": len(profile.spans),
+                    "spans": profile_dump["spans"][-_PROFILE_EVENT_SPAN_LIMIT:],
                 },
             )
             if not self._provider_usage_reported:
@@ -1680,8 +2420,10 @@ class BaseAgent:
             record_terminal_agent_metrics(
                 self.telemetry,
                 telemetry_context,
-                self.telemetry.list_events(telemetry_context.run_id, limit=1_000),
-                profile.model_dump(mode="json"),
+                self.telemetry.iter_events(
+                    telemetry_context.run_id, after_sequence=self._telemetry_start_sequence
+                ),
+                profile_dump,
                 completed=status is AgentRunStatus.COMPLETED,
                 terminal_reason=reason,
                 source_event_id=profile_event.event_id,
@@ -1692,10 +2434,23 @@ class BaseAgent:
                     "profile-completed",
                     {
                         "integrity_hash": profile.integrity_hash,
+                        "trace_id": profile.trace_id,
                         "status": status.value,
                         "phase_counts": {
                             summary.kind.value: summary.count for summary in profile.summaries
                         },
+                    },
+                    task_id=task.id,
+                    iteration=iterations,
+                )
+                self.audit_logs.append(
+                    telemetry_context.run_id,
+                    "terminal-link",
+                    {
+                        "telemetry_head": {
+                            "sequence": profile_event.sequence,
+                            "integrity_hash": profile_event.integrity_hash,
+                        }
                     },
                     task_id=task.id,
                     iteration=iterations,
@@ -1711,15 +2466,41 @@ class BaseAgent:
             context=prompt,
             project_state=project_state.model_view() if project_state is not None else None,
             episodes=episodes.list(),
+            episodes_total=episodes.total if self._episode_history_limit is not None else None,
+            episodes_omitted=episodes.omitted,
             projection_history=list(projection_history),
             events=list(events),
-            profile=profile.model_dump(mode="json"),
+            profile=profile_dump,
         )
-        self._active_project_id = None
-        self._active_project_state = None
-        self._profile_root_span = None
-        self._active_audit_run_id = None
+        self._clear_active_run()
         return result
+
+    def _record_tool_outcome(
+        self,
+        outcome: ToolCallOutcome,
+        task: ScopedAgentTask,
+        iteration: int,
+        prompt: Any,
+        episodes: InMemoryEpisodeGraph,
+        events: list[AgentLifecycleEvent],
+        emit: Callable[..., None],
+    ) -> AgentResult | None:
+        try:
+            self._apply_tool_outcome_to_project_state(outcome, emit, iteration)
+        except Exception as error:
+            failure = _state_update_failure(error)
+            return self._terminate(
+                AgentRunStatus.FAILED,
+                task,
+                iteration,
+                failure.message,
+                prompt,
+                episodes,
+                events,
+                emit,
+                failure=failure,
+            )
+        return None
 
     def _apply_tool_outcome_to_project_state(
         self,
@@ -1734,7 +2515,9 @@ class BaseAgent:
         projected = outcome.observation.result
         if projected is None:
             raise RuntimeError("Tool outcomes must carry a projected journal result.")
-        action_output_summary_chars = self.project_state_projector.policy.action_output_summary_chars
+        action_output_summary_chars = (
+            self.project_state_projector.policy.action_output_summary_chars
+        )
         state = self.project_state_store.apply(
             self._active_project_id,
             ProjectStateReducer.tool_transition(
@@ -1743,12 +2526,7 @@ class BaseAgent:
                 projected.handle,
                 output_summary_max_chars=action_output_summary_chars,
             ),
-            # apply()'s own summary wraps tool_transition's already-bounded
-            # output_summary plus a few short fields (tool_call_id, tool_name,
-            # status, error) - a second, independent hardcoded 2048 limit
-            # here re-truncated that inner value once it was raised past
-            # 2048, so this needs the same headroom, not just the inner call.
-            summary_max_chars=action_output_summary_chars + 512,
+            summary_max_chars=action_output_summary_chars + _STATE_SUMMARY_HEADROOM_CHARS,
         )
         self._active_project_state = state
         emit(
@@ -1776,7 +2554,7 @@ class BaseAgent:
     @staticmethod
     def _bounded_json_text(value: Any, max_chars: int) -> str:
         try:
-            encoded = json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+            encoded = canonical_json(value)
         except TypeError:
             encoded = str(value)
         return encoded if len(encoded) <= max_chars else f"{encoded[:max_chars]}...(truncated)"
@@ -1800,7 +2578,7 @@ class BaseAgent:
             "prompt": prompt.model_dump(mode="json"),
             "project_state": project_state_view.model_dump(mode="json"),
         }
-        return max(1, len(json.dumps(payload, sort_keys=True, separators=(",", ":"))) // 4)
+        return estimate_tokens(payload)
 
     @staticmethod
     def _with_projection_history(
@@ -1810,6 +2588,126 @@ class BaseAgent:
         return result.model_copy(update={"projection_history": list(projection_history)})
 
 
+async def _until_cancelled(cancellation: CancellationToken) -> None:
+    while not cancellation.is_cancelled():
+        await asyncio.sleep(_CANCELLATION_POLL_SECONDS)
+
+
+async def _interruptible(operation: Awaitable[Any], cancellation: CancellationToken) -> Any:
+    work = asyncio.ensure_future(operation)
+    watcher = asyncio.ensure_future(_until_cancelled(cancellation))
+    try:
+        await asyncio.wait({work, watcher}, return_when=asyncio.FIRST_COMPLETED)
+    except BaseException:
+        work.cancel()
+        watcher.cancel()
+        await asyncio.gather(work, watcher, return_exceptions=True)
+        raise
+    if work.done():
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        return work.result()
+    work.cancel()
+    await asyncio.gather(work, return_exceptions=True)
+    raise RunCancelled
+
+
+def _verifier_details(
+    decision: VerificationDecision, rejection: AgentFailure | None = None
+) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    if decision.verifier_id is not None:
+        details["verifier_id"] = decision.verifier_id
+    if decision.authority is not None:
+        details["verifier_kind"] = decision.authority.value
+    if decision.evidence is not None:
+        details["evidence"] = dict(decision.evidence)
+    if rejection is not None:
+        details["failure_code"] = rejection.code
+    return details
+
+
+def _naming_call(failure: AgentFailure | None, call: ToolCall) -> AgentFailure | None:
+    if failure is None:
+        return None
+    return AgentFailure(
+        code=failure.code,
+        message=failure.message,
+        details={"tool": call.name, "tool_call_id": call.id, **failure.details},
+    )
+
+
+def _batch_outcome(item: ToolCallOutcome) -> dict[str, Any]:
+    outcome: dict[str, Any] = {
+        "tool_call_id": item.call.id,
+        "tool": item.call.name,
+        "status": item.result.status,
+    }
+    if item.result.status != "succeeded":
+        failure = item.result.failure
+        outcome["failure_code"] = failure.code if failure is not None else None
+        error = item.result.error
+        outcome["error"] = (
+            error
+            if error is None or len(error) <= _OUTCOME_ERROR_CHARS
+            else f"{error[: _OUTCOME_ERROR_CHARS - 3]}..."
+        )
+    return outcome
+
+
+def _watchdog_detail(expired: WatchdogExpired, label: str) -> str:
+    if expired.source == "run-deadline":
+        return "the run's configured deadline"
+    return f"its {expired.seconds}s {label}"
+
+
+def _span_attribute_text(value: str) -> str:
+    if len(value) <= _SPAN_ATTRIBUTE_TEXT_CHARS:
+        return value
+    return value[: _SPAN_ATTRIBUTE_TEXT_CHARS - 3] + "..."
+
+
+def _model_turn_attributes(response: Any) -> dict[str, Any]:
+    usage = response.usage if isinstance(response, ModelTurnResponse) else None
+    if usage is None:
+        return {}
+    reported = {
+        "gen_ai.usage.input_tokens": usage.input_tokens,
+        "gen_ai.usage.output_tokens": usage.output_tokens,
+        "gen_ai.response.id": _span_attribute_text(usage.request_id) if usage.request_id else None,
+    }
+    return {name: value for name, value in reported.items() if value is not None}
+
+
+def _state_update_failure(error: Exception) -> AgentFailure:
+    if isinstance(error, AgentSdkError):
+        return AgentFailure.from_sdk_error(error)
+    return AgentFailure(
+        code="PROJECT_STATE_UPDATE_FAILED",
+        message=f"Project state update raised {type(error).__name__}: {error}",
+        details={"error_type": type(error).__name__},
+    )
+
+
+def _demote_for_state_failure(
+    status: AgentRunStatus,
+    reason: str | None,
+    failure: AgentFailure | None,
+    state_failure: AgentFailure,
+) -> tuple[AgentRunStatus, str, AgentFailure | None]:
+    if status is AgentRunStatus.COMPLETED:
+        return (
+            AgentRunStatus.FAILED,
+            "The agent finished and its output was accepted, but the result could not be "
+            f"recorded in project state: {state_failure.message}",
+            state_failure,
+        )
+    detail = (
+        f"Additionally, the result could not be recorded in project state: {state_failure.message}"
+    )
+    return status, f"{reason} {detail}" if reason else detail, failure
+
+
 def project_state_hash_from_result(
     status: AgentRunStatus,
     output: Any,
@@ -1817,14 +2715,4 @@ def project_state_hash_from_result(
 ) -> str:
     """Produce provenance for a terminal state reduction without retaining its raw output."""
 
-    import hashlib
-    import json
-
-    return hashlib.sha256(
-        json.dumps(
-            {"status": status.value, "output": output, "reason": reason},
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    return canonical_hash({"status": status.value, "output": output, "reason": reason})

@@ -10,12 +10,12 @@ from typing import Any
 from pydantic import Field
 
 from ..foundations.contracts import StrictModel
+from .elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from .planning import Plan, PlanValidationReport
 from .shared_state import SharedSubstrateSnapshot
 
 
 class ControllerPhase(StrEnum):
-    INTAKE = "intake"
     PLANNING = "planning"
     AWAITING_PLAN_APPROVAL = "awaiting-plan-approval"
     DISPATCH_READY = "dispatch-ready"
@@ -67,6 +67,12 @@ class ControllerRecord(StrictModel):
     snapshot: SharedSubstrateSnapshot
     repair_attempts: int = Field(default=0, ge=0)
     max_repair_attempts: int = Field(ge=0)
+    elastic_depth_ceiling: int = Field(
+        default=MAX_ELASTIC_DEPTH_LIMIT, ge=0, le=MAX_ELASTIC_DEPTH_LIMIT
+    )
+    elastic_nodes_ceiling: int = Field(
+        default=MAX_ELASTIC_NODES_LIMIT, ge=0, le=MAX_ELASTIC_NODES_LIMIT
+    )
     plan: Plan | None = None
     plan_validation: PlanValidationReport | None = None
     plan_approved: bool | None = None
@@ -75,6 +81,17 @@ class ControllerRecord(StrictModel):
     events: list[ControllerEvent] = Field(default_factory=list)
     events_entry_count: int = Field(default=0, ge=0)
     events_integrity_hash: str | None = None
+
+
+class ReconcileAction(StrictModel):
+    store: str = Field(min_length=1)
+    record_id: str = Field(min_length=1)
+    change: str = Field(min_length=1)
+
+
+class ReconcileReport(StrictModel):
+    subject: str = Field(min_length=1)
+    actions: list[ReconcileAction] = Field(default_factory=list)
 
 
 class ComplexityRouter:

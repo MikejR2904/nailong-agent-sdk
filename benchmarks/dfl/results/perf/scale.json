@@ -1,0 +1,152 @@
+{
+ "seed": 7,
+ "per_size": 8,
+ "sizes": {
+  "12": {
+   "static-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "optimal": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 295,
+    "median_latency_ms": 2.4502499727532268,
+    "max_latency_ms": 4.465900012291968,
+    "max_relative_gap": 0.0
+   },
+   "learned-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "optimal": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 235,
+    "median_latency_ms": 2.3381999926641583,
+    "max_latency_ms": 3.8313999539241195,
+    "max_relative_gap": 0.0
+   }
+  },
+  "24": {
+   "static-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "optimal": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 1821,
+    "median_latency_ms": 21.75675000762567,
+    "max_latency_ms": 30.281999963335693,
+    "max_relative_gap": 0.0
+   },
+   "learned-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "optimal": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 2693,
+    "median_latency_ms": 23.05904997047037,
+    "max_latency_ms": 37.05669997725636,
+    "max_relative_gap": 0.0
+   }
+  },
+  "48": {
+   "static-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "optimal": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 22491,
+    "median_latency_ms": 390.73645003372803,
+    "max_latency_ms": 486.9208999443799,
+    "max_relative_gap": 0.0
+   },
+   "learned-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "optimal": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 23195,
+    "median_latency_ms": 319.7027999558486,
+    "max_latency_ms": 647.5409000413492,
+    "max_relative_gap": 0.0
+   }
+  },
+  "96": {
+   "static-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "best-effort": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 50000,
+    "median_latency_ms": 2255.0087500130758,
+    "max_latency_ms": 2558.274000068195,
+    "max_relative_gap": 0.15592159067101688
+   },
+   "learned-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "best-effort": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 50000,
+    "median_latency_ms": 2310.673300002236,
+    "max_latency_ms": 2454.070199979469,
+    "max_relative_gap": 0.35693046189477917
+   }
+  },
+  "160": {
+   "static-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "best-effort": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 50000,
+    "median_latency_ms": 4656.96220000973,
+    "max_latency_ms": 6055.598299950361,
+    "max_relative_gap": 0.11846308476834969
+   },
+   "learned-pckp": {
+    "instances": 8,
+    "status_counts": {
+     "best-effort": 8
+    },
+    "solvers": [
+     "branch-and-bound"
+    ],
+    "max_branch_nodes": 50000,
+    "median_latency_ms": 4666.192850039806,
+    "max_latency_ms": 4979.763599927537,
+    "max_relative_gap": 0.5205358219498147
+   }
+  }
+ },
+ "environment": {
+  "python": "3.13.1",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "wall_seconds": 176.89521259989124,
+  "command": "C:\\dev\\nailong-agent-sdk\\benchmarks\\dfl\\dfl_bench\\perf.py scale --out results/perf"
+ }
+}

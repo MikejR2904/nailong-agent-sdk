@@ -5,18 +5,22 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from ..foundations.contracts import AgentFailure, ToolDefinition, ToolExecutionResult
+from ..foundations.identifiers import require_unique
 from ..memory.context_projection import ToolResultJournal
+from ..state.elastic import ELASTIC_REQUEST_TOOL_NAME
 from ..state.planning import PlanTask
 from .approvals import ApprovalRegistry
 from .artifacts import ArtifactStore
+from .authorization import CapabilityToolAuthorizer
 from .core import CoreToolDispatcher, CoreToolServices, HumanQuestionResponder, WebSearchClient
 from .policy import CapabilityPolicy, SideEffectClass
-from .supervisor import ProcessSupervisor
+from .result_cache import ToolResultCache
+from .supervisor import ProcessExecutionRecord, ProcessExitKind, ProcessSupervisor
 from .tools import ToolExecutor, ToolInvocationContext
 
 
@@ -40,6 +44,9 @@ class HarnessExecutionContext:
     search_client: WebSearchClient | None = None
     ask_human: HumanQuestionResponder | None = None
     pdf_image_cache: dict[str, tuple[str, bytes]] | None = None
+    trace_parent: str | None = None
+    bind_approvals_to_arguments: bool = False
+    single_use_capabilities: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -63,9 +70,8 @@ class HarnessToolRegistry:
         custom_handlers: dict[str, HarnessToolHandler] | None = None,
     ) -> None:
         values = list(tools) if tools is not None else self.default_tools()
+        require_unique([tool.name for tool in values], "Harness tool names")
         self._tools = {tool.name: tool for tool in values}
-        if len(self._tools) != len(values):
-            raise ValueError("Harness tool names must be unique.")
         self._custom_handlers = dict(custom_handlers or {})
         unknown = set(self._custom_handlers) - set(self._tools)
         if unknown:
@@ -93,13 +99,10 @@ class HarnessToolRegistry:
             RegisteredTool("sleep", "utility.wait", SideEffectClass.READ_ONLY),
             RegisteredTool("brief", "utility.brief", SideEffectClass.READ_ONLY),
             RegisteredTool("ask_human_question", "human.question", SideEffectClass.READ_ONLY),
-            RegisteredTool("run_registered_command", "process.execute", SideEffectClass.PROCESS),
-            RegisteredTool("run_verilator", "rtl.verilator", SideEffectClass.PROCESS, "verilator"),
-            RegisteredTool("run_yosys", "rtl.yosys", SideEffectClass.PROCESS, "yosys"),
             RegisteredTool(
-                "run_openroad", "physical.openroad", SideEffectClass.PROCESS, "openroad"
+                ELASTIC_REQUEST_TOOL_NAME, "graph.elastic.request", SideEffectClass.READ_ONLY
             ),
-            RegisteredTool("run_opensta", "physical.opensta", SideEffectClass.PROCESS, "opensta"),
+            RegisteredTool("run_registered_command", "process.execute", SideEffectClass.PROCESS),
         ]
 
     @classmethod
@@ -126,9 +129,16 @@ class HarnessToolRegistry:
 class HarnessToolExecutor(ToolExecutor):
     """Bridge BaseAgent tool calls into policy-governed typed harness actions."""
 
-    def __init__(self, registry: HarnessToolRegistry, context: HarnessExecutionContext) -> None:
+    def __init__(
+        self,
+        registry: HarnessToolRegistry,
+        context: HarnessExecutionContext,
+        cache: ToolResultCache | None = None,
+    ) -> None:
         self._registry = registry
         self._context = context
+        self._cache = cache
+        self._authorizer = CapabilityToolAuthorizer(registry.resolve, context)
         self._core = CoreToolDispatcher(
             CoreToolServices(
                 root=context.run_root,
@@ -139,6 +149,7 @@ class HarnessToolExecutor(ToolExecutor):
                     "node_id": context.node_id,
                     "task_id": context.plan_task.task_id,
                 },
+                read_scope=context.policy.read_scope(context.role),
                 result_journal=context.result_journal,
                 search_client=context.search_client,
                 ask_human=context.ask_human,
@@ -148,46 +159,86 @@ class HarnessToolExecutor(ToolExecutor):
             )
         )
 
+    @property
+    def enforces_authorization(self) -> bool:
+        return True
+
+    @property
+    def authorizer(self) -> CapabilityToolAuthorizer:
+        return self._authorizer
+
     async def execute(
         self,
         tool: ToolDefinition,
         invocation: ToolInvocationContext,
     ) -> ToolExecutionResult:
+        authorization = invocation.authorization
+        if (
+            authorization is None
+            or authorization.issuer is not self._authorizer
+            or authorization.tool != tool.name
+            or authorization.call_id != invocation.call.id
+        ):
+            authorization = self._authorizer.authorize(tool, invocation)
+        if not authorization.allowed:
+            if authorization.result is None:
+                raise RuntimeError(
+                    f'The authorizer refused tool "{tool.name}" without a result to return.'
+                )
+            return authorization.result
         registered = self._registry.resolve(tool.name)
         if registered is None:
-            return ToolExecutionResult(
-                status="failed", error=f'No harness tool named "{tool.name}" exists.'
-            )
-        requested_paths = self._requested_paths(tool.name, invocation.call.arguments)
-        approval = self._approval_for(registered.capability)
-        decision = self._context.policy.evaluate(
-            role=self._context.role,
-            capability=registered.capability,
-            side_effect=registered.side_effect,
-            run_root=self._context.run_root,
-            requested_paths=requested_paths,
-            approval=approval,
-        )
-        if not decision.allowed:
-            if decision.approval_required:
-                request = approval or self._context.approvals.request(
-                    self._context.run_id,
-                    self._context.node_id,
-                    registered.capability,
-                    decision.reason,
-                )
-                return ToolExecutionResult(
-                    status="blocked",
-                    output={
-                        "approval_id": request.approval_id,
-                        "capability": registered.capability,
-                    },
-                    error=decision.reason,
-                )
-            return ToolExecutionResult(status="blocked", error=decision.reason)
+            raise RuntimeError(f'Tool "{tool.name}" was authorized but is no longer registered.')
 
+        cache = self._cache
+        cacheable = (
+            cache is not None
+            and registered.side_effect is SideEffectClass.READ_ONLY
+            and cache.cacheable(tool.name)
+        )
+        if cache is not None and cacheable:
+            replay = cache.lookup(
+                tool.name,
+                invocation.call.arguments,
+                call_id=invocation.call.id,
+                iteration=invocation.iteration,
+            )
+            if replay is not None:
+                return replay
+        result = await self._invoke(registered, tool, invocation)
+        if cache is not None:
+            if registered.side_effect is not SideEffectClass.READ_ONLY:
+                cache.invalidate(f"{tool.name} ({registered.side_effect.value})")
+            elif cacheable:
+                cache.store(
+                    tool.name,
+                    invocation.call.arguments,
+                    result,
+                    call_id=invocation.call.id,
+                    iteration=invocation.iteration,
+                )
+        return result
+
+    async def _invoke(
+        self,
+        registered: RegisteredTool,
+        tool: ToolDefinition,
+        invocation: ToolInvocationContext,
+    ) -> ToolExecutionResult:
         try:
-            output = await self._execute_registered(registered, invocation.call.arguments)
+            output = await self._execute_registered(
+                registered,
+                invocation.call.arguments,
+                invocation.trace_parent,
+                {
+                    "agent_identity": invocation.agent_identity,
+                    "agent_run_id": invocation.task.id,
+                    "role": self._context.role,
+                    "tool": tool.name,
+                    "tool_call_id": invocation.call.id,
+                    "iteration": invocation.iteration,
+                },
+            )
             if isinstance(output, ToolExecutionResult):
                 return output
             return ToolExecutionResult(status="succeeded", output=output)
@@ -199,13 +250,16 @@ class HarnessToolExecutor(ToolExecutor):
             )
             return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
 
-    def _approval_for(self, capability: str):
-        approval_id = self._context.approval_ids_by_capability.get(capability)
-        return self._context.approvals.get(approval_id) if approval_id else None
-
-    async def _execute_registered(self, tool: RegisteredTool, arguments: dict[str, Any]) -> Any:
+    async def _execute_registered(
+        self,
+        tool: RegisteredTool,
+        arguments: dict[str, Any],
+        trace_parent: str | None = None,
+        writer: dict[str, Any] | None = None,
+    ) -> Any:
         if handler := self._registry.handler_for(tool.name):
-            return await handler(self._context, arguments)
+            context = replace(self._context, trace_parent=trace_parent)
+            return await handler(context, arguments)
 
         if tool.name == "read_spec":
             pointer = _string_argument(arguments, "pointer")
@@ -214,6 +268,13 @@ class HarnessToolExecutor(ToolExecutor):
             if pointer not in self._context.spec_snapshots:
                 raise ValueError("Scoped specification snapshot is unavailable.")
             return {"pointer": pointer, "content": self._context.spec_snapshots[pointer]}
+
+        if tool.name == ELASTIC_REQUEST_TOOL_NAME:
+            raise ValueError(
+                f'Tool "{ELASTIC_REQUEST_TOOL_NAME}" only works for an agent run as a graph '
+                "node through GraphAgentExecutor, which queues the request for the controller; "
+                "this agent was not started that way."
+            )
 
         if tool.name == "run_registered_command":
             template_name = _string_argument(arguments, "template_name")
@@ -225,8 +286,7 @@ class HarnessToolExecutor(ToolExecutor):
                 return ToolExecutionResult(
                     status="failed",
                     output=payload,
-                    error=process.error_code
-                    or f'Registered command "{template_name}" ended as {process.exit_kind.value}.',
+                    error=_process_failure_message(template_name, process),
                 )
             return payload
 
@@ -245,27 +305,13 @@ class HarnessToolExecutor(ToolExecutor):
             "brief",
             "ask_human_question",
         }:
+            return await self._core.execute(tool.name, arguments, writer=writer)
+
+        if tool.name in {"read_artifact", "grep_artifact"}:
+            artifact_id = _string_argument(arguments, "artifact_id")
+            if artifact_id not in self._context.plan_task.authorized_artifact_ids:
+                raise ValueError("Artifact is not authorized for this PlanTask.")
             return await self._core.execute(tool.name, arguments)
-
-        if tool.name == "read_artifact":
-            artifact_id = _string_argument(arguments, "artifact_id")
-            if artifact_id not in self._context.plan_task.authorized_artifact_ids:
-                raise ValueError("Artifact is not authorized for this PlanTask.")
-            return {
-                "artifact_id": artifact_id,
-                "content": self._context.artifacts.read_text(artifact_id),
-            }
-
-        if tool.name == "grep_artifact":
-            artifact_id = _string_argument(arguments, "artifact_id")
-            needle = _string_argument(arguments, "needle")
-            if artifact_id not in self._context.plan_task.authorized_artifact_ids:
-                raise ValueError("Artifact is not authorized for this PlanTask.")
-            lines = self._context.artifacts.read_text(artifact_id).splitlines()
-            return {
-                "artifact_id": artifact_id,
-                "matches": [index + 1 for index, line in enumerate(lines) if needle in line],
-            }
 
         if tool.name == "diff_declared_artifacts":
             base = _string_argument(arguments, "base_artifact_id")
@@ -301,19 +347,23 @@ class HarnessToolExecutor(ToolExecutor):
                 return ToolExecutionResult(
                     status="failed",
                     output=payload,
-                    error=process.error_code
-                    or f'Process tool "{tool.name}" ended as {process.exit_kind.value}.',
+                    error=_process_failure_message(tool.name, process),
                 )
             return payload
 
         raise ValueError(f'No implementation is registered for "{tool.name}".')
 
-    @staticmethod
-    def _requested_paths(tool_name: str, arguments: dict[str, Any]) -> list[str]:
-        if tool_name in {"write_draft", "edit_draft", "notebook_edit"}:
-            path = arguments.get("path")
-            return [path] if isinstance(path, str) else []
-        return []
+
+def _process_failure_message(name: str, process: ProcessExecutionRecord) -> str:
+    detail = {
+        ProcessExitKind.EXIT_NONZERO: f"exited with code {process.return_code}",
+        ProcessExitKind.TIMED_OUT: "was terminated after exceeding its timeout",
+        ProcessExitKind.CANCELLED: "was cancelled",
+        ProcessExitKind.RESOURCE_LIMIT: (
+            f"was stopped by a resource limit ({process.exit_signal or process.return_code})"
+        ),
+    }.get(process.exit_kind, f"ended as {process.exit_kind.value}")
+    return f'{process.error_code or process.exit_kind.value}: registered command "{name}" {detail}.'
 
 
 def _string_argument(arguments: dict[str, Any], key: str) -> str:

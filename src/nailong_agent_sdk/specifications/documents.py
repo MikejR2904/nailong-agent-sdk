@@ -9,23 +9,18 @@ not a lossy summary or a generic RAG index (systems-design framework, pp. 22-30)
 from __future__ import annotations
 
 from enum import StrEnum
-from pathlib import Path
-from typing import Any
+from pathlib import PurePosixPath, PureWindowsPath
+from typing import Annotated, Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.identifiers import require_unique
 
-
-class SpecificationCategory(StrEnum):
-    FUNCTIONAL = "functional"
-    ARCHITECTURAL = "architectural"
-    INTERFACE = "interface"
-    PPA = "ppa"
-    PDK = "pdk"
-    VERIFICATION = "verification"
-    SAFETY_SECURITY = "safety-security"
-    ASSUMPTIONS = "assumptions"
+SpecificationCategory = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$"),
+]
 
 
 class DocumentFormat(StrEnum):
@@ -39,12 +34,8 @@ class DocumentFormat(StrEnum):
     YAML = "yaml"
     JSON = "json"
     XML = "xml"
-    SYSTEMRDL = "systemrdl"
-    SDC = "sdc"
-    UPF = "upf"
     DOT = "dot"
     PLANTUML = "plantuml"
-    WAVEDROM = "wavedrom"
     MERMAID = "mermaid"
     TIKZ = "tikz"
     SVG = "svg"
@@ -109,9 +100,17 @@ class SpecificationDocument(StrictModel):
     @field_validator("path")
     @classmethod
     def path_is_relative(cls, value: str) -> str:
-        if Path(value).is_absolute() or ".." in Path(value).parts:
+        windows = PureWindowsPath(value)
+        posix = PurePosixPath(value.replace("\\", "/"))
+        if (
+            value.startswith(("/", "\\"))
+            or windows.is_absolute()
+            or windows.drive
+            or ".." in posix.parts
+        ):
             raise ValueError(
-                "specification document paths must be relative and may not escape the root"
+                f"specification document path {value!r} must be relative and may not escape "
+                "the root"
             )
         return value
 
@@ -123,6 +122,5 @@ class SpecificationManifest(StrictModel):
     @model_validator(mode="after")
     def document_ids_are_unique(self) -> SpecificationManifest:
         values = [document.id for document in self.documents]
-        if len(values) != len(set(values)):
-            raise ValueError("specification document IDs must be unique")
+        require_unique(values, "specification document IDs")
         return self

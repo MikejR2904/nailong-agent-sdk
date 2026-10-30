@@ -9,11 +9,18 @@ events, never model claims.
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable
 from typing import Any
 
 from ..foundations.contracts import ToolCall, ToolExecutionResult, ToolResultHandle
+from ..foundations.errors import AgentSdkError
+from ..foundations.hashing import estimate_tokens, model_canonical_json
 from .project_state_models import (
+    MAX_ARTIFACTS,
+    MAX_BLOCKERS,
+    MAX_DECISIONS,
+    MAX_OPEN_QUESTIONS,
+    MAX_WORK_ITEMS,
     ArtifactStatus,
     DecisionStatus,
     OpenQuestion,
@@ -35,6 +42,44 @@ from .project_state_models import (
     WorkItemStatus,
     make_project_state,
 )
+
+TRANSITION_AUTHORITY: dict[StateTransitionKind, frozenset[StateAuthority]] = {
+    StateTransitionKind.TOOL_OUTCOME: frozenset({StateAuthority.HARNESS}),
+    StateTransitionKind.AGENT_RESULT: frozenset({StateAuthority.HARNESS}),
+    StateTransitionKind.HUMAN_DECISION: frozenset({StateAuthority.HUMAN}),
+    StateTransitionKind.BLOCKER_CLEARED: frozenset(
+        {StateAuthority.CONTROLLER, StateAuthority.HUMAN}
+    ),
+    StateTransitionKind.WORK_ITEM_UPDATED: frozenset(
+        {StateAuthority.CONTROLLER, StateAuthority.HARNESS}
+    ),
+    StateTransitionKind.STAGE_CHANGED: frozenset({StateAuthority.CONTROLLER, StateAuthority.HUMAN}),
+    StateTransitionKind.ARTIFACT_STATUS_UPDATED: frozenset(
+        {StateAuthority.CONTROLLER, StateAuthority.HUMAN}
+    ),
+}
+QUESTION_RESOLUTION_AUTHORITY: dict[QuestionOwner, frozenset[StateAuthority]] = {
+    QuestionOwner.HUMAN: frozenset({StateAuthority.HUMAN}),
+    QuestionOwner.CONTROLLER: frozenset({StateAuthority.CONTROLLER, StateAuthority.HUMAN}),
+}
+_TRANSITION_VERBS: dict[StateTransitionKind, str] = {
+    StateTransitionKind.TOOL_OUTCOME: "record a tool outcome",
+    StateTransitionKind.AGENT_RESULT: "record an agent result",
+    StateTransitionKind.HUMAN_DECISION: "record a human decision",
+    StateTransitionKind.BLOCKER_CLEARED: "clear a blocker",
+    StateTransitionKind.WORK_ITEM_UPDATED: "update a work item",
+    StateTransitionKind.STAGE_CHANGED: "change project stage",
+    StateTransitionKind.ARTIFACT_STATUS_UPDATED: "change the status of an artifact",
+}
+
+
+def _require_authority(transition: StateTransition) -> None:
+    allowed = TRANSITION_AUTHORITY[transition.kind]
+    if transition.actor in allowed:
+        return
+    names = sorted(item.value for item in allowed)
+    label = "a human" if names == ["human"] else " or ".join(names)
+    raise ValueError(f"Only {label} authority may {_TRANSITION_VERBS[transition.kind]}.")
 
 
 class ProjectStateProjector:
@@ -60,18 +105,18 @@ class ProjectStateProjector:
             "step_count": state.step_count,
             "state_hash": state.state_hash,
         }
-        used = _estimated_tokens(core)
+        used = estimate_tokens(core, model_canonical_json)
         artifacts: list[ProjectArtifactState] = []
         work_items: list[ProjectWorkItem] = []
         if used <= self._policy.token_budget:
             for artifact in reversed(state.artifacts):
-                cost = _estimated_tokens(artifact)
+                cost = estimate_tokens(artifact, model_canonical_json)
                 if used + cost > self._policy.token_budget:
                     continue
                 artifacts.append(artifact)
                 used += cost
             for work_item in reversed(state.work_items):
-                cost = _estimated_tokens(work_item)
+                cost = estimate_tokens(work_item, model_canonical_json)
                 if used + cost > self._policy.token_budget:
                     continue
                 work_items.append(work_item)
@@ -162,19 +207,29 @@ class ProjectStateReducer:
         payload = transition.payload
         action_status = str(payload.get("status", "recorded"))
 
+        def required(key: str) -> Any:
+            if key not in payload:
+                raise ValueError(
+                    f'State transition "{transition.kind.value}" (action '
+                    f'"{transition.action_id}") is missing the required payload field "{key}".'
+                )
+            return payload[key]
+
         if transition.kind is StateTransitionKind.TOOL_OUTCOME:
+            _require_authority(transition)
             artifact = payload.get("artifact")
             if isinstance(artifact, dict):
-                artifacts = _upsert(
-                    artifacts,
-                    "relative_path",
-                    ProjectArtifactState.model_validate(
-                        {
-                            **artifact,
-                            "evidence": transition.evidence,
-                        }
-                    ),
+                recorded = ProjectArtifactState.model_validate(
+                    {**artifact, "evidence": transition.evidence}
                 )
+                if recorded.status is ArtifactStatus.COMPLETE:
+                    raise ValueError(
+                        f'Artifact "{recorded.relative_path}" cannot be recorded as complete by a '
+                        f'tool outcome (action "{transition.action_id}"); completion needs an '
+                        f'"{StateTransitionKind.ARTIFACT_STATUS_UPDATED.value}" transition from '
+                        "the controller or a human."
+                    )
+                artifacts = _upsert(artifacts, "relative_path", recorded)
             if action_status == "blocked":
                 blocked = _upsert(
                     blocked,
@@ -188,12 +243,13 @@ class ProjectStateReducer:
                 )
 
         elif transition.kind is StateTransitionKind.AGENT_RESULT:
-            status = str(payload["status"])
+            _require_authority(transition)
+            status = str(required("status"))
             work_items = _upsert(
                 work_items,
                 "work_item_id",
                 ProjectWorkItem(
-                    work_item_id=str(payload["task_id"]),
+                    work_item_id=str(required("task_id")),
                     status=WorkItemStatus.COMPLETED
                     if status == "completed"
                     else WorkItemStatus.BLOCKED
@@ -207,15 +263,14 @@ class ProjectStateReducer:
             )
 
         elif transition.kind is StateTransitionKind.HUMAN_DECISION:
-            if transition.actor is not StateAuthority.HUMAN:
-                raise ValueError("Only a human authority may record a human decision.")
+            _require_authority(transition)
             decisions = _upsert(
                 decisions,
                 "decision_id",
                 ProjectDecision(
-                    decision_id=str(payload["decision_id"]),
-                    content=str(payload["content"]),
-                    status=DecisionStatus(payload["status"]),
+                    decision_id=str(required("decision_id")),
+                    content=str(required("content")),
+                    status=DecisionStatus(required("status")),
                     authority=StateAuthority.HUMAN,
                     evidence=transition.evidence,
                 ),
@@ -226,37 +281,106 @@ class ProjectStateReducer:
                 questions,
                 "question_id",
                 OpenQuestion(
-                    question_id=str(payload["question_id"]),
-                    content=str(payload["content"]),
-                    owner=QuestionOwner(payload["owner"]),
+                    question_id=str(required("question_id")),
+                    content=str(required("content")),
+                    owner=QuestionOwner(required("owner")),
                     evidence=transition.evidence,
                 ),
             )
 
+        elif transition.kind is StateTransitionKind.QUESTION_RESOLVED:
+            question_id = str(required("question_id"))
+            question = next((item for item in questions if item.question_id == question_id), None)
+            if question is None:
+                raise ValueError(
+                    f'Open question "{question_id}" does not exist in project state '
+                    f'"{current.project_id}" (action "{transition.action_id}"); it may already '
+                    "be resolved."
+                )
+            allowed = QUESTION_RESOLUTION_AUTHORITY[question.owner]
+            if transition.actor not in allowed:
+                raise ValueError(
+                    f'Question "{question_id}" is owned by the {question.owner.value}; only '
+                    f"{' or '.join(sorted(item.value for item in allowed))} authority may "
+                    f'resolve it, not {transition.actor.value} (action "{transition.action_id}").'
+                )
+            if not str(required("resolution")).strip():
+                raise ValueError(
+                    f'Question "{question_id}" resolution must not be blank '
+                    f'(action "{transition.action_id}").'
+                )
+            questions = [item for item in questions if item.question_id != question_id]
+
+        elif transition.kind is StateTransitionKind.BLOCKER_CLEARED:
+            _require_authority(transition)
+            blocker_id = str(required("blocker_id"))
+            if not any(item.blocker_id == blocker_id for item in blocked):
+                raise ValueError(
+                    f'Blocker "{blocker_id}" does not exist in project state '
+                    f'"{current.project_id}" (action "{transition.action_id}"); it may already '
+                    "be cleared."
+                )
+            if not str(required("reason")).strip():
+                raise ValueError(
+                    f'Blocker "{blocker_id}" reason must not be blank '
+                    f'(action "{transition.action_id}").'
+                )
+            blocked = [item for item in blocked if item.blocker_id != blocker_id]
+
         elif transition.kind is StateTransitionKind.WORK_ITEM_UPDATED:
-            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HARNESS}:
-                raise ValueError("Only controller or harness authority may update a work item.")
+            _require_authority(transition)
             work_items = _upsert(
                 work_items,
                 "work_item_id",
                 ProjectWorkItem(
-                    work_item_id=str(payload["work_item_id"]),
-                    status=WorkItemStatus(payload["status"]),
-                    owner=str(payload["owner"]),
+                    work_item_id=str(required("work_item_id")),
+                    status=WorkItemStatus(required("status")),
+                    owner=str(required("owner")),
                     evidence=transition.evidence,
                 ),
             )
 
         elif transition.kind is StateTransitionKind.STAGE_CHANGED:
-            if transition.actor not in {StateAuthority.CONTROLLER, StateAuthority.HUMAN}:
-                raise ValueError("Only controller or human authority may change project stage.")
-            stage_schema = StageStateSchema.model_validate(payload["stage_schema"])
+            _require_authority(transition)
+            stage_schema = StageStateSchema.model_validate(required("stage_schema"))
             stage_fields = [
                 StageStateField.model_validate(item) for item in payload.get("stage_fields", [])
             ]
 
+        elif transition.kind is StateTransitionKind.ARTIFACT_STATUS_UPDATED:
+            _require_authority(transition)
+            artifacts = _with_artifact_status(
+                artifacts,
+                str(required("relative_path")),
+                str(required("artifact_id")),
+                ArtifactStatus(required("status")),
+                transition.evidence,
+            )
+
         else:
             raise ValueError(f"Unsupported state transition {transition.kind.value}.")
+
+        project_id = current.project_id
+        artifacts = _within_capacity(
+            project_id, "artifacts", artifacts, MAX_ARTIFACTS, "relative_path", _always_closed
+        )
+        blocked = _within_capacity(
+            project_id, "blocked", blocked, MAX_BLOCKERS, "blocker_id", _never_closed
+        )
+        work_items = _within_capacity(
+            project_id, "work_items", work_items, MAX_WORK_ITEMS, "work_item_id", _is_closed_work
+        )
+        decisions = _within_capacity(
+            project_id, "decisions", decisions, MAX_DECISIONS, "decision_id", _is_superseded
+        )
+        questions = _within_capacity(
+            project_id,
+            "open_questions",
+            questions,
+            MAX_OPEN_QUESTIONS,
+            "question_id",
+            _never_closed,
+        )
 
         return make_project_state(
             project_id=current.project_id,
@@ -279,16 +403,27 @@ class ProjectStateReducer:
         )
 
 
+_ARTIFACT_WRITE_TOOLS: dict[str, str | None] = {
+    "write_draft": None,
+    "edit_draft": "artifact",
+    "notebook_edit": "artifact",
+}
+
+
 def _artifact_from_result(
     call: ToolCall,
     result: ToolExecutionResult,
 ) -> dict[str, Any] | None:
-    if call.name != "write_draft" or result.status != "succeeded":
+    if call.name not in _ARTIFACT_WRITE_TOOLS or result.status != "succeeded":
         return None
     if not isinstance(result.output, dict):
         return None
-    artifact_id = result.output.get("artifact_id")
-    relative_path = result.output.get("relative_path")
+    nested_key = _ARTIFACT_WRITE_TOOLS[call.name]
+    record = result.output if nested_key is None else result.output.get(nested_key)
+    if not isinstance(record, dict):
+        return None
+    artifact_id = record.get("artifact_id")
+    relative_path = record.get("relative_path")
     if not isinstance(artifact_id, str) or not isinstance(relative_path, str):
         return None
     return {
@@ -298,23 +433,91 @@ def _artifact_from_result(
     }
 
 
+def _with_artifact_status(
+    artifacts: list[ProjectArtifactState],
+    relative_path: str,
+    artifact_id: str,
+    status: ArtifactStatus,
+    evidence: list[StateEvidence],
+) -> list[ProjectArtifactState]:
+    current = next((item for item in artifacts if item.relative_path == relative_path), None)
+    if current is None:
+        raise ValueError(
+            f'Artifact "{relative_path}" is not recorded in the project state, so its status '
+            "cannot be updated."
+        )
+    if current.artifact_id != artifact_id:
+        raise ValueError(
+            f'Artifact "{relative_path}" is recorded as {current.artifact_id}, but the status '
+            f"update names {artifact_id}; the artifact changed after the decision was prepared."
+        )
+    return _upsert(
+        artifacts,
+        "relative_path",
+        current.model_copy(update={"status": status, "evidence": evidence}),
+    )
+
+
 def _upsert[T](items: list[T], key: str, value: T) -> list[T]:
     value_key = getattr(value, key)
     replacement = [item for item in items if getattr(item, key) != value_key]
     return [*replacement, value]
 
 
-def _canonical_json(value: Any) -> str:
-    def default(item: Any) -> Any:
-        if hasattr(item, "model_dump"):
-            return item.model_dump(mode="json")
-        return str(item)
+_CLOSED_WORK_STATUSES = frozenset(
+    {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.CANCELLED}
+)
 
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=default)
+
+def _always_closed(_item: object) -> bool:
+    return True
+
+
+def _never_closed(_item: object) -> bool:
+    return False
+
+
+def _is_closed_work(item: ProjectWorkItem) -> bool:
+    return item.status in _CLOSED_WORK_STATUSES
+
+
+def _is_superseded(decision: ProjectDecision) -> bool:
+    return decision.status is DecisionStatus.SUPERSEDED
+
+
+def _within_capacity[T](
+    project_id: str,
+    collection: str,
+    items: list[T],
+    limit: int,
+    key: str,
+    is_closed: Callable[[T], bool],
+) -> list[T]:
+    overflow = len(items) - limit
+    if overflow <= 0:
+        return items
+    evictable = [index for index, item in enumerate(items[:-1]) if is_closed(item)]
+    if len(evictable) < overflow:
+        raise AgentSdkError(
+            "PROJECT_STATE_CAPACITY_EXCEEDED",
+            f'Project state "{project_id}" cannot record {collection} entry '
+            f'"{getattr(items[-1], key)}": it already holds {limit} {collection} entries and '
+            f"only {len(evictable)} of them are closed and eligible for eviction. Close, "
+            "supersede, or cancel existing entries, or record unrelated work under a new "
+            "project_id.",
+            {
+                "project_id": project_id,
+                "collection": collection,
+                "limit": limit,
+                "evictable_entries": len(evictable),
+            },
+        )
+    dropped = set(evictable[:overflow])
+    return [item for index, item in enumerate(items) if index not in dropped]
 
 
 def _bounded_value(value: Any, max_chars: int) -> Any:
-    encoded = _canonical_json(value)
+    encoded = model_canonical_json(value)
     if len(encoded) <= max_chars:
         return value
     return {
@@ -328,7 +531,3 @@ def _bounded_text(value: str | None, max_chars: int) -> str | None:
     if value is None or len(value) <= max_chars:
         return value
     return f"{value[:max_chars]}… [truncated]"
-
-
-def _estimated_tokens(value: Any) -> int:
-    return max(1, len(_canonical_json(value)) // 4)

@@ -26,8 +26,11 @@ from ..agent.model import AgentModel
 from ..agent.runtime import AgentRuntimeServices
 from ..agent.verification import VerificationGateRegistry
 from ..foundations.contracts import AgentDefinition, AgentRunStatus, ScopedAgentTask, StrictModel
+from ..foundations.hashing import canonical_hash
+from ..observability.telemetry_models import TelemetryContext
+from ..observability.trace_context import graph_run_trace_id
 from ..state.graph_models import GraphNode, GraphNodeExecutionContext, GraphNodeResult, NodeExecutor
-from ..tools.tools import ToolExecutor
+from ..tools.tools import ToolAuthorizer, ToolExecutor
 from ._utils import canonical_digest, require_optional_module
 from .contracts import (
     InteropOperationStatus,
@@ -40,6 +43,7 @@ from .receipts import InteropReceiptSink
 LangGraphTaskAdapter = Callable[[InteropRunEnvelope], ScopedAgentTask]
 LangGraphModelFactory = Callable[[InteropRunEnvelope], AgentModel]
 LangGraphToolExecutorFactory = Callable[[InteropRunEnvelope], ToolExecutor | None]
+LangGraphToolAuthorizerFactory = Callable[[InteropRunEnvelope], ToolAuthorizer | None]
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,8 @@ class LangGraphSdkNodeBinding:
     task_adapter: LangGraphTaskAdapter
     model_factory: LangGraphModelFactory
     tool_executor_factory: LangGraphToolExecutorFactory | None = None
+    tool_authorizer_factory: LangGraphToolAuthorizerFactory | None = None
+    require_tool_authorization: bool | None = None
     verification_gates: VerificationGateRegistry | None = None
     pre_tool_hooks: tuple[PreToolHook, ...] = ()
     post_tool_hooks: tuple[PostToolHook, ...] = ()
@@ -105,12 +111,25 @@ class LangGraphSdkNode:
                 self._binding.definition,
                 model,
                 tool_executor=tool_executor,
+                tool_authorizer=(
+                    self._binding.tool_authorizer_factory(envelope)
+                    if self._binding.tool_authorizer_factory is not None
+                    else None
+                ),
+                require_tool_authorization=self._binding.require_tool_authorization,
                 verification_gates=self._binding.verification_gates,
                 pre_tool_hooks=self._binding.pre_tool_hooks,
                 post_tool_hooks=self._binding.post_tool_hooks,
+                telemetry_context=TelemetryContext(
+                    run_id=task.id,
+                    task_id=task.id,
+                    agent_id=self._binding.definition.identity,
+                    node_id=envelope.graph_node_id or self._binding.node_name,
+                    trace_id=graph_run_trace_id(envelope.run_id),
+                ),
             )
             result = await agent.run(task)
-            result_digest = canonical_digest(
+            result_digest = canonical_hash(
                 {
                     "status": result.status.value,
                     "reason": result.reason,
@@ -127,7 +146,7 @@ class LangGraphSdkNode:
                 "remaining_turn_budget": max(0, envelope.remaining_turn_budget - result.iterations),
                 "binding_digest": self._binding.binding_digest,
                 "result_digest": result_digest,
-                "project_state_digest": canonical_digest(result.project_state or {}),
+                "project_state_digest": canonical_hash(result.project_state or {}),
             }
             await self._emit_receipt(
                 envelope,
@@ -137,7 +156,7 @@ class LangGraphSdkNode:
             )
             return {"agent_sdk_transition": transition}
         except Exception as error:
-            result_digest = canonical_digest({"error_type": type(error).__name__})
+            result_digest = canonical_hash({"error_type": type(error).__name__})
             await self._emit_receipt(
                 envelope,
                 InteropOperationStatus.FAILED,

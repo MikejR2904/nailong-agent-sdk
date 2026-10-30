@@ -17,18 +17,33 @@ multi-agent execution.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, replace as dataclass_replace
+import functools
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Concatenate
 
 from ...foundations.contracts import AgentDefinition, SkillContext
 from ...integrations.jev.architecture import JevArchitectureAdvice, JevArchitectureRouter
-from ...observability.telemetry_models import TelemetryActor, TelemetryAuthority, TelemetryContext
+from ...observability.telemetry_models import (
+    DecisionSource,
+    TelemetryActor,
+    TelemetryAuthority,
+    TelemetryContext,
+)
 from ...observability.telemetry_store import TelemetryStore
+from ...observability.trace_context import graph_run_trace_id
 from ...state.controller_runtime import ControllerRuntime
+from ...state.coordination_records import RunRecord
+from ...state.elastic import ElasticNodeRole, ElasticNodeSpec
+from ...state.graph_models import GraphNode, GraphNodeStatus
 from ...state.orchestration_models import (
     ComplexityRouter,
+    ControllerPhase,
+    ControllerRecord,
+    ReconcileAction,
+    ReconcileReport,
     SkillToolProfile,
     WorkflowArchitecture,
 )
@@ -59,9 +74,25 @@ class GraphAgentBindingContext:
     model: UserModelSelection
     profile: AgentExecutionProfile
     snapshot: SharedSubstrateSnapshot
+    elastic: ElasticNodeSpec | None = None
 
 
 GraphAgentBindingFactory = Callable[[GraphAgentBindingContext], GraphAgentBinding]
+
+
+def _serialized[**P, R](
+    method: Callable[Concatenate[Orchestrator, str, P], R],
+) -> Callable[Concatenate[Orchestrator, str, P], R]:
+    @functools.wraps(method)
+    def wrapper(
+        self: Orchestrator, orchestration_id: str, /, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        if not self._store.exists(orchestration_id):
+            return method(self, orchestration_id, *args, **kwargs)
+        with self._store.locked(orchestration_id):
+            return method(self, orchestration_id, *args, **kwargs)
+
+    return wrapper
 
 
 class Orchestrator:
@@ -134,6 +165,7 @@ class Orchestrator:
 
         PlanValidator().assert_valid(request.plan)
         self._validate_request_selection(request)
+        self._validate_elastic_caps(request.plan)
         deterministic = ComplexityRouter(self._policy.routing_rules).route(request.gap_metadata)
         if (
             deterministic is WorkflowArchitecture.MULTI_AGENT
@@ -194,10 +226,13 @@ class Orchestrator:
         )
         return record
 
+    @_serialized
     def submit_for_approval(self, orchestration_id: str) -> OrchestrationRecord:
         """Create a controller and present the compiled plan to the human designer."""
 
-        record = self.get(orchestration_id)
+        record, healed = self._align(orchestration_id)
+        if healed is not None and record.status is OrchestrationStatus.AWAITING_PLAN_APPROVAL:
+            return record
         if record.status is not OrchestrationStatus.PREPARED:
             raise ValueError("Only a prepared orchestration can be submitted for approval.")
         profile = SkillToolProfile(
@@ -210,51 +245,63 @@ class Orchestrator:
             ),
             source_snapshot_id=record.request.snapshot.snapshot_id,
         )
-        controller = self._controller_runtime.create_controller(
-            record.request.snapshot,
-            profile,
-            self._policy.routing_rules,
-            record.request.gap_metadata,
-            max_repair_attempts=self._policy.max_repair_attempts,
-        )
+        controller_id = record.controller_id
+        if controller_id is None:
+            controller = self._controller_runtime.create_controller(
+                record.request.snapshot,
+                profile,
+                self._policy.routing_rules,
+                record.request.gap_metadata,
+                max_repair_attempts=self._policy.max_repair_attempts,
+                elastic_depth_ceiling=self._policy.max_elastic_depth,
+                elastic_nodes_ceiling=self._policy.max_elastic_nodes,
+            )
+            controller_id = controller.controller_id
+            record = record.model_copy(update={"controller_id": controller_id})
+            self._store.save(record)
+        else:
+            controller = self._controller_runtime.get_controller(controller_id)
         if controller.architecture is not record.architecture:
-            controller = self._controller_runtime.apply_advisory_architecture(
-                controller.controller_id,
+            self._controller_runtime.apply_advisory_architecture(
+                controller_id,
                 record.architecture.value,
                 record.routing_advice.reason
                 if record.routing_advice is not None
                 else "Approved orchestration architecture selection.",
             )
-        self._controller_runtime.submit_plan(controller.controller_id, record.execution_plan)
-        updated = record.model_copy(
-            update={
-                "status": OrchestrationStatus.AWAITING_PLAN_APPROVAL,
-                "controller_id": controller.controller_id,
-            }
-        )
+        self._controller_runtime.submit_plan(controller_id, record.execution_plan)
+        updated = record.model_copy(update={"status": OrchestrationStatus.AWAITING_PLAN_APPROVAL})
         self._store.save(updated)
         self._emit(
             updated,
             "orchestration.plan-presented",
             updated.status.value,
-            {"controller_id": controller.controller_id, "plan_id": record.execution_plan.plan_id},
+            {"controller_id": controller_id, "plan_id": record.execution_plan.plan_id},
         )
         return updated
 
+    @_serialized
     def approve(
         self,
         orchestration_id: str,
         approved: bool,
         reason: str | None = None,
+        *,
+        source: DecisionSource | None = None,
     ) -> OrchestrationRecord:
         """Forward a typed human plan decision to the underlying controller."""
 
-        record = self.get(orchestration_id)
+        record, healed = self._align(orchestration_id)
+        decided = OrchestrationStatus.APPROVED if approved else OrchestrationStatus.PREPARED
+        if healed is not None and record.status is decided:
+            return record
         if record.status is not OrchestrationStatus.AWAITING_PLAN_APPROVAL:
             raise ValueError("The orchestration is not awaiting a plan decision.")
         if record.controller_id is None:
             raise ValueError("Approval requires a bound controller.")
-        self._controller_runtime.approve_plan(record.controller_id, approved, reason)
+        self._controller_runtime.approve_plan(record.controller_id, approved, reason, source=source)
+        decided_by = source.fields() if source is not None else {}
+        authority = source.authority if source is not None else TelemetryAuthority.DETERMINISTIC
         if approved:
             updated = record.model_copy(update={"status": OrchestrationStatus.APPROVED})
             self._store.save(updated)
@@ -262,7 +309,8 @@ class Orchestrator:
                 updated,
                 "orchestration.plan-decision",
                 "approved",
-                {"controller_id": updated.controller_id, "reason": reason},
+                {"controller_id": updated.controller_id, "reason": reason, **decided_by},
+                authority=authority,
             )
             return updated
         updated = record.model_copy(update={"status": OrchestrationStatus.PREPARED})
@@ -271,7 +319,8 @@ class Orchestrator:
             updated,
             "orchestration.plan-decision",
             "rejected",
-            {"controller_id": updated.controller_id, "reason": reason},
+            {"controller_id": updated.controller_id, "reason": reason, **decided_by},
+            authority=authority,
         )
         return updated
 
@@ -283,7 +332,24 @@ class Orchestrator:
     ) -> OrchestrationRecord:
         """Dispatch an approved graph and run only host-bound, policy-checked workers."""
 
-        record = self.get(orchestration_id)
+        dispatched, controller_id, executor = self._dispatch(
+            orchestration_id, services, binding_factory
+        )
+        return await self._execute_dispatched(dispatched, controller_id, executor)
+
+    @_serialized
+    def _dispatch(
+        self,
+        orchestration_id: str,
+        services: AgentRuntimeServices,
+        binding_factory: GraphAgentBindingFactory,
+    ) -> tuple[OrchestrationRecord, str, GraphAgentExecutor]:
+        record, healed = self._align(orchestration_id)
+        if healed is not None and record.status is OrchestrationStatus.DISPATCHED:
+            controller_id, executor = self._executor_for(
+                record, services, binding_factory, "Dispatching"
+            )
+            return record, controller_id, executor
         if record.status is not OrchestrationStatus.APPROVED:
             raise ValueError("Only an approved orchestration can dispatch.")
         if record.controller_id is None:
@@ -293,6 +359,8 @@ class Orchestrator:
         controller = self._controller_runtime.get_controller(record.controller_id)
         if controller.phase.value != "dispatch-ready":
             raise ValueError("The designer must approve the plan before dispatch.")
+        bindings = self._build_bindings(record, binding_factory)
+        executor = self._graph_executor(record, services, bindings, binding_factory)
         controller, run = self._controller_runtime.dispatch(record.controller_id)
         dispatched = record.model_copy(
             update={
@@ -307,16 +375,101 @@ class Orchestrator:
             dispatched.status.value,
             {"controller_id": dispatched.controller_id, "graph_run_id": dispatched.graph_run_id},
         )
+        return dispatched, controller.controller_id, executor
+
+    async def resume_execution(
+        self,
+        orchestration_id: str,
+        services: AgentRuntimeServices,
+        binding_factory: GraphAgentBindingFactory,
+    ) -> OrchestrationRecord:
+        record = self.get(orchestration_id)
+        if record.status is not OrchestrationStatus.BLOCKED:
+            raise ValueError(
+                "Only a blocked orchestration can resume execution; "
+                f'"{orchestration_id}" is {record.status.value}.'
+            )
+        controller_id, executor = self._executor_for(
+            record, services, binding_factory, "Resuming execution"
+        )
+        return await self._execute_dispatched(record, controller_id, executor)
+
+    async def recover_execution(
+        self,
+        orchestration_id: str,
+        services: AgentRuntimeServices,
+        binding_factory: GraphAgentBindingFactory,
+    ) -> OrchestrationRecord:
+        record, executor = self._begin_recovery(orchestration_id, services, binding_factory)
+        if executor is None or record.controller_id is None:
+            return record
+        return await self._execute_dispatched(record, record.controller_id, executor)
+
+    @_serialized
+    def _begin_recovery(
+        self,
+        orchestration_id: str,
+        services: AgentRuntimeServices,
+        binding_factory: GraphAgentBindingFactory,
+    ) -> tuple[OrchestrationRecord, GraphAgentExecutor | None]:
+        record = self.get(orchestration_id)
+        if record.controller_id is not None:
+            self._controller_runtime.reconcile(record.controller_id)
+        record, settled = self._align(orchestration_id, settle=True)
+        if settled is not None and record.status is not OrchestrationStatus.DISPATCHED:
+            return record, None
+        if record.status is not OrchestrationStatus.DISPATCHED:
+            raise ValueError(
+                "Only a dispatched orchestration can recover execution; "
+                f'"{orchestration_id}" is {record.status.value}.'
+            )
+        controller_id, executor = self._executor_for(
+            record, services, binding_factory, "Recovering execution"
+        )
+        self._controller_runtime.recover_interrupted_graph(
+            controller_id, executor.idempotent_node_ids(), is_replayable=executor.is_replayable
+        )
+        return record, executor
+
+    def _executor_for(
+        self,
+        record: OrchestrationRecord,
+        services: AgentRuntimeServices,
+        binding_factory: GraphAgentBindingFactory,
+        action: str,
+    ) -> tuple[str, GraphAgentExecutor]:
+        if record.controller_id is None:
+            raise ValueError(f"{action} requires a bound controller.")
+        if services.run_root.resolve() != self._run_root:
+            raise ValueError("AgentRuntimeServices must use the orchestrator run_root.")
         bindings = self._build_bindings(record, binding_factory)
-        executor = GraphAgentExecutor(services, bindings)
+        return record.controller_id, self._graph_executor(
+            record, services, bindings, binding_factory
+        )
+
+    async def _execute_dispatched(
+        self,
+        record: OrchestrationRecord,
+        controller_id: str,
+        executor: GraphAgentExecutor,
+    ) -> OrchestrationRecord:
         executed = await self._controller_runtime.execute_graph(
-            controller.controller_id,
+            controller_id,
             executor.executors(),
             max_parallelism=self._policy.max_parallel_agents,
         )
-        updated = dispatched.model_copy(
+        return self._conclude_execution(record.orchestration_id, executed)
+
+    @_serialized
+    def _conclude_execution(
+        self, orchestration_id: str, executed: RunRecord
+    ) -> OrchestrationRecord:
+        current = self.get(orchestration_id)
+        if current.status is OrchestrationStatus.CANCELLED:
+            return current
+        updated = current.model_copy(
             update={
-                "status": OrchestrationStatus.EXECUTED,
+                "status": _execution_outcome(executed.graph["statuses"]),
                 "graph_run_id": executed.run_id,
             }
         )
@@ -329,10 +482,13 @@ class Orchestrator:
         )
         return updated
 
+    @_serialized
     def cancel(self, orchestration_id: str, reason: str) -> OrchestrationRecord:
         """Cancel a nonterminal controller and retain the decision record."""
 
-        record = self.get(orchestration_id)
+        record, healed = self._align(orchestration_id)
+        if healed is not None and record.status is OrchestrationStatus.CANCELLED:
+            return record
         if record.controller_id is not None:
             self._controller_runtime.cancel(record.controller_id, reason)
         updated = record.model_copy(update={"status": OrchestrationStatus.CANCELLED})
@@ -344,6 +500,50 @@ class Orchestrator:
             {"reason": reason, "controller_id": updated.controller_id},
         )
         return updated
+
+    @_serialized
+    def reconcile(self, orchestration_id: str) -> ReconcileReport:
+        record = self.get(orchestration_id)
+        actions: list[ReconcileAction] = []
+        if record.controller_id is not None:
+            actions.extend(self._controller_runtime.reconcile(record.controller_id).actions)
+        _aligned, action = self._align(orchestration_id, settle=True)
+        if action is not None:
+            actions.append(action)
+        return ReconcileReport(subject=orchestration_id, actions=actions)
+
+    def _align(
+        self, orchestration_id: str, *, settle: bool = False
+    ) -> tuple[OrchestrationRecord, ReconcileAction | None]:
+        record = self.get(orchestration_id)
+        if record.controller_id is None:
+            return record, None
+        controller = self._controller_runtime.get_controller(record.controller_id)
+        run = None
+        if settle and record.status is OrchestrationStatus.DISPATCHED:
+            run = self._controller_runtime.get_run(record.controller_id)
+        implied = _implied_by_controller(record, controller, run)
+        if implied is None:
+            return record, None
+        fields, reason = implied
+        updated = record.model_copy(update=fields)
+        self._store.save(updated)
+        self._emit(
+            updated,
+            "orchestration.reconciled",
+            updated.status.value,
+            {
+                "controller_id": record.controller_id,
+                "from": record.status.value,
+                "reason": reason,
+            },
+        )
+        action = ReconcileAction(
+            store="orchestration",
+            record_id=orchestration_id,
+            change=f'status "{record.status.value}" -> "{updated.status.value}": {reason}',
+        )
+        return updated, action
 
     def get(self, orchestration_id: str) -> OrchestrationRecord:
         return self._store.load(orchestration_id)
@@ -498,6 +698,81 @@ class Orchestrator:
             bindings[assignment.node_id] = _with_selected_skills(binding, selected_skills)
         return bindings
 
+    def _graph_executor(
+        self,
+        record: OrchestrationRecord,
+        services: AgentRuntimeServices,
+        bindings: dict[str, GraphAgentBinding],
+        factory: GraphAgentBindingFactory,
+    ) -> GraphAgentExecutor:
+        return GraphAgentExecutor(
+            services,
+            bindings,
+            elastic_binding_factory=lambda node, context: self._elastic_binding(
+                record, factory, node
+            ),
+        )
+
+    def _elastic_binding(
+        self,
+        record: OrchestrationRecord,
+        factory: GraphAgentBindingFactory,
+        node: GraphNode,
+    ) -> GraphAgentBinding:
+        spec = node.elastic
+        if spec is None:
+            raise ValueError(
+                f'Node "{node.node_id}" is not an elastic node, so no elastic binding can be '
+                "derived for it."
+            )
+        root = next(
+            (item for item in record.assignments if item.node_id == spec.root_node_id), None
+        )
+        if root is None:
+            raise ValueError(
+                f'Elastic node "{node.node_id}" descends from "{spec.root_node_id}", which has no '
+                f'worker assignment in orchestration "{record.orchestration_id}".'
+            )
+        profile = next(item for item in self._policy.profiles if item.profile_id == root.profile_id)
+        model = next(item for item in self._policy.models if item.model_key == root.model_key)
+        skills = tuple(item for item in self._policy.skills if item.id in root.skill_ids)
+        root_task = next(
+            item for item in record.execution_plan.tasks if item.task_id == root.task_id
+        )
+        task = _elastic_plan_task(node, root_task)
+        identity = (
+            root.agent_identity
+            if spec.role is ElasticNodeRole.JOIN
+            else f"{root.agent_identity}:elastic:{spec.request.request_id}"
+        )
+        assignment = root.model_copy(
+            update={"node_id": node.node_id, "task_id": task.task_id, "agent_identity": identity}
+        )
+        context = GraphAgentBindingContext(
+            assignment=assignment,
+            execution_task=task,
+            selected_skills=skills,
+            model=model,
+            profile=profile,
+            snapshot=record.request.snapshot,
+            elastic=spec,
+        )
+        binding = factory(context)
+        self._validate_binding(binding, context)
+        return _with_selected_skills(binding, skills)
+
+    def _validate_elastic_caps(self, plan: Plan) -> None:
+        for name, ceiling in (
+            ("max_elastic_depth", self._policy.max_elastic_depth),
+            ("max_elastic_nodes", self._policy.max_elastic_nodes),
+        ):
+            declared = getattr(plan, name)
+            if declared > ceiling:
+                raise ValueError(
+                    f'Plan "{plan.plan_id}" declares {name} {declared}, above the policy '
+                    f"ceiling {name} {ceiling}."
+                )
+
     @staticmethod
     def _validate_binding(binding: GraphAgentBinding, context: GraphAgentBindingContext) -> None:
         if binding.node_id != context.assignment.node_id:
@@ -516,11 +791,8 @@ class Orchestrator:
             )
 
     def _next_id(self) -> str:
-        while self._store.exists(f"orchestration-{self._counter}"):
-            self._counter += 1
-        value = f"orchestration-{self._counter}"
-        self._counter += 1
-        return value
+        orchestration_id, self._counter = self._store.reserve_orchestration_id(start=self._counter)
+        return orchestration_id
 
     def _emit(
         self,
@@ -528,6 +800,8 @@ class Orchestrator:
         event_type: str,
         status: str,
         payload: dict[str, Any],
+        *,
+        authority: TelemetryAuthority = TelemetryAuthority.DETERMINISTIC,
     ) -> None:
         self._telemetry.emit(
             event_type,
@@ -535,16 +809,91 @@ class Orchestrator:
                 run_id=record.orchestration_id,
                 controller_id=record.controller_id,
                 stage=record.request.stage,
+                trace_id=graph_run_trace_id(record.graph_run_id) if record.graph_run_id else None,
             ),
             actor=TelemetryActor(
                 kind="system",
                 identifier="agent-sdk-orchestrator",
                 role="orchestrator",
             ),
-            authority=TelemetryAuthority.DETERMINISTIC,
+            authority=authority,
             status=status,
             payload=payload,
         )
+
+
+_UNFINISHED_STATUSES = frozenset(
+    {
+        GraphNodeStatus.PENDING.value,
+        GraphNodeStatus.RUNNABLE.value,
+        GraphNodeStatus.RUNNING.value,
+    }
+)
+_RUNNING_PHASES = frozenset(
+    {ControllerPhase.EXECUTING, ControllerPhase.REPAIR_REQUIRED, ControllerPhase.ESCALATED}
+)
+
+
+def _implied_by_controller(
+    record: OrchestrationRecord, controller: ControllerRecord, run: RunRecord | None = None
+) -> tuple[dict[str, Any], str] | None:
+    phase = controller.phase
+    if phase is ControllerPhase.CANCELLED and record.status is not OrchestrationStatus.CANCELLED:
+        return (
+            {"status": OrchestrationStatus.CANCELLED},
+            f'controller "{controller.controller_id}" is cancelled',
+        )
+    if (
+        record.status is OrchestrationStatus.PREPARED
+        and phase is ControllerPhase.AWAITING_PLAN_APPROVAL
+        and controller.plan == record.execution_plan
+    ):
+        return (
+            {"status": OrchestrationStatus.AWAITING_PLAN_APPROVAL},
+            f'controller "{controller.controller_id}" holds the compiled plan for approval',
+        )
+    if record.status is OrchestrationStatus.AWAITING_PLAN_APPROVAL:
+        if phase is ControllerPhase.DISPATCH_READY:
+            return (
+                {"status": OrchestrationStatus.APPROVED},
+                f'controller "{controller.controller_id}" approved the plan',
+            )
+        if phase is ControllerPhase.PLANNING and controller.plan_approved is False:
+            return (
+                {"status": OrchestrationStatus.PREPARED},
+                f'controller "{controller.controller_id}" rejected the plan',
+            )
+    if (
+        record.status is OrchestrationStatus.APPROVED
+        and phase in _RUNNING_PHASES
+        and controller.run_id is not None
+    ):
+        return (
+            {"status": OrchestrationStatus.DISPATCHED, "graph_run_id": controller.run_id},
+            f'controller "{controller.controller_id}" dispatched graph run "{controller.run_id}"',
+        )
+    if record.status is OrchestrationStatus.DISPATCHED and run is not None:
+        statuses = run.graph["statuses"]
+        failed = GraphNodeStatus.FAILED.value in statuses.values()
+        if _UNFINISHED_STATUSES.isdisjoint(statuses.values()) and (
+            not failed or phase in {ControllerPhase.REPAIR_REQUIRED, ControllerPhase.ESCALATED}
+        ):
+            return (
+                {"status": _execution_outcome(statuses), "graph_run_id": run.run_id},
+                f'graph run "{run.run_id}" has finished',
+            )
+    return None
+
+
+def _execution_outcome(statuses: Mapping[str, str]) -> OrchestrationStatus:
+    observed = set(statuses.values())
+    if GraphNodeStatus.FAILED.value in observed:
+        return OrchestrationStatus.FAILED
+    if GraphNodeStatus.BLOCKED.value in observed:
+        return OrchestrationStatus.BLOCKED
+    if GraphNodeStatus.CANCELLED.value in observed:
+        return OrchestrationStatus.CANCELLED
+    return OrchestrationStatus.EXECUTED
 
 
 def _profile_skills(profile: AgentExecutionProfile, selected_skill_ids: list[str]) -> list[str]:
@@ -561,6 +910,25 @@ def _worker_identity(
     if len(source_task_ids) == 1:
         return f"{profile.role}:{source_task_ids[0]}"
     return f"{profile.role}:orchestrated:{task.task_id}"
+
+
+def _elastic_plan_task(node: GraphNode, root_task: PlanTask) -> PlanTask:
+    request = node.elastic.request if node.elastic is not None else None
+    return PlanTask(
+        task_id=node.node_id,
+        scope=root_task.scope,
+        locked_interface=root_task.locked_interface,
+        instructions=request.instructions if request is not None else root_task.instructions,
+        acceptance_criteria=(
+            f"Report findings for the declared scope: {request.scope}"
+            if request is not None
+            else root_task.acceptance_criteria
+        ),
+        model_tier=root_task.model_tier,
+        generality_rank=root_task.generality_rank,
+        authorized_artifact_ids=list(root_task.authorized_artifact_ids),
+        routing_refs=node.routing_refs,
+    )
 
 
 def _routing_state(request: OrchestrationRequest) -> dict[str, Any]:

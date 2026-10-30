@@ -9,7 +9,6 @@ marked untrusted, and named process execution remains delegated to ProcessSuperv
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import html
 import json
 import re
@@ -21,28 +20,29 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ...foundations.contracts import AgentFailure, ToolExecutionResult
+from ...foundations.detached import run_detached
+from ...foundations.hashing import sha256_hex
+from ...foundations.paths import relative_to_base
+from ...foundations.text import split_lines
+from ...foundations.version import http_user_agent
 from ...memory.context_projection import ToolResultJournal
 from ..artifacts import ArtifactStore
-from ..policy import SENSITIVE_PATH_PATTERNS
+from ..policy import sensitive_pattern_for
 from .helpers import (
     _bounded_float,
     _bounded_int,
     _bounded_regex_search,
     _fetch_public_text,
+    _leaves_run_root,
     _nonnegative_int,
     _read_lines,
     _render_pdf_page,
     _required_text,
-    _sha256,
     _strip_html,
+    _text_argument,
 )
 
-
-def _matches_sensitive_pattern(path: Path) -> bool:
-    """Return whether ``path`` names a credential location denied in every run root."""
-
-    posix = str(path).replace("\\", "/")
-    return any(fnmatch.fnmatch(posix, pattern) for pattern in SENSITIVE_PATH_PATTERNS)
+_INTERNAL_STATE_PREFIX = ".agent-"
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ class DuckDuckGoHtmlClient:
     """Small dependency-free search client. Search text is always untrusted evidence."""
 
     async def search(self, query: str, limit: int) -> list[SearchResult]:
-        return await asyncio.to_thread(self._search, query, limit)
+        return await run_detached(self._search, query, limit)
 
     @staticmethod
     def _search(query: str, limit: int) -> list[SearchResult]:
@@ -71,11 +71,11 @@ class DuckDuckGoHtmlClient:
         request = urllib.request.Request(
             "https://html.duckduckgo.com/html/",
             data=data,
-            headers={"User-Agent": "agent-design-sdk/0.8 research client"},
+            headers={"User-Agent": http_user_agent("research client")},
             method="POST",
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(request, timeout=15) as response:  # noqa: S310 -- URL is fixed.
+        with opener.open(request, timeout=15) as response:
             status = response.status
             body = response.read(512_000).decode("utf-8", errors="replace")
         if status != 200 or "duckduckgo.com/anomaly.js" in body or "cc=botnet" in body:
@@ -99,9 +99,7 @@ class DuckDuckGoHtmlClient:
                 continue
             title = _strip_html(match.group("title"))
             chunk_end = (
-                title_matches[index + 1].start()
-                if index + 1 < len(title_matches)
-                else len(body)
+                title_matches[index + 1].start() if index + 1 < len(title_matches) else len(body)
             )
             snippet_match = snippet_pattern.search(body, match.end(), chunk_end)
             snippet = _strip_html(snippet_match.group("snippet")) if snippet_match else ""
@@ -129,6 +127,8 @@ class CoreToolServices:
     # The timeout covers isolated-worker startup as well as regex matching. Keep it
     # finite but above the supported-environment startup budget for valid searches.
     max_grep_seconds: float = 8.0
+    max_fetch_seconds: float = 30.0
+    read_scope: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         self.root = self.root.resolve()
@@ -140,6 +140,7 @@ class CoreToolServices:
             or self.max_grep_files < 1
             or self.max_grep_total_bytes < 1
             or self.max_grep_seconds <= 0
+            or self.max_fetch_seconds <= 0
         ):
             raise ValueError("Core tool read limits must be positive and safe.")
 
@@ -150,9 +151,11 @@ class CoreToolDispatcher:
     def __init__(self, services: CoreToolServices) -> None:
         self._services = services
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
+    async def execute(
+        self, name: str, arguments: dict[str, Any], *, writer: dict[str, Any] | None = None
+    ) -> ToolExecutionResult:
         try:
-            output = await self._dispatch(name, arguments)
+            output = await self._dispatch(name, arguments, writer)
         except Exception as error:
             failure = AgentFailure(
                 code="CORE_TOOL_EXECUTION_FAILED",
@@ -162,10 +165,12 @@ class CoreToolDispatcher:
             return ToolExecutionResult(status="failed", error=failure.message, failure=failure)
         return ToolExecutionResult(status="succeeded", output=output)
 
-    async def _dispatch(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def _dispatch(
+        self, name: str, arguments: dict[str, Any], writer: dict[str, Any] | None = None
+    ) -> Any:
         if name == "read_file":
             relative_path = _required_text(arguments, "path")
-            path = self._path(relative_path)
+            path = self._read_path(relative_path)
             offset = _nonnegative_int(arguments.get("offset", 0), "offset")
             limit = _bounded_int(arguments.get("limit", 200), "limit", 1, 2_000)
             result = _read_lines(path, offset, limit, self._services.max_read_bytes)
@@ -178,9 +183,9 @@ class CoreToolDispatcher:
         if name == "grep":
             return await self._grep(arguments)
         if name == "write_draft":
-            return self._write_draft(arguments)
+            return self._write_draft(arguments, writer)
         if name == "edit_draft":
-            return self._edit_draft(arguments)
+            return self._edit_draft(arguments, writer)
         if name == "diff_declared_artifacts":
             return self._diff(arguments)
         if name == "read_artifact":
@@ -206,8 +211,11 @@ class CoreToolDispatcher:
             max_chars = _bounded_int(arguments.get("max_chars", 200), "max_chars", 20, 2_000)
             return {"text": text[:max_chars], "truncated": len(text) > max_chars}
         if name == "notebook_edit":
-            return self._notebook_edit(arguments)
+            return self._notebook_edit(arguments, writer)
         raise ValueError(f'No core tool implementation exists for "{name}".')
+
+    def _manifest(self, writer: dict[str, Any] | None) -> dict[str, Any]:
+        return {**(self._services.write_manifest or {}), **(writer or {})}
 
     def _path(self, relative_path: str) -> Path:
         candidate = Path(relative_path)
@@ -215,26 +223,55 @@ class CoreToolDispatcher:
             raise ValueError("Tool paths must be non-empty and relative to the run root.")
         target = (self._services.root / candidate).resolve()
         try:
-            target.relative_to(self._services.root)
+            relative_to_base(target, self._services.root)
         except ValueError as error:
             raise ValueError("Tool path escapes the configured run root.") from error
-        if _matches_sensitive_pattern(target):
+        if sensitive_pattern_for(target) is not None:
             raise ValueError(f'Tool path "{relative_path}" is a denied credential path.')
         return target
 
+    def _read_path(self, relative_path: str) -> Path:
+        target = self._path(relative_path)
+        if not self._is_readable(target):
+            scope = self._services.read_scope
+            raise ValueError(
+                f'Tool path "{relative_path}" is not readable: it is SDK-internal run state or '
+                f"outside the read scope {list(scope) if scope is not None else 'of this run'}."
+            )
+        return target
+
+    def _is_readable(self, resolved: Path) -> bool:
+        root = self._services.root
+        relative = relative_to_base(resolved, root)
+        if relative.parts and relative.parts[0].lower().startswith(_INTERNAL_STATE_PREFIX):
+            return False
+        scope = self._services.read_scope
+        if scope is None:
+            return True
+        for allowed in scope:
+            try:
+                relative_to_base(resolved, (root / allowed).resolve())
+            except ValueError:
+                continue
+            return True
+        return False
+
     def _glob(self, pattern: str, limit: int) -> list[str]:
-        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-            raise ValueError("Glob pattern must remain below the configured run root.")
+        if _leaves_run_root(pattern):
+            raise ValueError(
+                f'Glob pattern "{pattern}" must remain below the configured run root; '
+                'absolute, drive-qualified and ".." patterns are refused.'
+            )
         matches: list[str] = []
         for candidate in self._services.root.glob(pattern):
             resolved = candidate.resolve()
             try:
-                resolved.relative_to(self._services.root)
+                relative = relative_to_base(resolved, self._services.root)
             except ValueError:
                 continue
-            if _matches_sensitive_pattern(resolved):
+            if sensitive_pattern_for(resolved) is not None or not self._is_readable(resolved):
                 continue
-            matches.append(str(resolved.relative_to(self._services.root)))
+            matches.append(str(relative))
             if len(matches) == limit:
                 break
         return sorted(matches)
@@ -260,7 +297,7 @@ class CoreToolDispatcher:
         total_bytes = 0
         scan_truncated = False
         for relative in self._glob(file_glob, self._services.max_grep_files):
-            path = self._path(relative)
+            path = self._read_path(relative)
             if not path.is_file() or path.stat().st_size > self._services.max_read_bytes:
                 continue
             size_bytes = path.stat().st_size
@@ -275,40 +312,50 @@ class CoreToolDispatcher:
             documents.append((relative, text))
         return documents, scan_truncated
 
-    def _write_draft(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _write_draft(
+        self, arguments: dict[str, Any], writer: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         path = _required_text(arguments, "path")
-        if path not in self._services.declared_output_paths:
-            raise ValueError("Draft path was not declared for this governed task.")
+        self._require_declared(path, "Draft")
         record = self._services.artifacts.write_text(
             path,
-            _required_text(arguments, "content"),
-            manifest=self._services.write_manifest,
+            _text_argument(arguments, "content"),
+            manifest=self._manifest(writer),
         )
         return record.model_dump(mode="json")
 
-    def _edit_draft(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        path = _required_text(arguments, "path")
+    def _require_declared(self, path: str, label: str) -> None:
         if path not in self._services.declared_output_paths:
-            raise ValueError("Draft path was not declared for this governed task.")
+            raise ValueError(
+                f'{label} path "{path}" was not declared for this governed task; declared '
+                f"output paths: {list(self._services.declared_output_paths)}."
+            )
+
+    def _edit_draft(
+        self, arguments: dict[str, Any], writer: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        path = _required_text(arguments, "path")
+        self._require_declared(path, "Draft")
         target = self._path(path)
         if not target.is_file():
-            raise ValueError("Declared draft file does not exist.")
+            raise ValueError(f'Declared draft file "{path}" does not exist.')
         old = _required_text(arguments, "old_text")
-        new = _required_text(arguments, "new_text")
+        new = _text_argument(arguments, "new_text")
         replace_all = bool(arguments.get("replace_all", False))
         content = target.read_text(encoding="utf-8")
         count = content.count(old)
         if count == 0:
-            raise ValueError("edit_draft old_text was not found.")
+            raise ValueError(f'edit_draft old_text was not found in "{path}".')
         if count > 1 and not replace_all:
             raise ValueError(
-                "edit_draft old_text is ambiguous; set replace_all only when intended."
+                f'edit_draft old_text is ambiguous: it occurs {count} times in "{path}"; set '
+                "replace_all only when intended."
             )
         updated = content.replace(old, new) if replace_all else content.replace(old, new, 1)
         record = self._services.artifacts.write_text(
             path,
             updated,
-            manifest=self._services.write_manifest,
+            manifest=self._manifest(writer),
         )
         return {
             "replacements": count if replace_all else 1,
@@ -333,7 +380,7 @@ class CoreToolDispatcher:
         matches = [
             index
             for index, line in enumerate(
-                self._services.artifacts.read_text(artifact_id).splitlines(), start=1
+                split_lines(self._services.artifacts.read_text(artifact_id)), start=1
             )
             if needle in line
         ]
@@ -350,7 +397,7 @@ class CoreToolDispatcher:
             "handle_id": handle,
             "content": encoded[:max_chars],
             "truncated": len(encoded) > max_chars,
-            "content_hash": _sha256(encoded),
+            "content_hash": sha256_hex(encoded),
         }
 
     async def _web_fetch(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -362,20 +409,21 @@ class CoreToolDispatcher:
             self._services.max_web_chars,
         )
         page = _bounded_int(arguments.get("page", 1), "page", 1, 10_000)
-        return await asyncio.to_thread(
+        return await run_detached(
             _fetch_public_text,
             url,
             max_chars,
             page=page,
             image_cache=self._services.pdf_image_cache,
             pdf_bytes_cache=self._services.pdf_bytes_cache,
+            deadline_seconds=self._services.max_fetch_seconds,
         )
 
     async def _render_pdf_page(self, arguments: dict[str, Any]) -> dict[str, Any]:
         url = _required_text(arguments, "url")
         page = _bounded_int(arguments.get("page", 1), "page", 1, 10_000)
         scale = _bounded_float(arguments.get("scale", 2.0), "scale", 1.0, 4.0)
-        return await asyncio.to_thread(
+        return await run_detached(
             _render_pdf_page,
             url,
             page,
@@ -404,34 +452,50 @@ class CoreToolDispatcher:
         answer = await self._services.ask_human(question)
         return {"answer": answer, "answered": answer is not None}
 
-    def _notebook_edit(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _notebook_edit(
+        self, arguments: dict[str, Any], writer: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         path = _required_text(arguments, "path")
-        if path not in self._services.declared_output_paths:
-            raise ValueError("Notebook path was not declared for this governed task.")
+        self._require_declared(path, "Notebook")
         # A sparse index materializes every preceding cell, so bound it even when
         # a host calls this dispatcher directly without schema validation.
         cell_index = _bounded_int(arguments.get("cell_index", 0), "cell_index", 0, 2_000)
-        source = _required_text(arguments, "new_source")
+        source = _text_argument(arguments, "new_source")
         mode = str(arguments.get("mode", "replace"))
         if mode not in {"replace", "append"}:
             raise ValueError("Notebook mode must be replace or append.")
         target = self._path(path)
-        document = (
-            json.loads(target.read_text(encoding="utf-8"))
-            if target.exists()
-            else {"cells": [], "nbformat": 4, "nbformat_minor": 5, "metadata": {}}
-        )
-        cells = document.setdefault("cells", [])
+        document = self._load_notebook(path, target)
+        cells = document["cells"]
         while len(cells) <= cell_index:
             cells.append({"cell_type": "code", "metadata": {}, "outputs": [], "source": []})
         cell = cells[cell_index]
-        existing = "".join(cell.get("source", []))
-        cell["source"] = (existing + source if mode == "append" else source).splitlines(
-            keepends=True
+        existing = cell.get("source", [])
+        existing_text = existing if isinstance(existing, str) else "".join(existing)
+        cell["source"] = split_lines(
+            existing_text + source if mode == "append" else source, keepends=True
         )
         record = self._services.artifacts.write_text(
             path,
             json.dumps(document, indent=2),
-            manifest=self._services.write_manifest,
+            manifest=self._manifest(writer),
         )
         return {"cell_index": cell_index, "artifact": record.model_dump(mode="json")}
+
+    @staticmethod
+    def _load_notebook(path: str, target: Path) -> dict[str, Any]:
+        if not target.exists():
+            return {"cells": [], "nbformat": 4, "nbformat_minor": 5, "metadata": {}}
+        try:
+            document = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError as error:
+            raise ValueError(
+                f'Notebook "{path}" is not valid JSON: {type(error).__name__}: {error}'
+            ) from error
+        if not isinstance(document, dict) or not isinstance(document.get("cells", []), list):
+            raise ValueError(
+                f'Notebook "{path}" must hold a JSON object whose "cells" is a list; found '
+                f"{type(document).__name__}."
+            )
+        document.setdefault("cells", [])
+        return document

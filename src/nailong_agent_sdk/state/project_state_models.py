@@ -9,14 +9,22 @@ they are not replayed as the agent's ordinary reasoning context.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import Field, field_validator, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.hashing import model_canonical_json, sha256_hex
+from ..foundations.identifiers import require_unique
+from ..foundations.json_limits import assert_json_depth
+
+MAX_STAGE_FIELDS = 128
+MAX_ARTIFACTS = 1_024
+MAX_DECISIONS = 256
+MAX_OPEN_QUESTIONS = 256
+MAX_BLOCKERS = 256
+MAX_WORK_ITEMS = 1_024
 
 
 class StateAuthority(StrEnum):
@@ -72,8 +80,7 @@ class StageStateSchema(StrictModel):
     @field_validator("required_field_ids")
     @classmethod
     def field_ids_are_unique(cls, values: list[str]) -> list[str]:
-        if len(values) != len(set(values)):
-            raise ValueError("required stage field IDs must be unique")
+        require_unique(values, "required stage field IDs")
         return values
 
 
@@ -81,6 +88,11 @@ class StageStateField(StrictModel):
     field_id: str = Field(min_length=1)
     value: Any
     evidence: list[StateEvidence] = Field(min_length=1, max_length=32)
+
+    @field_validator("value")
+    @classmethod
+    def value_is_bounded(cls, value: Any) -> Any:
+        return assert_json_depth(value, "stage state field value")
 
 
 class ProjectDecision(StrictModel):
@@ -129,7 +141,8 @@ class StateAction(StrictModel):
     @field_validator("summary")
     @classmethod
     def summary_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if len(_canonical_json(value)) > 4_096:
+        assert_json_depth(value, "state action summary")
+        if len(model_canonical_json(value)) > 4_096:
             raise ValueError("state action summary exceeds the 4,096-character bound")
         return value
 
@@ -141,12 +154,12 @@ class ProjectState(StrictModel):
     project_id: str = Field(min_length=1)
     revision: int = Field(ge=0)
     stage_schema: StageStateSchema
-    stage_fields: list[StageStateField] = Field(default_factory=list, max_length=128)
-    artifacts: list[ProjectArtifactState] = Field(default_factory=list, max_length=1_024)
-    decisions: list[ProjectDecision] = Field(default_factory=list, max_length=256)
-    open_questions: list[OpenQuestion] = Field(default_factory=list, max_length=256)
-    blocked: list[ProjectBlocker] = Field(default_factory=list, max_length=256)
-    work_items: list[ProjectWorkItem] = Field(default_factory=list, max_length=1_024)
+    stage_fields: list[StageStateField] = Field(default_factory=list, max_length=MAX_STAGE_FIELDS)
+    artifacts: list[ProjectArtifactState] = Field(default_factory=list, max_length=MAX_ARTIFACTS)
+    decisions: list[ProjectDecision] = Field(default_factory=list, max_length=MAX_DECISIONS)
+    open_questions: list[OpenQuestion] = Field(default_factory=list, max_length=MAX_OPEN_QUESTIONS)
+    blocked: list[ProjectBlocker] = Field(default_factory=list, max_length=MAX_BLOCKERS)
+    work_items: list[ProjectWorkItem] = Field(default_factory=list, max_length=MAX_WORK_ITEMS)
     last_action: StateAction | None = None
     step_count: int = Field(default=0, ge=0)
     state_hash: str = Field(min_length=1)
@@ -213,8 +226,11 @@ class StateTransitionKind(StrEnum):
     AGENT_RESULT = "agent-result"
     HUMAN_DECISION = "human-decision"
     QUESTION_OPENED = "question-opened"
+    QUESTION_RESOLVED = "question-resolved"
+    BLOCKER_CLEARED = "blocker-cleared"
     WORK_ITEM_UPDATED = "work-item-updated"
     STAGE_CHANGED = "stage-changed"
+    ARTIFACT_STATUS_UPDATED = "artifact-status-updated"
 
 
 class StateTransition(StrictModel):
@@ -225,6 +241,11 @@ class StateTransition(StrictModel):
     action_id: str = Field(min_length=1)
     payload: dict[str, Any]
     evidence: list[StateEvidence] = Field(min_length=1, max_length=32)
+
+    @field_validator("payload")
+    @classmethod
+    def payload_is_bounded(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        return assert_json_depth(payload, "state transition payload")
 
 
 class ProjectStateEvent(StrictModel):
@@ -261,7 +282,13 @@ class ProjectStateRepository(Protocol):
 
     def load(self, project_id: str) -> ProjectState: ...
 
-    def apply(self, project_id: str, transition: StateTransition) -> ProjectState: ...
+    def apply(
+        self,
+        project_id: str,
+        transition: StateTransition,
+        *,
+        summary_max_chars: int = 2_048,
+    ) -> ProjectState: ...
 
 
 def make_project_state(
@@ -303,7 +330,7 @@ def project_state_hash(state: ProjectState) -> str:
 
 def project_state_hash_from_payload(payload: dict[str, Any]) -> str:
     stable = {key: value for key, value in payload.items() if key != "state_hash"}
-    return hashlib.sha256(_canonical_json(stable).encode("utf-8")).hexdigest()
+    return sha256_hex(model_canonical_json(stable))
 
 
 def _event_hash(
@@ -316,8 +343,8 @@ def _event_hash(
     previous_state_hash: str,
     state_hash: str,
 ) -> str:
-    return hashlib.sha256(
-        _canonical_json(
+    return sha256_hex(
+        model_canonical_json(
             {
                 "project_id": project_id,
                 "revision": revision,
@@ -328,20 +355,9 @@ def _event_hash(
                 "previous_state_hash": previous_state_hash,
                 "state_hash": state_hash,
             }
-        ).encode("utf-8")
-    ).hexdigest()
+        )
+    )
 
 
 def _ensure_unique[T](items: list[T], key: str, label: str) -> None:
-    values = [getattr(item, key) for item in items]
-    if len(values) != len(set(values)):
-        raise ValueError(f"{label} must be unique")
-
-
-def _canonical_json(value: Any) -> str:
-    def default(item: Any) -> Any:
-        if hasattr(item, "model_dump"):
-            return item.model_dump(mode="json")
-        return str(item)
-
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=default)
+    require_unique([getattr(item, key) for item in items], label)

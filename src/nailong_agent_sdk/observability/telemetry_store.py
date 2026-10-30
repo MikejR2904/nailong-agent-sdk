@@ -4,19 +4,26 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+import shutil
 import sqlite3
 import threading
-from collections.abc import Iterable, Iterator
+import time
+from collections.abc import Callable, Collection, Iterable, Iterator
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic_ns
 from typing import Any
 
-from ..foundations.atomic_io import replace_atomic
-from ..foundations.errors import redact_secrets
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
+from ..foundations.errors import AgentSdkError, redact_secrets
+from ..foundations.hashing import canonical_hash, canonical_json
+from ..foundations.identifiers import file_safe_name
+from ..foundations.run_fence import RunFence
+from .telemetry_helpers import first_chain_break
 from .telemetry_models import (
+    ChainBreak,
     MetricAvailability,
     MetricDefinition,
     MetricObservation,
@@ -24,27 +31,54 @@ from .telemetry_models import (
     TelemetryAuthority,
     TelemetryContext,
     TelemetryEvent,
+    TelemetryFootprint,
+    TelemetryMaintenance,
+    TelemetryRunActivity,
     TelemetryRunSummary,
     TelemetrySeverity,
+    TelemetryVacuum,
 )
+
+_EVENT_TIME = "json_extract(event_json, '$.occurred_at_utc')"
+_EVENT_STATUS = "json_extract(event_json, '$.status')"
+_EVENT_TYPE = "json_extract(event_json, '$.event_type')"
+_EVENT_TRACE = "json_extract(event_json, '$.context.trace_id')"
+_LOCK_RETRY_SECONDS = 10.0
 
 
 class TelemetryStore:
     """Append-only SQLite ledger with an integrity hash chain and metric observations."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, read_only: bool = False) -> None:
         self._root = root.resolve() / ".agent-telemetry"
-        self._root.mkdir(parents=True, exist_ok=True)
         self._database_path = self._root / "telemetry.sqlite3"
+        self._fence = RunFence(root)
         self._lock = threading.RLock()
+        if read_only:
+            if not self._database_path.is_file():
+                raise FileNotFoundError(
+                    f'Telemetry database "{self._database_path}" does not exist.'
+                )
+            self._read_only = True
+            self._connection = sqlite3.connect(
+                f"{self._database_path.as_uri()}?mode=ro",
+                uri=True,
+                timeout=10,
+                isolation_level=None,
+                check_same_thread=False,
+            )
+            return
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._read_only = False
         # One connection is shared only while `_lock` is held. `check_same_thread=False`
         # permits that serialized use; it does not make unprotected access safe.
         self._connection = sqlite3.connect(
             self._database_path, timeout=10, isolation_level=None, check_same_thread=False
         )
-        self._connection.execute("PRAGMA journal_mode=WAL")
+        # Write ahead logging (WAL) mode
+        _retry_when_locked(lambda: self._connection.execute("PRAGMA journal_mode=WAL"))
         self._connection.execute("PRAGMA foreign_keys=ON")
-        self._initialize()
+        _retry_when_locked(self._initialize)
 
     def close(self) -> None:
         """Close the persistent connection; repeated calls are safe.
@@ -59,6 +93,10 @@ class TelemetryStore:
     @property
     def root(self) -> Path:
         return self._root
+
+    @property
+    def fence(self) -> RunFence:
+        return self._fence
 
     @property
     def database_path(self) -> Path:
@@ -94,12 +132,14 @@ class TelemetryStore:
         """Append one event atomically after assigning its sequence and hash-chain predecessor.
 
         ``payload``/``links`` are redacted here, at the actual persistence
-        boundary, rather than only in ``emit`` — this is the point every event
+        boundary, rather than only in ``emit`` - this is the point every event
         passes through no matter how it was constructed.
         """
 
+        self._fence.wait_until_open(event.context.run_id, "append a telemetry event")
         with self._lock, self._connection as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._fence.raise_if_fenced(event.context.run_id, "append a telemetry event")
             previous = connection.execute(
                 "SELECT sequence, integrity_hash FROM events "
                 "WHERE run_id = ? ORDER BY sequence DESC LIMIT 1",
@@ -116,7 +156,7 @@ class TelemetryStore:
                     "links": redact_secrets(event.links),
                 }
             )
-            digest = _canonical_hash(prepared.model_dump(mode="json"))
+            digest = canonical_hash(prepared.model_dump(mode="json"))
             prepared = prepared.model_copy(update={"integrity_hash": digest})
             connection.execute(
                 """
@@ -135,7 +175,7 @@ class TelemetryStore:
                     prepared.severity.value,
                     prepared.integrity_hash,
                     prepared.previous_event_hash,
-                    _canonical_json(prepared.payload),
+                    canonical_json(prepared.payload),
                     prepared.model_dump_json(),
                 ),
             )
@@ -150,7 +190,10 @@ class TelemetryStore:
             and not observation.unavailable_reason
         ):
             raise ValueError("Unavailable metric observations require an unavailable_reason.")
+        self._fence.wait_until_open(observation.run_id, "record a metric observation")
         with self._lock, self._connection as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._fence.raise_if_fenced(observation.run_id, "record a metric observation")
             connection.execute(
                 """
                 INSERT INTO metric_observations (
@@ -170,7 +213,7 @@ class TelemetryStore:
                     observation.source_event_id,
                     observation.source_artifact_id,
                     observation.parser_version,
-                    _canonical_json(observation.context),
+                    canonical_json(observation.context),
                     observation.observed_at_utc,
                     observation.model_dump_json(),
                 ),
@@ -205,21 +248,54 @@ class TelemetryStore:
         limit: int = 250,
         after_sequence: int = 0,
         through_sequence: int | None = None,
+        event_types: Collection[str] | None = None,
     ) -> list[TelemetryEvent]:
+        rows = self._event_rows(
+            run_id,
+            limit=limit,
+            after_sequence=after_sequence,
+            through_sequence=through_sequence,
+            event_types=event_types,
+        )
+        return [TelemetryEvent.parse_stored(row) for row in rows]
+
+    def _event_rows(
+        self,
+        run_id: str,
+        *,
+        limit: int,
+        after_sequence: int,
+        through_sequence: int | None,
+        event_types: Collection[str] | None = None,
+    ) -> list[str]:
         if limit < 1 or limit > 1_000:
             raise ValueError("Telemetry event page size must be between 1 and 1000.")
+        types = _normalized_event_types(event_types)
         if through_sequence is not None and through_sequence < after_sequence:
             return []
+        type_clause = (
+            f" AND {_EVENT_TYPE} IN ({', '.join('?' for _ in types)})" if types is not None else ""
+        )
         with self._lock, self._connection as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT event_json FROM events
-                WHERE run_id = ? AND sequence > ? AND (? IS NULL OR sequence <= ?)
+                WHERE run_id = ? AND sequence > ? AND (? IS NULL OR sequence <= ?){type_clause}
                 ORDER BY sequence ASC LIMIT ?
                 """,
-                (run_id, after_sequence, through_sequence, through_sequence, limit),
+                (run_id, after_sequence, through_sequence, through_sequence, *(types or ()), limit),
             ).fetchall()
-        return [TelemetryEvent.model_validate_json(str(row[0])) for row in rows]
+        return [str(row[0]) for row in rows]
+
+    def run_ids_for_trace(self, trace_id: str) -> list[str]:
+        """Return the runs that recorded at least one event under a trace, ordered by id."""
+
+        with self._lock, self._connection as connection:
+            rows = connection.execute(
+                f"SELECT DISTINCT run_id FROM events WHERE {_EVENT_TRACE} = ? ORDER BY run_id",
+                (trace_id,),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def run_snapshot_sequence(self, run_id: str) -> int:
         """Return the highest persisted sequence for an explicit verification boundary."""
@@ -236,21 +312,25 @@ class TelemetryStore:
         *,
         page_size: int = 1_000,
         through_sequence: int | None = None,
+        after_sequence: int = 0,
+        event_types: Collection[str] | None = None,
     ) -> Iterator[TelemetryEvent]:
         """Stream a complete ordered run sequence through one fixed sequence boundary."""
 
         boundary = (
             self.run_snapshot_sequence(run_id) if through_sequence is None else through_sequence
         )
-        after_sequence = 0
-        while page := self.list_events(
+        while rows := self._event_rows(
             run_id,
             limit=page_size,
             after_sequence=after_sequence,
             through_sequence=boundary,
+            event_types=event_types,
         ):
-            yield from page
-            after_sequence = page[-1].sequence
+            for row in rows:
+                event = TelemetryEvent.parse_stored(row)
+                yield event
+            after_sequence = event.sequence
 
     def list_metrics(self, run_id: str) -> list[MetricObservation]:
         with self._lock, self._connection as connection:
@@ -261,25 +341,188 @@ class TelemetryStore:
             ).fetchall()
         return [MetricObservation.model_validate_json(str(row[0])) for row in rows]
 
+    def run_activity(
+        self, *, terminal_event_types: Collection[str] = ()
+    ) -> list[TelemetryRunActivity]:
+        types = sorted(set(terminal_event_types))
+        flag = f"MAX({_EVENT_TYPE} IN ({', '.join('?' for _ in types)}))" if types else "0"
+        with self._lock, self._connection as connection:
+            rows = connection.execute(
+                f"""
+                SELECT run_id, COUNT(*), MIN({_EVENT_TIME}), MAX({_EVENT_TIME}),
+                       MAX(sequence), {flag}
+                FROM events GROUP BY run_id ORDER BY MAX({_EVENT_TIME}) ASC, run_id ASC
+                """,
+                types,
+            ).fetchall()
+        return [
+            TelemetryRunActivity(
+                run_id=str(run_id),
+                event_count=int(count),
+                first_event_at=str(first),
+                last_event_at=str(last),
+                last_sequence=int(sequence),
+                terminal=bool(terminal),
+            )
+            for run_id, count, first, last, sequence, terminal in rows
+        ]
+
+    def quiesce(self, run_id: str) -> None:
+        """Wait for any append already inside its transaction to commit or roll back."""
+
+        self._require_writable("quiesce")
+        with self._lock, self._connection as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.commit()
+
+    def maintenance_report(self) -> TelemetryMaintenance:
+        with self._lock:
+            page_size = int(self._connection.execute("PRAGMA page_size").fetchone()[0])
+            page_count = int(self._connection.execute("PRAGMA page_count").fetchone()[0])
+            free_pages = int(self._connection.execute("PRAGMA freelist_count").fetchone()[0])
+        wal = self._database_path.with_name(self._database_path.name + "-wal")
+        return TelemetryMaintenance(
+            database_bytes=self._database_path.stat().st_size,
+            wal_bytes=wal.stat().st_size if wal.is_file() else 0,
+            page_size=page_size,
+            page_count=page_count,
+            free_pages=free_pages,
+            reclaimable_bytes=page_size * free_pages,
+        )
+
+    def vacuum(self) -> TelemetryVacuum:
+        self._require_writable("vacuum")
+        fenced = self._fence.fenced_runs()
+        if fenced:
+            names = ", ".join(sorted(holder.run_id for holder in fenced)[:5])
+            raise AgentSdkError(
+                "TELEMETRY_VACUUM_REFUSED",
+                f"A retention prune is in progress or was interrupted for {len(fenced)} run(s) "
+                f"({names}); finish it with an applied prune pass before vacuuming.",
+                {"runs": len(fenced)},
+            )
+        with self._lock:
+            self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = self.maintenance_report()
+        needed = before.database_bytes + before.wal_bytes
+        available = shutil.disk_usage(self._root).free
+        if available < needed:
+            raise AgentSdkError(
+                "TELEMETRY_VACUUM_REFUSED",
+                f"VACUUM rewrites the database and needs about {needed} free bytes beside "
+                f'"{self._database_path}", but only {available} are available.',
+                {"needed": needed, "available": available},
+            )
+        with self._lock:
+            try:
+                self._connection.execute("VACUUM")
+                self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                verdict = str(self._connection.execute("PRAGMA integrity_check").fetchone()[0])
+            except sqlite3.Error as error:
+                raise AgentSdkError(
+                    "TELEMETRY_VACUUM_FAILED",
+                    f'VACUUM of "{self._database_path}" failed: {type(error).__name__}: {error}',
+                    {"path": str(self._database_path)},
+                ) from error
+        after = self.maintenance_report()
+        return TelemetryVacuum(
+            before=before,
+            after=after,
+            integrity_check=verdict,
+            reclaimed_bytes=max(0, before.database_bytes - after.database_bytes),
+        )
+
+    def footprint(self, run_id: str) -> TelemetryFootprint:
+        with self._lock, self._connection as connection:
+            return self._footprint(connection, run_id)
+
+    def prune_run(
+        self,
+        run_id: str,
+        *,
+        dry_run: bool = False,
+        expected_last_sequence: int | None = None,
+    ) -> TelemetryFootprint:
+        self._require_writable("prune_run")
+        with self._lock, self._connection as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                footprint = self._footprint(connection, run_id)
+                if (
+                    expected_last_sequence is not None
+                    and footprint.last_sequence != expected_last_sequence
+                ):
+                    raise AgentSdkError(
+                        "TELEMETRY_RUN_CHANGED",
+                        f'Telemetry run "{run_id}" received a new event after it was examined at '
+                        f"sequence {expected_last_sequence} (it is now at sequence "
+                        f"{footprint.last_sequence}), so nothing was pruned.",
+                        {"run_id": run_id, "expected": expected_last_sequence},
+                    )
+                if not dry_run:
+                    connection.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+                    connection.execute(
+                        "DELETE FROM metric_observations WHERE run_id = ?", (run_id,)
+                    )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return footprint
+
+    @staticmethod
+    def _footprint(connection: sqlite3.Connection, run_id: str) -> TelemetryFootprint:
+        events = connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(event_json)), 0), "
+            "COALESCE(MIN(sequence), 0), COALESCE(MAX(sequence), 0) "
+            "FROM events WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        metrics = connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(observation_json)), 0) "
+            "FROM metric_observations WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        head = connection.execute(
+            "SELECT integrity_hash FROM events WHERE run_id = ? ORDER BY sequence DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        return TelemetryFootprint(
+            run_id=run_id,
+            event_count=int(events[0]),
+            metric_count=int(metrics[0]),
+            bytes=int(events[1]) + int(metrics[1]),
+            first_sequence=int(events[2]),
+            last_sequence=int(events[3]),
+            head_hash=str(head[0]) if head else None,
+        )
+
+    def _require_writable(self, operation: str) -> None:
+        if self._read_only:
+            raise RuntimeError(
+                f'Telemetry store at "{self._database_path}" was opened read-only; '
+                f'"{operation}" is not available.'
+            )
+
     def list_runs(self, *, limit: int = 100) -> list[TelemetryRunSummary]:
         if limit < 1 or limit > 1_000:
             raise ValueError("Telemetry run page size must be between 1 and 1000.")
         with self._lock, self._connection as connection:
             rows = connection.execute(
-                """
-                SELECT run_id, COUNT(*), MIN(occurred_at_utc), MAX(occurred_at_utc)
-                FROM events GROUP BY run_id ORDER BY MAX(occurred_at_utc) DESC LIMIT ?
+                f"""
+                SELECT run_id, COUNT(*), MIN({_EVENT_TIME}), MAX({_EVENT_TIME})
+                FROM events GROUP BY run_id ORDER BY MAX({_EVENT_TIME}) DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
             summaries: list[TelemetryRunSummary] = []
             for run_id, count, started, last in rows:
                 status_rows = connection.execute(
-                    "SELECT status, COUNT(*) FROM events WHERE run_id = ? GROUP BY status",
+                    f"SELECT {_EVENT_STATUS}, COUNT(*) FROM events WHERE run_id = ? GROUP BY 1",
                     (run_id,),
                 ).fetchall()
                 type_rows = connection.execute(
-                    "SELECT event_type, COUNT(*) FROM events WHERE run_id = ? GROUP BY event_type",
+                    f"SELECT {_EVENT_TYPE}, COUNT(*) FROM events WHERE run_id = ? GROUP BY 1",
                     (run_id,),
                 ).fetchall()
                 summaries.append(
@@ -295,47 +538,50 @@ class TelemetryStore:
         return summaries
 
     def verify_run_chain(self, run_id: str) -> bool:
+        return self.chain_break(run_id) is None
+
+    def chain_break(self, run_id: str) -> ChainBreak | None:
         boundary = self.run_snapshot_sequence(run_id)
-        return self._verify_events(self.iter_events(run_id, through_sequence=boundary))
+        return _events_chain_break(self.iter_events(run_id, through_sequence=boundary))
 
     @staticmethod
     def _verify_events(events: Iterable[TelemetryEvent]) -> bool:
-        previous: str | None = None
-        for event in events:
-            expected = _canonical_hash(
-                event.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
-            )
-            if event.previous_event_hash != previous or event.integrity_hash != expected:
-                return False
-            previous = event.integrity_hash
-        return True
+        return _events_chain_break(events) is None
 
-    def create_run_report(self, run_id: str) -> dict[str, Any]:
+    def create_run_report(
+        self, run_id: str, *, include_event_hashes: bool = False
+    ) -> dict[str, Any]:
         boundary = self.run_snapshot_sequence(run_id)
-        events = list(self.iter_events(run_id, through_sequence=boundary))
         metrics = self.list_metrics(run_id)
-        if not events:
+        tally = _EventTally(keep_hashes=include_event_hashes)
+        stream = tally.watch(self.iter_events(run_id, through_sequence=boundary))
+        failure = _events_chain_break(stream)
+        verified_count, verified_head = tally.verified_prefix(failure)
+        for _remaining in stream:
+            pass
+        if tally.count == 0 and failure is None:
             raise ValueError(f'Telemetry run "{run_id}" is unknown.')
-        report = {
-            "schema_version": "run-report-v1",
+        report: dict[str, Any] = {
+            "schema_version": "run-report-v2",
             "run_id": run_id,
-            "event_count": len(events),
-            "verified_event_count": len(events),
-            "verified_through_sequence": boundary,
-            "integrity_chain_valid": self._verify_events(events),
-            "statuses": _count(event.status for event in events),
-            "event_types": _count(event.event_type for event in events),
-            "watchdog_interventions": sum(
-                event.event_type.startswith("watchdog.") for event in events
-            ),
+            "event_count": tally.count,
+            "verified_event_count": verified_count,
+            "verified_through_sequence": boundary if failure is None else failure.sequence - 1,
+            "integrity_chain_valid": failure is None,
+            "integrity_failure": failure.model_dump(mode="json") if failure else None,
+            "statuses": tally.statuses,
+            "event_types": tally.event_types,
+            "watchdog_interventions": tally.watchdog_interventions,
             "metrics": [metric.model_dump(mode="json") for metric in metrics],
             "metric_availability": _count(metric.availability.value for metric in metrics),
             "metric_summary": _summarize_metrics(metrics, self.list_metric_definitions()),
-            "evidence_event_hashes": [event.integrity_hash for event in events],
+            "evidence_head_hash": verified_head,
         }
+        if include_event_hashes:
+            report["evidence_event_hashes"] = tally.event_hashes
         reports = self._root / "reports"
         reports.mkdir(exist_ok=True)
-        target = reports / f"{_safe_name(run_id)}.run-report.json"
+        target = reports / f"{file_safe_name(run_id)}.run-report.json"
         _atomic_write(target, json.dumps(report, indent=2, sort_keys=True).encode("utf-8"))
         return {**report, "report_path": str(target.relative_to(self._root))}
 
@@ -384,12 +630,84 @@ class TelemetryStore:
             )
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+MAX_EVENT_TYPE_FILTER = 64
 
 
-def _canonical_hash(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+def _normalized_event_types(event_types: Collection[str] | None) -> list[str] | None:
+    if event_types is None:
+        return None
+    if isinstance(event_types, str):
+        raise ValueError(
+            "event_types must be a collection of event type names, got the string "
+            f'"{event_types}"; pass ["{event_types}"].'
+        )
+    names = sorted(set(event_types), key=str)
+    if not names:
+        raise ValueError(
+            "event_types must name at least one event type when it is given; pass None to read "
+            "every event."
+        )
+    blank = [name for name in names if not isinstance(name, str) or not name.strip()]
+    if blank:
+        raise ValueError(f"event_types must contain non-blank strings, got {blank!r}.")
+    if len(names) > MAX_EVENT_TYPE_FILTER:
+        raise ValueError(
+            f"event_types names {len(names)} event types; at most {MAX_EVENT_TYPE_FILTER} are "
+            "accepted."
+        )
+    return names
+
+
+def _retry_when_locked[T](operation: Callable[[], T]) -> T:
+    deadline = time.monotonic() + _LOCK_RETRY_SECONDS
+    delay = 0.005
+    while True:
+        try:
+            return operation()
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error) or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
+
+
+def _events_chain_break(events: Iterable[TelemetryEvent]) -> ChainBreak | None:
+    return first_chain_break(
+        events,
+        noun="event",
+        previous_attribute="previous_event_hash",
+        expected_hash=lambda event: canonical_hash(
+            event.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
+        ),
+    )
+
+
+@dataclass
+class _EventTally:
+    keep_hashes: bool = False
+    count: int = 0
+    statuses: dict[str, int] = field(default_factory=dict)
+    event_types: dict[str, int] = field(default_factory=dict)
+    watchdog_interventions: int = 0
+    event_hashes: list[str] = field(default_factory=list)
+    last_hash: str | None = None
+    hash_before_last: str | None = None
+
+    def watch(self, events: Iterable[TelemetryEvent]) -> Iterator[TelemetryEvent]:
+        for event in events:
+            self.count += 1
+            self.statuses[event.status] = self.statuses.get(event.status, 0) + 1
+            self.event_types[event.event_type] = self.event_types.get(event.event_type, 0) + 1
+            self.watchdog_interventions += event.event_type.startswith("watchdog.")
+            self.hash_before_last, self.last_hash = self.last_hash, event.integrity_hash
+            if self.keep_hashes:
+                self.event_hashes.append(event.integrity_hash)
+            yield event
+
+    def verified_prefix(self, failure: ChainBreak | None) -> tuple[int, str | None]:
+        if failure is None or failure.kind == "unreadable-entry":
+            return self.count, self.last_hash
+        return self.count - 1, self.hash_before_last
 
 
 def _count(values: Iterable[str]) -> dict[str, int]:
@@ -444,13 +762,7 @@ def _summarize_metrics(
     return summary
 
 
-def _safe_name(value: str) -> str:
-    return "".join(
-        character if character.isalnum() or character in "-_." else "_" for character in value
-    )
-
-
 def _atomic_write(target: Path, content: bytes) -> None:
-    temporary = target.with_name(f".{target.name}.tmp")
+    temporary = unique_temporary_path(target)
     temporary.write_bytes(content)
     replace_atomic(temporary, target)

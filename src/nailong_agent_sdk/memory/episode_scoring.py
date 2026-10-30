@@ -8,7 +8,13 @@ import json
 import re
 
 from ..foundations.contracts import EpisodeKind
-from .episode_models import EpisodeRecord
+from ..foundations.hashing import estimate_tokens
+from .episode_models import (
+    EpisodeRecord,
+    EpisodeRelevanceScorer,
+    EpisodeState,
+    SemanticEpisodeSummary,
+)
 
 
 class LexicalEpisodeRelevanceScorer:
@@ -22,9 +28,28 @@ class LexicalEpisodeRelevanceScorer:
         return len(overlap) / len(query_terms)
 
 
+def summary_relevance(
+    scorer: EpisodeRelevanceScorer, query: str, summary: SemanticEpisodeSummary
+) -> float:
+    """Score a summary with the store's scorer by presenting its text as a closed episode."""
+
+    parts = [summary.summary_text, *summary.unresolved_issues]
+    parts.extend(fact.claim for fact in summary.key_facts)
+    parts.extend(f"{item.decision} {item.rationale}" for item in summary.decisions)
+    text = " ".join(parts).strip()[:4_096] or summary.summary_id
+    stand_in = EpisodeRecord(
+        id=summary.summary_id,
+        owner_id="semantic-summary",
+        kind=EpisodeKind.EXPLORATORY,
+        state=EpisodeState.CLOSED,
+        description=text,
+    )
+    return _clamp_score(scorer.score(query, stand_in))
+
+
 def _episode_tokens(record: EpisodeRecord) -> int:
     payload = record.content if record.content is not None else {"description": record.description}
-    return max(1, len(json.dumps(payload, sort_keys=True, default=str)) // 4)
+    return estimate_tokens(payload)
 
 
 def _terms(value: str) -> set[str]:
@@ -41,8 +66,6 @@ def _provenance_weight(record: EpisodeRecord) -> float:
         return 1.0
     if record.kind is EpisodeKind.EXPLORATORY:
         return 0.65
-    if record.eda_manifest is not None:
-        return 0.20
     return 0.40
 
 

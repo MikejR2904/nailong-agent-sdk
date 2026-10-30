@@ -1,6 +1,6 @@
 # Copyright (c) 2026 David Michael Indraputra
 
-"""Deterministic traversal helpers for declared directed dependency graphs.
+"""Deterministic traversal helpers for declared directed dependency graphs (DAGs).
 
 Edges use the project convention ``(dependent, prerequisite)``. Therefore a
 reverse traversal from a missing prerequisite returns all known dependents that
@@ -18,12 +18,13 @@ DependencyPair = tuple[str, str]
 def deterministic_cycles(nodes: Iterable[str], edges: Iterable[DependencyPair]) -> list[list[str]]:
     """Return stable closed cycle paths over declared known nodes only.
 
-    The traversal is intentionally structural: unknown endpoints are excluded so
-    traceability validation can report them as missing references separately.
+    We exclude unknown endpoints/nodes by design with the aim such that
+    traceability can report them as missing references separately.
     """
 
     known = set(nodes)
     dependencies: dict[str, list[str]] = {node: [] for node in sorted(known)}
+    # Build adjacency list with sorted keys to ensure deterministic traversal order
     for dependent, prerequisite in edges:
         if dependent in known and prerequisite in known:
             dependencies[dependent].append(prerequisite)
@@ -31,24 +32,31 @@ def deterministic_cycles(nodes: Iterable[str], edges: Iterable[DependencyPair]) 
         values.sort()
 
     found: list[list[str]] = []
-    visiting: set[str] = set()
     visited: set[str] = set()
 
-    def visit(node: str, trail: list[str]) -> None:
-        if node in visiting:
-            start = trail.index(node)
-            found.append([*trail[start:], node])
-            return
-        if node in visited:
-            return
-        visiting.add(node)
-        for dependency in dependencies[node]:
-            visit(dependency, [*trail, node])
-        visiting.remove(node)
-        visited.add(node)
-
-    for node in sorted(dependencies):
-        visit(node, [])
+    for root in sorted(dependencies):
+        if root in visited:
+            continue
+        path = [root]
+        position = {root: 0}
+        stack = [iter(dependencies[root])]
+        while stack:
+            advanced = False
+            for dependency in stack[-1]:
+                if dependency in position:
+                    # Cycle detected: slice path from first occurrence to current node
+                    found.append([*path[position[dependency] :], dependency])
+                elif dependency not in visited:
+                    position[dependency] = len(path)
+                    path.append(dependency)
+                    stack.append(iter(dependencies[dependency]))
+                    advanced = True
+                    break
+            if not advanced:
+                stack.pop()
+                node = path.pop()
+                del position[node]
+                visited.add(node)
     return found
 
 
@@ -68,9 +76,10 @@ def reverse_reachable_nodes(
     dependents: dict[str, set[str]] = {}
     for dependent, prerequisite in edges:
         if dependent in known:
+            # Build reverse adjacency: prerequisite -> set of dependents
             dependents.setdefault(prerequisite, set()).add(dependent)
 
-    seen = {root_id}
+    seen = {root_id}  # Track visited nodes to avoid revisiting
     affected: set[str] = set()
     queue: deque[str] = deque([root_id])
     while queue:
@@ -81,6 +90,7 @@ def reverse_reachable_nodes(
             seen.add(dependent)
             affected.add(dependent)
             queue.append(dependent)
+    # The blast radius: all dependents that would break if root_id is missing
     return sorted(affected)
 
 

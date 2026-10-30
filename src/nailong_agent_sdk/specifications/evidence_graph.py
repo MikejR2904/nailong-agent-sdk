@@ -10,7 +10,6 @@ not create relationships from model output or semantic similarity.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import defaultdict, deque
@@ -20,8 +19,12 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from ..foundations.contracts import StrictModel
+from ..foundations.hashing import sha256_hex, strict_canonical_json
+from ..foundations.identifiers import require_unique
 from ..foundations.optimization import ExactPckpSolver, PckpItem, PckpProblem, PckpStatus
 from .documents import SourceRef
+
+DEFAULT_MAX_BRANCH_NODES = 50_000
 
 
 class EvidenceNodeKind(StrEnum):
@@ -59,8 +62,7 @@ class EvidenceNode(StrictModel):
 
     @model_validator(mode="after")
     def aliases_are_unique(self) -> EvidenceNode:
-        if len(self.aliases) != len(set(self.aliases)):
-            raise ValueError("Evidence node aliases must be unique")
+        require_unique(self.aliases, f'Evidence node "{self.node_id}" aliases')
         return self
 
 
@@ -75,7 +77,9 @@ class EvidenceRelation(StrictModel):
     @model_validator(mode="after")
     def endpoints_are_distinct(self) -> EvidenceRelation:
         if self.from_node_id == self.to_node_id:
-            raise ValueError("Evidence relation endpoints must be distinct")
+            raise ValueError(
+                f'Evidence relation endpoints must be distinct; both are "{self.from_node_id}"'
+            )
         return self
 
 
@@ -89,20 +93,19 @@ class EvidenceGraph(StrictModel):
     @model_validator(mode="after")
     def graph_is_well_formed(self) -> EvidenceGraph:
         node_ids = [node.node_id for node in self.nodes]
-        if len(node_ids) != len(set(node_ids)):
-            raise ValueError("Evidence node IDs must be unique")
+        require_unique(node_ids, "Evidence node IDs")
         known = set(node_ids)
         for relation in self.relations:
-            if relation.from_node_id not in known or relation.to_node_id not in known:
-                raise ValueError("Evidence relations must reference known nodes")
+            unknown = sorted({relation.from_node_id, relation.to_node_id} - known)
+            if unknown:
+                raise ValueError(
+                    f"Evidence relations must reference known nodes; unknown: {unknown}"
+                )
         return self
 
     @property
     def content_hash(self) -> str:
-        payload = self.model_dump(mode="json")
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        return sha256_hex(strict_canonical_json(self.model_dump(mode="json")))
 
 
 class EvidenceSelectionPolicy(StrictModel):
@@ -138,15 +141,12 @@ class EvidenceSelectionPolicy(StrictModel):
 
     @model_validator(mode="after")
     def relation_kinds_are_unique(self) -> EvidenceSelectionPolicy:
-        if len(self.mandatory_relation_kinds) != len(set(self.mandatory_relation_kinds)):
-            raise ValueError("Mandatory relation kinds must be unique")
+        require_unique(self.mandatory_relation_kinds, "Mandatory relation kinds")
         return self
 
     @property
     def policy_hash(self) -> str:
-        return hashlib.sha256(
-            self.model_dump_json(by_alias=False, exclude_none=False).encode("utf-8")
-        ).hexdigest()
+        return sha256_hex(self.model_dump_json(by_alias=False, exclude_none=False))
 
 
 class EvidenceSelectionRequest(StrictModel):
@@ -158,8 +158,7 @@ class EvidenceSelectionRequest(StrictModel):
 
     @model_validator(mode="after")
     def target_ids_are_unique(self) -> EvidenceSelectionRequest:
-        if len(self.target_ids) != len(set(self.target_ids)):
-            raise ValueError("Evidence selection target IDs must be unique")
+        require_unique(self.target_ids, "Evidence selection target IDs")
         return self
 
 
@@ -195,7 +194,18 @@ class EvidenceSelectionResult(StrictModel):
 
 
 class StructuralContextSelector:
-    """Compute required graph closure before exact optional evidence packing."""
+    """Compute required graph closure before exact optional evidence packing.
+
+    ``max_branch_nodes`` bounds the branch-and-bound fallback used when the optional items are
+    too many for the dynamic program; a run that reaches it returns ``BEST_EFFORT`` with the
+    best feasible set found, seeded by the greedy density fill, instead of searching without
+    limit.
+    """
+
+    def __init__(self, *, max_branch_nodes: int | None = DEFAULT_MAX_BRANCH_NODES) -> None:
+        if max_branch_nodes is not None and max_branch_nodes < 1:
+            raise ValueError(f"max_branch_nodes must be at least 1, got {max_branch_nodes}.")
+        self._max_branch_nodes = max_branch_nodes
 
     def select(
         self,
@@ -206,7 +216,9 @@ class StructuralContextSelector:
         if graph.snapshot_id != request.snapshot_id:
             raise ValueError("Evidence selection request references an unexpected graph snapshot.")
         nodes = {node.node_id: node for node in graph.nodes}
-        target_ids, target_diagnostics = self._resolve_targets(nodes, request.target_ids)
+        target_ids, target_diagnostics = self._resolve_targets(
+            nodes, request.target_ids, strict=request.strict
+        )
         mandatory, witnesses = self._mandatory_closure(graph, target_ids, policy)
         mandatory_cost = sum(nodes[node_id].token_cost for node_id in mandatory)
         graph_hash = graph.content_hash
@@ -243,7 +255,7 @@ class StructuralContextSelector:
             ]
             or [PckpItem(item_id="__empty__", token_cost=0, utility=0)],
         )
-        solution = ExactPckpSolver().solve(problem)
+        solution = ExactPckpSolver(max_branch_nodes=self._max_branch_nodes).solve(problem)
         selected_optional = set(solution.selected_item_ids) - {"__empty__"}
         selected_ids = mandatory | selected_optional
         omissions = [
@@ -272,7 +284,7 @@ class StructuralContextSelector:
 
     @staticmethod
     def _resolve_targets(
-        nodes: dict[str, EvidenceNode], requested: list[str]
+        nodes: dict[str, EvidenceNode], requested: list[str], *, strict: bool = True
     ) -> tuple[list[str], list[str]]:
         aliases: dict[str, list[str]] = defaultdict(list)
         for node in nodes.values():
@@ -289,9 +301,19 @@ class StructuralContextSelector:
                 resolved.append(candidates[0])
                 diagnostics.append(f'Approved alias "{target}" resolved to "{candidates[0]}".')
                 continue
-            if not candidates:
-                raise ValueError(f'Evidence target "{target}" is unknown.')
-            raise ValueError(f'Evidence target alias "{target}" is ambiguous: {candidates}')
+            problem = (
+                f'Evidence target "{target}" is unknown.'
+                if not candidates
+                else f'Evidence target alias "{target}" is ambiguous: {candidates}'
+            )
+            if strict:
+                raise ValueError(problem)
+            diagnostics.append(f"{problem[:-1] if problem.endswith('.') else problem} (ignored).")
+        if not resolved:
+            raise ValueError(
+                f"Evidence selection has no resolvable target among {requested}; "
+                "none exists in the graph."
+            )
         return sorted(set(resolved)), diagnostics
 
     @staticmethod

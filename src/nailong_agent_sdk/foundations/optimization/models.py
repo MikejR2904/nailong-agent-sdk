@@ -2,7 +2,7 @@
 
 """PCKP problem, item, and solution contracts.
 
-The general model is a precedence-constrained knapsack problem (PCKP): selecting
+The general model is a prerequisite-constrained knapsack problem (PCKP): selecting
 an item requires selecting every immediate prerequisite.
 """
 
@@ -13,6 +13,8 @@ from enum import StrEnum
 from pydantic import Field, model_validator
 
 from ..contracts import StrictModel
+from ..dependency_graph import deterministic_cycles
+from ..identifiers import require_unique
 
 
 class PckpStatus(StrEnum):
@@ -34,10 +36,9 @@ class PckpItem(StrictModel):
 
     @model_validator(mode="after")
     def prerequisites_are_unique_and_external(self) -> PckpItem:
-        if len(self.prerequisites) != len(set(self.prerequisites)):
-            raise ValueError("PCKP prerequisites must be unique")
+        require_unique(self.prerequisites, f'PCKP item "{self.item_id}" prerequisites')
         if self.item_id in self.prerequisites:
-            raise ValueError("A PCKP item cannot require itself")
+            raise ValueError(f'PCKP item "{self.item_id}" cannot require itself')
         return self
 
 
@@ -50,8 +51,7 @@ class PckpProblem(StrictModel):
     @model_validator(mode="after")
     def validate_problem_graph(self) -> PckpProblem:
         item_ids = [item.item_id for item in self.items]
-        if len(item_ids) != len(set(item_ids)):
-            raise ValueError("PCKP item IDs must be unique")
+        require_unique(item_ids, "PCKP item IDs")
         known = set(item_ids)
         for item in self.items:
             unknown = set(item.prerequisites) - known
@@ -80,19 +80,11 @@ class PckpSolution(StrictModel):
 
 
 def _assert_acyclic(dependencies: dict[str, set[str]]) -> None:
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(item_id: str) -> None:
-        if item_id in visiting:
-            raise ValueError(f'PCKP dependencies contain a cycle at "{item_id}".')
-        if item_id in visited:
-            return
-        visiting.add(item_id)
-        for prerequisite in sorted(dependencies[item_id]):
-            visit(prerequisite)
-        visiting.remove(item_id)
-        visited.add(item_id)
-
-    for item_id in sorted(dependencies):
-        visit(item_id)
+    edges = [
+        (item_id, prerequisite)
+        for item_id, values in dependencies.items()
+        for prerequisite in values
+    ]
+    cycles = deterministic_cycles(dependencies, edges)
+    if cycles:
+        raise ValueError(f'PCKP dependencies contain a cycle at "{cycles[0][0]}".')

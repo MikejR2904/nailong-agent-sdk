@@ -1,0 +1,69 @@
+{
+  "policy_id": "ops-authority",
+  "version": "2026-10-20",
+  "classes": {
+    "D": "a deterministic independent check",
+    "M": "model judgement",
+    "H": "a human"
+  },
+  "internal_domains": ["corp.example"],
+  "high_amount": 10000,
+  "default": {
+    "class": "H",
+    "rule": "default",
+    "description": "when a field a rule needs is missing, nothing is assumed and a human decides"
+  },
+  "rules": [
+    {
+      "id": "R1",
+      "effect": "delete",
+      "snapshot": false,
+      "class": "H",
+      "description": "destroying data that no snapshot protects cannot be undone"
+    },
+    {
+      "id": "R2",
+      "effect": "delete",
+      "snapshot": true,
+      "class": "D",
+      "description": "destroying data a snapshot protects is undone by restoring it"
+    },
+    {
+      "id": "R3",
+      "effect": "send",
+      "audience": "external",
+      "stakes": "high",
+      "class": "H",
+      "description": "a message of high value to a recipient outside the organisation"
+    },
+    {
+      "id": "R4",
+      "effect": "send",
+      "audience": "external",
+      "stakes": "low",
+      "class": "M",
+      "description": "a message of low value to a recipient outside the organisation"
+    },
+    {
+      "id": "R5",
+      "effect": "send",
+      "audience": "internal",
+      "class": "D",
+      "description": "a message to a recipient inside the organisation"
+    },
+    {
+      "id": "R6",
+      "effect": "write",
+      "validator": "registered",
+      "class": "D",
+      "description": "a write whose content a registered validator can check"
+    },
+    {
+      "id": "R7",
+      "effect": "write",
+      "validator": "none",
+      "class": "M",
+      "description": "a write whose content only judgement can check"
+    }
+  ]
+}

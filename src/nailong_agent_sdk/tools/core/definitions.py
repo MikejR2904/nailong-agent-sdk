@@ -7,6 +7,12 @@ from __future__ import annotations
 from typing import Any
 
 from ...foundations.contracts import EpisodeKind, ToolConcurrency, ToolDefinition
+from ...state.elastic import (
+    ELASTIC_REQUEST_TOOL_NAME,
+    MAX_ELASTIC_DEPENDENCIES,
+    MAX_ELASTIC_HANDOFF_CHARS,
+    MAX_ELASTIC_HANDOFF_TOTAL_CHARS,
+)
 
 
 def core_tool_definitions() -> list[ToolDefinition]:
@@ -155,7 +161,9 @@ def core_tool_definitions() -> list[ToolDefinition]:
             "and images_found (any images on those pages, each with an "
             "image_ref). If next_page is set, call again with page=next_page "
             "to continue - do not assume one call covers an entire multi-page "
-            "PDF.",
+            "PDF. If text_truncated is true, the first page alone held more "
+            "text than max_chars: omitted_chars were cut, and only a larger "
+            "max_chars returns them.",
             {
                 "type": "object",
                 "properties": {
@@ -281,6 +289,66 @@ def core_tool_definitions() -> list[ToolDefinition]:
                 "type": "object",
                 "properties": {"template_name": {"type": "string"}},
                 "required": ["template_name"],
+                "additionalProperties": False,
+            },
+            write=True,
+        ),
+        definition(
+            ELASTIC_REQUEST_TOOL_NAME,
+            "Queue one extra exploration node for the controller. It runs after this task "
+            "finishes, inherits this task's authority and cannot see more than this task can; "
+            "a join node then resumes this task with every exploration result. The join node "
+            "and the requests of tasks running at the same time count against the plan's "
+            "elastic capacity. A request that exceeds that capacity is refused here, or held for "
+            "a controller decision when this task ends if the binding allows it and a grant "
+            "could still fit it. The join node resumes this task with its task text and the "
+            "exploration results, not with this conversation, so put anything it must remember "
+            "in handoff.",
+            {
+                "type": "object",
+                "properties": {
+                    "request_id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9]([A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$",
+                        "description": "Unique within this task; letters, digits, '.', '_', '-'.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                        "description": "The area the exploration is limited to.",
+                    },
+                    "instructions": {"type": "string", "minLength": 1, "maxLength": 8000},
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    "handoff": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_ELASTIC_HANDOFF_CHARS,
+                        "description": "Notes for the join node that resumes this task, repeated "
+                        "to it word for word; at most "
+                        f"{MAX_ELASTIC_HANDOFF_TOTAL_CHARS} characters across this task's "
+                        "requests.",
+                    },
+                    "dependencies": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
+                        "maxItems": MAX_ELASTIC_DEPENDENCIES,
+                        "description": "Nodes this task already depends on whose results the "
+                        "exploration also needs.",
+                    },
+                    "routing_refs": {
+                        "type": "object",
+                        "properties": {
+                            "requirement_ids": {"type": "array", "items": {"type": "string"}},
+                            "signal_ids": {"type": "array", "items": {"type": "string"}},
+                            "task_ids": {"type": "array", "items": {"type": "string"}},
+                            "schema_ids": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["request_id", "scope", "instructions", "reason"],
                 "additionalProperties": False,
             },
             write=True,

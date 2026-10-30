@@ -5,13 +5,16 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, TypeAdapter, field_validator
 
 from ...foundations.contracts import StrictModel
-from .._utils import canonical_digest
-from ..contracts import InteropOperationStatus, InteropReceipt, assert_sanitized_interop_value
+from ...foundations.hashing import canonical_hash
+from .._utils import canonical_digest, checked_interop_value
+from ..contracts import InteropOperationStatus, InteropReceipt
+
+MAX_CHOICE_CRITERIA = 255
 
 
 class JevQuestionKind(StrEnum):
@@ -31,7 +34,7 @@ class JevChoiceQuestion(StrictModel):
     instructions: str | dict[str, Any] | list[Any]
     criteria: dict[str, str | dict[str, Any] | list[Any] | None] = Field(
         min_length=2,
-        max_length=255,
+        max_length=MAX_CHOICE_CRITERIA,
     )
 
 
@@ -63,7 +66,7 @@ class JevQuestionSpec(StrictModel):
 
     @property
     def digest(self) -> str:
-        return canonical_digest(self.model_dump(mode="json"))
+        return canonical_hash(self.model_dump(mode="json"))
 
 
 class JevDecisionRequest(StrictModel):
@@ -81,8 +84,7 @@ class JevDecisionRequest(StrictModel):
     @field_validator("state")
     @classmethod
     def state_is_redacted_json(cls, state: dict[str, Any]) -> dict[str, Any]:
-        assert_sanitized_interop_value(state)
-        return state
+        return checked_interop_value(state)
 
     @property
     def state_digest(self) -> str:
@@ -148,6 +150,12 @@ class JevDecisionResult(StrictModel):
             duration_ms=duration_ms,
             unavailable_reason=reason,
         )
+
+
+class JevDecisionProvider(Protocol):
+    """Read-only Jev evaluator protocol; implementations cannot receive authority objects."""
+
+    async def evaluate(self, request: JevDecisionRequest) -> JevDecisionResult: ...
 
 
 class JevDecisionReceipt(InteropReceipt):

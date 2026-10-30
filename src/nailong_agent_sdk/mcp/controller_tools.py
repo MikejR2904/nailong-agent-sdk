@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from ..state.elastic import MAX_ELASTIC_DEPTH_LIMIT, MAX_ELASTIC_NODES_LIMIT
 from ..state.graph_models import GraphNodeResult
 from ..state.orchestration_models import ComplexityRoutingRules, GapMetadata, SkillToolProfile
 from ..state.planning import Plan
@@ -18,19 +19,27 @@ from ..state.shared_state import (
     SharedSubstrateSnapshot,
 )
 from ._shared import McpContext, _validation_errors
+from .authority import McpOperation, plan_digest
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
 
 
+def _run_hash(ctx: McpContext, controller_id: str) -> str | None:
+    run = ctx.controller_runtime.get_run(controller_id)
+    return None if run is None else run.run_hash
+
+
 def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
-    @server.tool(name="create_controller", structured_output=True)
-    async def create_controller(
+    @ctx.tool(server, "create_controller")
+    def create_controller(
         snapshot: dict[str, Any],
         profile: dict[str, Any],
         routing_rules: dict[str, Any],
         gap_metadata: dict[str, Any],
         max_repair_attempts: int = 1,
+        elastic_depth_ceiling: int = MAX_ELASTIC_DEPTH_LIMIT,
+        elastic_nodes_ceiling: int = MAX_ELASTIC_NODES_LIMIT,
     ) -> dict[str, Any]:
         """Create a deterministic vertical controller bound to a read-only source snapshot."""
 
@@ -41,6 +50,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
                 ComplexityRoutingRules.model_validate(routing_rules),
                 GapMetadata.model_validate(gap_metadata),
                 max_repair_attempts=max_repair_attempts,
+                elastic_depth_ceiling=elastic_depth_ceiling,
+                elastic_nodes_ceiling=elastic_nodes_ceiling,
             )
             return {"ok": True, "controller": record.model_dump(mode="json")}
         except ValidationError as error:
@@ -48,8 +59,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="submit_controller_plan", structured_output=True)
-    async def submit_controller_plan(controller_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+    @ctx.tool(server, "submit_controller_plan")
+    def submit_controller_plan(controller_id: str, plan: dict[str, Any]) -> dict[str, Any]:
         """Present a deterministically validated plan upward for designer approval."""
 
         try:
@@ -60,22 +71,49 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="approve_controller_plan", structured_output=True)
-    async def approve_controller_plan(
+    @ctx.tool(server, "approve_controller_plan", operation=McpOperation.APPROVAL)
+    def approve_controller_plan(
         controller_id: str,
         approved: bool,
         reason: str | None = None,
+        plan_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
     ) -> dict[str, Any]:
-        """Record the designer's explicit plan decision before downward dispatch."""
+        """Record the designer's explicit plan decision before downward dispatch.
+
+        An approver credential must send `plan_hash` (`binding.plan_hash` of
+        `get_controller_state`) and `issued_at_utc` (the instant the approver decided);
+        `approver_label` is the caller's unverified note on who decided and is only
+        recorded."""
 
         try:
-            record = ctx.controller_runtime.approve_plan(controller_id, approved, reason)
-            return {"ok": True, "controller": record.model_dump(mode="json")}
+            with ctx.gate.decide(
+                "approve_controller_plan",
+                subject=f'the plan of controller "{controller_id}"',
+                approved=approved,
+                binding_field="plan_hash",
+                expected=plan_hash,
+                actual=lambda: plan_digest(
+                    ctx.controller_runtime.get_controller(controller_id).plan
+                ),
+                issued_at_utc=issued_at_utc,
+                label=approver_label,
+                reason=reason,
+            ) as receipt:
+                record = ctx.controller_runtime.approve_plan(
+                    controller_id, approved, reason, source=receipt.source()
+                )
+            return {
+                "ok": True,
+                "controller": record.model_dump(mode="json"),
+                **receipt.fields(),
+            }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="dispatch_controller", structured_output=True)
-    async def dispatch_controller(controller_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "dispatch_controller")
+    def dispatch_controller(controller_id: str) -> dict[str, Any]:
         """Create the approved graph run and immutable lateral shared substrate."""
 
         try:
@@ -88,8 +126,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="record_controller_node_result", structured_output=True)
-    async def record_controller_node_result(
+    @ctx.tool(server, "record_controller_node_result")
+    def record_controller_node_result(
         controller_id: str,
         node_id: str,
         result: dict[str, Any],
@@ -106,8 +144,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="publish_exploratory_discovery", structured_output=True)
-    async def publish_exploratory_discovery(
+    @ctx.tool(server, "publish_exploratory_discovery")
+    def publish_exploratory_discovery(
         controller_id: str,
         discovery: dict[str, Any],
     ) -> dict[str, Any]:
@@ -123,8 +161,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="request_lateral_dependency", structured_output=True)
-    async def request_lateral_dependency(
+    @ctx.tool(server, "request_lateral_dependency")
+    def request_lateral_dependency(
         controller_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
@@ -140,22 +178,96 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_controller_state", structured_output=True)
-    async def get_controller_state(controller_id: str) -> dict[str, Any]:
-        """Return the durable user-visible vertical controller state and event log."""
+    @ctx.tool(server, "grant_elastic_capacity", operation=McpOperation.APPROVAL)
+    def grant_elastic_capacity(
+        controller_id: str,
+        reason: str,
+        max_elastic_depth: int | None = None,
+        max_elastic_nodes: int | None = None,
+        run_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
+    ) -> dict[str, Any]:
+        """Raise a run's elastic caps by a recorded decision and run deferred requests that fit.
+
+        An approver credential must send `run_hash` (`run.run_hash` of `get_run_state`) and
+        `issued_at_utc` (the instant the approver decided); `approver_label` is the
+        caller's unverified note on who decided and is only recorded."""
 
         try:
+            with ctx.gate.decide(
+                "grant_elastic_capacity",
+                subject=f'the run of controller "{controller_id}"',
+                approved=True,
+                binding_field="run_hash",
+                expected=run_hash,
+                actual=lambda: _run_hash(ctx, controller_id),
+                issued_at_utc=issued_at_utc,
+                label=approver_label,
+                reason=reason,
+            ) as receipt:
+                run = ctx.controller_runtime.grant_elastic_capacity(
+                    controller_id,
+                    max_elastic_depth=max_elastic_depth,
+                    max_elastic_nodes=max_elastic_nodes,
+                    reason=reason,
+                    source=receipt.source(),
+                )
+            return {"ok": True, "run": run.model_dump(mode="json"), **receipt.fields()}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
+    @ctx.tool(server, "decline_elastic_requests", operation=McpOperation.APPROVAL)
+    def decline_elastic_requests(
+        controller_id: str,
+        parent_node_id: str,
+        reason: str,
+        run_hash: str | None = None,
+        issued_at_utc: str | None = None,
+        approver_label: str | None = None,
+    ) -> dict[str, Any]:
+        """Discard one node's deferred elastic requests and release the dependents they held.
+
+        An approver credential must send `run_hash` (`run.run_hash` of `get_run_state`) and
+        `issued_at_utc` (the instant the approver decided); `approver_label` is the
+        caller's unverified note on who decided and is only recorded."""
+
+        try:
+            with ctx.gate.decide(
+                "decline_elastic_requests",
+                subject=f'the run of controller "{controller_id}"',
+                approved=False,
+                binding_field="run_hash",
+                expected=run_hash,
+                actual=lambda: _run_hash(ctx, controller_id),
+                issued_at_utc=issued_at_utc,
+                label=approver_label,
+                reason=reason,
+            ) as receipt:
+                run = ctx.controller_runtime.decline_elastic_requests(
+                    controller_id, parent_node_id, reason, source=receipt.source()
+                )
+            return {"ok": True, "run": run.model_dump(mode="json"), **receipt.fields()}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
+    @ctx.tool(server, "get_controller_state", operation=McpOperation.READ)
+    def get_controller_state(controller_id: str) -> dict[str, Any]:
+        """Return the durable user-visible vertical controller state and event log, with
+        the plan_hash an approver binds a plan decision to."""
+
+        try:
+            record = ctx.controller_runtime.get_controller(controller_id)
             return {
                 "ok": True,
-                "controller": ctx.controller_runtime.get_controller(controller_id).model_dump(
-                    mode="json"
-                ),
+                "controller": record.model_dump(mode="json"),
+                "binding": {"plan_hash": plan_digest(record.plan)},
             }
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="get_shared_state", structured_output=True)
-    async def get_shared_state(controller_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "get_shared_state", operation=McpOperation.READ)
+    def get_shared_state(controller_id: str) -> dict[str, Any]:
         """Return typed lateral discoveries and writes without worker transcripts."""
 
         try:
@@ -163,8 +275,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="verify_provenance_contract", structured_output=True)
-    async def verify_provenance_contract(
+    @ctx.tool(server, "verify_provenance_contract")
+    def verify_provenance_contract(
         controller_id: str,
         records: list[dict[str, Any]],
         required_schema_version: str,
@@ -183,8 +295,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="record_controller_stage_failure", structured_output=True)
-    async def record_controller_stage_failure(
+    @ctx.tool(server, "record_controller_stage_failure")
+    def record_controller_stage_failure(
         controller_id: str,
         reason: str,
     ) -> dict[str, Any]:
@@ -196,8 +308,8 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="complete_controller", structured_output=True)
-    async def complete_controller(controller_id: str) -> dict[str, Any]:
+    @ctx.tool(server, "complete_controller")
+    def complete_controller(controller_id: str) -> dict[str, Any]:
         """Record the typed completion of a vertical controller run."""
 
         try:
@@ -206,8 +318,19 @@ def register_controller_tools(server: MCPServer, ctx: McpContext) -> None:
         except Exception as error:
             return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
 
-    @server.tool(name="cancel_controller", structured_output=True)
-    async def cancel_controller(controller_id: str, reason: str) -> dict[str, Any]:
+    @ctx.tool(server, "reconcile_controller")
+    def reconcile_controller(controller_id: str) -> dict[str, Any]:
+        """Re-derive the project state from the controller's graph run results and cancel the
+        controller if its run was cancelled, after an operation that failed between writes."""
+
+        try:
+            report = ctx.controller_runtime.reconcile(controller_id)
+            return {"ok": True, "report": report.model_dump(mode="json")}
+        except Exception as error:
+            return {"ok": False, "errors": [{"message": str(error), "type": type(error).__name__}]}
+
+    @ctx.tool(server, "cancel_controller")
+    def cancel_controller(controller_id: str, reason: str) -> dict[str, Any]:
         """Cancel the active graph run and its vertical controller record."""
 
         try:

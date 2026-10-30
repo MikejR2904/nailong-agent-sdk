@@ -13,22 +13,28 @@ import json
 import re
 import zipfile
 from pathlib import Path
-from typing import Any
 
 import yaml
 
+from ..foundations.atomic_io import replace_atomic, unique_temporary_path
+from ..foundations.identifiers import file_safe_name
+from ..foundations.json_limits import assert_json_depth
+from ..foundations.paths import relative_to_base
+from ..foundations.text import split_lines
 from .documents import (
     DocumentFormat,
     DocumentNode,
     DocumentNodeKind,
     DocumentTree,
     SourceRef,
-    SpecificationCategory,
     SpecificationDocument,
     SpecificationManifest,
     VisionStatus,
 )
 from .vision import UnconfiguredVisionAdapter, VisionAdapter, VisionProposal
+
+_MAX_VSDX_PART_BYTES = 16 * 1024 * 1024
+_MAX_VSDX_TOTAL_BYTES = 64 * 1024 * 1024
 
 
 class SpecificationPreprocessor:
@@ -45,7 +51,10 @@ class SpecificationPreprocessor:
         if not isinstance(payload, dict):
             raise ValueError("Specification manifest must be a mapping.")
         if "documents" not in payload:
-            payload = self._legacy_manifest_to_documents(payload)
+            raise ValueError(
+                f'Specification manifest "{relative_manifest_path}" must contain a "documents" '
+                f"list; its top-level keys are {sorted(payload)}."
+            )
         return SpecificationManifest.model_validate(payload)
 
     def process_manifest(self, manifest: SpecificationManifest) -> list[DocumentTree]:
@@ -67,7 +76,14 @@ class SpecificationPreprocessor:
                 location=location,
             )
 
-        nodes = self._parse(path, document.format, source)
+        try:
+            nodes = self._parse(path, document.format, source)
+        except Exception as error:
+            detail = str(error) if type(error) is ValueError else f"{type(error).__name__}: {error}"
+            raise ValueError(
+                f'Specification document "{document.path}" ({document.format.value}) could not '
+                f"be processed: {detail}"
+            ) from error
         return DocumentTree(
             document_id=document.id,
             category=document.category,
@@ -115,11 +131,13 @@ class SpecificationPreprocessor:
         return tree.model_copy(update={"nodes": resolved})
 
     def persist_tree(self, tree: DocumentTree) -> Path:
-        target = self._root / "processed" / f"{tree.document_id}.document.yaml"
+        target = self._root / "processed" / f"{file_safe_name(tree.document_id)}.document.yaml"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
+        temporary = unique_temporary_path(target)
+        temporary.write_text(
             yaml.safe_dump(tree.model_dump(mode="json"), sort_keys=False), encoding="utf-8"
         )
+        replace_atomic(temporary, target)
         return target
 
     def _parse(self, path: Path, format_: DocumentFormat, source) -> list[DocumentNode]:
@@ -127,12 +145,8 @@ class SpecificationPreprocessor:
             DocumentFormat.TXT,
             DocumentFormat.MD,
             DocumentFormat.TEX,
-            DocumentFormat.SYSTEMRDL,
-            DocumentFormat.SDC,
-            DocumentFormat.UPF,
             DocumentFormat.PLANTUML,
             DocumentFormat.DOT,
-            DocumentFormat.WAVEDROM,
             DocumentFormat.MERMAID,
             DocumentFormat.TIKZ,
         }:
@@ -142,14 +156,13 @@ class SpecificationPreprocessor:
                 in {
                     DocumentFormat.PLANTUML,
                     DocumentFormat.DOT,
-                    DocumentFormat.WAVEDROM,
                     DocumentFormat.MERMAID,
                     DocumentFormat.TIKZ,
                 }
                 else DocumentNodeKind.TEXT
             )
             return self._line_nodes(
-                path.read_text(encoding="utf-8", errors="replace"), source, kind
+                path.read_text(encoding="utf-8-sig", errors="replace"), source, kind
             )
         if format_ is DocumentFormat.PDF:
             from pypdf import PdfReader
@@ -193,10 +206,7 @@ class SpecificationPreprocessor:
                             content=paragraph.text,
                         )
                     )
-                drawing_count = sum(
-                    child.tag.endswith("}drawing")
-                    for child in paragraph._p.iter()  # noqa: SLF001
-                )
+                drawing_count = sum(child.tag.endswith("}drawing") for child in paragraph._p.iter())
                 for _ in range(drawing_count):
                     image_index += 1
                     nodes.append(
@@ -222,11 +232,11 @@ class SpecificationPreprocessor:
         if format_ in {DocumentFormat.CSV, DocumentFormat.XLSX}:
             return self._table_nodes(path, format_, source)
         if format_ in {DocumentFormat.YAML, DocumentFormat.JSON}:
+            content = path.read_text(encoding="utf-8-sig")
             parsed = (
-                yaml.safe_load(path.read_text(encoding="utf-8"))
-                if format_ is DocumentFormat.YAML
-                else json.loads(path.read_text(encoding="utf-8"))
+                yaml.safe_load(content) if format_ is DocumentFormat.YAML else json.loads(content)
             )
+            assert_json_depth(parsed, f"{format_.value} document content")
             return [
                 DocumentNode(
                     node_id="structured-1",
@@ -267,6 +277,17 @@ class SpecificationPreprocessor:
                 )
                 if not page_parts:
                     raise ValueError("VSDX document contains no Visio page XML parts.")
+                total_bytes = 0
+                for part in page_parts:
+                    declared = package.getinfo(part).file_size
+                    total_bytes += declared
+                    if declared > _MAX_VSDX_PART_BYTES or total_bytes > _MAX_VSDX_TOTAL_BYTES:
+                        raise ValueError(
+                            f'VSDX part "{part}" would decompress to {declared} bytes '
+                            f"(running total {total_bytes}); the limits are "
+                            f"{_MAX_VSDX_PART_BYTES} bytes per part and {_MAX_VSDX_TOTAL_BYTES} "
+                            "bytes in total."
+                        )
                 return [
                     DocumentNode(
                         node_id=f"vsdx-{index}",
@@ -294,7 +315,7 @@ class SpecificationPreprocessor:
     @staticmethod
     def _line_nodes(text: str, source, kind: DocumentNodeKind) -> list[DocumentNode]:
         nodes = []
-        for index, line in enumerate(text.splitlines(), start=1):
+        for index, line in enumerate(split_lines(text), start=1):
             if line.strip():
                 nodes.append(
                     DocumentNode(
@@ -313,15 +334,22 @@ class SpecificationPreprocessor:
         if format_ is DocumentFormat.CSV:
             import csv
 
-            with path.open(newline="", encoding="utf-8") as file:
-                return [
-                    DocumentNode(
-                        node_id="table-1",
-                        kind=DocumentNodeKind.TABLE,
-                        source=source("rows:1-end"),
-                        content=list(csv.reader(file)),
-                    )
-                ]
+            previous_limit = csv.field_size_limit(
+                max(csv.field_size_limit(), path.stat().st_size + 1)
+            )
+            try:
+                with path.open(newline="", encoding="utf-8-sig") as file:
+                    rows = list(csv.reader(file))
+            finally:
+                csv.field_size_limit(previous_limit)
+            return [
+                DocumentNode(
+                    node_id="table-1",
+                    kind=DocumentNodeKind.TABLE,
+                    source=source("rows:1-end"),
+                    content=rows,
+                )
+            ]
         from openpyxl import load_workbook
 
         workbook = load_workbook(path, read_only=True, data_only=False)
@@ -354,32 +382,10 @@ class SpecificationPreprocessor:
     def _resolve(self, relative_path: str) -> Path:
         candidate = (self._root / relative_path).resolve()
         try:
-            candidate.relative_to(self._root)
+            relative_to_base(candidate, self._root)
         except ValueError as error:
             raise ValueError("Specification path escapes the configured root.") from error
         return candidate
-
-    @staticmethod
-    def _legacy_manifest_to_documents(payload: dict[str, Any]) -> dict[str, Any]:
-        documents: list[dict[str, Any]] = []
-        categories = {
-            "functional_spec": SpecificationCategory.FUNCTIONAL,
-            "architectural_spec": SpecificationCategory.ARCHITECTURAL,
-            "interface_spec": SpecificationCategory.INTERFACE,
-            "ppa_spec": SpecificationCategory.PPA,
-            "pdk_spec": SpecificationCategory.PDK,
-            "verification_spec": SpecificationCategory.VERIFICATION,
-            "safety_security_spec": SpecificationCategory.SAFETY_SECURITY,
-            "assumptions_dependencies": SpecificationCategory.ASSUMPTIONS,
-        }
-        for key, category in categories.items():
-            section = payload.get(key, {})
-            for item in section.get("documents", []):
-                documents.append({**item, "category": category.value})
-            for interface in section.get("interfaces", []):
-                for item in interface.get("documents", []):
-                    documents.append({**item, "category": category.value})
-        return {"documents": documents}
 
 
 def keywords_from_task(text: str) -> set[str]:
