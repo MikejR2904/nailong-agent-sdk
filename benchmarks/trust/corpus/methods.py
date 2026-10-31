@@ -76,7 +76,8 @@ FILE {path}:
 {content}
 
 Compute from the source table what this file should contain and compare. Is any number or the
-top region in the file wrong, or is any line the description requires missing? Work out every
+top region in the file wrong, is any line the description requires missing, or is any region of
+the source table absent from the file (or any region not in the table present)? Work out every
 needed sum row by row before you judge; the last line of your reply must be one JSON object:
 {{"defective": true or false}}"""
 VOTES = 3

@@ -183,11 +183,13 @@ def attribute_lineage(
     fails ``is_defective``, or, when ``is_defective_result`` is given, a retrieved result (the
     output of a registered command, a fetched page, a search, or a stored result fetched again
     with ``get_tool_result``) that fails it. An artifact version names the run that wrote it, and
-    the trace goes on there. A stored result names the run that recorded it, and the trace goes on
-    there. A command output, a page or a search is data from outside the SDK's records, so the
-    trace ends at the call that retrieved it. It also ends at the writer of a version whose own
-    run read nothing defective, at a version several writes could have produced, at a writer or
-    a stored result with no known run, and at ``max_depth`` hops.
+    the trace goes on there. When several writes of one run produced the same version, the trace
+    goes on in that run and the hop stays ambiguous only if the trace ends there. A stored result
+    names the run that recorded it, and the trace goes on there. A command output, a page or a
+    search is data from outside the SDK's records, so the trace ends at the call that retrieved
+    it. It also ends at the writer of a version whose own run read nothing defective, at a version
+    that writes by different runs could have produced, at a writer or a stored result with no
+    known run, and at ``max_depth`` hops.
     """
 
     if max_depth < 1:
@@ -218,6 +220,8 @@ def attribute_lineage(
         inputs = _inputs(journal, entries, is_defective_result)
         first_read = next((item for item in reads if item.defective), None)
         first_input = next((item for item in inputs if item.defective), None)
+        if hops and hops[-1].ambiguous and (first_read is not None or first_input is not None):
+            hops[-1] = hops[-1].model_copy(update={"ambiguous": False})
         if first_input is not None and (
             first_read is None or first_input.position < first_read.position
         ):
@@ -263,7 +267,9 @@ def attribute_lineage(
                 "retrieval that fails the result check."
             )
             break
+        writer_runs = {item.agent_run_id for item in first_read.candidates}
         ambiguous = not first_read.unique
+        one_run = ambiguous and len(writer_runs) == 1 and None not in writer_runs
         hops.append(
             LineageHop(
                 run_id=current,
@@ -272,13 +278,13 @@ def attribute_lineage(
                 ambiguous=ambiguous,
             )
         )
-        if ambiguous:
+        if ambiguous and not one_run:
             reason = (
                 f"{len(first_read.candidates)} writes produced the defective version read by "
                 f'"{current}"; the records cannot tell which one was served.'
             )
             break
-        writer = first_read.candidates[0]
+        writer = first_read.candidates[-1]
         origin, origin_kind = writer, OriginKind.ARTIFACT_WRITE
         upstream = writer.agent_run_id
         if upstream is None or upstream in seen:

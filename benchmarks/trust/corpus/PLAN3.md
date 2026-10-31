@@ -30,6 +30,17 @@ evaluation is registered separately and is reported as registered.
    files. `sdk-oracle` is an upper bound using the pipeline's validator.
 3. On fault-free dev controls step-by-step names a step on 12 of 14 runs; every SDK arm names none.
 
+## Later dev additions
+
+* **Same-run ambiguity in `attribute_lineage`**: when a read matches several writes that all come from
+  one agent run (an identical rewrite), the trace continues through that run's latest write instead of
+  stopping as ambiguous. Found on natural dev case s1005.
+* **Planted-derived profile** (dev seeds 3201-3202, test seeds 3301-3304, test not built): hidden read
+  and write faults on the derived pipeline. Dev result (36 failed runs): `sdk-integrity` 36/36 steps,
+  the Who&When methods and FALAT 3-9/36, `sdk-llmcheck+integrity` 29/29 of the runs it answered.
+  Seven runs of every model-based method errored with HTTP 412 (the provider account was suspended
+  for its monthly spending limit), so those arms are not complete on dev and were not re-run.
+
 ## Pre-registered analysis for the derived test split (not yet built)
 
 Cases: 12 seeds (3101-3112) times three pipeline models, kept when the run finished and its final

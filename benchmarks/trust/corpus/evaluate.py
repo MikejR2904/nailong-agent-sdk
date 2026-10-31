@@ -25,6 +25,19 @@ ROOTS = {
     "planted": Path("results/corpus"),
     "natural": Path("results/corpus_natural"),
     "derived": Path("results/corpus_derived"),
+    "planted-derived": Path("results/corpus_planted_derived"),
+}
+FAILED_KINDS = {
+    "planted": {"read", "write"},
+    "natural": {"natural"},
+    "derived": {"natural"},
+    "planted-derived": {"read", "write"},
+}
+CONTROL_KINDS = {
+    "planted": {"none"},
+    "natural": {"natural"},
+    "derived": {"natural"},
+    "planted-derived": {"none"},
 }
 LLM_FAMILIES = ("ww-all", "ww-step", "ww-binary", "falat")
 
@@ -34,7 +47,7 @@ class TokenCap(RuntimeError):
 
 
 def eligible(label: dict[str, Any], dataset: str) -> bool:
-    kinds = {"planted": {"read", "write"}, "natural": {"natural"}, "derived": {"natural"}}[dataset]
+    kinds = FAILED_KINDS[dataset]
     return bool(
         label.get("kind") in kinds
         and label.get("pipeline_complete")
@@ -76,7 +89,7 @@ def control_methods(names: list[str]) -> list[str]:
 
 
 def is_control(label: dict[str, Any], dataset: str) -> bool:
-    kinds = {"planted": {"none"}, "natural": {"natural"}, "derived": {"natural"}}[dataset]
+    kinds = CONTROL_KINDS[dataset]
     return bool(
         label.get("kind") in kinds
         and label.get("pipeline_complete")
@@ -366,7 +379,7 @@ def main(argv: list[str]) -> int:
         for label in (load_label(path.parent) for path in sorted(root.glob("*/label.json")))
         if label.get("split") == arguments.split
         and label.get("kind") in {"read", "write", "natural", "none"}
-        and (label["kind"] == "natural") == (arguments.dataset != "planted")
+        and label["kind"] in FAILED_KINDS[arguments.dataset] | CONTROL_KINDS[arguments.dataset]
     ]
     chosen = [label for label in labels if eligible(label, arguments.dataset)]
     names = methods(arguments)

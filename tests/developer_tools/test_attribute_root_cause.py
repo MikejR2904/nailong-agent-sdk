@@ -419,3 +419,50 @@ def test_unchecked_tracing_is_off_by_default_and_needs_a_workspace(tmp_path):
     assert all(item.basis is not CauseBasis.UNCHECKED for item in plain.candidates)
     skipped = attribute_root_cause(tmp_path, "r1", trace_unchecked=True)
     assert any("trace_unchecked follows the artifacts" in line for line in skipped.not_examined)
+
+
+def test_identical_rewrites_by_one_run_do_not_stop_the_trace_before_that_run(tmp_path):
+    failed_run(tmp_path)
+    store, journal = ArtifactStore(tmp_path), FileToolResultJournal(tmp_path)
+    source = store.write_text("in.txt", "BAD seed\n", manifest=writer("r_up", "wu"))
+    journal_call(
+        journal,
+        "r0",
+        "c_in",
+        "read_artifact",
+        {"artifact_id": source.artifact_id},
+        {"artifact_id": source.artifact_id, "content": "BAD seed\n"},
+    )
+    first = store.write_text("out.txt", "BAD copy\n", manifest=writer("r0", "w1", 1))
+    store.write_text("out.txt", "BAD copy\n", manifest=writer("r0", "w2", 2))
+    journal_call(
+        journal,
+        "r1",
+        "c1",
+        "read_artifact",
+        {"artifact_id": first.artifact_id},
+        {"artifact_id": first.artifact_id, "content": "BAD copy\n"},
+    )
+    analysis = attribute_root_cause(tmp_path, "r1", workspace=tmp_path, content_check=lineage_check)
+    primary = analysis.primary
+    assert primary.kind is CauseKind.UPSTREAM_ORIGIN and primary.basis is CauseBasis.TRACED
+    assert primary.writer.agent_run_id == "r_up" and primary.writer.tool_call_id == "wu"
+
+
+def test_identical_rewrites_by_one_run_stay_ambiguous_when_the_trace_ends_at_that_run(tmp_path):
+    failed_run(tmp_path)
+    store, journal = ArtifactStore(tmp_path), FileToolResultJournal(tmp_path)
+    first = store.write_text("out.txt", "BAD copy\n", manifest=writer("r0", "w1", 1))
+    store.write_text("out.txt", "BAD copy\n", manifest=writer("r0", "w2", 2))
+    journal_call(
+        journal,
+        "r1",
+        "c1",
+        "read_artifact",
+        {"artifact_id": first.artifact_id},
+        {"artifact_id": first.artifact_id, "content": "BAD copy\n"},
+    )
+    analysis = attribute_root_cause(tmp_path, "r1", workspace=tmp_path, content_check=lineage_check)
+    origin = next(item for item in analysis.candidates if item.kind is CauseKind.UPSTREAM_ORIGIN)
+    assert origin.basis is CauseBasis.AMBIGUOUS
+    assert analysis.primary is None or analysis.primary.kind is not CauseKind.UPSTREAM_ORIGIN

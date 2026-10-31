@@ -24,6 +24,8 @@ NATURAL_DEV_SEEDS = (*range(1001, 1007), *range(2001, 2007))
 NATURAL_TEST_SEEDS = (*range(1101, 1113), *range(2101, 2113))
 DERIVED_DEV_SEEDS = tuple(range(3001, 3007))
 DERIVED_TEST_SEEDS = tuple(range(3101, 3113))
+PLANTED_DERIVED_DEV_SEEDS = (3201, 3202)
+PLANTED_DERIVED_TEST_SEEDS = (3301, 3302, 3303, 3304)
 DEV_SEEDS = (1, 2)
 TEST_SEEDS = (3, 4, 5, 6)
 KINDS = ("read", "write")
@@ -33,10 +35,10 @@ def short(model: str) -> str:
     return model.rsplit("/", 1)[-1]
 
 
-def cases() -> list[Case]:
+def cases(dev_seeds=DEV_SEEDS, test_seeds=TEST_SEEDS) -> list[Case]:
     found: list[Case] = []
     for model in MODELS:
-        for split, seeds in (("dev", DEV_SEEDS), ("test", TEST_SEEDS)):
+        for split, seeds in (("dev", dev_seeds), ("test", test_seeds)):
             for seed in seeds:
                 for kind in KINDS:
                     for node in NODES:
@@ -86,19 +88,26 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--split", default="")
     parser.add_argument(
-        "--set", dest="which", default="planted", choices=("planted", "natural", "derived")
+        "--set",
+        dest="which",
+        default="planted",
+        choices=("planted", "natural", "derived", "planted-derived"),
     )
     arguments = parser.parse_args(argv)
     if arguments.which == "derived":
         pool = natural_cases(DERIVED_DEV_SEEDS, DERIVED_TEST_SEEDS)
+    elif arguments.which == "planted-derived":
+        pool = cases(PLANTED_DERIVED_DEV_SEEDS, PLANTED_DERIVED_TEST_SEEDS)
     elif arguments.which == "natural":
         pool = natural_cases()
     else:
         pool = cases()
     out = arguments.out or Path(
-        {"planted": "results/corpus", "natural": "results/corpus_natural"}.get(
-            arguments.which, "results/corpus_derived"
-        )
+        {
+            "planted": "results/corpus",
+            "natural": "results/corpus_natural",
+            "planted-derived": "results/corpus_planted_derived",
+        }.get(arguments.which, "results/corpus_derived")
     )
     chosen = [c for c in pool if not arguments.split or c.split == arguments.split]
     if arguments.limit:
