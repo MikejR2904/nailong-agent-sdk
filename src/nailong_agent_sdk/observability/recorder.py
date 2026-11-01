@@ -62,8 +62,10 @@ from .transparency import (
 )
 
 _logger = get_logger("recorder")
-RECORDER_SCHEMA = "agent-sdk-recorder-v1"
-MAX_LINE_BYTES = 1_048_576
+RECORDER_SCHEMA = "agent-sdk-recorder-v2"
+MAX_LINE_BYTES = 16_777_216
+PAGE_BYTES = 4_194_304
+MAX_PAGE_ENTRIES = 1_000
 IDLE_TIMEOUT_SECONDS = 300.0
 APPEND_TOKEN_VARIABLE = "NAILONG_RECORDER_APPEND_TOKEN"
 READ_TOKEN_VARIABLE = "NAILONG_RECORDER_READ_TOKEN"
@@ -110,7 +112,9 @@ class RecorderComparison(StrictModel):
 
 
 class RecorderSource(Protocol):
-    def entries(self, run_id: str, store: str) -> list[RecordedEntry]: ...
+    def entries(
+        self, run_id: str, store: str, include_records: bool = True
+    ) -> list[RecordedEntry]: ...
 
     def head_sink(self) -> CheckpointSink: ...
 
@@ -123,6 +127,7 @@ class _Stream:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.entries: list[RecordedEntry] = []
+        self.offsets: list[int] = []
         self.accumulator = MerkleAccumulator()
 
 
@@ -170,11 +175,67 @@ class RecorderCore:
         with self._lock:
             return run_id in self._final
 
-    def entries(self, run_id: str, store: str) -> list[RecordedEntry]:
+    def entries(self, run_id: str, store: str, include_records: bool = True) -> list[RecordedEntry]:
+        found: list[RecordedEntry] = []
+        after = 0
+        while after is not None:
+            page, after = self.page(
+                run_id,
+                store,
+                after=after,
+                max_entries=MAX_PAGE_ENTRIES,
+                include_records=include_records,
+            )
+            found.extend(page)
+        return found
+
+    def page(
+        self,
+        run_id: str,
+        store: str,
+        *,
+        after: int = 0,
+        max_entries: int = MAX_PAGE_ENTRIES,
+        max_bytes: int | None = None,
+        include_records: bool = True,
+    ) -> tuple[list[RecordedEntry], int | None]:
         self._require_store(store)
+        if after < 0 or max_entries < 1:
+            raise _fail(
+                "RECORDER_REQUEST_INVALID",
+                f"A page starts after a sequence of 0 or more and holds at least one entry, "
+                f"got after={after} and limit={max_entries}.",
+            )
         with self._lock:
             stream = self._streams.get((run_id, store))
-            return list(stream.entries) if stream is not None else []
+            if stream is None:
+                return [], None
+            chosen = list(stream.entries[after : after + max_entries])
+            offsets = stream.offsets[after : after + max_entries]
+            path = stream.path
+            more = after + max_entries < len(stream.entries)
+        if not include_records:
+            return self._within_budget(chosen, max_bytes, more)
+        with path.open("rb") as handle:
+            filled = []
+            for entry, offset in zip(chosen, offsets, strict=True):
+                handle.seek(offset)
+                text = RecordedEntry.model_validate_json(handle.readline()).record
+                filled.append(entry.model_copy(update={"record": text}))
+        return self._within_budget(filled, max_bytes, more)
+
+    @staticmethod
+    def _within_budget(
+        entries: list[RecordedEntry], max_bytes: int | None, more: bool
+    ) -> tuple[list[RecordedEntry], int | None]:
+        if max_bytes is not None:
+            used = 0
+            for index, entry in enumerate(entries):
+                used += len(entry.model_dump_json())
+                if used > max_bytes and index > 0:
+                    entries, more = entries[:index], True
+                    break
+        return entries, (entries[-1].sequence if entries and more else None)
 
     def run_ids(self) -> list[str]:
         with self._lock:
@@ -251,8 +312,9 @@ class RecorderCore:
                 received_at_utc=datetime.now(UTC).isoformat(),
                 claimed_at_utc=claimed,
             )
-            self._persist(stream, entry)
-            stream.entries.append(entry)
+            offset = self._persist(stream, entry)
+            stream.entries.append(entry.model_copy(update={"record": None}))
+            stream.offsets.append(offset)
             stream.accumulator.append(leaf_data(record_hash))
             if len(stream.entries) % self._head_every == 0:
                 self._publish(run_id, store, stream)
@@ -388,13 +450,15 @@ class RecorderCore:
             self._streams[key] = _Stream(self._records / name)
         return self._streams[key]
 
-    def _persist(self, stream: _Stream, entry: RecordedEntry) -> None:
+    def _persist(self, stream: _Stream, entry: RecordedEntry) -> int:
         try:
             with stream.path.open("ab") as handle:
+                offset = handle.tell()
                 handle.write(entry.model_dump_json().encode("utf-8") + b"\n")
                 handle.flush()
                 if self._durable:
                     os.fsync(handle.fileno())
+            return offset
         except OSError as error:
             raise _fail(
                 "RECORDER_STORAGE_FAILED",
@@ -439,8 +503,9 @@ class RecorderCore:
                 continue
             run_id = unquote(stem)
             stream = _Stream(path)
-            for entry in _read_records(path):
-                stream.entries.append(entry)
+            for entry, offset in _read_records(path):
+                stream.entries.append(entry.model_copy(update={"record": None}))
+                stream.offsets.append(offset)
                 stream.accumulator.append(leaf_data(entry.hash))
             self._streams[(run_id, store)] = stream
         for run_id in {run for run, _ in self._streams}:
@@ -449,7 +514,7 @@ class RecorderCore:
                 self._final.add(run_id)
 
 
-def _read_records(path: Path) -> list[RecordedEntry]:
+def _read_records(path: Path) -> list[tuple[RecordedEntry, int]]:
     data = path.read_bytes()
     if data and not data.endswith(b"\n"):
         keep = data.rfind(b"\n") + 1
@@ -468,8 +533,10 @@ def _read_records(path: Path) -> list[RecordedEntry]:
         else:
             data += b"\n"
         path.write_bytes(data)
-    entries: list[RecordedEntry] = []
-    for number, line in enumerate(data.splitlines(), start=1):
+    entries: list[tuple[RecordedEntry, int]] = []
+    offset = 0
+    for number, line in enumerate(data.splitlines(keepends=True), start=1):
+        start, offset = offset, offset + len(line)
         if not line.strip():
             continue
         try:
@@ -491,7 +558,7 @@ def _read_records(path: Path) -> list[RecordedEntry]:
                 path=str(path),
                 line=number,
             )
-        entries.append(entry)
+        entries.append((entry, start))
     return entries
 
 
@@ -604,6 +671,8 @@ class RecorderServer(socketserver.ThreadingTCPServer):
         writes = operation in {"append", "seal"}
         if operation not in {"append", "seal", "read", "heads", "ping", "status", "attestations"}:
             return {"ok": False, "code": "RECORDER_OPERATION_UNKNOWN", "detail": str(operation)}
+        if operation == "ping":
+            return {"ok": True, "schema": RECORDER_SCHEMA}
         wanted = self._read_token
         scope = "read"
         if writes:
@@ -663,8 +732,18 @@ class RecorderServer(socketserver.ThreadingTCPServer):
         if operation == "attestations":
             return {"lines": core.attestation_lines(str(request["run_id"]))}
         if operation == "read":
-            found = core.entries(str(request["run_id"]), str(request["store"]))
-            return {"entries": [item.model_dump(mode="json") for item in found]}
+            found, next_after = core.page(
+                str(request["run_id"]),
+                str(request["store"]),
+                after=int(request.get("after", 0)),
+                max_entries=min(int(request.get("limit", MAX_PAGE_ENTRIES)), MAX_PAGE_ENTRIES),
+                max_bytes=PAGE_BYTES,
+                include_records=bool(request.get("include_records", True)),
+            )
+            return {
+                "entries": [item.model_dump(mode="json") for item in found],
+                "next_after": next_after,
+            }
         return {"lines": core.sink.read_all(str(request["name"]))}
 
 
@@ -732,11 +811,24 @@ class RecorderClient:
             store: MerkleTreeHead.model_validate(head) for store, head in reply["heads"].items()
         }
 
-    def entries(self, run_id: str, store: str) -> list[RecordedEntry]:
-        reply = self._call(
-            {"op": "read", "token": self._need_read(), "run_id": run_id, "store": store}
-        )
-        return [RecordedEntry.model_validate(item) for item in reply["entries"]]
+    def entries(self, run_id: str, store: str, include_records: bool = True) -> list[RecordedEntry]:
+        found: list[RecordedEntry] = []
+        after: int | None = 0
+        while after is not None:
+            reply = self._call(
+                {
+                    "op": "read",
+                    "token": self._need_read(),
+                    "run_id": run_id,
+                    "store": store,
+                    "after": after,
+                    "limit": MAX_PAGE_ENTRIES,
+                    "include_records": include_records,
+                }
+            )
+            found.extend(RecordedEntry.model_validate(item) for item in reply["entries"])
+            after = reply.get("next_after")
+        return found
 
     def head_sink(self) -> CheckpointSink:
         return _HeadSink(self)
@@ -777,23 +869,64 @@ class RecorderClient:
             self._socket.close()
         self._reader = self._socket = None
 
+    def _connect(self) -> None:
+        self._socket = socket.create_connection(self._address, self._timeout)
+        if self._tls is not None:
+            self._socket = self._tls.wrap_socket(
+                self._socket, server_hostname=self._server_hostname
+            )
+        self._socket.settimeout(self._timeout)
+        self._reader = self._socket.makefile("rb")
+        greeting = self._parse(self._roundtrip(b'{"op": "ping"}\n'))
+        if greeting.get("schema") != RECORDER_SCHEMA:
+            self._drop()
+            raise _fail(
+                "RECORDER_PROTOCOL_MISMATCH",
+                f"The recorder at {self._address[0]}:{self._address[1]} speaks protocol "
+                f'"{greeting.get("schema")}" but this client speaks "{RECORDER_SCHEMA}"; '
+                "upgrade the older side.",
+                host=self._address[0],
+                port=self._address[1],
+            )
+
+    def _roundtrip(self, data: bytes) -> bytes:
+        assert self._socket is not None and self._reader is not None
+        self._socket.sendall(data)
+        line = self._reader.readline(MAX_LINE_BYTES + 1)
+        if not line:
+            raise ConnectionError("the recorder closed the connection")
+        if len(line) > MAX_LINE_BYTES and not line.endswith(b"\n"):
+            self._drop()
+            raise _fail(
+                "RECORDER_REPLY_TOO_LARGE",
+                f"The recorder at {self._address[0]}:{self._address[1]} sent a reply over "
+                f"{MAX_LINE_BYTES} bytes, which this client does not read.",
+                host=self._address[0],
+                port=self._address[1],
+            )
+        return line
+
+    def _parse(self, line: bytes) -> dict[str, Any]:
+        try:
+            reply = json.loads(line)
+        except ValueError as error:
+            raise _fail(
+                "RECORDER_REPLY_INVALID",
+                f"The recorder at {self._address[0]}:{self._address[1]} sent a reply that is "
+                f"not JSON ({type(error).__name__}: {error}).",
+                host=self._address[0],
+                port=self._address[1],
+            ) from error
+        return dict(reply)
+
     def _call(self, request: dict[str, Any]) -> dict[str, Any]:
         data = json.dumps(request).encode("utf-8") + b"\n"
         with self._lock:
             for attempt in (1, 2):
                 try:
                     if self._socket is None:
-                        self._socket = socket.create_connection(self._address, self._timeout)
-                        if self._tls is not None:
-                            self._socket = self._tls.wrap_socket(
-                                self._socket, server_hostname=self._server_hostname
-                            )
-                        self._socket.settimeout(self._timeout)
-                        self._reader = self._socket.makefile("rb")
-                    self._socket.sendall(data)
-                    line = self._reader.readline(MAX_LINE_BYTES + 1)
-                    if not line:
-                        raise ConnectionError("the recorder closed the connection")
+                        self._connect()
+                    line = self._roundtrip(data)
                     break
                 except (OSError, ConnectionError) as error:
                     self._drop()
@@ -805,7 +938,7 @@ class RecorderClient:
                             host=self._address[0],
                             port=self._address[1],
                         ) from error
-        reply = json.loads(line)
+        reply = self._parse(line)
         if not reply.get("ok"):
             raise _fail(
                 str(reply.get("code", "RECORDER_ERROR")),
@@ -1029,7 +1162,7 @@ def _compare_store(
     source: RecorderSource,
     verifier: CheckpointSigner,
 ) -> RecorderComparison:
-    recorded = source.entries(run_id, store)
+    recorded = source.entries(run_id, store, include_records=False)
     held = len(recorded)
     if not recorded:
         return RecorderComparison(

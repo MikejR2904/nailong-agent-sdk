@@ -579,7 +579,7 @@ class EvidenceProfile:
         worst = 0.0
         receipts: dict[str, list[tuple[int, str]]] = {}
         for store in ("telemetry", "audit"):
-            entries = self._reader.entries(run_id, store)
+            entries = self._reader.entries(run_id, store, include_records=False)
             receipts[store] = [
                 (item.sequence, item.received_at_utc) for item in entries if item.received_at_utc
             ]
