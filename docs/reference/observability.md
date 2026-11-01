@@ -9,18 +9,32 @@ Three independent records of a run, all written outside the model's context: the
 | [`observability/audit_log.py`](#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 550 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/clock_check.py`](#observabilityclock_checkpy---detecting-a-ledger-whose-recorded-times-run-backwards) | 69 | detecting a ledger whose recorded times run backwards |
 | [`observability/keyring.py`](#observabilitykeyringpy---public-verification-keys-with-validity-windows-rotation-and-revocation) | 216 | public verification keys with validity windows, rotation and revocation |
-| [`observability/ledger_state.py`](#observabilityledger_statepy---what-a-runs-two-ledgers-hold-now) | 64 | what a run's two ledgers hold now |
+| [`observability/ledger_state.py`](#observabilityledger_statepy---what-a-runs-two-ledgers-hold-now) | 68 | what a run's two ledgers hold now |
 | [`observability/metric_definitions.py`](#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 450 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
 | [`observability/otlp.py`](#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 1000 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
 | [`observability/payload_bounds.py`](#observabilitypayload_boundspy---size-bounds-on-one-ledger-record-that-keep-the-fields-saying-who-and-what) | 45 | size bounds on one ledger record that keep the fields saying who and what |
 | [`observability/profiler.py`](#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
-| [`observability/run_checkpoints.py`](#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 892 | signed checkpoints of a run's chain heads, kept outside the run root |
+| [`observability/recorder/__init__.py`](#observabilityrecorder__init__py---package-entry-for-the-recorder-re-exports-its-public-names) | 136 | package entry for the recorder: re-exports its public names |
+| [`observability/recorder/__main__.py`](#observabilityrecorder__main__py---entry-point-for-python--m-nailong_agent_sdkobservabilityrecorder) | 10 | entry point for `python -m nailong_agent_sdk.observability.recorder` |
+| [`observability/recorder/cli.py`](#observabilityrecorderclipy---the-recorders-command-line) | 109 | the recorder's command line |
+| [`observability/recorder/client.py`](#observabilityrecorderclientpy---the-agent-side-handle-on-a-recorder-connection-pool-and-calls) | 284 | the agent-side handle on a recorder: connection pool and calls |
+| [`observability/recorder/compare.py`](#observabilityrecordercomparepy---comparing-a-runs-local-ledgers-with-the-recorders-copy) | 105 | comparing a run's local ledgers with the recorder's copy |
+| [`observability/recorder/core.py`](#observabilityrecordercorepy---the-recorders-storage-rules-sequencing-chain-record-checks-attestation) | 499 | the recorder's storage rules: sequencing, chain, record checks, attestation |
+| [`observability/recorder/mirror.py`](#observabilityrecordermirrorpy---feeding-each-persisted-record-to-a-recorder-and-what-happens-when-it-cannot) | 200 | feeding each persisted record to a recorder, and what happens when it cannot |
+| [`observability/recorder/models.py`](#observabilityrecordermodelspy---what-the-recorder-holds-and-what-a-comparison-with-it-concludes) | 54 | what the recorder holds and what a comparison with it concludes |
+| [`observability/recorder/process.py`](#observabilityrecorderprocesspy---starting-a-recorder-as-a-separate-process) | 116 | starting a recorder as a separate process |
+| [`observability/recorder/protocol.py`](#observabilityrecorderprotocolpy---the-recorders-wire-protocol-version-limits-and-shared-names) | 43 | the recorder's wire protocol: version, limits and shared names |
+| [`observability/recorder/server.py`](#observabilityrecorderserverpy---the-recorders-network-face-connections-tokens-operations) | 174 | the recorder's network face: connections, tokens, operations |
+| [`observability/recorder/tls.py`](#observabilityrecordertlspy---tls-contexts-for-the-recorders-server-and-its-clients) | 36 | TLS contexts for the recorder's server and its clients |
+| [`observability/run_checkpoints.py`](#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 697 | signed checkpoints of a run's chain heads, kept outside the run root |
 | [`observability/signed_records.py`](#observabilitysigned_recordspy---the-one-check-every-signed-record-goes-through) | 106 | the one check every signed record goes through |
 | [`observability/signers.py`](#observabilitysignerspy---what-signs-and-verifies-a-record-and-the-shared-secret-signer) | 53 | what signs and verifies a record, and the shared-secret signer |
+| [`observability/sinks.py`](#observabilitysinkspy---where-signed-records-are-kept-outside-the-run-root) | 117 | where signed records are kept outside the run root |
 | [`observability/telemetry_helpers.py`](#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
 | [`observability/telemetry_models.py`](#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 261 | telemetry event, context, actor and metric contracts |
 | [`observability/telemetry_store.py`](#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 768 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
+| [`observability/terminal_link.py`](#observabilityterminal_linkpy---the-cross-link-between-a-runs-last-telemetry-event-and-last-audit-entry) | 124 | the cross-link between a run's last telemetry event and last audit entry |
 | [`observability/timestamp.py`](#observabilitytimestamppy---rfc-3161-trusted-timestamps-for-checkpoints-and-tree-heads) | 629 | RFC 3161 trusted timestamps for checkpoints and tree heads |
 | [`observability/trace_context.py`](#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 181 | W3C Trace Context ids, the traceparent header and the process resource |
 
@@ -60,10 +74,10 @@ Three independent records of a run, all written outside the model's context: the
 
 **Contents**
 
-- `attestation_name(run_id: str) -> str` - `<run_id>.attestation`, the name extra sinks store attestations under. · *Called by:* `observability/recorder.py::RecorderCore.attest`
+- `attestation_name(run_id: str) -> str` - `<run_id>.attestation`, the name extra sinks store attestations under. · *Called by:* `observability/recorder/core.py::RecorderCore.attest`
 - **class `RunAttestation`** *(pydantic model; bases: StrictModel)* - The run id, the telemetry and audit sequence and head the recorder holds, the time it attested, whether the host sealed the run as final, the signer id and the signature.
   - `RunAttestation.signed_message(self) -> bytes` - The RFC 8785 bytes of the record without its signature.
-- `sign_attestation(run_id, telemetry, audit, signer, *, final, now=None) -> RunAttestation` - Builds and signs one from the (sequence, head) of each ledger. · *Called by:* `observability/recorder.py::RecorderCore.attest`
+- `sign_attestation(run_id, telemetry, audit, signer, *, final, now=None) -> RunAttestation` - Builds and signs one from the (sequence, head) of each ledger. · *Called by:* `observability/recorder/core.py::RecorderCore.attest`
 - **class `AttestationVerdict`** *(enum; bases: StrEnum)* - `matches`, `advanced` (the ledgers hold more than was attested), `truncated`, `diverged`, `chain-broken`, `signature-invalid`, `not-final` (a closing seal was required and never arrived), `no-attestation` and `unreadable`.
 - **class `AttestationVerification`** *(pydantic model; bases: StrictModel)* - The verdict, the count of attestations, whether the newest is final, the attested and current sequences of each ledger and a sentence.
   - `AttestationVerification.ok(self) -> bool` *(property)* - True for `matches` and `advanced`.
@@ -229,6 +243,7 @@ Three independent records of a run, all written outside the model's context: the
 - `inspect_run(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, *, telemetry_sequences: Collection[int]=(), audit_sequences: Collection[int]=()) -> RunState` - Both ledgers, keeping the hash at the requested sequences. · *Called by:* `observability/attestation.py::verify_attestations`, `observability/run_checkpoints.py::_inspect_for`, `observability/run_checkpoints.py::build_run_head_checkpoint`
 - `telemetry_state(telemetry: TelemetryStore, run_id: str, wanted: Collection[int]) -> ChainState` - Verifies the telemetry chain; a broken chain returns its break and no lengths, otherwise one pass collects the length, head and wanted hashes. · *Called by:* `observability/ledger_state.py::inspect_run`
 - `audit_state(audit: AuditTranscriptStore, run_id: str, wanted: Collection[int]) -> ChainState` - The same for the audit ledger. · *Called by:* `observability/ledger_state.py::inspect_run`
+- `short_digest(digest: object) -> str` - The first 12 characters of a digest, or `no entries` when there is none. · *Called by:* `observability/run_checkpoints.py::_verdict`, `observability/run_checkpoints.py::_tombstone_verdict`, `observability/terminal_link.py::verify_terminal_link`
 ---
 
 ### `observability/metric_definitions.py` - the SDK's standard metric catalogue
@@ -412,24 +427,105 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
-### `observability/recorder.py` - a recorder in another process that keeps its own signed copy of the ledgers
+### `observability/recorder/__init__.py` - package entry for the recorder: re-exports its public names
 
-*909 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `observability/audit_log.py`, `observability/ed25519.py`, `observability/merkle.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/transparency.py` · used by: tests, `benchmarks/trust/tamper_protocol.py` · not re-exported at the package root*
+*Imports from `observability.recorder` keep working; each name lives in the module that owns it.*
 
-**Role in the workflow.** The ledgers live under the run root, where anything with file access can edit or delete them, and an end-of-run anchor covers whatever state they were in by then. The recorder receives every record as it is written, over a socket, in a process the agent has no handle on; keeps its own durable copy; refuses a record that does not chain to what it holds; and signs Merkle tree heads with a key that never leaves it. `compare_with_recorder` later checks the local ledgers against that copy, so an edit, a deletion or a truncation of anything already sent is found and the lost records can be read back. This separates the agent from the evidence, not the host from it: the recorder is as independent as the account, container or machine it runs in.
+**Role in the workflow.** Re-exports the recorder's public names so `from nailong_agent_sdk.observability.recorder import RecorderClient` still works after the split, and carries the module overview.
 
 **Contents**
 
-- **class `RecordedEntry`** *(pydantic model; bases: StrictModel)* - One record as the recorder holds it: its sequence, its integrity hash, the hash of its predecessor and, when the mirror sends it, the record's full JSON, which is what lets a deleted record be read back.
-  - fields: `sequence`, `hash`, `previous`, `record`
-- **class `RecorderVerdict`** *(StrEnum)* - How a local ledger compares with the recorder's copy: `matches`, `advanced` (more local records than received), `truncated`, `diverged` (a record differs, was removed from the middle or was resealed), `no-record` and `recorder-unverified` (the recorder's own signed heads do not vouch for its copy).
-- **class `RecorderComparison`** *(pydantic model; bases: StrictModel)* - The result for one ledger: the verdict, the counts on both sides, the first differing sequence, how many newest records were removed, how many differ, and a sentence.
-  - fields: `store`, `verdict`, `recorded`, `local`, `first_difference`, `removed_tail`, `differing`, `detail`
-  - `RecorderComparison.ok(self) -> bool` - True for `matches` and `advanced`.
-- **class `RecorderSource`** *(Protocol)* - What `compare_with_recorder` needs of a recorder: its records for a run and ledger and a sink to read its signed heads from. Both `RecorderCore` and `RecorderClient` provide them.
-  - `RecorderSource.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - The recorder's records for one run and ledger, in sequence order.
-  - `RecorderSource.head_sink(self) -> CheckpointSink` - A sink that reads the recorder's signed tree heads.
-- `_fail(code: str, message: str) -> AgentSdkError` - An `AgentSdkError` with a code, a message and details.
+---
+
+### `observability/recorder/__main__.py` - entry point for `python -m nailong_agent_sdk.observability.recorder`
+
+*Runs `cli.main`.*
+
+**Role in the workflow.** Lets the recorder be started as a module, which is how `spawn_recorder` starts it.
+
+**Contents**
+
+---
+
+### `observability/recorder/cli.py` - the recorder's command line
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** `main` is what `python -m nailong_agent_sdk.observability.recorder` runs: it reads the tokens (from files or the environment), builds the core and the server, and prints where it listens.
+
+**Where to look.** If the recorder will not start or reads the wrong token, start here.
+
+**Contents**
+
+- `_load_signer(directory: Path) -> Ed25519Signer` - The recorder's Ed25519 key from `recorder.key`, created with owner-only permissions on first start. It stays in the recorder's directory and is never sent.
+- `_secret(path: Path | None, variable: str) -> str` - A token from a file when one is named, else from the environment; a file keeps it out of the environment child processes inherit. · *Called by:* `observability/recorder/cli.py::main`
+- `main(argv: Sequence[str] | None=None) -> int` - The recorder process: needs both tokens in its environment (else exit status 2 naming them), loads or creates its key, listens and prints one JSON line with its address and public key.
+---
+
+### `observability/recorder/client.py` - the agent-side handle on a recorder: connection pool and calls
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** `RecorderClient` turns method calls into request lines over a small pool of connections, pages reads, and turns refusals and broken replies into named errors.
+
+**Where to look.** If a call fails or hangs from the agent's side, start here.
+
+**Contents**
+
+- **class `RecorderClient`** *(class)* - The agent-side handle on a recorder. It holds the append token, so it can add records and ask for a seal; reading records or heads needs a read token that only a verifier is given.
+  - `RecorderClient.__init__(self, host: str, port: int, *, append_token: str, read_token: str | None=None, timeout_seconds: float=5.0) -> None` - A non-positive timeout raises naming it. `append_token` may be a function of the run id, for per-run tokens; `tls` and `server_hostname` connect over TLS. `connections` sets how many requests may be in flight (default 4).
+  - `RecorderClient.append(self, run_id: str, store: str, sequence: int, record_hash: str, previous_hash: str | None, record: str | None=None) -> dict[str, Any]` - Sends one record; the reply carries the new size and whether it was a duplicate.
+  - `RecorderClient.seal(self, run_id: str) -> dict[str, MerkleTreeHead]` - Asks the recorder to sign heads for a run now and returns them. With `final` the recorder marks the run closed; the signed attestation it returns is kept as `last_attestation`.
+  - `RecorderClient.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - Reads the recorder's records for a run and ledger (needs the read token, else `RECORDER_READ_TOKEN_MISSING`). Reads the stream in pages of at most 1,000 entries and about 4 MiB (the server's budget), so a run of any length comes back; `include_records=False` asks for hashes and times only, which is all a comparison needs.
+  - `RecorderClient.head_sink(self) -> CheckpointSink` - A read-only sink over the recorder's heads, for `verify_tree_heads` and `compare_with_recorder`.
+  - `RecorderClient.status(self, run_id: str) -> dict[str, Any]` - `RecorderCore.status` over the wire (needs the read token).
+  - `RecorderClient.attestation_lines(self, run_id: str) -> list[str]` - The run's attestations (needs the read token).
+  - `RecorderClient._append_token_for(self, run_id: str) -> str` - The append token for a run: the given string, or the result of the callable the client was given (a per-run scoped token).
+  - `RecorderClient._take(self) -> _Connection` - An idle connection, or a new one (not yet opened).
+  - `RecorderClient._give_back(self, connection: _Connection) -> None` - Returns a connection that served a request to the idle list.
+  - `RecorderClient.head_lines(self, name: str) -> list[str]` - The signed head lines the recorder holds under a name.
+  - `RecorderClient.close(self) -> None` - Closes the connection. Closes the idle connections.
+  - `RecorderClient._need_read(self) -> str` - The read token, or `RECORDER_READ_TOKEN_MISSING`.
+  - `RecorderClient._call(self, request: dict[str, Any]) -> dict[str, Any]` - One request and reply on a persistent connection, reconnecting once; a failure raises `RECORDER_UNREACHABLE` with the address, and an `ok: false` reply raises its code and detail. At most `connections` (default 4) requests are in flight; each takes its own socket, so runs do not queue behind one another. A broken connection is closed and the request retried once on a new one before `RECORDER_UNREACHABLE`.
+- `parse_reply(line: bytes, address: tuple[str, int]) -> dict[str, Any]` - A reply line as a dict; text that is not JSON is `RECORDER_REPLY_INVALID` naming the address. · *Called by:* `observability/recorder/client.py::RecorderClient._call`, `observability/recorder/client.py::_Connection._open`
+- **class `_Connection`** *(class)* - One socket to the recorder, opened on first use. The first thing it does on a new socket is a tokenless `ping`, and a different protocol version closes it and raises `RECORDER_PROTOCOL_MISMATCH`. · *Instantiated by:* `observability/recorder/client.py::RecorderClient._take`
+  - `_Connection.__init__(self, address: tuple[str, int], timeout: float, tls: ssl.SSLContext | None, server_hostname: str) -> None` - Stores where and how to connect; nothing is opened yet.
+  - `_Connection.exchange(self, data: bytes) -> bytes` - Opens the socket if needed, sends one request line and returns one reply line.
+  - `_Connection.close(self) -> None` - Closes the socket and its reader; safe to repeat.
+  - `_Connection._open(self) -> None` - Connects, wraps the socket in TLS when configured, and checks the protocol version.
+  - `_Connection._roundtrip(self, data: bytes) -> bytes` - Sends and reads one line; a closed connection is `ConnectionError`, a reply over `MAX_LINE_BYTES` (16 MiB) is `RECORDER_REPLY_TOO_LARGE`.
+- **class `_HeadSink`** *(class)* - Adapts a client to the sink interface for reading heads.
+- `_HeadSink.__init__(self, client: RecorderClient) -> None` - Holds the client.
+- `_HeadSink.location(self, run_id: str) -> str` - Where the heads are read from, for messages.
+- `_HeadSink.read_all(self, run_id: str) -> list[str]` - The head lines for a name.
+- `_HeadSink.append(self, run_id: str, record: str) -> None` - Refused: heads are written by the recorder alone (`RECORDER_HEADS_READ_ONLY`).
+- `_HeadSink.is_inside(self, root: Path) -> bool` - Always False.
+---
+
+### `observability/recorder/compare.py` - comparing a run's local ledgers with the recorder's copy
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** `compare_with_recorder` checks the recorder's signed heads vouch for its copy, then compares hashes with the local ledger to say matches, advanced, truncated or diverged.
+
+**Where to look.** If a comparison verdict is wrong, start here.
+
+**Contents**
+
+- `compare_with_recorder(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, source: RecorderSource, verifier: CheckpointSigner) -> dict[str, RecorderComparison]` - Compares both local ledgers of a run with the recorder's copy.
+- `_compare_store(run_id: str, store: str, local: list[str], source: RecorderSource, verifier: CheckpointSigner) -> RecorderComparison` - First checks that the recorder's own signed heads vouch for its copy (else `recorder-unverified`), then compares hash by hash: a difference is `diverged` with the first sequence, fewer local records is `truncated`, more is `advanced`, equal is `matches`.
+---
+
+### `observability/recorder/core.py` - the recorder's storage rules: sequencing, chain, record checks, attestation
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** `RecorderCore` decides what the recorder accepts and keeps: records must arrive in sequence and chain to the one before, may be checked against their text, are stamped with the recorder's clock, and are persisted before they are acknowledged. It also publishes signed tree heads and attestations. It knows nothing about sockets.
+
+**Where to look.** If the recorder accepted a record it should not have, lost one, or signed the wrong thing, start here.
+
+**Contents**
+
 - **class `_Stream`** *(class)* - One run's one ledger as the recorder holds it: its file, its records and a Merkle accumulator.
 - `_Stream.__init__(self, path: Path) -> None` - Starts empty.
 - **class `RecorderCore`** *(class)* - The recorder's state and rules: it accepts a record only if it is the next sequence and chains to the one before, keeps it in its own directory with an fsync, and signs a Merkle tree head every `head_every` records and on `seal`, with a key that never leaves the recorder. The server and the tests both drive it. Concurrency: a run's records are serialized by its gate, and the registry lock (taken only after a gate, never before) guards the stream table and the set of final runs.
@@ -455,48 +551,20 @@ Three independent records of a run, all written outside the model's context: the
   - `RecorderCore._note_conflict(self, run_id: str, store: str, sequence: int, held: str, offered: str) -> None` - Writes what was held and what was offered to `conflicts.jsonl` with an fsync.
   - `RecorderCore._publish(self, run_id: str, store: str, stream: _Stream) -> MerkleTreeHead` - Signs the accumulator's size and root with the recorder's key, appends the head to the heads sink and to any extra sink (a failure of an extra sink is logged).
   - `RecorderCore._load(self) -> None` - Rebuilds every stream from its JSONL file with `_read_records`.
-- `_read_records(path: Path) -> list[RecordedEntry]` - Reads one stream file. An unterminated last line that is not a valid record is the half of a write a crash cut off: it is logged with its length and hash and discarded. A valid record without its newline is kept and the newline restored. A damaged line elsewhere, or a sequence that is not the previous one plus one, raises `RECORDER_RECORDS_CORRUPT` naming the file and line, so the recorder never starts on records it cannot vouch for. · *Called by:* `observability/recorder.py::RecorderCore._load`
-- `_claimed_time(record: str | None) -> str | None` - The `occurred_at_utc` of a record's JSON, or None. · *Called by:* `observability/recorder.py::RecorderCore._check_record`
-- `scoped_append_token(secret: str, run_id: str) -> str` - HMAC-SHA-256 of the run id under the append secret. A server started with `scoped_append` accepts only this token for that run, so a leaked token opens one run and the secret itself opens none. · *Called by:* `observability/recorder.py::RecorderServer.dispatch`, `agent/evidence_profile.py::EvidenceProfile._build_recorder`
-- `server_ssl_context(certificate_file: Path, key_file: Path, *, client_ca_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later; with a client CA, a client certificate signed by it is required. · *Called by:* `observability/recorder.py::main`
-- `client_ssl_context(ca_file: Path, *, certificate_file: Path | None=None, key_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later, the server certificate and its host name verified against the CA, optionally presenting a client certificate. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._build_recorder`
-- **class `_Handler`** *(class)* - The per-connection handler: one JSON request per line, one JSON reply per line.
-- `_Handler.handle(self) -> None` - Reads lines until the peer closes; a line above 1 MiB is refused and ends the connection.
-- `_Handler.setup(self) -> None` - Completes the TLS handshake on the connection's own thread (so a slow client cannot stall accepting others) before the first request; a failed handshake closes the connection.
-- `_Handler._send(self, payload: dict[str, Any]) -> None` - Writes one reply line.
-- **class `RecorderServer`** *(class)* - A threaded loopback TCP server around a `RecorderCore`. Appending and sealing need the append token; reading records and heads needs a different read token. Nothing deletes or replaces a record.
-  - `RecorderServer.__init__(self, core: RecorderCore, *, append_token: str, read_token: str, host: str='127.0.0.1', port: int=0) -> None` - Requires two different non-empty tokens, binds the address (port 0 picks a free one). `scoped_append` makes the append token a secret from which each run's token is derived (`scoped_append_token`), and `tls` wraps every connection in TLS, optionally requiring a client certificate.
-  - `RecorderServer.port(self) -> int` - The port it is listening on.
-  - `RecorderServer.dispatch(self, line: bytes) -> dict[str, Any]` - Checks the request and the token with a constant-time comparison and runs the operation; every failure is an `ok: false` reply with a code (`RECORDER_REQUEST_INVALID`, `RECORDER_OPERATION_UNKNOWN`, `RECORDER_TOKEN_REFUSED`, or the core's own). The operations are append, seal (with `final`), read, heads, ping, status and attestations; an append or seal in scoped mode needs the token for the run it names.
-  - `RecorderServer._run(self, operation: str, request: dict[str, Any]) -> dict[str, Any]` - The operations: `ping`, `append`, `seal`, `read` (records) and `heads` (the signed head lines of a name).
-- **class `RecorderClient`** *(class)* - The agent-side handle on a recorder. It holds the append token, so it can add records and ask for a seal; reading records or heads needs a read token that only a verifier is given.
-  - `RecorderClient.__init__(self, host: str, port: int, *, append_token: str, read_token: str | None=None, timeout_seconds: float=5.0) -> None` - A non-positive timeout raises naming it. `append_token` may be a function of the run id, for per-run tokens; `tls` and `server_hostname` connect over TLS. `connections` sets how many requests may be in flight (default 4).
-  - `RecorderClient.append(self, run_id: str, store: str, sequence: int, record_hash: str, previous_hash: str | None, record: str | None=None) -> dict[str, Any]` - Sends one record; the reply carries the new size and whether it was a duplicate.
-  - `RecorderClient.seal(self, run_id: str) -> dict[str, MerkleTreeHead]` - Asks the recorder to sign heads for a run now and returns them. With `final` the recorder marks the run closed; the signed attestation it returns is kept as `last_attestation`.
-  - `RecorderClient.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - Reads the recorder's records for a run and ledger (needs the read token, else `RECORDER_READ_TOKEN_MISSING`). Reads the stream in pages of at most 1,000 entries and about 4 MiB (the server's budget), so a run of any length comes back; `include_records=False` asks for hashes and times only, which is all a comparison needs.
-  - `RecorderClient.head_sink(self) -> CheckpointSink` - A read-only sink over the recorder's heads, for `verify_tree_heads` and `compare_with_recorder`.
-  - `RecorderClient.status(self, run_id: str) -> dict[str, Any]` - `RecorderCore.status` over the wire (needs the read token).
-  - `RecorderClient.attestation_lines(self, run_id: str) -> list[str]` - The run's attestations (needs the read token).
-  - `RecorderClient._append_token_for(self, run_id: str) -> str` - The append token for a run: the given string, or the result of the callable the client was given (a per-run scoped token).
-  - `RecorderClient._take(self) -> _Connection` - An idle connection, or a new one (not yet opened).
-  - `RecorderClient._give_back(self, connection: _Connection) -> None` - Returns a connection that served a request to the idle list.
-  - `RecorderClient.head_lines(self, name: str) -> list[str]` - The signed head lines the recorder holds under a name.
-  - `RecorderClient.close(self) -> None` - Closes the connection. Closes the idle connections.
-  - `RecorderClient._need_read(self) -> str` - The read token, or `RECORDER_READ_TOKEN_MISSING`.
-  - `RecorderClient._call(self, request: dict[str, Any]) -> dict[str, Any]` - One request and reply on a persistent connection, reconnecting once; a failure raises `RECORDER_UNREACHABLE` with the address, and an `ok: false` reply raises its code and detail. At most `connections` (default 4) requests are in flight; each takes its own socket, so runs do not queue behind one another. A broken connection is closed and the request retried once on a new one before `RECORDER_UNREACHABLE`.
-- `parse_reply(line: bytes, address: tuple[str, int]) -> dict[str, Any]` - A reply line as a dict; text that is not JSON is `RECORDER_REPLY_INVALID` naming the address. · *Called by:* `observability/recorder.py::RecorderClient._call`, `observability/recorder.py::_Connection._open`
-- **class `_Connection`** *(class)* - One socket to the recorder, opened on first use. The first thing it does on a new socket is a tokenless `ping`, and a different protocol version closes it and raises `RECORDER_PROTOCOL_MISMATCH`. · *Instantiated by:* `observability/recorder.py::RecorderClient._take`
-  - `_Connection.__init__(self, address: tuple[str, int], timeout: float, tls: ssl.SSLContext | None, server_hostname: str) -> None` - Stores where and how to connect; nothing is opened yet.
-  - `_Connection.exchange(self, data: bytes) -> bytes` - Opens the socket if needed, sends one request line and returns one reply line.
-  - `_Connection.close(self) -> None` - Closes the socket and its reader; safe to repeat.
-  - `_Connection._open(self) -> None` - Connects, wraps the socket in TLS when configured, and checks the protocol version.
-  - `_Connection._roundtrip(self, data: bytes) -> bytes` - Sends and reads one line; a closed connection is `ConnectionError`, a reply over `MAX_LINE_BYTES` (16 MiB) is `RECORDER_REPLY_TOO_LARGE`.
-- **class `_HeadSink`** *(class)* - Adapts a client to the sink interface for reading heads.
-- `_HeadSink.__init__(self, client: RecorderClient) -> None` - Holds the client.
-- `_HeadSink.location(self, run_id: str) -> str` - Where the heads are read from, for messages.
-- `_HeadSink.read_all(self, run_id: str) -> list[str]` - The head lines for a name.
-- `_HeadSink.append(self, run_id: str, record: str) -> None` - Refused: heads are written by the recorder alone (`RECORDER_HEADS_READ_ONLY`).
-- `_HeadSink.is_inside(self, root: Path) -> bool` - Always False.
+- `_read_records(path: Path) -> list[RecordedEntry]` - Reads one stream file. An unterminated last line that is not a valid record is the half of a write a crash cut off: it is logged with its length and hash and discarded. A valid record without its newline is kept and the newline restored. A damaged line elsewhere, or a sequence that is not the previous one plus one, raises `RECORDER_RECORDS_CORRUPT` naming the file and line, so the recorder never starts on records it cannot vouch for. · *Called by:* `observability/recorder/core.py::RecorderCore._load`
+- `_claimed_time(record: str | None) -> str | None` - The `occurred_at_utc` of a record's JSON, or None. · *Called by:* `observability/recorder/core.py::RecorderCore._check_record`
+---
+
+### `observability/recorder/mirror.py` - feeding each persisted record to a recorder, and what happens when it cannot
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** `RecorderMirror` is the listener attached to the audit and telemetry stores. It sends each record as it is persisted, and decides what a failure means: a required mirror raises and keeps refusing until `backfill`, an optional one logs and marks the ledger degraded.
+
+**Where to look.** If records are not reaching the recorder, or a failure was swallowed, start here.
+
+**Contents**
+
 - **class `MirrorStats`** *(dataclass)* - What a mirror did: records sent, records that failed, the last error and the run and ledger pairs it stopped mirroring.
   - fields: `sent`, `failed`, `last_error`, `degraded`
 - **class `RecorderMirror`** *(class)* - Copies each record to a recorder as the ledgers persist it, through the ledgers' append listeners. Synchronous by default (the record is acknowledged before the next step); `asynchronous=True` sends from a queue, which opens a window equal to what is queued. With `required=True` a synchronous failure raises into the run; otherwise it is logged, counted and the run and ledger stop being mirrored, because a recorder cannot take a record after a gap.
@@ -513,8 +581,39 @@ Three independent records of a run, all written outside the model's context: the
   - `RecorderMirror._deliver(self, item: tuple[str, str, int, str, str | None, str | None]) -> None` - Sends one record; a failure is noted, and raised only for a required synchronous mirror.
   - `RecorderMirror._note_failure(self, store: str, run_id: str, error: AgentSdkError) -> None` - Counts the failure, remembers the error and stops mirroring that run and ledger, with a warning that names them.
   - `RecorderMirror._drain(self) -> None` - The sender thread's loop.
-- `compare_with_recorder(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, source: RecorderSource, verifier: CheckpointSigner) -> dict[str, RecorderComparison]` - Compares both local ledgers of a run with the recorder's copy.
-- `_compare_store(run_id: str, store: str, local: list[str], source: RecorderSource, verifier: CheckpointSigner) -> RecorderComparison` - First checks that the recorder's own signed heads vouch for its copy (else `recorder-unverified`), then compares hash by hash: a difference is `diverged` with the first sequence, fewer local records is `truncated`, more is `advanced`, equal is `matches`.
+---
+
+### `observability/recorder/models.py` - what the recorder holds and what a comparison with it concludes
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** `RecordedEntry` is one record as the recorder keeps it (hash, predecessor, optional text, and the two times). `RecorderComparison` is the verdict of comparing a local ledger with that copy.
+
+**Where to look.** If a stored record has the wrong fields, or a comparison verdict is wrong, start here and then `compare.py`.
+
+**Contents**
+
+- **class `RecordedEntry`** *(pydantic model; bases: StrictModel)* - One record as the recorder holds it: its sequence, its integrity hash, the hash of its predecessor and, when the mirror sends it, the record's full JSON, which is what lets a deleted record be read back.
+  - fields: `sequence`, `hash`, `previous`, `record`
+- **class `RecorderVerdict`** *(StrEnum)* - How a local ledger compares with the recorder's copy: `matches`, `advanced` (more local records than received), `truncated`, `diverged` (a record differs, was removed from the middle or was resealed), `no-record` and `recorder-unverified` (the recorder's own signed heads do not vouch for its copy).
+- **class `RecorderComparison`** *(pydantic model; bases: StrictModel)* - The result for one ledger: the verdict, the counts on both sides, the first differing sequence, how many newest records were removed, how many differ, and a sentence.
+  - fields: `store`, `verdict`, `recorded`, `local`, `first_difference`, `removed_tail`, `differing`, `detail`
+  - `RecorderComparison.ok(self) -> bool` - True for `matches` and `advanced`.
+- **class `RecorderSource`** *(Protocol)* - What `compare_with_recorder` needs of a recorder: its records for a run and ledger and a sink to read its signed heads from. Both `RecorderCore` and `RecorderClient` provide them.
+  - `RecorderSource.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - The recorder's records for one run and ledger, in sequence order.
+  - `RecorderSource.head_sink(self) -> CheckpointSink` - A sink that reads the recorder's signed tree heads.
+---
+
+### `observability/recorder/process.py` - starting a recorder as a separate process
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** `spawn_recorder` starts the recorder as a child process with fresh random tokens and returns how to reach it.
+
+**Where to look.** If a spawned recorder does not come up, start here, then `cli.py`.
+
+**Contents**
+
 - **class `RecorderProcess`** *(dataclass)* - A recorder started as a separate operating-system process: its address, the two tokens, its public key and the process.
   - fields: `directory`, `host`, `port`, `append_token`, `read_token`, `public_key_hex`, `signer_id`, `process`
   - `RecorderProcess.client(self, *, with_read: bool=False, timeout_seconds: float=5.0) -> RecorderClient` - A client for it; with `with_read` it carries the read token.
@@ -522,35 +621,65 @@ Three independent records of a run, all written outside the model's context: the
   - `RecorderProcess.alive(self) -> bool` - Whether the process is still running.
   - `RecorderProcess.stop(self) -> None` - Terminates the process, killing it if it does not stop in ten seconds.
 - `spawn_recorder(directory: Path, *, head_every: int=50, durable: bool=True, startup_timeout_seconds: float=30.0) -> RecorderProcess` - Starts `python -m nailong_agent_sdk.observability.recorder` with fresh tokens passed in its environment, waits for its ready line (address, public key) and returns the handle; a recorder that does not report in time raises `RECORDER_START_FAILED` with the end of its stderr.
-- `_load_signer(directory: Path) -> Ed25519Signer` - The recorder's Ed25519 key from `recorder.key`, created with owner-only permissions on first start. It stays in the recorder's directory and is never sent.
-- `_secret(path: Path | None, variable: str) -> str` - A token from a file when one is named, else from the environment; a file keeps it out of the environment child processes inherit. · *Called by:* `observability/recorder.py::main`
-- `main(argv: Sequence[str] | None=None) -> int` - The recorder process: needs both tokens in its environment (else exit status 2 naming them), loads or creates its key, listens and prints one JSON line with its address and public key.
+---
 
-**Algorithms & invariants.** A record is accepted only as the next sequence of its run and ledger with the previous hash the recorder holds, so the recorder's copy is itself a hash chain, and it also refuses a different hash for a sequence it already holds (the local ledger was rewritten after the send) and a gap. A tamper that rewrites a ledger and recomputes its chain therefore fails at the next record sent, during the run, and at the final comparison. The recorder cannot see records the agent process never sent: a synchronous mirror leaves no unsent record, an asynchronous one leaves what is queued, and a mirror that is not required stops after its first failure. The comparison first verifies the recorder's own signed heads, so a recorder whose copy was altered is not trusted. A same-user process that can kill the recorder or delete its directory defeats the arrangement from the host side; deployment on another account, container or machine is what makes that costly.
+### `observability/recorder/protocol.py` - the recorder's wire protocol: version, limits and shared names
 
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** The protocol is versioned (`RECORDER_SCHEMA`); a client checks it on connect. Limits live here too: one request or reply line is at most `MAX_LINE_BYTES` (16 MiB), and a `read` reply is cut at `PAGE_BYTES` (4 MiB) or `MAX_PAGE_ENTRIES` entries.
+
+**Where to look.** If client and server disagree about a name, a limit or a version, start here.
+
+**Contents**
+
+- `recorder_error(code: str, message: str) -> AgentSdkError` - An `AgentSdkError` with a code, a message and details.
+- `scoped_append_token(secret: str, run_id: str) -> str` - HMAC-SHA-256 of the run id under the append secret. A server started with `scoped_append` accepts only this token for that run, so a leaked token opens one run and the secret itself opens none. · *Called by:* `observability/recorder/server.py::RecorderServer.dispatch`, `agent/evidence_profile.py::EvidenceProfile._build_recorder`
+---
+
+### `observability/recorder/server.py` - the recorder's network face: connections, tokens, operations
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** `RecorderServer` accepts connections (one thread each), completes the TLS handshake on that thread, reads one JSON line per request, checks the token that applies to the operation and the run, and calls `RecorderCore`.
+
+**Where to look.** If an operation is refused or answered wrongly over the wire, start here; if the rule behind it is wrong, go to `core.py`.
+
+**Contents**
+
+- **class `_Handler`** *(class)* - The per-connection handler: one JSON request per line, one JSON reply per line.
+- `_Handler.handle(self) -> None` - Reads lines until the peer closes; a line above 1 MiB is refused and ends the connection.
+- `_Handler.setup(self) -> None` - Completes the TLS handshake on the connection's own thread (so a slow client cannot stall accepting others) before the first request; a failed handshake closes the connection.
+- `_Handler._send(self, payload: dict[str, Any]) -> None` - Writes one reply line.
+- **class `RecorderServer`** *(class)* - A threaded loopback TCP server around a `RecorderCore`. Appending and sealing need the append token; reading records and heads needs a different read token. Nothing deletes or replaces a record.
+  - `RecorderServer.__init__(self, core: RecorderCore, *, append_token: str, read_token: str, host: str='127.0.0.1', port: int=0) -> None` - Requires two different non-empty tokens, binds the address (port 0 picks a free one). `scoped_append` makes the append token a secret from which each run's token is derived (`scoped_append_token`), and `tls` wraps every connection in TLS, optionally requiring a client certificate.
+  - `RecorderServer.port(self) -> int` - The port it is listening on.
+  - `RecorderServer.dispatch(self, line: bytes) -> dict[str, Any]` - Checks the request and the token with a constant-time comparison and runs the operation; every failure is an `ok: false` reply with a code (`RECORDER_REQUEST_INVALID`, `RECORDER_OPERATION_UNKNOWN`, `RECORDER_TOKEN_REFUSED`, or the core's own). The operations are append, seal (with `final`), read, heads, ping, status and attestations; an append or seal in scoped mode needs the token for the run it names.
+  - `RecorderServer._run(self, operation: str, request: dict[str, Any]) -> dict[str, Any]` - The operations: `ping`, `append`, `seal`, `read` (records) and `heads` (the signed head lines of a name).
+---
+
+### `observability/recorder/tls.py` - TLS contexts for the recorder's server and its clients
+
+*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+
+**Role in the workflow.** Builds the `ssl` contexts: TLS 1.2 or later, the client certificate required when a client CA is given, and the host name verified on the client side.
+
+**Where to look.** If a TLS connection is refused or too permissive, start here.
+
+**Contents**
+
+- `server_ssl_context(certificate_file: Path, key_file: Path, *, client_ca_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later; with a client CA, a client certificate signed by it is required. · *Called by:* `observability/recorder/cli.py::main`
+- `client_ssl_context(ca_file: Path, *, certificate_file: Path | None=None, key_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later, the server certificate and its host name verified against the CA, optionally presenting a client certificate. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._build_recorder`
 ---
 
 ### `observability/run_checkpoints.py` - signed checkpoints of a run's chain heads, kept outside the run root
 
-*892 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `observability/audit_log.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `mcp/security.py` · re-exported at the package root: 16 name(s)*
+*697 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `observability/audit_log.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `mcp/security.py` · re-exported at the package root: 16 name(s)*
 
 **Role in the workflow.** Each run keeps two hash chains, telemetry events and audit entries. Each detects an edit in the middle, but the newest entries can be removed together, or both chains rewritten and resealed, because nothing outside the run root remembers how long they were. `export_run_head_checkpoint` verifies both chains, signs their sequence and head hash with a `CheckpointSigner` and appends the record to a `CheckpointSink` the operator keeps elsewhere; `verify_run_head_checkpoints` later reports a run that was truncated or rewritten. Retention's tombstone holds a pruned run's final heads, so a run that was pruned is `pruned`, not `truncated`, and a run id used again after a prune starts a new series. `nailong-agent-sdk-dev checkpoint-run` and `verify-checkpoints` do the same from the command line, and `AgentRuntimeServices(checkpointer=...)` takes a checkpoint when each task or node-agent run ends. At the end of a run `BaseAgent._terminate` makes its `agent.profile-completed` event record the audit head and appends a `terminal-link` audit entry that records that event's hash, so one checkpoint, or one intact store, vouches for the other.
 
 **Contents**
 
-- `checkpoint_path(destination: Path, run_id: str) -> Path` - `<destination>/<run id>.checkpoints.jsonl`, the run's file of checkpoints. · *Called by:* `developer_tools/cli.py::_verify_checkpoints`, `observability/run_checkpoints.py::FileCheckpointSink.append`, `observability/run_checkpoints.py::FileCheckpointSink.location`, `observability/run_checkpoints.py::FileCheckpointSink.read_all`
-- **class `CheckpointSink`** *(Protocol; bases: Protocol)* - Where a run's signed records are kept: a location label, the records read back in order, an append and whether the sink stores them inside a given run root. A host that wants object storage or a ledger implements it; the SDK ships the file sink.
-  - `CheckpointSink.location(run_id: str) -> str` - A label for where the run's records live (a path, a URL), used in messages.
-  - `CheckpointSink.read_all(run_id: str) -> list[str]` - The run's records in the order they were appended, empty when there are none.
-  - `CheckpointSink.append(run_id: str, record: str) -> None` - Appends one record durably.
-  - `CheckpointSink.is_inside(root: Path) -> bool` - True when the sink writes under `root`; a remote store answers False.
-- **class `FileCheckpointSink`** *(class)* - One append-only JSONL file per run under a directory the operator keeps elsewhere (`checkpoint_path`), appended under a lock with an fsync. · *Instantiated by:* `mcp/security.py::HttpServiceSettings.checkpointer`, `observability/run_checkpoints.py::export_run_head_checkpoint`
-  - `FileCheckpointSink.__init__(directory: Path) -> None` - Resolves the directory.
-  - `FileCheckpointSink.directory() -> Path` *(property)* - Property: the resolved directory. · *Called within this file by:* `observability/run_checkpoints.py::FileCheckpointSink.__init__`
-  - `FileCheckpointSink.location(run_id: str) -> str` - The run's file path.
-  - `FileCheckpointSink.read_all(run_id: str) -> list[str]` - The lines of the run's file, none when it does not exist (blank lines are skipped when they are parsed); an `OSError` raises `RUN_CHECKPOINT_UNREADABLE` naming the path.
-  - `FileCheckpointSink.append(run_id: str, record: str) -> None` - Appends one line under the file's lock (`RUN_CHECKPOINT_LOCK_TIMEOUT` when it cannot be taken) and fsyncs the file and its directory; an `OSError` becomes `RUN_CHECKPOINT_WRITE_FAILED` naming the path.
-  - `FileCheckpointSink.is_inside(root: Path) -> bool` - True when the directory is the run root or below it.
 - **class `CheckpointVerdict`** *(enum; bases: StrEnum)* - The outcome of checking a run against its checkpoints: `matches`, `advanced` (the run grew), `pruned` (retention removed it and its tombstone accounts for the checkpoint), `truncated`, `diverged` (rewritten), `chain-broken`, `signature-invalid`, `no-checkpoint` (none, or none that covers the run that exists now) and `unreadable`.
   - members: `MATCHES`, `ADVANCED`, `PRUNED`, `TRUNCATED`, `DIVERGED`, `CHAIN_BROKEN`, `SIGNATURE_INVALID`, `NO_CHECKPOINT`, `UNREADABLE`
 - **class `RunHeadCheckpoint`** *(pydantic model; bases: StrictModel)* - One signed record: the run id, a label of the run root, the sequence and head hash of the telemetry chain, the sequence and head hash of the audit chain, the time, the signer id and the signature over the other fields' canonical JSON. `timestamp` holds the optional RFC 3161 token; it is left out of the signed message when absent, so unstamped records are unchanged. New checkpoints are `agent-sdk-run-head-checkpoint-v2` (JCS); v1 still verifies. · *Instantiated by:* `observability/run_checkpoints.py::_signed_from`
@@ -561,11 +690,6 @@ Three independent records of a run, all written outside the model's context: the
 - **class `CheckpointVerification`** *(pydantic model; bases: StrictModel)* - The verdict, the number of checkpoints read, the checkpointed and current sequence of each chain `tombstone_signed` (for a `pruned` verdict: whether the tombstone's signature was verified; None otherwise) and a sentence naming what differs. · *Instantiated by:* `observability/run_checkpoints.py::_retired_verdict`, `observability/run_checkpoints.py::_tombstone_verdict`, `observability/run_checkpoints.py::_verdict`, `observability/run_checkpoints.py::verify_run_head_checkpoints`
   - fields: `verdict`, `checkpoints`, `checkpointed_telemetry_sequence`, `current_telemetry_sequence`, `checkpointed_audit_sequence`, `current_audit_sequence`, `detail`
   - `CheckpointVerification.ok() -> bool` *(property)* - Property: true for `matches`, `advanced` and `pruned`.
-- **class `TerminalLinkState`** *(enum; bases: StrEnum)* - `linked`, `broken` or `absent` (no terminal pair, or one written before runs cross-linked their heads).
-  - members: `LINKED`, `BROKEN`, `ABSENT`
-- **class `TerminalLinkVerification`** *(pydantic model; bases: StrictModel)* - Whether a run's terminal telemetry event and its `terminal-link` audit entry commit to each other's heads, with the sentence that says what was compared. · *Instantiated by:* `observability/run_checkpoints.py::verify_terminal_link`
-  - fields: `state`, `detail`
-  - `TerminalLinkVerification.linked() -> bool` *(property)* - Property: true when the state is `linked`. · *Called by:* `developer_tools/attribute_failure.py::_linked`, `observability/otlp.py::build_run_payloads`, `observability/telemetry_helpers.py::first_chain_break`
 - **class `RunHeadReport`** *(pydantic model; bases: StrictModel)* - A checkpoint verification and a terminal-link verification together; `ok` is false when the checkpoints do not match or the link is broken (an absent link is not). · *Instantiated by:* `observability/run_checkpoints.py::check_run_heads`
   - fields: `verification`, `terminal_link`, `ok`
   - `RunHeadReport.ok() -> bool` *(property)* - Computed field: the checkpoint verdict is `matches`, `advanced` or `pruned` and the link is not broken.
@@ -576,10 +700,7 @@ Three independent records of a run, all written outside the model's context: the
 - `read_checkpoints(path: Path) -> list[RunHeadCheckpoint]` - Reads a file's checkpoints in order; a line that is not a checkpoint of this schema raises `RUN_CHECKPOINT_UNREADABLE` naming the line. · *Called by:* `observability/run_checkpoints.py::_load`
 - `export_run_head_checkpoint(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, signer: CheckpointSigner, destination: Path | CheckpointSink, *, now: datetim...` - Reads the run's existing checkpoints from the sink (a directory is wrapped in a `FileCheckpointSink`), scans both chains once, refuses when they no longer match (`RUN_CHECKPOINT_MISMATCH` naming the verdict: truncated, rewritten, broken, signed by another key or unreadable), and otherwise signs and appends the heads. A sink inside the run root raises `RUN_CHECKPOINT_INSIDE_RUN_ROOT`. `pruned_lookup` lets a run id that retention pruned start a fresh checkpoint series. With a `timestamper` the checkpoint is stamped by an RFC 3161 authority before it is signed, so the signature also covers the stamp. `verifier` verifies the existing checkpoints (a key ring after a rotation) and `trusted_roots` the stamps on them. · *Called by:* `agent/run_checkpointer.py::RunHeadCheckpointer.export`, `developer_tools/cli.py::_checkpoint_run`
 - `verify_run_head_checkpoints(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, source: Path | CheckpointSink | Sequence[RunHeadCheckpoint], signer: Checkpoi...` - Checks ownership, signer and signature of every checkpoint, that the counts never shrink within one incarnation of the run, both chains, and the newest live checkpoint against the run: fewer events or entries than checkpointed is `truncated`, a different hash at the checkpointed position is `diverged`, more is `advanced`. A run that is gone is `pruned` when a tombstone no older than the checkpoint accounts for it, `truncated` otherwise (a tombstone log that could not be read is named). A file that cannot be read is a verdict, not an exception. With `trusted_roots` each stamped checkpoint's token and certificate chain are verified and the attested time, not the claimed one, selects the key (`max_skew_seconds`, default 600, bounds how far they may differ); without roots a stamp is counted but not believed. The result reports `stamped_checkpoints` and `verified_timestamps`. · *Called by:* `observability/run_checkpoints.py::check_run_heads`
-- `verify_terminal_link(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str) -> TerminalLinkVerification` - Compares the run's last `agent.profile-completed` event with its last `terminal-link` audit entry (the older layout kept `telemetry_head` in `profile-completed`): the audit chain's entry at the event's recorded `audit_head.entries` must have the event's `head_hash`, and the entry's `telemetry_head` must be the event's sequence and hash. A pair with neither half is `absent`; only one half present, or a half that does not match, is `broken`. · *Called by:* `developer_tools/diagnose.py::_integrity`, `observability/run_checkpoints.py::check_run_heads`
 - `check_run_heads(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, source: Path | CheckpointSink | Sequence[RunHeadCheckpoint], signer: Checkpoi...` - `verify_run_head_checkpoints` and `verify_terminal_link` as one `RunHeadReport`. · *Called by:* `agent/run_checkpointer.py::RunHeadCheckpointer.check`, `developer_tools/cli.py::_verify_checkpoints`
-- `_read_lines(path: Path) -> list[str]` - The lines of a checkpoint file; an `OSError` raises `RUN_CHECKPOINT_UNREADABLE` naming the path. · *Called within this file by:* `observability/run_checkpoints.py::FileCheckpointSink.read_all`, `observability/run_checkpoints.py::read_checkpoints`
-- `_discard_unterminated_tail(path: Path) -> None` - Truncates a checkpoint file that ends in an unterminated record (a crash between the bytes of one append), syncs it and logs the number of bytes and their SHA-256. `FileCheckpointSink.read_all` already reads the file as ending before such a fragment; `append` discards it before writing the next record.
 - `_parse(lines: Sequence[str], label: str) -> list[RunHeadCheckpoint]` - Parses record lines into checkpoints; a line of another schema or shape raises `RUN_CHECKPOINT_UNREADABLE` naming the line and its location. · *Called within this file by:* `observability/run_checkpoints.py::_load`, `observability/run_checkpoints.py::export_run_head_checkpoint`, `observability/run_checkpoints.py::read_checkpoints`
 - `_load(source: Path | CheckpointSink | Sequence[RunHeadCheckpoint], run_id: str) -> list[RunHeadCheckpoint]` - Checkpoints from a file path, a sink or an already parsed list. · *Called within this file by:* `observability/run_checkpoints.py::verify_run_head_checkpoints`
 - `_same_heads(checkpoint: RunHeadCheckpoint, pruned: PrunedHeads) -> bool` - True when a checkpoint's sequences and heads equal a tombstone's. · *Called by:* `observability/run_checkpoints.py::_assess`, `observability/run_checkpoints.py::_retired_verdict`
@@ -592,8 +713,6 @@ Three independent records of a run, all written outside the model's context: the
 - `_tombstone_verdict(run_id: str, newest: RunHeadCheckpoint, stone: PrunedHeads, summary: dict[str, Any]) -> CheckpointVerification` - Compares a missing run's newest live checkpoint with its tombstone: shorter is `truncated`, equal length with another head is `diverged`, otherwise `pruned`, noting how far it grew beyond the checkpoint and whether the tombstone's signature was verified. · *Called by:* `observability/run_checkpoints.py::_verdict`
 - `_unsigned_note(stone: PrunedHeads) -> str` - The sentence a `pruned` verdict ends with: that the tombstone's signature was verified, or that it was not checked so only the retention log's own word vouches for the deletion. · *Called within this file by:* `observability/run_checkpoints.py::_retired_verdict`, `observability/run_checkpoints.py::_tombstone_verdict`
 - `_pruned_after(pruned: Sequence[PrunedHeads], created_at_utc: str) -> list[PrunedHeads]` - The tombstones whose prune time is not before a checkpoint's creation (an older tombstone cannot account for it). · *Called by:* `observability/run_checkpoints.py::_verdict`
-- `_audit_hash_at(audit: AuditTranscriptStore, run_id: str, sequence: int) -> str | None` - The hash of the audit entry at a sequence, or None. · *Called by:* `observability/run_checkpoints.py::verify_terminal_link`
-- `_short(digest: object) -> str` - The first 12 characters of a digest, or `no entries`. · *Called within this file by:* `observability/run_checkpoints.py::_tombstone_verdict`, `observability/run_checkpoints.py::_verdict`, `observability/run_checkpoints.py::verify_terminal_link`
 
 **Algorithms & invariants.** A checkpoint is as independent as the place it is kept: someone who can rewrite the run root and the checkpoint store together, or who holds the key, can produce agreeing records, and one who can delete the newest checkpoints leaves an older, shorter one. The store is therefore kept on another volume or host and the key is not stored in the run root. A run that grew since its newest checkpoint is `advanced`, not a failure. The telemetry head is read from the event JSON, not the denormalized hash column. One export or verification scans each chain twice (its chain check, then one pass for the head and the wanted hash); a re-export used to scan each chain five times. A tombstone retires a checkpoint only when its final heads equal that checkpoint's exactly; a tombstone that is longer than the checkpoint says only that the run was not cut short before it was pruned, and the events between are gone. The `terminal-link` entry is its own audit record so that a small `max_payload_chars` cannot truncate it away.
 
@@ -639,6 +758,52 @@ Three independent records of a run, all written outside the model's context: the
   - `HmacSha256Signer.sign(message: bytes) -> str` - The hex HMAC of the message. · *Called within this file by:* `observability/signers.py::HmacSha256Signer.verify`
   - `HmacSha256Signer.verify(message: bytes, signature: str) -> bool` - Compares in constant time.
   - `HmacSha256Signer.__repr__() -> str` - Names the signer id only.
+---
+
+### `observability/sinks.py` - where signed records are kept outside the run root
+
+*Re-exported by `observability/run_checkpoints.py`.*
+
+**Role in the workflow.** A sink is an append-only place for signed records: a file under a directory the operator keeps elsewhere, a remote witness, or the recorder's own heads. `FileCheckpointSink` repairs a torn final line before it appends.
+
+**Where to look.** If a checkpoint file is read or appended wrongly, start here.
+
+**Contents**
+
+- `checkpoint_path(destination: Path, run_id: str) -> Path` - `<destination>/<run id>.checkpoints.jsonl`, the run's file of checkpoints. · *Called by:* `developer_tools/cli.py::_verify_checkpoints`, `observability/sinks.py::FileCheckpointSink.append`, `observability/sinks.py::FileCheckpointSink.location`, `observability/sinks.py::FileCheckpointSink.read_all`
+- **class `CheckpointSink`** *(Protocol; bases: Protocol)* - Where a run's signed records are kept: a location label, the records read back in order, an append and whether the sink stores them inside a given run root. A host that wants object storage or a ledger implements it; the SDK ships the file sink.
+  - `CheckpointSink.location(run_id: str) -> str` - A label for where the run's records live (a path, a URL), used in messages.
+  - `CheckpointSink.read_all(run_id: str) -> list[str]` - The run's records in the order they were appended, empty when there are none.
+  - `CheckpointSink.append(run_id: str, record: str) -> None` - Appends one record durably.
+  - `CheckpointSink.is_inside(root: Path) -> bool` - True when the sink writes under `root`; a remote store answers False.
+- **class `FileCheckpointSink`** *(class)* - One append-only JSONL file per run under a directory the operator keeps elsewhere (`checkpoint_path`), appended under a lock with an fsync. · *Instantiated by:* `mcp/security.py::HttpServiceSettings.checkpointer`, `observability/run_checkpoints.py::export_run_head_checkpoint`
+  - `FileCheckpointSink.__init__(directory: Path) -> None` - Resolves the directory.
+  - `FileCheckpointSink.directory() -> Path` *(property)* - Property: the resolved directory. · *Called within this file by:* `observability/sinks.py::FileCheckpointSink.__init__`
+  - `FileCheckpointSink.location(run_id: str) -> str` - The run's file path.
+  - `FileCheckpointSink.read_all(run_id: str) -> list[str]` - The lines of the run's file, none when it does not exist (blank lines are skipped when they are parsed); an `OSError` raises `RUN_CHECKPOINT_UNREADABLE` naming the path.
+  - `FileCheckpointSink.append(run_id: str, record: str) -> None` - Appends one line under the file's lock (`RUN_CHECKPOINT_LOCK_TIMEOUT` when it cannot be taken) and fsyncs the file and its directory; an `OSError` becomes `RUN_CHECKPOINT_WRITE_FAILED` naming the path.
+  - `FileCheckpointSink.is_inside(root: Path) -> bool` - True when the directory is the run root or below it.
+- `read_lines(path: Path) -> list[str]` - The lines of a checkpoint file; an `OSError` raises `RUN_CHECKPOINT_UNREADABLE` naming the path. · *Called within this file by:* `observability/sinks.py::FileCheckpointSink.read_all`, `observability/run_checkpoints.py::read_checkpoints`
+- `_discard_unterminated_tail(path: Path) -> None` - Truncates a checkpoint file that ends in an unterminated record (a crash between the bytes of one append), syncs it and logs the number of bytes and their SHA-256. `FileCheckpointSink.read_all` already reads the file as ending before such a fragment; `append` discards it before writing the next record.
+---
+
+### `observability/terminal_link.py` - the cross-link between a run's last telemetry event and last audit entry
+
+*Re-exported by `observability/run_checkpoints.py`.*
+
+**Role in the workflow.** When a run ends, its final telemetry event records the audit ledger's length and head, and its final audit entry records the telemetry event's sequence and hash. `verify_terminal_link` checks both halves agree, which ties the two ledgers to each other.
+
+**Where to look.** If the terminal link verdict (`linked`, `broken`, `absent`) is wrong, start here.
+
+**Contents**
+
+- **class `TerminalLinkState`** *(enum; bases: StrEnum)* - `linked`, `broken` or `absent` (no terminal pair, or one written before runs cross-linked their heads).
+  - members: `LINKED`, `BROKEN`, `ABSENT`
+- **class `TerminalLinkVerification`** *(pydantic model; bases: StrictModel)* - Whether a run's terminal telemetry event and its `terminal-link` audit entry commit to each other's heads, with the sentence that says what was compared. · *Instantiated by:* `observability/terminal_link.py::verify_terminal_link`
+  - fields: `state`, `detail`
+  - `TerminalLinkVerification.linked() -> bool` *(property)* - Property: true when the state is `linked`. · *Called by:* `developer_tools/attribute_failure.py::_linked`, `observability/otlp.py::build_run_payloads`, `observability/telemetry_helpers.py::first_chain_break`
+- `verify_terminal_link(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str) -> TerminalLinkVerification` - Compares the run's last `agent.profile-completed` event with its last `terminal-link` audit entry (the older layout kept `telemetry_head` in `profile-completed`): the audit chain's entry at the event's recorded `audit_head.entries` must have the event's `head_hash`, and the entry's `telemetry_head` must be the event's sequence and hash. A pair with neither half is `absent`; only one half present, or a half that does not match, is `broken`. · *Called by:* `developer_tools/diagnose.py::_integrity`, `observability/run_checkpoints.py::check_run_heads`
+- `_audit_hash_at(audit: AuditTranscriptStore, run_id: str, sequence: int) -> str | None` - The hash of the audit entry at a sequence, or None. · *Called by:* `observability/terminal_link.py::verify_terminal_link`
 ---
 
 ### `observability/timestamp.py` - RFC 3161 trusted timestamps for checkpoints and tree heads
@@ -821,7 +986,7 @@ Three independent records of a run, all written outside the model's context: the
   - `TelemetryStore.record_metric(observation: MetricObservation) -> MetricObservation` - Validates availability rules (available needs a value, unavailable needs a reason) and inserts the observation. The run's retention fence is honoured exactly as in `append`. · *Called by:* `mcp/telemetry_tools.py::register_telemetry_tools.record_metric_observation`, `observability/metrics.py::record_metric_unavailable`, `observability/metrics.py::record_metric_value`
   - `TelemetryStore.register_metric_definition(definition: MetricDefinition) -> MetricDefinition` - Upserts a metric definition by id.
   - `TelemetryStore.list_metric_definitions() -> list[MetricDefinition]` - All definitions ordered by id. · *Called within this file by:* `observability/telemetry_store.py::TelemetryStore.create_run_report`
-  - `TelemetryStore.list_events(run_id: str, *, limit: int=250, after_sequence: int=0, through_sequence: int | None=None, event_types: Collection[str] | None=None) -> list[Teleme...` - One page (1 to 1,000) of a run's events after a sequence and optionally through a boundary; an unreadable row raises when the page is built. `event_types` keeps only those types, read from the stored event JSON rather than the denormalized column, so a forged column cannot hide an event; paging with `after_sequence` still counts sequences, not matches. · *Called by:* `mcp/telemetry_tools.py::register_telemetry_tools.get_telemetry_events`, `observability/run_checkpoints.py::verify_terminal_link`
+  - `TelemetryStore.list_events(run_id: str, *, limit: int=250, after_sequence: int=0, through_sequence: int | None=None, event_types: Collection[str] | None=None) -> list[Teleme...` - One page (1 to 1,000) of a run's events after a sequence and optionally through a boundary; an unreadable row raises when the page is built. `event_types` keeps only those types, read from the stored event JSON rather than the denormalized column, so a forged column cannot hide an event; paging with `after_sequence` still counts sequences, not matches. · *Called by:* `mcp/telemetry_tools.py::register_telemetry_tools.get_telemetry_events`, `observability/terminal_link.py::verify_terminal_link`
   - `TelemetryStore._event_rows(run_id: str, *, limit: int, after_sequence: int, through_sequence: int | None, event_types: Collection[str] | None=None) -> list[str]` - The raw `event_json` of one page of a run's events after a sequence and through an optional boundary, in sequence order; validates the page size (1 to 1,000). The one query behind `list_events` and `iter_events`. `event_types` adds `json_extract(event_json, '$.event_type') IN (...)`. · *Called by:* `observability/telemetry_store.py::TelemetryStore.iter_events`, `observability/telemetry_store.py::TelemetryStore.list_events`
   - `TelemetryStore.run_ids_for_trace(trace_id: str) -> list[str]` - The runs that recorded at least one event under a trace id, ordered by run id. It scans the events table with `json_extract`, so it is meant for exports and inspection, not for the write path. · *Called by:* `developer_tools/cli.py::_export_otlp`
   - `TelemetryStore.run_snapshot_sequence(run_id: str) -> int` - Highest sequence for a run; the boundary for verification and reports. · *Called by:* `observability/telemetry_store.py::TelemetryStore.chain_break`, `observability/telemetry_store.py::TelemetryStore.create_run_report`, `observability/telemetry_store.py::TelemetryStore.iter_events`

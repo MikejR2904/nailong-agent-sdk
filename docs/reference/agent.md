@@ -11,7 +11,11 @@
 | [`agent/cost_model.py`](#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
 | [`agent/definition_digest.py`](#agentdefinition_digestpy---digests-of-an-agents-configured-identity-recorded-with-each-run) | 27 | digests of an agent's configured identity, recorded with each run |
 | [`agent/elastic_context.py`](#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
-| [`agent/evidence_profile.py`](#agentevidence_profilepy---one-profile-that-turns-on-every-independent-piece-of-run-evidence-and-checks-them-together) | 620 | one profile that turns on every independent piece of run evidence and checks them together |
+| [`agent/evidence_profile/__init__.py`](#agentevidence_profile__init__py---package-entry-for-the-evidence-profile-re-exports-its-public-names) | 33 | package entry for the evidence profile: re-exports its public names |
+| [`agent/evidence_profile/build.py`](#agentevidence_profilebuildpy---turning-settings-into-keys-sink-clients-authority-and-roots) | 237 | turning settings into keys, sink, clients, authority and roots |
+| [`agent/evidence_profile/checks.py`](#agentevidence_profilecheckspy---the-checks-run-on-a-run-one-function-each) | 314 | the checks run on a run, one function each |
+| [`agent/evidence_profile/profile.py`](#agentevidence_profileprofilepy---the-evidence-profile-checkpointer-recorder-mirror-and-verification) | 98 | the evidence profile: checkpointer, recorder mirror and verification |
+| [`agent/evidence_profile/settings.py`](#agentevidence_profilesettingspy---what-an-evidence-profile-is-told) | 68 | what an evidence profile is told |
 | [`agent/graph_agent_executor.py`](#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 338 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 439 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
@@ -214,48 +218,98 @@
 
 ---
 
-### `agent/evidence_profile.py` - one profile that turns on every independent piece of run evidence and checks them together
+### `agent/evidence_profile/__init__.py` - package entry for the evidence profile: re-exports its public names
 
-*620 lines · depends on: `agent/retention.py`, `agent/run_checkpointer.py`, `foundations/contracts.py`, `foundations/errors.py`, `observability/*` · used by: `agent/runtime.py`, `developer_tools/cli.py` · not re-exported at the package root*
+*Imports from `agent.evidence_profile` keep working.*
 
-**Role in the workflow.** Run-head checkpoints, signed tree heads, an out-of-process recorder, signed retention tombstones and trusted timestamps each defend a different attack, and each is off unless wired. An `EvidenceProfile` wires them together from one settings file and verifies them together. Pass it to `AgentRuntimeServices.open(evidence=...)` to write the evidence, or run `verify-run-evidence` to check a run against it. Tokens are never in the file; it names the environment variables that hold them.
+**Role in the workflow.** Re-exports the profile's public names and carries a map of the package: `settings.py`, `build.py`, `checks.py`, `profile.py`.
+
+**Contents**
+
+---
+
+### `agent/evidence_profile/build.py` - turning settings into keys, sink, clients, authority and roots
+
+*Part of the `agent/evidence_profile/` package.*
+
+**Role in the workflow.** `build_components` reads the key and token files, builds the checkpoint sink and the recorder clients (with TLS and scoped tokens when configured), and refuses a combination that could not work, naming the setting: no place to keep evidence, `require_recorder` with no recorder, `require_timestamps` with no roots, a recorder over plaintext on another host, a signing key the key ring would reject.
+
+**Where to look.** If a profile will not construct, or constructs with the wrong key, sink or client, start here.
+
+**Contents**
+
+- **class `Components`** *(dataclass)* - The built parts: signer, key ring, sink, writing and reading recorder clients, the recorder's verifier, the timestamp authority and the trusted roots.
+- `build_components(settings: EvidenceSettings, environ: Mapping[str, str]) -> Components` - Builds and validates everything. · *Called by:* `agent/evidence_profile/profile.py::EvidenceProfile.__init__`
+- `is_loopback(host: str) -> bool` - True for `localhost` and loopback addresses. · *Called by:* `agent/evidence_profile/build.py::build_recorder`
+- `read_secret(environ, variable, file, label) -> str | None` - A token from a file when one is named, else from the environment variable; a missing, unreadable or empty one raises `EVIDENCE_PROFILE_TOKEN_MISSING` naming the file or variable. · *Called by:* `agent/evidence_profile/build.py::build_recorder`, `agent/evidence_profile/build.py::build_sink`
+- `load_signer(settings: EvidenceSettings) -> Ed25519Signer | None` - The writer's Ed25519 key, or None for a verify-only profile.
+- `load_ring(settings: EvidenceSettings, signer: Ed25519Signer | None) -> KeyRing | None` - The verifier's ring: the ring file when given, else the writer's own public key; neither (and no recorder) raises `ValueError`.
+- `build_sink(settings: EvidenceSettings, environ: Mapping[str, str]) -> CheckpointSink | None` - A witness sink when configured, else a file sink; None when only a recorder keeps the evidence.
+- `build_recorder(settings: EvidenceSettings, environ: Mapping[str, str]) -> tuple[RecorderClient | None, RecorderClient | None]` - The appending client and, with a read token, the reading client; with `scoped_append` the append token is derived per run.
+- `build_recorder.token(run_id: str, _secret: str=secret) -> str` - The per-run scoped token.
+- `load_recorder_verifier(settings: EvidenceSettings) -> Ed25519Signer | None` - The recorder's public key, which signs its own heads and attestations.
+- `load_roots(settings: EvidenceSettings) -> list[Certificate]` - The trusted PEM roots; an unreadable one is `EVIDENCE_PROFILE_ROOT_UNREADABLE`.
+- `require_own_key_valid(signer: Ed25519Signer | None, ring: KeyRing | None) -> None` - Refuses a profile whose key ring does not accept its own signing key now.
+---
+
+### `agent/evidence_profile/checks.py` - the checks run on a run, one function each
+
+*Part of the `agent/evidence_profile/` package.*
+
+**Role in the workflow.** Each check takes an `EvidenceContext` (settings, built parts, stores, run id) and returns findings; `CHECKS` lists them in the order they run. A finding's `check` name tells which function produced it.
+
+**Where to look.** To add a check, write a function here and add it to `CHECKS`. If a finding is wrong, find its `check` name below.
+
+**Contents**
+
+- **class `EvidenceFinding`** *(pydantic model; bases: StrictModel)* - One check: its name, whether it held and a sentence.
+- **class `EvidenceReport`** *(pydantic model; bases: StrictModel)* - The run id and findings.
+  - `EvidenceReport.ok(self) -> bool` *(property)* - True when every finding held.
+- **class `EvidenceContext`** *(frozen dataclass)* - What a check needs: settings, the built components, the run root, the two stores and the run id.
+  - `EvidenceContext.verifier(self) -> CheckpointSigner | None` *(property)* - The key ring's verifier, or None without host-signed evidence.
+- `check_ledger_chains(context: EvidenceContext) -> list[EvidenceFinding]` - Findings `telemetry-chain` and `audit-chain`.
+- `check_host_signed(context: EvidenceContext) -> list[EvidenceFinding]` - Findings `run-heads`, `signed-tombstones`, `timestamps`, `terminal-link` and `tree-heads:<ledger>`; with no host key, one finding saying the recorder's attestation is the evidence.
+- `_tombstone_finding(checked: Any) -> EvidenceFinding` - A pruned run with no verified tombstone signature fails.
+- `_timestamp_finding(settings: EvidenceSettings, checked: Any) -> EvidenceFinding` - With `require_timestamps` every checkpoint must carry a verified stamp; otherwise it only reports the count.
+- `check_time_order(context: EvidenceContext) -> list[EvidenceFinding]` - Finding `time-order`; fails only with `require_ordered_time`.
+- `check_recorder(context: EvidenceContext) -> list[EvidenceFinding]` - Findings `recorder`, `recorder-attestation` and `receipt-times`. With `require_final_attestation`, records the host wrote but never sent also fail.
+- `_receipt_finding(context: EvidenceContext) -> EvidenceFinding` - Compares the time each record claims with the time the recorder's clock received it: too far in the future, later than `max_receipt_delay_seconds`, or receipt times that run backwards each fail it.
+---
+
+### `agent/evidence_profile/profile.py` - the evidence profile: checkpointer, recorder mirror and verification
+
+*Part of the `agent/evidence_profile/` package.*
+
+**Role in the workflow.** `EvidenceProfile` is what a host passes to `AgentRuntimeServices.open(evidence=...)` to write the evidence, and what `verify-run-evidence` uses to check a run. It builds its parts with `build.py` and runs the checks in `checks.py`.
+
+**Where to look.** Writing evidence (checkpointer, mirror) starts here; a wrong finding starts in `checks.py`; a profile that will not construct starts in `build.py`.
+
+**Contents**
+
+- **class `EvidenceProfile`** *(class)* - The writer and verifier sides of the evidence.
+  - `EvidenceProfile.__init__(self, settings: EvidenceSettings, environ: Mapping[str, str] | None=None) -> None` - Builds the components (the process environment by default).
+  - `EvidenceProfile.verifier(self) -> CheckpointSigner | None` *(property)* - The key ring's verifier.
+  - `EvidenceProfile.checkpointer(self) -> RunHeadCheckpointer | None` - A checkpointer with tree heads, signed tombstones, the key-ring verifier, the authority and the roots; None for a profile with no signing key (the recorder's attestation replaces host-signed checkpoints); a profile with neither raises `EVIDENCE_PROFILE_CANNOT_SIGN`.
+  - `EvidenceProfile.mirror(self) -> RecorderMirror | None` - A mirror that is `required` by default, so a run whose recorder is unreachable fails instead of going unwitnessed.
+  - `EvidenceProfile.apply(self, telemetry, audit) -> RecorderMirror | None` - Attaches the mirror to both ledgers.
+  - `EvidenceProfile.verify(self, services: AgentRuntimeServices, run_id: str) -> EvidenceReport` - `verify_stores` over a runtime's stores.
+  - `EvidenceProfile.verify_stores(self, run_root, telemetry, audit, run_id) -> EvidenceReport` - Runs every check in `CHECKS` and collects the findings.
+---
+
+### `agent/evidence_profile/settings.py` - what an evidence profile is told
+
+*Part of the `agent/evidence_profile/` package.*
+
+**Role in the workflow.** The settings models for an evidence profile and loading them from a JSON file. Tokens are never in the file; it names the environment variables or files that hold them.
+
+**Where to look.** A new setting goes here and in `build.py`; a setting that is ignored or rejected wrongly starts here.
 
 **Contents**
 
 - **class `WitnessSettings`** *(pydantic model; bases: StrictModel)* - A remote witness: `url`, the environment variables holding its append and read tokens, and `allow_insecure_http` for loopback.
-- **class `RecorderSettings`** *(pydantic model; bases: StrictModel)* - A recorder: `host`, `port`, the append and read token variables, the recorder's `public_key_file` and `signer_id` (default `recorder`). Tokens come from `append_token_file` / `read_token_file` (kept out of the environment) or the named variables; `scoped_append` derives a token per run; `tls_ca_file`, `tls_client_certificate_file`, `tls_client_key_file` and `tls_server_hostname` connect over TLS, which lifts the plaintext refusal for a remote host.
-- **class `EvidenceSettings`** *(pydantic model; bases: StrictModel)* - The profile: `signing_key_file` (Ed25519 private key hex, writer side), `keyring_file`, `signer_id`, `checkpoint_directory` or `witness`, `recorder`, `timestamp_authority_url`, `trusted_roots` (PEM files), `require_recorder` (default True) and `require_timestamps`. Also `require_final_attestation` (the recorder must have received the host's closing seal, and a ledger holding records the recorder never got fails), `require_ordered_time`, `max_receipt_delay_seconds` and `clock_skew_tolerance_seconds`. With no `signing_key_file` and no checkpoint directory, the recorder's signed attestation is the evidence and no key on the host is trusted.
+- **class `RecorderSettings`** *(pydantic model; bases: StrictModel)* - A recorder: `host`, `port`, tokens from `append_token_file` / `read_token_file` (kept out of the environment) or the named variables, `scoped_append`, the recorder's `public_key_file` and `signer_id`, TLS (`tls_ca_file`, `tls_client_certificate_file`, `tls_client_key_file`, `tls_server_hostname`, which lifts the plaintext refusal for a remote host) and `allow_remote_plaintext`.
+- **class `EvidenceSettings`** *(pydantic model; bases: StrictModel)* - The profile: `signing_key_file`, `keyring_file`, `signer_id`, `checkpoint_directory` or `witness`, `recorder`, `timestamp_authority_url`, `trusted_roots`, `require_recorder` (default True), `require_timestamps`, `require_final_attestation` (the recorder must have received the host's closing seal, and a ledger holding records the recorder never got fails), `require_ordered_time`, `max_receipt_delay_seconds` and `clock_skew_tolerance_seconds`. With no `signing_key_file` and no checkpoint directory, the recorder's signed attestation is the evidence and no key on the host is trusted.
   - `EvidenceSettings.load(cls, path: Path) -> EvidenceSettings` - Reads the JSON; failure is `EVIDENCE_PROFILE_UNREADABLE`.
-- **class `EvidenceFinding`** *(pydantic model; bases: StrictModel)* - One check: its name, whether it held and a sentence.
-- **class `EvidenceReport`** *(pydantic model; bases: StrictModel)* - The run id and findings.
-  - `EvidenceReport.ok(self) -> bool` *(property)* - True when every finding held.
-- `_is_loopback(host: str) -> bool` - True for `localhost` and loopback addresses; a recorder elsewhere needs `allow_remote_plaintext`, because the recorder protocol carries tokens and records in clear text. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._build_recorder`
-- `_secret(environ: Mapping[str, str], variable: str | None, file: Path | None, label: str) -> str | None` - A token from a file when one is named, else from the environment variable; a missing or empty one raises `EVIDENCE_PROFILE_TOKEN_MISSING` naming the file or variable. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._build_recorder`, `agent/evidence_profile.py::EvidenceProfile._build_sink`
-- **class `EvidenceProfile`** *(class)* - The writer and verifier sides.
-  - `EvidenceProfile._build_recorder.token(run_id: str, _secret: str=secret) -> str` - The per-run scoped token, when the recorder is configured with `scoped_append`.
-  - `EvidenceProfile.__init__(self, settings: EvidenceSettings, environ: Mapping[str, str] | None=None) -> None` - Builds the signer, key ring, sink, recorder clients, authority and roots. It refuses, naming the setting: no sink outside the run root, `require_recorder` without a recorder, `require_timestamps` without roots, neither a signing key nor a key ring.
-  - `EvidenceProfile._load_signer(settings) -> Ed25519Signer | None` - The writer's Ed25519 key, or None for a verify-only profile.
-  - `EvidenceProfile._load_ring(settings, signer) -> KeyRing` - The verifier's ring: the ring file when given, else the writer's own public key; neither raises `ValueError`.
-  - `EvidenceProfile._build_sink(settings, variables) -> CheckpointSink` - A witness sink when configured, else a file sink.
-  - `EvidenceProfile._build_recorder(settings, variables)` - The appending client and, with a read token, the reading client.
-  - `EvidenceProfile._load_recorder_verifier(settings) -> Ed25519Signer | None` - The recorder's public key, which signs its own heads.
-  - `EvidenceProfile._load_roots(settings) -> list[Any]` - The trusted PEM roots; an unreadable one is `EVIDENCE_PROFILE_ROOT_UNREADABLE`.
-  - `EvidenceProfile._require_own_key_valid(self) -> None` - Refuses a profile whose key ring does not accept its own signing key now, because evidence written with it would fail verification.
-  - `EvidenceProfile.verifier(self) -> CheckpointSigner` *(property)* - The key ring's verifier.
-  - `EvidenceProfile.checkpointer(self) -> RunHeadCheckpointer` - A checkpointer with tree heads, signed tombstones, the key-ring verifier, the authority and the roots; a profile with no signing key raises `EVIDENCE_PROFILE_CANNOT_SIGN`. Returns None for a profile with no signing key (the recorder's attestation replaces host-signed checkpoints).
-  - `EvidenceProfile.mirror(self) -> RecorderMirror | None` - A mirror that is `required` by default, so a run whose recorder is unreachable fails instead of going unwitnessed.
-  - `EvidenceProfile.apply(self, telemetry, audit) -> RecorderMirror | None` - Attaches the mirror to both ledgers.
-  - `EvidenceProfile.verify(self, services, run_id) -> EvidenceReport` - `verify_stores` over a runtime's stores.
-  - `EvidenceProfile.verify_stores(self, run_root, telemetry, audit, run_id) -> EvidenceReport` - The findings: both chains, the run-head checkpoints (with signed tombstones and verified timestamps), the terminal link, the tree heads of both ledgers and the recorder's copy.
-  - `EvidenceProfile._host_signed_findings(self, run_root, telemetry, audit, run_id) -> list[EvidenceFinding]` - The checks that depend on a key on the host: run-head checkpoints, signed tombstones, timestamps, the terminal link and tree heads. With no host key they are replaced by one finding saying the recorder's attestation is the evidence.
-  - `EvidenceProfile._time_order_finding(self, telemetry, audit, run_id) -> EvidenceFinding` - Reports where recorded times run backwards; it fails the profile only with `require_ordered_time`.
-  - `EvidenceProfile._recorder_findings(self, telemetry, audit, run_id) -> list[EvidenceFinding]` - The recorder's copy compared with the ledgers, the recorder's signed attestation checked, and the receipt times. With `require_final_attestation`, records the host wrote but never sent also fail.
-  - `EvidenceProfile._receipt_finding(self, run_id: str) -> EvidenceFinding` - Compares the time each record claims with the time the recorder's clock received it: more than `clock_skew_tolerance_seconds` into the future, later than `max_receipt_delay_seconds`, or receipt times that run backwards, each fail it.
-  - `EvidenceProfile._tombstone_finding(checked) -> EvidenceFinding` *(static)* - A pruned run with no verified tombstone signature fails.
-  - `EvidenceProfile._timestamp_finding(self, checked) -> EvidenceFinding` - With `require_timestamps` every checkpoint must carry a verified stamp; otherwise it only reports the count.
-
-**Algorithms & invariants.** The profile does not make the host trustworthy: the recorder, witness and authority are as independent as the accounts and machines they run under. It only removes the configurations in which one forgotten switch leaves a hole.
-
 ---
 
 ### `agent/graph_agent_executor.py` - runs registered BaseAgent bindings as graph nodes

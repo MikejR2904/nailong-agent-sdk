@@ -7,38 +7,42 @@ both chains rewritten, without a trace, because nothing outside the run root rem
 they were. A checkpoint records the length and head hash of both chains at one moment, signed,
 in a store the operator keeps elsewhere; verification against it reports a run that was
 truncated or rewritten afterwards, and a run that retention pruned is recognised from its
-tombstone instead of being reported as truncated.
-"""
+tombstone instead of being reported as truncated."""
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field, ValidationError, computed_field
 
-from ..foundations.atomic_io import exclusive_file_lock, fsync_directory
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import sha256_hex
-from ..foundations.identifiers import file_safe_name
 from ..foundations.jcs import schema_message
-from ..foundations.logging import get_logger
-from ..foundations.text import split_lines
-from .audit_log import AuditLogEntry, AuditTranscriptStore
-from .ledger_state import ChainState, RunState, inspect_run
+from .audit_log import AuditTranscriptStore
+from .ledger_state import ChainState, RunState, inspect_run, short_digest
 from .signed_records import SignatureCheck, SignatureFailure, check_signature
 from .signed_records import resolve_verifier as resolve_verifier
 from .signers import MAX_SIGNER_ID_CHARS as MAX_SIGNER_ID_CHARS
 from .signers import MIN_HMAC_KEY_BYTES as MIN_HMAC_KEY_BYTES
 from .signers import CheckpointSigner as CheckpointSigner
 from .signers import HmacSha256Signer as HmacSha256Signer
+from .sinks import CheckpointSink as CheckpointSink
+from .sinks import FileCheckpointSink as FileCheckpointSink
+from .sinks import checkpoint_path as checkpoint_path
+from .sinks import read_lines
 from .telemetry_store import TelemetryStore
+from .terminal_link import LEGACY_TERMINAL_AUDIT_EVENT as LEGACY_TERMINAL_AUDIT_EVENT
+from .terminal_link import TERMINAL_AUDIT_EVENT as TERMINAL_AUDIT_EVENT
+from .terminal_link import TERMINAL_TELEMETRY_EVENT as TERMINAL_TELEMETRY_EVENT
+from .terminal_link import TerminalLinkState as TerminalLinkState
+from .terminal_link import TerminalLinkVerification as TerminalLinkVerification
+from .terminal_link import verify_terminal_link as verify_terminal_link
 from .timestamp import (
     DEFAULT_MAX_SKEW_SECONDS,
     TimestampAuthority,
@@ -49,72 +53,8 @@ from .timestamp import (
 if TYPE_CHECKING:
     from cryptography.x509 import Certificate
 
-_logger = get_logger("run-checkpoints")
 CHECKPOINT_SCHEMAS = ("agent-sdk-run-head-checkpoint-v1", "agent-sdk-run-head-checkpoint-v2")
 CHECKPOINT_SCHEMA = CHECKPOINT_SCHEMAS[-1]
-TERMINAL_TELEMETRY_EVENT = "agent.profile-completed"
-TERMINAL_AUDIT_EVENT = "terminal-link"
-LEGACY_TERMINAL_AUDIT_EVENT = "profile-completed"
-
-
-def checkpoint_path(destination: Path, run_id: str) -> Path:
-    return destination / f"{file_safe_name(run_id)}.checkpoints.jsonl"
-
-
-class CheckpointSink(Protocol):
-    def location(self, run_id: str) -> str: ...
-
-    def read_all(self, run_id: str) -> list[str]: ...
-
-    def append(self, run_id: str, record: str) -> None: ...
-
-    def is_inside(self, root: Path) -> bool: ...
-
-
-class FileCheckpointSink:
-    """One append-only JSONL file per run under a directory the operator keeps elsewhere."""
-
-    def __init__(self, directory: Path) -> None:
-        self._directory = directory.resolve()
-
-    @property
-    def directory(self) -> Path:
-        return self._directory
-
-    def location(self, run_id: str) -> str:
-        return str(checkpoint_path(self._directory, run_id))
-
-    def read_all(self, run_id: str) -> list[str]:
-        path = checkpoint_path(self._directory, run_id)
-        if not path.exists():
-            return []
-        return _read_lines(path)
-
-    def append(self, run_id: str, record: str) -> None:
-        path = checkpoint_path(self._directory, run_id)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with exclusive_file_lock(
-                path.with_suffix(".lock"), timeout_code="RUN_CHECKPOINT_LOCK_TIMEOUT"
-            ):
-                if path.exists():
-                    _discard_unterminated_tail(path)
-                with path.open("ab") as stream:
-                    stream.write(record.encode("utf-8"))
-                    stream.write(b"\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            fsync_directory(path.parent)
-        except OSError as error:
-            raise AgentSdkError(
-                "RUN_CHECKPOINT_WRITE_FAILED",
-                f'Could not append a checkpoint to "{path}": {type(error).__name__}: {error}',
-                {"path": str(path)},
-            ) from error
-
-    def is_inside(self, root: Path) -> bool:
-        resolved = root.resolve()
-        return self._directory == resolved or resolved in self._directory.parents
 
 
 class CheckpointVerdict(StrEnum):
@@ -184,21 +124,6 @@ class CheckpointVerification(StrictModel):
         }
 
 
-class TerminalLinkState(StrEnum):
-    LINKED = "linked"
-    BROKEN = "broken"
-    ABSENT = "absent"
-
-
-class TerminalLinkVerification(StrictModel):
-    state: TerminalLinkState
-    detail: str
-
-    @property
-    def linked(self) -> bool:
-        return self.state is TerminalLinkState.LINKED
-
-
 class RunHeadReport(StrictModel):
     verification: CheckpointVerification
     terminal_link: TerminalLinkVerification
@@ -250,7 +175,7 @@ def build_run_head_checkpoint(
 
 
 def read_checkpoints(path: Path) -> list[RunHeadCheckpoint]:
-    return _parse(_read_lines(path), str(path))
+    return _parse(read_lines(path), str(path))
 
 
 def export_run_head_checkpoint(
@@ -336,80 +261,6 @@ def verify_run_head_checkpoints(
     return _verdict(run_id, checkpoints, assessment, state)
 
 
-def verify_terminal_link(
-    telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str
-) -> TerminalLinkVerification:
-    events = telemetry.list_events(run_id, limit=1_000, event_types=[TERMINAL_TELEMETRY_EVENT])
-    links: list[AuditLogEntry] = []
-    legacy: list[AuditLogEntry] = []
-    for item in audit.iter_entries(run_id):
-        if item.event_type == TERMINAL_AUDIT_EVENT:
-            links.append(item)
-        elif item.event_type == LEGACY_TERMINAL_AUDIT_EVENT:
-            legacy.append(item)
-    entries = links or legacy
-    if not events or not entries:
-        return TerminalLinkVerification(
-            state=TerminalLinkState.ABSENT,
-            detail=(
-                f'Run "{run_id}" has no terminal pair: '
-                f"{len(events)} {TERMINAL_TELEMETRY_EVENT} events and {len(links)} "
-                f"{TERMINAL_AUDIT_EVENT} audit entries."
-            ),
-        )
-    event, entry = events[-1], entries[-1]
-    audit_head = event.payload.get("audit_head")
-    telemetry_head = entry.payload.get("telemetry_head")
-    if audit_head is None and telemetry_head is None:
-        return TerminalLinkVerification(
-            state=TerminalLinkState.ABSENT,
-            detail=(
-                f'The terminal pair of run "{run_id}" was written before runs cross-linked '
-                "their heads, so there is no link to check."
-            ),
-        )
-    if not isinstance(audit_head, dict) or not isinstance(telemetry_head, dict):
-        return TerminalLinkVerification(
-            state=TerminalLinkState.BROKEN,
-            detail=(
-                f'Only one half of the cross-link of run "{run_id}" is present: the telemetry '
-                f"event has audit_head={audit_head!r} and the audit entry has "
-                f"telemetry_head={telemetry_head!r}."
-            ),
-        )
-    recorded_entries = audit_head.get("entries")
-    if not isinstance(recorded_entries, int) or recorded_entries < 0:
-        return TerminalLinkVerification(
-            state=TerminalLinkState.BROKEN,
-            detail=f"The telemetry event's audit_head.entries is {recorded_entries!r}.",
-        )
-    actual_audit = _audit_hash_at(audit, run_id, recorded_entries)
-    if actual_audit != audit_head.get("head_hash"):
-        return TerminalLinkVerification(
-            state=TerminalLinkState.BROKEN,
-            detail=(
-                f"The telemetry event recorded audit entry {recorded_entries} as "
-                f"{_short(audit_head.get('head_hash'))} but it is {_short(actual_audit)}."
-            ),
-        )
-    if telemetry_head != {"sequence": event.sequence, "integrity_hash": event.integrity_hash}:
-        return TerminalLinkVerification(
-            state=TerminalLinkState.BROKEN,
-            detail=(
-                f"The audit entry recorded telemetry event {telemetry_head.get('sequence')} as "
-                f"{_short(telemetry_head.get('integrity_hash'))} but the terminal event is "
-                f"{event.sequence} ({_short(event.integrity_hash)})."
-            ),
-        )
-    return TerminalLinkVerification(
-        state=TerminalLinkState.LINKED,
-        detail=(
-            f"Audit entry {entry.sequence} commits to telemetry event {event.sequence}, which "
-            f"commits to audit entry {recorded_entries}."
-        ),
-    )
-
-
 def check_run_heads(
     telemetry: TelemetryStore,
     audit: AuditTranscriptStore,
@@ -432,40 +283,6 @@ def check_run_heads(
         ),
         terminal_link=verify_terminal_link(telemetry, audit, run_id),
     )
-
-
-def _read_lines(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as error:
-        raise AgentSdkError(
-            "RUN_CHECKPOINT_UNREADABLE",
-            f'The checkpoint file "{path}" cannot be read: {type(error).__name__}: {error}',
-            {"path": str(path)},
-        ) from error
-    if text and not text.endswith("\n"):
-        text = text[: text.rfind("\n") + 1]
-    return split_lines(text)
-
-
-def _discard_unterminated_tail(path: Path) -> None:
-    """Drop the half of a record a crash cut off; an acknowledged append ends with a newline."""
-
-    data = path.read_bytes()
-    if not data or data.endswith(b"\n"):
-        return
-    keep = data.rfind(b"\n") + 1
-    _logger.warning(
-        'The checkpoint file "%s" ended in %d unterminated bytes (sha256 %s), a write cut off '
-        "by a crash; they were discarded before the next record was appended.",
-        path,
-        len(data) - keep,
-        sha256_hex(data[keep:]),
-    )
-    with path.open("r+b") as stream:
-        stream.truncate(keep)
-        stream.flush()
-        os.fsync(stream.fileno())
 
 
 def _parse(lines: Sequence[str], label: str) -> list[RunHeadCheckpoint]:
@@ -733,11 +550,11 @@ def _verdict(
     if state.telemetry.hashes.get(newest.telemetry_sequence) != newest.telemetry_head:
         rewritten.append(
             f"telemetry event {newest.telemetry_sequence} is no longer "
-            f"{_short(newest.telemetry_head)}"
+            f"{short_digest(newest.telemetry_head)}"
         )
     if state.audit.hashes.get(newest.audit_sequence) != newest.audit_head:
         rewritten.append(
-            f"audit entry {newest.audit_sequence} is no longer {_short(newest.audit_head)}"
+            f"audit entry {newest.audit_sequence} is no longer {short_digest(newest.audit_head)}"
         )
     if rewritten:
         return CheckpointVerification(
@@ -822,12 +639,13 @@ def _tombstone_verdict(
         and stone.telemetry_head != newest.telemetry_head
     ):
         rewritten.append(
-            f"the final telemetry event is {_short(stone.telemetry_head)}, not "
-            f"{_short(newest.telemetry_head)}"
+            f"the final telemetry event is {short_digest(stone.telemetry_head)}, not "
+            f"{short_digest(newest.telemetry_head)}"
         )
     if stone.audit_sequence == newest.audit_sequence and stone.audit_head != newest.audit_head:
         rewritten.append(
-            f"the final audit entry is {_short(stone.audit_head)}, not {_short(newest.audit_head)}"
+            f"the final audit entry is {short_digest(stone.audit_head)}, "
+            f"not {short_digest(newest.audit_head)}"
         )
     if rewritten:
         return CheckpointVerification(
@@ -877,16 +695,3 @@ def _pruned_after(pruned: Sequence[PrunedHeads], created_at_utc: str) -> list[Pr
         except ValueError:
             continue
     return later
-
-
-def _audit_hash_at(audit: AuditTranscriptStore, run_id: str, sequence: int) -> str | None:
-    if sequence == 0:
-        return None
-    found = None
-    for entry in audit.iter_entries(run_id, through_sequence=sequence):
-        found = entry
-    return found.integrity_hash if found is not None and found.sequence == sequence else None
-
-
-def _short(digest: object) -> str:
-    return "no entries" if not isinstance(digest, str) else digest[:12]

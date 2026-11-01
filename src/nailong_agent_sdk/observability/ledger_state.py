@@ -62,3 +62,7 @@ def audit_state(audit: AuditTranscriptStore, run_id: str, wanted: Collection[int
         if entry.sequence in wanted:
             hashes[entry.sequence] = entry.integrity_hash
     return ChainState(None, sequence, head, hashes)
+
+
+def short_digest(digest: object) -> str:
+    return "no entries" if not isinstance(digest, str) else digest[:12]
