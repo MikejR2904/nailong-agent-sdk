@@ -12,15 +12,13 @@ tombstone instead of being reported as truncated.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import Field, ValidationError, computed_field
 
@@ -33,74 +31,30 @@ from ..foundations.jcs import schema_message
 from ..foundations.logging import get_logger
 from ..foundations.text import split_lines
 from .audit_log import AuditLogEntry, AuditTranscriptStore
-from .telemetry_models import ChainBreak
+from .ledger_state import ChainState, RunState, inspect_run
+from .signed_records import SignatureCheck, SignatureFailure, check_signature
+from .signed_records import resolve_verifier as resolve_verifier
+from .signers import MAX_SIGNER_ID_CHARS as MAX_SIGNER_ID_CHARS
+from .signers import MIN_HMAC_KEY_BYTES as MIN_HMAC_KEY_BYTES
+from .signers import CheckpointSigner as CheckpointSigner
+from .signers import HmacSha256Signer as HmacSha256Signer
 from .telemetry_store import TelemetryStore
 from .timestamp import (
     DEFAULT_MAX_SKEW_SECONDS,
     TimestampAuthority,
     TimestampToken,
     stamp_content,
-    timestamp_problem,
 )
+
+if TYPE_CHECKING:
+    from cryptography.x509 import Certificate
 
 _logger = get_logger("run-checkpoints")
 CHECKPOINT_SCHEMAS = ("agent-sdk-run-head-checkpoint-v1", "agent-sdk-run-head-checkpoint-v2")
 CHECKPOINT_SCHEMA = CHECKPOINT_SCHEMAS[-1]
-MIN_HMAC_KEY_BYTES = 32
-MAX_SIGNER_ID_CHARS = 128
 TERMINAL_TELEMETRY_EVENT = "agent.profile-completed"
 TERMINAL_AUDIT_EVENT = "terminal-link"
 LEGACY_TERMINAL_AUDIT_EVENT = "profile-completed"
-
-
-class CheckpointSigner(Protocol):
-    @property
-    def signer_id(self) -> str: ...
-
-    def sign(self, message: bytes) -> str: ...
-
-    def verify(self, message: bytes, signature: str) -> bool: ...
-
-
-class HmacSha256Signer:
-    """Shared-secret signer from the standard library; the key never appears in a repr."""
-
-    def __init__(self, key: bytes | str, *, signer_id: str = "hmac-sha256") -> None:
-        material = key.encode("utf-8") if isinstance(key, str) else bytes(key)
-        if len(material) < MIN_HMAC_KEY_BYTES:
-            raise ValueError(
-                f"An HMAC checkpoint key must be at least {MIN_HMAC_KEY_BYTES} bytes, "
-                f"got {len(material)}."
-            )
-        if not signer_id.strip() or len(signer_id) > MAX_SIGNER_ID_CHARS:
-            raise ValueError(
-                f"signer_id must be 1 to {MAX_SIGNER_ID_CHARS} non-blank characters, "
-                f"got {signer_id!r}."
-            )
-        self._key = material
-        self._signer_id = signer_id
-
-    @property
-    def signer_id(self) -> str:
-        return self._signer_id
-
-    def sign(self, message: bytes) -> str:
-        return hmac.new(self._key, message, hashlib.sha256).hexdigest()
-
-    def verify(self, message: bytes, signature: str) -> bool:
-        return hmac.compare_digest(self.sign(message).encode(), signature.encode())
-
-    def __repr__(self) -> str:
-        return f"HmacSha256Signer(signer_id={self._signer_id!r})"
-
-
-def resolve_verifier(
-    verifier: CheckpointSigner, signer_id: str, at_utc: str | None
-) -> tuple[CheckpointSigner | None, str | None]:
-    resolve = getattr(verifier, "resolve", None)
-    if resolve is None:
-        return verifier, None
-    return resolve(signer_id, at_utc)
 
 
 def checkpoint_path(destination: Path, run_id: str) -> Path:
@@ -256,20 +210,6 @@ class RunHeadReport(StrictModel):
 
 
 @dataclass(frozen=True)
-class _ChainState:
-    failure: ChainBreak | None
-    sequence: int
-    head: str | None
-    hashes: dict[int, str]
-
-
-@dataclass(frozen=True)
-class _RunState:
-    telemetry: _ChainState
-    audit: _ChainState
-
-
-@dataclass(frozen=True)
 class _Assessment:
     refusal: tuple[CheckpointVerdict, str] | None
     live: list[RunHeadCheckpoint]
@@ -303,9 +243,9 @@ def build_run_head_checkpoint(
     *,
     now: datetime | None = None,
     timestamper: TimestampAuthority | None = None,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> RunHeadCheckpoint:
-    state = _inspect(telemetry, audit, run_id)
+    state = inspect_run(telemetry, audit, run_id)
     return _signed_from(state, telemetry, run_id, signer, now, timestamper, trusted_roots)
 
 
@@ -324,7 +264,7 @@ def export_run_head_checkpoint(
     pruned_lookup: PrunedLookup | None = None,
     verifier: CheckpointSigner | None = None,
     timestamper: TimestampAuthority | None = None,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> RunHeadCheckpoint:
     sink = destination if not isinstance(destination, Path) else FileCheckpointSink(destination)
     root = telemetry.root.parent
@@ -372,7 +312,7 @@ def verify_run_head_checkpoints(
     signer: CheckpointSigner,
     *,
     pruned_lookup: PrunedLookup | None = None,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
     max_skew_seconds: float = DEFAULT_MAX_SKEW_SECONDS,
 ) -> CheckpointVerification:
     try:
@@ -478,7 +418,7 @@ def check_run_heads(
     signer: CheckpointSigner,
     *,
     pruned_lookup: PrunedLookup | None = None,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> RunHeadReport:
     return RunHeadReport(
         verification=verify_run_head_checkpoints(
@@ -578,7 +518,7 @@ def _assess(
     signer: CheckpointSigner,
     pruned_lookup: PrunedLookup | None,
     *,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
     max_skew_seconds: float = DEFAULT_MAX_SKEW_SECONDS,
 ) -> _Assessment:
     stamped = verified_stamps = 0
@@ -588,44 +528,19 @@ def _assess(
                 CheckpointVerdict.UNREADABLE,
                 f'Checkpoint {index} is of run "{checkpoint.run_id}", not "{run_id}".',
             )
-        signing_time = checkpoint.created_at_utc
-        if checkpoint.timestamp is not None:
-            stamped += 1
-            moment, stamp_problem = timestamp_problem(
-                checkpoint.timestamp,
-                checkpoint.model_dump(mode="json"),
-                checkpoint.schema_version,
-                schema_message,
-                trusted_roots,
-                checkpoint.created_at_utc,
-                max_skew_seconds,
-            )
-            if stamp_problem is not None:
-                return _refused(
-                    CheckpointVerdict.SIGNATURE_INVALID,
-                    f"Checkpoint {index} cannot be trusted: {stamp_problem}.",
-                )
-            if moment is not None:
-                verified_stamps += 1
-                signing_time = moment.isoformat()
-        resolved, problem = resolve_verifier(signer, checkpoint.signer_id, signing_time)
-        if resolved is None:
+        check = check_signature(
+            checkpoint,
+            signer,
+            claimed_utc=checkpoint.created_at_utc,
+            content=checkpoint.model_dump(mode="json"),
+            trusted_roots=trusted_roots,
+            max_skew_seconds=max_skew_seconds,
+        )
+        stamped += check.stamped
+        verified_stamps += check.stamp_verified
+        if not check.ok:
             return _refused(
-                CheckpointVerdict.SIGNATURE_INVALID,
-                f"Checkpoint {index} (created {checkpoint.created_at_utc}) cannot be trusted: "
-                f"{problem}.",
-            )
-        if checkpoint.signer_id != resolved.signer_id:
-            return _refused(
-                CheckpointVerdict.SIGNATURE_INVALID,
-                f'Checkpoint {index} was signed by "{checkpoint.signer_id}" but the verifier '
-                f'is "{resolved.signer_id}".',
-            )
-        if not resolved.verify(checkpoint.signed_message(), checkpoint.signature):
-            return _refused(
-                CheckpointVerdict.SIGNATURE_INVALID,
-                f"Checkpoint {index} (created {checkpoint.created_at_utc}) fails its "
-                "signature: it was edited, or it was signed with another key.",
+                CheckpointVerdict.SIGNATURE_INVALID, _untrusted(index, checkpoint, check)
             )
     pruned: list[PrunedHeads] = []
     lookup_problem: str | None = None
@@ -663,23 +578,28 @@ def _assess(
     )
 
 
-def _refused(verdict: CheckpointVerdict, detail: str) -> _Assessment:
-    return _Assessment(
-        refusal=(verdict, detail), live=[], retired=[], pruned=[], lookup_problem=None
+def _untrusted(index: int, checkpoint: RunHeadCheckpoint, check: SignatureCheck) -> str:
+    if check.failure is SignatureFailure.UNTRUSTED_STAMP:
+        return f"Checkpoint {index} cannot be trusted: {check.detail}."
+    if check.failure is SignatureFailure.UNTRUSTED_KEY:
+        return (
+            f"Checkpoint {index} (created {checkpoint.created_at_utc}) cannot be trusted: "
+            f"{check.detail}."
+        )
+    if check.failure is SignatureFailure.WRONG_SIGNER:
+        return (
+            f'Checkpoint {index} was signed by "{checkpoint.signer_id}" but the verifier '
+            f'is "{check.detail}".'
+        )
+    return (
+        f"Checkpoint {index} (created {checkpoint.created_at_utc}) fails its signature: it was "
+        "edited, or it was signed with another key."
     )
 
 
-def _inspect(
-    telemetry: TelemetryStore,
-    audit: AuditTranscriptStore,
-    run_id: str,
-    *,
-    telemetry_sequences: Collection[int] = (),
-    audit_sequences: Collection[int] = (),
-) -> _RunState:
-    return _RunState(
-        telemetry=_telemetry_state(telemetry, run_id, telemetry_sequences),
-        audit=_audit_state(audit, run_id, audit_sequences),
+def _refused(verdict: CheckpointVerdict, detail: str) -> _Assessment:
+    return _Assessment(
+        refusal=(verdict, detail), live=[], retired=[], pruned=[], lookup_problem=None
     )
 
 
@@ -688,11 +608,11 @@ def _inspect_for(
     audit: AuditTranscriptStore,
     run_id: str,
     assessment: _Assessment,
-) -> _RunState:
+) -> RunState:
     if assessment.refusal is not None:
-        return _RunState(_ChainState(None, 0, None, {}), _ChainState(None, 0, None, {}))
+        return RunState(ChainState(None, 0, None, {}), ChainState(None, 0, None, {}))
     newest = assessment.live[-1] if assessment.live else None
-    return _inspect(
+    return inspect_run(
         telemetry,
         audit,
         run_id,
@@ -701,40 +621,14 @@ def _inspect_for(
     )
 
 
-def _telemetry_state(
-    telemetry: TelemetryStore, run_id: str, wanted: Collection[int]
-) -> _ChainState:
-    failure = telemetry.chain_break(run_id)
-    if failure is not None:
-        return _ChainState(failure, 0, None, {})
-    sequence, head, hashes = 0, None, {}
-    for event in telemetry.iter_events(run_id):
-        sequence, head = event.sequence, event.integrity_hash
-        if event.sequence in wanted:
-            hashes[event.sequence] = event.integrity_hash
-    return _ChainState(None, sequence, head, hashes)
-
-
-def _audit_state(audit: AuditTranscriptStore, run_id: str, wanted: Collection[int]) -> _ChainState:
-    failure = audit.chain_break(run_id)
-    if failure is not None:
-        return _ChainState(failure, 0, None, {})
-    sequence, head, hashes = 0, None, {}
-    for entry in audit.iter_entries(run_id):
-        sequence, head = entry.sequence, entry.integrity_hash
-        if entry.sequence in wanted:
-            hashes[entry.sequence] = entry.integrity_hash
-    return _ChainState(None, sequence, head, hashes)
-
-
 def _signed_from(
-    state: _RunState,
+    state: RunState,
     telemetry: TelemetryStore,
     run_id: str,
     signer: CheckpointSigner,
     now: datetime | None,
     timestamper: TimestampAuthority | None = None,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> RunHeadCheckpoint:
     for label, chain in (("telemetry", state.telemetry), ("audit", state.audit)):
         failure = chain.failure
@@ -778,7 +672,7 @@ def _verdict(
     run_id: str,
     checkpoints: Sequence[RunHeadCheckpoint],
     assessment: _Assessment,
-    state: _RunState,
+    state: RunState,
 ) -> CheckpointVerification:
     newest = assessment.live[-1] if assessment.live else checkpoints[-1]
     summary: dict[str, Any] = {

@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import secrets
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -44,6 +46,10 @@ MAX_CHAIN_DEPTH = 6
 MAX_RESPONSE_BYTES = 1_048_576
 DEFAULT_MAX_SKEW_SECONDS = 600.0
 TIMESTAMP_FIELD = "timestamp"
+
+
+if TYPE_CHECKING:
+    from cryptography.x509 import Certificate
 
 
 class TimestampToken(StrictModel):
@@ -81,7 +87,7 @@ def stamp_content(
     schema: str,
     authority: TimestampAuthority,
     schema_message: Callable[[str, Any], bytes],
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> TimestampToken:
     digest = digest_of(content, schema_message, schema)
     der = authority.stamp(digest)
@@ -107,7 +113,7 @@ def timestamp_problem(
     content: dict[str, Any],
     schema: str,
     schema_message: Callable[[str, Any], bytes],
-    trusted_roots: Sequence[Any] | None,
+    trusted_roots: Sequence[Certificate] | None,
     claimed_utc: str,
     max_skew_seconds: float = DEFAULT_MAX_SKEW_SECONDS,
 ) -> tuple[datetime | None, str | None]:
@@ -335,6 +341,13 @@ def _tst_info(response: bytes) -> _TstInfo:
     return _signed_data(response)[1]
 
 
+@functools.cache
+def _x509() -> ModuleType:
+    from cryptography import x509
+
+    return x509
+
+
 def _signed_data(response: bytes) -> tuple[list[_Node], _TstInfo, bytes]:
     top, _ = read_one(response)
     parts = top.children()
@@ -379,7 +392,7 @@ def _signed_data(response: bytes) -> tuple[list[_Node], _TstInfo, bytes]:
 
 
 def parse_token(
-    response: bytes, digest: bytes, trusted_roots: Sequence[Any] | None = None
+    response: bytes, digest: bytes, trusted_roots: Sequence[Certificate] | None = None
 ) -> VerifiedTimestamp:
     signed, info, econtent = _signed_data(response)
     if info.imprint != digest:
@@ -394,9 +407,9 @@ def parse_token(
 
 
 def _check_signature(
-    signed: list[_Node], econtent: bytes, info: _TstInfo, roots: Sequence[Any]
+    signed: list[_Node], econtent: bytes, info: _TstInfo, roots: Sequence[Certificate]
 ) -> str:
-    from cryptography import x509
+    x509 = _x509()
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
@@ -422,7 +435,7 @@ def _check_signature(
         position += 1
     signature_algorithm = _decode_oid(fields[position].children()[0])
     signature = fields[position + 1].content
-    certificate = _match_certificate(certificates, signer_id, x509)
+    certificate = _match_certificate(certificates, signer_id)
     if certificate is None:
         raise AgentSdkError(
             "TIMESTAMP_SIGNATURE_INVALID",
@@ -464,11 +477,12 @@ def _check_signature(
         raise AgentSdkError(
             "TIMESTAMP_SIGNATURE_INVALID", "The token's signature does not verify."
         ) from error
-    _check_certificate(certificate, certificates, roots, info.gen_time, x509)
+    _check_certificate(certificate, certificates, roots, info.gen_time)
     return certificate.subject.rfc4514_string()
 
 
-def _match_certificate(certificates: list[Any], signer_id: _Node, x509: Any) -> Any | None:
+def _match_certificate(certificates: list[Certificate], signer_id: _Node) -> Certificate | None:
+    x509 = _x509()
     if signer_id.tag == 0x30:
         issuer, serial = signer_id.children()
         number = _decode_int(serial)
@@ -491,10 +505,13 @@ def _match_certificate(certificates: list[Any], signer_id: _Node, x509: Any) -> 
 
 
 def _check_certificate(
-    certificate: Any, embedded: list[Any], roots: Sequence[Any], moment: datetime, x509: Any
+    certificate: Certificate,
+    embedded: list[Certificate],
+    roots: Sequence[Certificate],
+    moment: datetime,
 ) -> None:
     try:
-        _walk_chain(certificate, embedded, roots, moment, x509)
+        _walk_chain(certificate, embedded, roots, moment)
     except (TypeError, ValueError) as error:
         raise AgentSdkError(
             "TIMESTAMP_CERTIFICATE_INVALID",
@@ -502,18 +519,18 @@ def _check_certificate(
         ) from error
 
 
-def _der(certificate: Any) -> bytes:
+def _der(certificate: Certificate) -> bytes:
     from cryptography.hazmat.primitives import serialization
 
     return bytes(certificate.public_bytes(serialization.Encoding.DER))
 
 
-def _is_root(certificate: Any, roots: Sequence[Any]) -> bool:
+def _is_root(certificate: Certificate, roots: Sequence[Certificate]) -> bool:
     wanted = _der(certificate)
     return any(_der(root) == wanted for root in roots)
 
 
-def _weak_signature(certificate: Any) -> str | None:
+def _weak_signature(certificate: Certificate) -> str | None:
     from cryptography.hazmat.primitives import hashes
 
     algorithm = certificate.signature_hash_algorithm
@@ -522,7 +539,8 @@ def _weak_signature(certificate: Any) -> str | None:
     return None
 
 
-def _issuer_problem(issuer: Any, intermediates_below: int, x509: Any) -> str | None:
+def _issuer_problem(issuer: Certificate, intermediates_below: int) -> str | None:
+    x509 = _x509()
     try:
         constraints = issuer.extensions.get_extension_for_class(x509.BasicConstraints).value
     except x509.ExtensionNotFound:
@@ -542,8 +560,12 @@ def _issuer_problem(issuer: Any, intermediates_below: int, x509: Any) -> str | N
 
 
 def _walk_chain(
-    certificate: Any, embedded: list[Any], roots: Sequence[Any], moment: datetime, x509: Any
+    certificate: Certificate,
+    embedded: list[Certificate],
+    roots: Sequence[Certificate],
+    moment: datetime,
 ) -> None:
+    x509 = _x509()
     try:
         usage = certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
     except x509.ExtensionNotFound:
@@ -580,7 +602,7 @@ def _walk_chain(
             )
         trusted = _is_root(issuer, roots)
         if not trusted:
-            problem = _issuer_problem(issuer, intermediates, x509)
+            problem = _issuer_problem(issuer, intermediates)
             if problem is not None:
                 raise AgentSdkError(
                     "TIMESTAMP_CERTIFICATE_INVALID",
@@ -595,7 +617,7 @@ def _walk_chain(
     )
 
 
-def _find_issuer(certificate: Any, pool: Sequence[Any]) -> Any | None:
+def _find_issuer(certificate: Certificate, pool: Sequence[Certificate]) -> Certificate | None:
     for candidate in pool:
         if candidate is certificate:
             continue

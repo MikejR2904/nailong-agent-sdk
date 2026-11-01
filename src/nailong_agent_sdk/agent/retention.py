@@ -9,6 +9,7 @@ import os
 import sqlite3
 from collections import Counter
 from collections.abc import Collection, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -20,12 +21,8 @@ from ..foundations.errors import AgentSdkError
 from ..foundations.jcs import jcs_bytes, schema_hash
 from ..memory.context_projection import FileToolResultJournal, JournalFootprint
 from ..observability.audit_log import AuditFootprint, AuditTranscriptStore
-from ..observability.run_checkpoints import (
-    CheckpointSigner,
-    PrunedHeads,
-    PrunedLookup,
-    resolve_verifier,
-)
+from ..observability.run_checkpoints import CheckpointSigner, PrunedHeads, PrunedLookup
+from ..observability.signed_records import SignatureFailure, check_signature
 from ..observability.telemetry_helpers import first_chain_break, utc_now
 from ..observability.telemetry_models import (
     ChainBreak,
@@ -157,18 +154,38 @@ def tombstone_signed_message(tombstone: RunTombstone) -> bytes:
     )
 
 
+@dataclass(frozen=True)
+class _TombstoneSignature:
+    schema_version: str
+    signer_id: str
+    signature: str
+    message: bytes
+
+    def signed_message(self) -> bytes:
+        return self.message
+
+
 def tombstone_signature_problem(tombstone: RunTombstone, verifier: CheckpointSigner) -> str | None:
     if not tombstone.signature or tombstone.signer_id is None:
         return f'tombstone {tombstone.sequence} of run "{tombstone.run_id}" carries no signature'
-    resolved, problem = resolve_verifier(verifier, tombstone.signer_id, tombstone.pruned_at_utc)
-    if resolved is None:
-        return f"tombstone {tombstone.sequence} cannot be trusted: {problem}"
-    if tombstone.signer_id != resolved.signer_id:
+    check = check_signature(
+        _TombstoneSignature(
+            tombstone.schema_version,
+            tombstone.signer_id,
+            tombstone.signature,
+            tombstone_signed_message(tombstone),
+        ),
+        verifier,
+        claimed_utc=tombstone.pruned_at_utc,
+    )
+    if check.failure is SignatureFailure.UNTRUSTED_KEY:
+        return f"tombstone {tombstone.sequence} cannot be trusted: {check.detail}"
+    if check.failure is SignatureFailure.WRONG_SIGNER:
         return (
             f'tombstone {tombstone.sequence} was signed by "{tombstone.signer_id}" but the '
-            f'verifier is "{resolved.signer_id}"'
+            f'verifier is "{check.detail}"'
         )
-    if not resolved.verify(tombstone_signed_message(tombstone), tombstone.signature):
+    if not check.ok:
         return f"tombstone {tombstone.sequence} fails its signature"
     return None
 

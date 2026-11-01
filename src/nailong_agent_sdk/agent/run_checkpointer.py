@@ -8,7 +8,7 @@ import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import sha256_hex
@@ -28,6 +28,9 @@ from ..observability.telemetry_store import TelemetryStore
 from ..observability.timestamp import TimestampAuthority
 from ..observability.transparency import publish_run_tree_heads
 from .retention import pruned_heads_lookup
+
+if TYPE_CHECKING:
+    from cryptography.x509 import Certificate
 
 _logger = get_logger("run-checkpointer")
 ANCHOR_HOME_VARIABLE = "NAILONG_ANCHOR_HOME"
@@ -53,7 +56,7 @@ class RunHeadCheckpointer:
     signed_tombstones: bool = False
     verifier: CheckpointSigner | None = None
     timestamper: TimestampAuthority | None = None
-    trusted_roots: tuple[Any, ...] = ()
+    trusted_roots: tuple[Certificate, ...] = ()
 
     @property
     def trusted(self) -> CheckpointSigner:

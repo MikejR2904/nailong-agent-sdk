@@ -5,20 +5,23 @@ Three independent records of a run, all written outside the model's context: the
 | File | Lines | Role |
 |---|---:|---|
 | [`observability/__init__.py`](#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
-| [`observability/attestation.py`](#observabilityattestationpy---run-heads-signed-by-the-recorder-so-no-key-on-the-host-is-trusted) | 234 | run heads signed by the recorder, so no key on the host is trusted |
+| [`observability/attestation.py`](#observabilityattestationpy---run-heads-signed-by-the-recorder-so-no-key-on-the-host-is-trusted) | 244 | run heads signed by the recorder, so no key on the host is trusted |
 | [`observability/audit_log.py`](#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 550 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/clock_check.py`](#observabilityclock_checkpy---detecting-a-ledger-whose-recorded-times-run-backwards) | 69 | detecting a ledger whose recorded times run backwards |
 | [`observability/keyring.py`](#observabilitykeyringpy---public-verification-keys-with-validity-windows-rotation-and-revocation) | 216 | public verification keys with validity windows, rotation and revocation |
+| [`observability/ledger_state.py`](#observabilityledger_statepy---what-a-runs-two-ledgers-hold-now) | 64 | what a run's two ledgers hold now |
 | [`observability/metric_definitions.py`](#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 450 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
 | [`observability/otlp.py`](#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 1000 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
 | [`observability/payload_bounds.py`](#observabilitypayload_boundspy---size-bounds-on-one-ledger-record-that-keep-the-fields-saying-who-and-what) | 45 | size bounds on one ledger record that keep the fields saying who and what |
 | [`observability/profiler.py`](#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
-| [`observability/run_checkpoints.py`](#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 890 | signed checkpoints of a run's chain heads, kept outside the run root |
+| [`observability/run_checkpoints.py`](#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 892 | signed checkpoints of a run's chain heads, kept outside the run root |
+| [`observability/signed_records.py`](#observabilitysigned_recordspy---the-one-check-every-signed-record-goes-through) | 106 | the one check every signed record goes through |
+| [`observability/signers.py`](#observabilitysignerspy---what-signs-and-verifies-a-record-and-the-shared-secret-signer) | 53 | what signs and verifies a record, and the shared-secret signer |
 | [`observability/telemetry_helpers.py`](#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
 | [`observability/telemetry_models.py`](#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 261 | telemetry event, context, actor and metric contracts |
 | [`observability/telemetry_store.py`](#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 768 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
-| [`observability/timestamp.py`](#observabilitytimestamppy---rfc-3161-trusted-timestamps-for-checkpoints-and-tree-heads) | 545 | RFC 3161 trusted timestamps for checkpoints and tree heads |
+| [`observability/timestamp.py`](#observabilitytimestamppy---rfc-3161-trusted-timestamps-for-checkpoints-and-tree-heads) | 629 | RFC 3161 trusted timestamps for checkpoints and tree heads |
 | [`observability/trace_context.py`](#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 181 | W3C Trace Context ids, the traceparent header and the process resource |
 
 ---
@@ -51,7 +54,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/attestation.py` - run heads signed by the recorder, so no key on the host is trusted
 
-*234 lines · depends on: `foundations/jcs.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `observability/recorder.py`, `agent/evidence_profile.py` · not re-exported at the package root*
+*244 lines · depends on: `foundations/jcs.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `observability/recorder.py`, `agent/evidence_profile.py` · not re-exported at the package root*
 
 **Role in the workflow.** A run-head checkpoint is signed by a key on the host that ran the agent, so a host that is compromised can sign whatever it likes. The recorder holds its own copy of both ledgers and signs what it holds with a key that never leaves it. A `RunAttestation` is that signature; checking a run against the recorder's attestations needs only the recorder's public key. `final` marks the host's closing seal.
 
@@ -69,6 +72,7 @@ Three independent records of a run, all written outside the model's context: the
 
 **Algorithms & invariants.** An attestation covers the prefix the recorder received, so it is evidence about what the host sent, not about what the host did afterwards. Records the host wrote after sending its final seal are `advanced`.
 
+- `_why(item: RunAttestation, check: SignatureCheck) -> str` - The reason an attestation is refused, for the sentence `verify_attestations` returns. · *Called by:* `observability/attestation.py::verify_attestations`
 ---
 
 ### `observability/audit_log.py` - append-only, hash-chained, per-run JSONL audit transcript
@@ -210,6 +214,21 @@ Three independent records of a run, all written outside the model's context: the
 
 **Algorithms & invariants.** The time a window is checked against is the one the record claims, or, when the record carries a verified RFC 3161 timestamp, the time the authority attested. Without a trusted timestamp, revocation cannot stop a thief who backdates a record, so a deployment that revokes keys should also require timestamps.
 
+---
+
+### `observability/ledger_state.py` - what a run's two ledgers hold now
+
+*Used by `observability/run_checkpoints.py` and `observability/attestation.py`.*
+
+**Role in the workflow.** Checkpoints and attestations both ask the same question of the ledgers: how long are they, what is the head hash, and what is the hash at the sequence a record names. This is the one place that answers it, after checking each chain. If a checkpoint or attestation compares the wrong lengths or hashes, start here.
+
+**Contents**
+
+- **class `ChainState`** *(dataclass)* - One ledger: the chain break found (or None), its length, its head hash and the hash at each requested sequence.
+- **class `RunState`** *(dataclass)* - The telemetry and audit `ChainState` of a run.
+- `inspect_run(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, *, telemetry_sequences: Collection[int]=(), audit_sequences: Collection[int]=()) -> RunState` - Both ledgers, keeping the hash at the requested sequences. · *Called by:* `observability/attestation.py::verify_attestations`, `observability/run_checkpoints.py::_inspect_for`, `observability/run_checkpoints.py::build_run_head_checkpoint`
+- `telemetry_state(telemetry: TelemetryStore, run_id: str, wanted: Collection[int]) -> ChainState` - Verifies the telemetry chain; a broken chain returns its break and no lengths, otherwise one pass collects the length, head and wanted hashes. · *Called by:* `observability/ledger_state.py::inspect_run`
+- `audit_state(audit: AuditTranscriptStore, run_id: str, wanted: Collection[int]) -> ChainState` - The same for the audit ledger. · *Called by:* `observability/ledger_state.py::inspect_run`
 ---
 
 ### `observability/metric_definitions.py` - the SDK's standard metric catalogue
@@ -513,23 +532,12 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/run_checkpoints.py` - signed checkpoints of a run's chain heads, kept outside the run root
 
-*890 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `observability/audit_log.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `mcp/security.py` · re-exported at the package root: 16 name(s)*
+*892 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `observability/audit_log.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `mcp/security.py` · re-exported at the package root: 16 name(s)*
 
 **Role in the workflow.** Each run keeps two hash chains, telemetry events and audit entries. Each detects an edit in the middle, but the newest entries can be removed together, or both chains rewritten and resealed, because nothing outside the run root remembers how long they were. `export_run_head_checkpoint` verifies both chains, signs their sequence and head hash with a `CheckpointSigner` and appends the record to a `CheckpointSink` the operator keeps elsewhere; `verify_run_head_checkpoints` later reports a run that was truncated or rewritten. Retention's tombstone holds a pruned run's final heads, so a run that was pruned is `pruned`, not `truncated`, and a run id used again after a prune starts a new series. `nailong-agent-sdk-dev checkpoint-run` and `verify-checkpoints` do the same from the command line, and `AgentRuntimeServices(checkpointer=...)` takes a checkpoint when each task or node-agent run ends. At the end of a run `BaseAgent._terminate` makes its `agent.profile-completed` event record the audit head and appends a `terminal-link` audit entry that records that event's hash, so one checkpoint, or one intact store, vouches for the other.
 
 **Contents**
 
-- **class `CheckpointSigner`** *(Protocol; bases: Protocol)* - What a checkpoint needs of a signer: an identifier, `sign(message) -> signature` and `verify(message, signature) -> bool`. A host that wants an asymmetric signature or a time-stamp token implements it with its own key store; the SDK ships only the HMAC signer.
-  - `CheckpointSigner.signer_id() -> str` *(property)* - Property: the signer's identifier, written into each checkpoint.
-  - `CheckpointSigner.sign(message: bytes) -> str` - Returns the signature of a message as text.
-  - `CheckpointSigner.verify(message: bytes, signature: str) -> bool` - True when the signature belongs to the message.
-- **class `HmacSha256Signer`** *(class)* - HMAC-SHA256 from the standard library with a shared key of at least 32 bytes; the key is held privately and never appears in a repr. · *Instantiated by:* `developer_tools/cli.py::_checkpoint_signer`, `mcp/security.py::HttpServiceSettings.checkpointer`, `mcp/security.py::_parse_checkpoint`
-  - `HmacSha256Signer.__init__(key: bytes | str, *, signer_id: str='hmac-sha256') -> None` - Raises `ValueError` for a key shorter than 32 bytes (naming the length it got) and for a blank or over-long `signer_id` (default `hmac-sha256`, naming the value).
-  - `HmacSha256Signer.signer_id() -> str` *(property)* - Property: the identifier. · *Called within this file by:* `observability/run_checkpoints.py::HmacSha256Signer.__init__`
-  - `HmacSha256Signer.sign(message: bytes) -> str` - The hex HMAC of the message. · *Called within this file by:* `observability/run_checkpoints.py::HmacSha256Signer.verify`
-  - `HmacSha256Signer.verify(message: bytes, signature: str) -> bool` - Compares in constant time.
-  - `HmacSha256Signer.__repr__() -> str` - Names the signer id only.
-- `resolve_verifier(verifier: CheckpointSigner, signer_id: str, at_utc: str | None) -> tuple[CheckpointSigner | None, str | None]` - The verifier to use for a record that names a signer: the given one unchanged, or, for a verifier with a `resolve` method (a `KeyRingVerifier`), the key that signer id names if it was valid at that time, else None and a sentence. · *Called by:* `observability/run_checkpoints.py::_assess`, `observability/transparency.py::verify_tree_heads`, `agent/retention.py::tombstone_signature_problem`
 - `checkpoint_path(destination: Path, run_id: str) -> Path` - `<destination>/<run id>.checkpoints.jsonl`, the run's file of checkpoints. · *Called by:* `developer_tools/cli.py::_verify_checkpoints`, `observability/run_checkpoints.py::FileCheckpointSink.append`, `observability/run_checkpoints.py::FileCheckpointSink.location`, `observability/run_checkpoints.py::FileCheckpointSink.read_all`
 - **class `CheckpointSink`** *(Protocol; bases: Protocol)* - Where a run's signed records are kept: a location label, the records read back in order, an append and whether the sink stores them inside a given run root. A host that wants object storage or a ledger implements it; the SDK ships the file sink.
   - `CheckpointSink.location(run_id: str) -> str` - A label for where the run's records live (a path, a URL), used in messages.
@@ -561,10 +569,6 @@ Three independent records of a run, all written outside the model's context: the
 - **class `RunHeadReport`** *(pydantic model; bases: StrictModel)* - A checkpoint verification and a terminal-link verification together; `ok` is false when the checkpoints do not match or the link is broken (an absent link is not). · *Instantiated by:* `observability/run_checkpoints.py::check_run_heads`
   - fields: `verification`, `terminal_link`, `ok`
   - `RunHeadReport.ok() -> bool` *(property)* - Computed field: the checkpoint verdict is `matches`, `advanced` or `pruned` and the link is not broken.
-- **class `_ChainState`** *(dataclass)* - What one scan of a chain found: its first break (if any), its last sequence and head hash, and the hashes at the sequences that were asked for. · *Instantiated by:* `observability/run_checkpoints.py::_audit_state`, `observability/run_checkpoints.py::_inspect_for`, `observability/run_checkpoints.py::_telemetry_state`
-  - fields: `failure`, `sequence`, `head`, `hashes`
-- **class `_RunState`** *(dataclass)* - The telemetry and the audit `_ChainState` of one run, taken once per operation. · *Instantiated by:* `observability/run_checkpoints.py::_inspect`, `observability/run_checkpoints.py::_inspect_for`
-  - fields: `telemetry`, `audit`
 - **class `_Assessment`** *(dataclass)* - What the checkpoints themselves say before the run is looked at: a refusal (ownership, signer, signature, ordering), the live checkpoints, the retired prefix that a tombstone accounts for, the tombstones found and a note when the tombstone log could not be read. · *Instantiated by:* `observability/run_checkpoints.py::_assess`, `observability/run_checkpoints.py::_refused`
   - fields: `refusal`, `live`, `retired`, `pruned`, `lookup_problem`
 - `run_root_label_of(telemetry: TelemetryStore) -> str` - A 16-character digest of the run root's path as the telemetry store holds it, so a checkpoint says which root it covers without storing the path. · *Called by:* `observability/run_checkpoints.py::_signed_from`
@@ -581,10 +585,7 @@ Three independent records of a run, all written outside the model's context: the
 - `_same_heads(checkpoint: RunHeadCheckpoint, pruned: PrunedHeads) -> bool` - True when a checkpoint's sequences and heads equal a tombstone's. · *Called by:* `observability/run_checkpoints.py::_assess`, `observability/run_checkpoints.py::_retired_verdict`
 - `_assess(checkpoints: Sequence[RunHeadCheckpoint], run_id: str, signer: CheckpointSigner, pruned_lookup: PrunedLookup | None) -> _Assessment` - Walks the checkpoints: ownership, signer, signature, then (with a lookup) the newest checkpoint a tombstone equals retires every checkpoint up to it, and the counts must not shrink within the retired prefix or within the live suffix. · *Called by:* `observability/run_checkpoints.py::export_run_head_checkpoint`, `observability/run_checkpoints.py::verify_run_head_checkpoints`
 - `_refused(verdict: CheckpointVerdict, detail: str) -> _Assessment` - An assessment that only carries a refusal. · *Called by:* `observability/run_checkpoints.py::_assess`
-- `_inspect(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, *, telemetry_sequences: Collection[int]=(), audit_sequences: Collection[int]=...` - Scans both chains: first break, last sequence and head and the hashes at the wanted sequences; a broken chain is reported, not scanned. · *Called by:* `observability/run_checkpoints.py::_inspect_for`, `observability/run_checkpoints.py::build_run_head_checkpoint`
 - `_inspect_for(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, assessment: _Assessment) -> _RunState` - `_inspect` for the sequences of the newest live checkpoint, or an empty state when the checkpoints were already refused. · *Called by:* `observability/run_checkpoints.py::export_run_head_checkpoint`, `observability/run_checkpoints.py::verify_run_head_checkpoints`
-- `_telemetry_state(telemetry: TelemetryStore, run_id: str, wanted: Collection[int]) -> _ChainState` - One scan of the run's telemetry events. · *Called by:* `observability/run_checkpoints.py::_inspect`
-- `_audit_state(audit: AuditTranscriptStore, run_id: str, wanted: Collection[int]) -> _ChainState` - One scan of the run's audit entries. · *Called by:* `observability/run_checkpoints.py::_inspect`
 - `_signed_from(state: _RunState, telemetry: TelemetryStore, run_id: str, signer: CheckpointSigner, now: datetime | None) -> RunHeadCheckpoint` - Signs the scanned heads; a broken chain or a run with nothing recorded raises the specific error. · *Called by:* `observability/run_checkpoints.py::build_run_head_checkpoint`, `observability/run_checkpoints.py::export_run_head_checkpoint`
 - `_verdict(run_id: str, checkpoints: Sequence[RunHeadCheckpoint], assessment: _Assessment, state: _RunState) -> CheckpointVerification` - The `CheckpointVerification` of the checkpoints against the scanned run, in order: refusal, broken chain, retired-only, tombstone for a missing run, shortfall, rewrite, match or advance. · *Called within this file by:* `observability/run_checkpoints.py::export_run_head_checkpoint`, `observability/run_checkpoints.py::verify_run_head_checkpoints`
 - `_retired_verdict(run_id: str, assessment: _Assessment, summary: dict[str, Any], absent: bool) -> CheckpointVerification` - `pruned` when the run is gone and a tombstone holds the newest checkpoint's heads (the detail says whether its signature was verified), `no-checkpoint` when a run of that id exists again. · *Called by:* `observability/run_checkpoints.py::_verdict`
@@ -598,11 +599,51 @@ Three independent records of a run, all written outside the model's context: the
 
 *Module-level names:* `CHECKPOINT_SCHEMA`, `MIN_HMAC_KEY_BYTES`, `MAX_SIGNER_ID_CHARS`, `TERMINAL_TELEMETRY_EVENT`, `TERMINAL_AUDIT_EVENT`, `LEGACY_TERMINAL_AUDIT_EVENT`, `PrunedLookup`, `_REFUSES_APPEND`
 
+- `_untrusted(index: int, checkpoint: RunHeadCheckpoint, check: SignatureCheck) -> str` - The sentence for a checkpoint that failed `check_signature`: an untrusted stamp or key, a signer other than the verifier, or a bad signature. · *Called by:* `observability/run_checkpoints.py::_assess`
+---
+
+### `observability/signed_records.py` - the one check every signed record goes through
+
+*Used by every module that verifies a signed record.*
+
+**Role in the workflow.** A signed record is trusted only if three things hold: its stamp (when it carries one) verifies and supplies the time, the key it names is trusted at that time, and the signature is valid and made by that signer. `check_signature` does all three and says which failed; each caller keeps its own verdict names and sentences. A test fails if any module resolves a key without going through it, so a signed record cannot skip the check.
+
+**Contents**
+
+- `resolve_verifier(verifier: CheckpointSigner, signer_id: str, at_utc: str | None) -> tuple[CheckpointSigner | None, str | None]` - The verifier to use for a record that names a signer: the given one unchanged, or, for a verifier with a `resolve` method (a `KeyRingVerifier`), the key that signer id names if it was valid at that time, else None and a sentence. · *Called by:* `observability/run_checkpoints.py::_assess`, `observability/transparency.py::verify_tree_heads`, `agent/retention.py::tombstone_signature_problem`
+- **class `SignedRecord`** *(protocol)* - What a record needs to be checked: `schema_version`, `signer_id`, `signature` and `signed_message()`. A record may also have a `timestamp`.
+  - `SignedRecord.signed_message(self) -> bytes` - The bytes the signature covers.
+- **class `KeyResolver`** *(protocol, runtime-checkable)* - A verifier that picks the key by the id a record names and the time it claims. `KeyRingVerifier` is the one implementation.
+  - `KeyResolver.resolve(self, signer_id: str, at_utc: str | None) -> tuple[CheckpointSigner | None, str | None]` - The verify-only signer for that key, or None and a sentence.
+- **class `SignatureFailure`** *(enum; bases: StrEnum)* - Which check failed: `untrusted-stamp`, `untrusted-key`, `wrong-signer` or `bad-signature`.
+- **class `SignatureCheck`** *(dataclass)* - The outcome: the failure (None when it holds), a detail (the reason for an untrusted stamp or key, the verifier's signer id otherwise), the verifier that was used, whether the record was stamped and whether the stamp was verified.
+  - `SignatureCheck.ok(self) -> bool` *(property)* - True when nothing failed.
+- `check_signature(record: SignedRecord, verifier: CheckpointSigner, *, claimed_utc: str, content: dict[str, Any] | None=None, trusted_roots: Sequence[Certificate] | None=None, max_skew_seconds: float=600.0) -> SignatureCheck` - With `content` and a stamp on the record, checks the stamp first (`timestamp_problem`) and uses the time it attests as the signing time when roots are given. Then resolves the key for that time, requires the record's signer id to equal the key's, and verifies the signature. · *Called by:* `observability/run_checkpoints.py::_assess`, `observability/transparency.py::verify_tree_heads`, `observability/transparency.py::verify_extension`, `observability/transparency.py::verify_event_inclusion`, `observability/attestation.py::verify_attestations`, `agent/retention.py::tombstone_signature_problem`, `tools/artifact_anchor.py::verify_artifact_anchor`, `state/run_anchor.py::verify_run_anchor`
+---
+
+### `observability/signers.py` - what signs and verifies a record, and the shared-secret signer
+
+*Re-exported by `observability/run_checkpoints.py`, which is where older imports find these names.*
+
+**Role in the workflow.** `CheckpointSigner` is the interface every signature in the SDK goes through (checkpoints, tree heads, attestations, tombstones, anchors). `HmacSha256Signer` is the standard-library implementation; `Ed25519Signer` and `KeyRingVerifier` are the asymmetric ones. A bug in how a record is signed or verified starts in the signer; a bug in which key is trusted starts in `observability/signed_records.py` or `observability/keyring.py`.
+
+**Contents**
+
+- **class `CheckpointSigner`** *(Protocol; bases: Protocol)* - What a checkpoint needs of a signer: an identifier, `sign(message) -> signature` and `verify(message, signature) -> bool`. A host that wants an asymmetric signature or a time-stamp token implements it with its own key store; the SDK ships only the HMAC signer.
+  - `CheckpointSigner.signer_id() -> str` *(property)* - Property: the signer's identifier, written into each checkpoint.
+  - `CheckpointSigner.sign(message: bytes) -> str` - Returns the signature of a message as text.
+  - `CheckpointSigner.verify(message: bytes, signature: str) -> bool` - True when the signature belongs to the message.
+- **class `HmacSha256Signer`** *(class)* - HMAC-SHA256 from the standard library with a shared key of at least 32 bytes; the key is held privately and never appears in a repr. · *Instantiated by:* `developer_tools/cli.py::_checkpoint_signer`, `mcp/security.py::HttpServiceSettings.checkpointer`, `mcp/security.py::_parse_checkpoint`
+  - `HmacSha256Signer.__init__(key: bytes | str, *, signer_id: str='hmac-sha256') -> None` - Raises `ValueError` for a key shorter than 32 bytes (naming the length it got) and for a blank or over-long `signer_id` (default `hmac-sha256`, naming the value).
+  - `HmacSha256Signer.signer_id() -> str` *(property)* - Property: the identifier. · *Called within this file by:* `observability/signers.py::HmacSha256Signer.__init__`
+  - `HmacSha256Signer.sign(message: bytes) -> str` - The hex HMAC of the message. · *Called within this file by:* `observability/signers.py::HmacSha256Signer.verify`
+  - `HmacSha256Signer.verify(message: bytes, signature: str) -> bool` - Compares in constant time.
+  - `HmacSha256Signer.__repr__() -> str` - Names the signer id only.
 ---
 
 ### `observability/timestamp.py` - RFC 3161 trusted timestamps for checkpoints and tree heads
 
-*545 lines · depends on: `foundations/contracts.py`, `foundations/errors.py` · used by: `observability/run_checkpoints.py`, `observability/transparency.py`, `agent/run_checkpointer.py`, `agent/evidence_profile.py` · not re-exported at the package root*
+*629 lines · depends on: `foundations/contracts.py`, `foundations/errors.py` · used by: `observability/run_checkpoints.py`, `observability/transparency.py`, `agent/run_checkpointer.py`, `agent/evidence_profile.py` · not re-exported at the package root*
 
 **Role in the workflow.** A record's own time is the writer's clock. A timestamp authority signs, under a certificate the verifier trusts, that a digest existed at a time, so a record cannot be backdated past the authority's attestation. A checkpoint or tree head is stamped before it is signed; the stamp covers its content without the signature and the stamp itself, and the signature then covers the stamp. It needs the optional `cryptography` package for verification.
 
@@ -649,11 +690,12 @@ Three independent records of a run, all written outside the model's context: the
 
 **Algorithms & invariants.** There is no default trust store: the caller supplies the roots, so a timestamp from an authority nobody chose proves nothing. Certificate revocation (CRL, OCSP) is not checked. The attested time is the authority's, so it supersedes the writer's claimed time when a key's validity window is checked.
 
+- `_x509() -> ModuleType` - The `cryptography.x509` module, imported on first use so the package works without the optional dependency. · *Called by:* `observability/timestamp.py::_check_signature`, `observability/timestamp.py::_match_certificate`, `observability/timestamp.py::_issuer_problem`, `observability/timestamp.py::_walk_chain`
 ---
 
 ### `observability/transparency.py` - signed Merkle tree heads over a run's ledgers, with inclusion and extension proofs
 
-*359 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/audit_log.py`, `observability/merkle.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `agent/run_checkpointer.py` · not re-exported at the package root*
+*506 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/audit_log.py`, `observability/merkle.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `agent/run_checkpointer.py` · not re-exported at the package root*
 
 **Role in the workflow.** Signed Merkle tree heads over a run's telemetry and audit ledgers. A head fixes the size and root of the record hashes. Against it the ledger itself is checked for truncation, rewriting and resealing, and, from the proofs alone, a verifier checks that one record is in the log (`verify_event_inclusion`) or that a newer head extends an older one (`verify_extension`) without reading either log. `RunHeadCheckpointer(tree_heads=True)` publishes the heads with every checkpoint.
 
@@ -683,12 +725,13 @@ Three independent records of a run, all written outside the model's context: the
 - `verify_extension(first: MerkleTreeHead, second: MerkleTreeHead, proof: ConsistencyProof, verifier: CheckpointSigner) -> ProofCheck` - Checks two signed heads and a proof without the log: both signatures, that both heads are of the same ledger name, the sizes the proof is for, then the RFC 9162 consistency check. Fails with a sentence naming a rewrite or fork.
 - `prove_inclusion(hashes: Sequence[str], index: int, size: int | None=None) -> InclusionProof` - The inclusion proof of one record in a hash list.
 - `verify_event_inclusion(record_hash: str, proof: InclusionProof, head: MerkleTreeHead, verifier: CheckpointSigner) -> ProofCheck` - Checks that one record hash is in the log a signed head covers, from the proof alone: the signature, the size and the audit path.
-- `_binding_problem(head: MerkleTreeHead, name: str, verifier: CheckpointSigner) -> str | None` - A phrase naming the ledger or signer a head names when it differs from the one checked, or None. · *Called within this file by:* `observability/transparency.py::verify_tree_heads`
+- `_binding_problem(head: MerkleTreeHead, name: str) -> str | None` - A phrase naming the ledger a head names when it differs from the one checked, or None (the signer is checked by `check_signature`). · *Called within this file by:* `observability/transparency.py::verify_tree_heads`
 - `_verdict(kind: TreeHeadVerdict, detail: str) -> TreeHeadVerification` - A `TreeHeadVerification` from a verdict, a sentence and the counts.
 
 **Algorithms & invariants.** The leaves are the ledgers' own integrity hashes, so a head adds no per-event storage. An attacker who edits an event and recomputes the chain changes every later hash, so the prefix root no longer equals a head published before the edit (`diverged`); one who cuts the newest records leaves fewer records than the head covers (`truncated`). Records written after the newest head are not covered until the next head is published, and a log cut back exactly to a head is indistinguishable from the log at that moment. A head fixes a size and a root; an inclusion proof is checked against the head's size, because the audit path alone does not bind it.
 - `sign_tree_head(size: int, root: bytes, sink: CheckpointSink, name: str, signer: CheckpointSigner, *, now: datetime | None=None) -> MerkleTreeHead` - Signs a size and a root already computed (by an accumulator) and appends the head to the sink; `publish_tree_head` uses it after accumulating.
 
+- `_head_refused(number: int, name: str, head: MerkleTreeHead, check: SignatureCheck, trusted_heads: int) -> TreeHeadVerification` - Maps a failed `check_signature` to the verdict: `signature-invalid` for an untrusted stamp or key or a bad signature, `misbound` for a validly signed head that names another signer. · *Called by:* `observability/transparency.py::verify_tree_heads`
 ---
 ### `observability/telemetry_helpers.py` - tiny constructors for timestamps and metric observations, and the shared hash-chain checker
 

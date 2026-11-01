@@ -44,6 +44,8 @@ from .retention import pruned_heads_lookup
 from .run_checkpointer import RunHeadCheckpointer
 
 if TYPE_CHECKING:
+    from cryptography.x509 import Certificate
+
     from .runtime import AgentRuntimeServices
 
 PROFILE_SCHEMA = "agent-sdk-evidence-profile-v1"
@@ -304,7 +306,7 @@ class EvidenceProfile:
         return Ed25519Signer(public_key=public, signer_id=recorder.signer_id)
 
     @staticmethod
-    def _load_roots(settings: EvidenceSettings) -> list[Any]:
+    def _load_roots(settings: EvidenceSettings) -> list[Certificate]:
         from cryptography import x509
 
         roots = []

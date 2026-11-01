@@ -19,7 +19,8 @@ from pydantic import Field, ValidationError
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import canonical_json
-from ..observability.run_checkpoints import CheckpointSigner, CheckpointSink, resolve_verifier
+from ..observability.run_checkpoints import CheckpointSigner, CheckpointSink
+from ..observability.signed_records import SignatureFailure, check_signature
 from .artifacts import ArtifactStore
 
 ANCHOR_SCHEMA = "agent-sdk-artifact-log-anchor-v1"
@@ -128,20 +129,18 @@ def verify_artifact_anchor(
                 f"{type(error).__name__}: {error}",
                 anchors=len(anchors),
             )
-        resolved, problem = resolve_verifier(signer, anchor.signer_id, anchor.anchored_at_utc)
-        if resolved is None:
+        check = check_signature(anchor, signer, claimed_utc=anchor.anchored_at_utc)
+        if check.failure is SignatureFailure.UNTRUSTED_KEY:
             return _verdict(
                 ArtifactAnchorVerdict.SIGNATURE_INVALID,
-                f'Anchor {number} of "{name}" cannot be trusted: {problem}.',
+                f'Anchor {number} of "{name}" cannot be trusted: {check.detail}.',
                 anchors=len(anchors),
             )
-        if anchor.schema_version != ANCHOR_SCHEMA or not resolved.verify(
-            anchor.signed_message(), anchor.signature
-        ):
+        if anchor.schema_version != ANCHOR_SCHEMA or not check.ok:
             return _verdict(
                 ArtifactAnchorVerdict.SIGNATURE_INVALID,
                 f'Anchor {number} of "{name}" does not carry a valid signature from signer '
-                f'"{resolved.signer_id}": it was edited or signed with another key.',
+                f'"{check.detail or signer.signer_id}": it was edited or signed with another key.',
                 anchors=len(anchors),
             )
         anchors.append(anchor)

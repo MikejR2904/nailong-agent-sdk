@@ -14,7 +14,9 @@ from ..foundations.contracts import StrictModel
 from ..foundations.jcs import schema_message
 from ..foundations.text import split_lines
 from .audit_log import AuditTranscriptStore
-from .run_checkpoints import CheckpointSigner, _inspect, resolve_verifier
+from .ledger_state import inspect_run
+from .run_checkpoints import CheckpointSigner
+from .signed_records import SignatureCheck, SignatureFailure, check_signature
 from .telemetry_store import TelemetryStore
 
 ATTESTATION_SCHEMAS = ("agent-sdk-recorder-attestation-v2",)
@@ -92,6 +94,14 @@ class AttestationVerification(StrictModel):
         return self.verdict in {AttestationVerdict.MATCHES, AttestationVerdict.ADVANCED}
 
 
+def _why(item: RunAttestation, check: SignatureCheck) -> str:
+    if check.failure is SignatureFailure.UNTRUSTED_KEY:
+        return check.detail
+    if check.failure is SignatureFailure.WRONG_SIGNER:
+        return f'it names signer "{item.signer_id}" but the verifier is "{check.detail}"'
+    return _EDITED
+
+
 def parse_attestations(lines: Sequence[str], run_id: str) -> list[RunAttestation]:
     parsed: list[RunAttestation] = []
     for number, line in enumerate(lines, start=1):
@@ -134,12 +144,12 @@ def verify_attestations(
             detail=f'The recorder holds no attestation of run "{run_id}".',
         )
     for number, item in enumerate(attestations, start=1):
-        resolved, problem = resolve_verifier(verifier, item.signer_id, item.attested_at_utc)
-        if resolved is None or not resolved.verify(item.signed_message(), item.signature):
+        check = check_signature(item, verifier, claimed_utc=item.attested_at_utc)
+        if not check.ok:
             return AttestationVerification(
                 verdict=AttestationVerdict.SIGNATURE_INVALID,
                 attestations=len(attestations),
-                detail=f"Attestation {number} cannot be trusted: {problem or _EDITED}.",
+                detail=f"Attestation {number} cannot be trusted: {_why(item, check)}.",
             )
     for number in range(1, len(attestations)):
         before, after = attestations[number - 1], attestations[number]
@@ -154,7 +164,7 @@ def verify_attestations(
                 "recorder's own record of the run went backwards.",
             )
     newest = attestations[-1]
-    state = _inspect(
+    state = inspect_run(
         telemetry,
         audit,
         run_id,

@@ -11,7 +11,7 @@
 | [`agent/cost_model.py`](#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
 | [`agent/definition_digest.py`](#agentdefinition_digestpy---digests-of-an-agents-configured-identity-recorded-with-each-run) | 27 | digests of an agent's configured identity, recorded with each run |
 | [`agent/elastic_context.py`](#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
-| [`agent/evidence_profile.py`](#agentevidence_profilepy---one-profile-that-turns-on-every-independent-piece-of-run-evidence-and-checks-them-together) | 392 | one profile that turns on every independent piece of run evidence and checks them together |
+| [`agent/evidence_profile.py`](#agentevidence_profilepy---one-profile-that-turns-on-every-independent-piece-of-run-evidence-and-checks-them-together) | 620 | one profile that turns on every independent piece of run evidence and checks them together |
 | [`agent/graph_agent_executor.py`](#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 338 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 439 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
@@ -24,10 +24,10 @@
 | [`agent/orchestrator/orchestrator.py`](#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 1004 | deterministic composition of policy, plan, controller and graph execution |
 | [`agent/orchestrator/state_store.py`](#agentorchestratorstate_storepy---atomic-local-persistence-of-orchestration-records-and-policies) | 119 | atomic local persistence of orchestration records and policies |
 | [`agent/periodic_checkpoints.py`](#agentperiodic_checkpointspy---signed-checkpoints-and-artifact-anchors-taken-while-a-run-is-going) | 102 | signed checkpoints and artifact anchors taken while a run is going |
-| [`agent/retention.py`](#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 666 | opt-in pruning of finished runs with a hash-chained tombstone for each |
+| [`agent/retention.py`](#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 748 | opt-in pruning of finished runs with a hash-chained tombstone for each |
 | [`agent/retention_anchor.py`](#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
 | [`agent/retention_inventory.py`](#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
-| [`agent/run_checkpointer.py`](#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 71 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
+| [`agent/run_checkpointer.py`](#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 172 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
 | [`agent/runtime.py`](#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 226 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
 | [`agent/task_runner.py`](#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 847 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
@@ -216,7 +216,7 @@
 
 ### `agent/evidence_profile.py` - one profile that turns on every independent piece of run evidence and checks them together
 
-*392 lines · depends on: `agent/retention.py`, `agent/run_checkpointer.py`, `foundations/contracts.py`, `foundations/errors.py`, `observability/*` · used by: `agent/runtime.py`, `developer_tools/cli.py` · not re-exported at the package root*
+*620 lines · depends on: `agent/retention.py`, `agent/run_checkpointer.py`, `foundations/contracts.py`, `foundations/errors.py`, `observability/*` · used by: `agent/runtime.py`, `developer_tools/cli.py` · not re-exported at the package root*
 
 **Role in the workflow.** Run-head checkpoints, signed tree heads, an out-of-process recorder, signed retention tombstones and trusted timestamps each defend a different attack, and each is off unless wired. An `EvidenceProfile` wires them together from one settings file and verifies them together. Pass it to `AgentRuntimeServices.open(evidence=...)` to write the evidence, or run `verify-run-evidence` to check a run against it. Tokens are never in the file; it names the environment variables that hold them.
 
@@ -628,7 +628,7 @@
 
 ### `agent/retention.py` - opt-in pruning of finished runs with a hash-chained tombstone for each
 
-*666 lines · depends on: `agent/retention_anchor.py`, `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/context_projection.py`, `observability/audit_log.py`, `observability/run_checkpoints.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/retention_inventory.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `developer_tools/inspect.py`, `mcp/_shared.py`, `mcp/authority.py` (+2 more) · re-exported at the package root: 10 name(s)*
+*748 lines · depends on: `agent/retention_anchor.py`, `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/context_projection.py`, `observability/audit_log.py`, `observability/run_checkpoints.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/retention_inventory.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `developer_tools/inspect.py`, `mcp/_shared.py`, `mcp/authority.py` (+2 more) · re-exported at the package root: 10 name(s)*
 
 **Role in the workflow.** Keeps a long-lived run root from growing without bound without hiding what was removed. A caller (the MCP tool `prune_runs`, the developer CLI `prune-runs`, or `AgentRuntimeServices.retention()`) hands `RunRetention.prune` a `RetentionPolicy`; a dry run reports the runs that would go, an applied run deletes each one's telemetry, audit transcript and tool-result journal files after recording a tombstone.
 
@@ -690,6 +690,8 @@
 
 **Algorithms & invariants.** A run is a telemetry run id (a task id): its events and metrics, its audit transcript and the journal files recorded under it. A run is pruned whole or not at all, because removing a prefix would break its hash chain. It qualifies when it has an `agent.terminated` event (or the policy says `include_unfinished`), its last event is older than `older_than_seconds`, it is not among the `keep_most_recent` newest, and both chains verify; a run with a broken chain is reported and left, as evidence. Nothing is deleted without a policy from the caller: no threshold is built in. Order matters for crashes: the tombstone is written first, then the journal, the audit files and the telemetry rows, so the run stays discoverable by its telemetry until the last step and a second pass finds the tombstone by run id, telemetry sequence and head hash and finishes the job without writing another. The tombstones form their own hash chain (`.agent-retention/tombstones.jsonl`), appended under `.agent-retention/retention.lock`, so editing or dropping one is detectable; a tombstone is the only record of a pruned run's final heads and tool-result hashes, which is what lets `verify-evidence` keep vouching for project-state evidence whose journal file is gone. A run that is revived between examination and deletion is caught by the telemetry sequence check under the store's write transaction (`TELEMETRY_RUN_CHANGED`); an event arriving after the last check but before the final delete is the one unguarded window, which is why `older_than_seconds` should be far longer than any task's resubmission delay. Journal handle numbers are never reused (`.high-water`). Not pruned: project states, graph runs, controllers, orchestrations, episode records, exported reports, workspaces and journal files recorded without a run id. The bytes a report counts are the logical size of what was removed. The audit and journal files are deleted outright; the telemetry database reuses the pages its deleted rows held, so it stops growing, but its file does not shrink until a `VACUUM`, which needs a quiet store and is left to the operator. Pruning is fenced: `_prune_one` raises the run's fence, waits for the writes already in progress by entering each store's critical section once, confirms the run received no new event, writes the tombstone, deletes, and releases the fence, so an event accepted before the fence is in the tombstone's footprint and one after it is refused with `RUN_PRUNING` (the writer may wait the fence out). A prune that dies is finished by running the same policy again. An anchor (`anchor_path`) is the independent record that makes removal of the newest tombstones detectable; without one the log proves only that nothing in the middle was changed.
 
+- **class `_TombstoneSignature`** *(dataclass)* - Presents a tombstone's signer id, signature and signed bytes to `check_signature`. · *Instantiated by:* `agent/retention.py::tombstone_signature_problem`
+  - `_TombstoneSignature.signed_message(self) -> bytes` - The bytes that were signed.
 ---
 
 ### `agent/retention_anchor.py` - anchors of the tombstone chain's head, kept outside the run root
@@ -790,7 +792,7 @@
 
 ### `agent/run_checkpointer.py` - opt-in signed checkpoints of a run's chain heads, taken when a run ends
 
-*71 lines · depends on: `agent/retention.py`, `foundations/errors.py`, `observability/audit_log.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `agent/runtime.py`, `mcp/security.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
+*172 lines · depends on: `agent/retention.py`, `foundations/errors.py`, `observability/audit_log.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `agent/runtime.py`, `mcp/security.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** A host that wants every run's chain heads recorded outside the run root builds a `RunHeadCheckpointer` and gives it to `AgentRuntimeServices`; `AgentTaskRunner.run` and `GraphAgentExecutor.execute` then call `checkpoint_after_run` when a run ends. Nothing is signed unless a checkpointer is given: there is no default key and no default destination.
 

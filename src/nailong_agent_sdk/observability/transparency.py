@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import Field, ValidationError
 
@@ -24,19 +24,18 @@ from ..foundations.errors import AgentSdkError
 from ..foundations.jcs import schema_message
 from .audit_log import AuditTranscriptStore
 from .merkle import MerkleAccumulator, MerkleTree, verify_consistency, verify_inclusion
-from .run_checkpoints import (
-    CheckpointSigner,
-    CheckpointSink,
-    resolve_verifier,
-)
+from .run_checkpoints import CheckpointSigner, CheckpointSink
+from .signed_records import SignatureCheck, SignatureFailure, check_signature
 from .telemetry_store import TelemetryStore
 from .timestamp import (
     DEFAULT_MAX_SKEW_SECONDS,
     TimestampAuthority,
     TimestampToken,
     stamp_content,
-    timestamp_problem,
 )
+
+if TYPE_CHECKING:
+    from cryptography.x509 import Certificate
 
 TREE_HEAD_SCHEMAS = ("agent-sdk-merkle-tree-head-v1", "agent-sdk-merkle-tree-head-v2")
 TREE_HEAD_SCHEMA = TREE_HEAD_SCHEMAS[-1]
@@ -134,7 +133,7 @@ def sign_tree_head(
     *,
     now: datetime | None = None,
     timestamper: TimestampAuthority | None = None,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> MerkleTreeHead:
     draft = MerkleTreeHead(
         name=name,
@@ -165,7 +164,7 @@ def publish_tree_head(
     *,
     now: datetime | None = None,
     timestamper: TimestampAuthority | None = None,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> MerkleTreeHead:
     accumulator = MerkleAccumulator()
     for item in hashes:
@@ -191,7 +190,7 @@ def publish_run_tree_heads(
     *,
     now: datetime | None = None,
     timestamper: TimestampAuthority | None = None,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> dict[str, MerkleTreeHead]:
     telemetry_break = telemetry.chain_break(run_id)
     audit_break = audit.chain_break(run_id)
@@ -224,7 +223,7 @@ def verify_tree_heads(
     name: str,
     verifier: CheckpointSigner,
     *,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
     max_skew_seconds: float = DEFAULT_MAX_SKEW_SECONDS,
 ) -> TreeHeadVerification:
     try:
@@ -253,44 +252,26 @@ def verify_tree_heads(
                 f"{type(error).__name__}: {error}",
                 heads=len(heads),
             )
-        signing_time = head.published_at_utc
-        if head.timestamp is not None:
-            stamped += 1
-            moment, stamp_problem = timestamp_problem(
-                head.timestamp,
-                head.model_dump(mode="json"),
-                head.schema_version,
-                schema_message,
-                trusted_roots,
-                head.published_at_utc,
-                max_skew_seconds,
-            )
-            if stamp_problem is not None:
-                return _verdict(
-                    TreeHeadVerdict.SIGNATURE_INVALID,
-                    f'Tree head {number} of "{name}" cannot be trusted: {stamp_problem}.',
-                    heads=len(heads),
-                )
-            if moment is not None:
-                verified += 1
-                signing_time = moment.isoformat()
-        resolved, problem = resolve_verifier(verifier, head.signer_id, signing_time)
-        if resolved is None:
+        if head.schema_version not in TREE_HEAD_SCHEMAS:
             return _verdict(
                 TreeHeadVerdict.SIGNATURE_INVALID,
-                f'Tree head {number} of "{name}" cannot be trusted: {problem}.',
+                f'Tree head {number} of "{name}" has schema_version "{head.schema_version}", '
+                f"expected one of {list(TREE_HEAD_SCHEMAS)}.",
                 heads=len(heads),
             )
-        if head.schema_version not in TREE_HEAD_SCHEMAS or not resolved.verify(
-            head.signed_message(), head.signature
-        ):
-            return _verdict(
-                TreeHeadVerdict.SIGNATURE_INVALID,
-                f'Tree head {number} of "{name}" does not carry a valid signature from signer '
-                f'"{resolved.signer_id}": it was edited or signed with another key.',
-                heads=len(heads),
-            )
-        mismatch = _binding_problem(head, name, resolved)
+        check = check_signature(
+            head,
+            verifier,
+            claimed_utc=head.published_at_utc,
+            content=head.model_dump(mode="json"),
+            trusted_roots=trusted_roots,
+            max_skew_seconds=max_skew_seconds,
+        )
+        stamped += check.stamped
+        verified += check.stamp_verified
+        if not check.ok:
+            return _head_refused(number, name, head, check, len(heads))
+        mismatch = _binding_problem(head, name)
         if mismatch is not None:
             return _verdict(
                 TreeHeadVerdict.MISBOUND,
@@ -353,7 +334,7 @@ def verify_run_tree_heads(
     sink: CheckpointSink,
     verifier: CheckpointSigner,
     *,
-    trusted_roots: Sequence[Any] | None = None,
+    trusted_roots: Sequence[Certificate] | None = None,
 ) -> dict[str, TreeHeadVerification]:
     chains = {"telemetry": telemetry.chain_break(run_id), "audit": audit.chain_break(run_id)}
     hashes = run_hashes(telemetry, audit, run_id)
@@ -398,14 +379,16 @@ def verify_extension(
     verifier: CheckpointSigner,
 ) -> ProofCheck:
     for label, head in (("older", first), ("newer", second)):
-        resolved, problem = resolve_verifier(verifier, head.signer_id, head.published_at_utc)
-        if resolved is None:
-            return ProofCheck(ok=False, detail=f"The {label} head cannot be trusted: {problem}.")
-        if not resolved.verify(head.signed_message(), head.signature):
+        check = check_signature(head, verifier, claimed_utc=head.published_at_utc)
+        if check.failure is SignatureFailure.UNTRUSTED_KEY:
+            return ProofCheck(
+                ok=False, detail=f"The {label} head cannot be trusted: {check.detail}."
+            )
+        if not check.ok:
             return ProofCheck(
                 ok=False,
                 detail=f"The {label} head does not carry a valid signature from signer "
-                f'"{resolved.signer_id}".',
+                f'"{check.detail}".',
             )
     if first.name != second.name:
         return ProofCheck(
@@ -452,13 +435,13 @@ def verify_event_inclusion(
     head: MerkleTreeHead,
     verifier: CheckpointSigner,
 ) -> ProofCheck:
-    resolved, problem = resolve_verifier(verifier, head.signer_id, head.published_at_utc)
-    if resolved is None:
-        return ProofCheck(ok=False, detail=f"The head cannot be trusted: {problem}.")
-    if not resolved.verify(head.signed_message(), head.signature):
+    check = check_signature(head, verifier, claimed_utc=head.published_at_utc)
+    if check.failure is SignatureFailure.UNTRUSTED_KEY:
+        return ProofCheck(ok=False, detail=f"The head cannot be trusted: {check.detail}.")
+    if not check.ok:
         return ProofCheck(
             ok=False,
-            detail=f'The head does not carry a valid signature from signer "{resolved.signer_id}".',
+            detail=f'The head does not carry a valid signature from signer "{check.detail}".',
         )
     if proof.size != head.size:
         return ProofCheck(
@@ -488,12 +471,35 @@ def verify_event_inclusion(
     )
 
 
-def _binding_problem(head: MerkleTreeHead, name: str, verifier: CheckpointSigner) -> str | None:
+def _binding_problem(head: MerkleTreeHead, name: str) -> str | None:
     if head.name != name:
         return f'names the ledger "{head.name}" instead of "{name}"'
-    if head.signer_id != verifier.signer_id:
-        return f'names signer "{head.signer_id}" instead of "{verifier.signer_id}"'
     return None
+
+
+def _head_refused(
+    number: int, name: str, head: MerkleTreeHead, check: SignatureCheck, trusted_heads: int
+) -> TreeHeadVerification:
+    if check.failure in {SignatureFailure.UNTRUSTED_STAMP, SignatureFailure.UNTRUSTED_KEY}:
+        return _verdict(
+            TreeHeadVerdict.SIGNATURE_INVALID,
+            f'Tree head {number} of "{name}" cannot be trusted: {check.detail}.',
+            heads=trusted_heads,
+        )
+    if check.failure is SignatureFailure.WRONG_SIGNER:
+        return _verdict(
+            TreeHeadVerdict.MISBOUND,
+            f'Tree head {number} of "{name}" is validly signed but names signer '
+            f'"{head.signer_id}" instead of "{check.detail}": it was copied from another '
+            "ledger or signer.",
+            heads=trusted_heads,
+        )
+    return _verdict(
+        TreeHeadVerdict.SIGNATURE_INVALID,
+        f'Tree head {number} of "{name}" does not carry a valid signature from signer '
+        f'"{check.detail}": it was edited or signed with another key.',
+        heads=trusted_heads,
+    )
 
 
 def _verdict(kind: TreeHeadVerdict, detail: str, **counts: int) -> TreeHeadVerification:

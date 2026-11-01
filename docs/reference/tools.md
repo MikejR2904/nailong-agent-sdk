@@ -8,7 +8,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | [`tools/approvals.py`](#toolsapprovalspy---typed-approval-gates-for-state-changing-actions) | 383 | typed approval gates for state-changing actions |
 | [`tools/approval_audit.py`](#toolsapproval_auditpy---approval-lifecycle-events-written-to-the-hash-chained-telemetry-ledger) | 55 | approval lifecycle events written to the hash-chained telemetry ledger |
 | [`tools/authorization.py`](#toolsauthorizationpy---the-capability-path-and-approval-check-every-governed-tool-call-passes) | 312 | the capability, path and approval check every governed tool call passes |
-| [`tools/artifact_anchor.py`](#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 196 | signed anchors of the artifact write log, kept outside the workspace |
+| [`tools/artifact_anchor.py`](#toolsartifact_anchorpy---signed-anchors-of-the-artifact-write-log-kept-outside-the-workspace) | 202 | signed anchors of the artifact write log, kept outside the workspace |
 | [`tools/artifacts.py`](#toolsartifactspy---content-addressed-artifact-store-with-immutable-write-attribution-and-a-per-path-write-history) | 632 | content-addressed artifact store with immutable write attribution and a per-path write history |
 | [`tools/core/__init__.py`](#toolscore__init__py---public-surface-of-the-portable-core-tools) | 25 | public surface of the portable core tools |
 | [`tools/core/definitions.py`](#toolscoredefinitionspy---typed-declarations-of-the-governed-core-tool-set) | 356 | typed declarations of the governed core tool set |
@@ -135,7 +135,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/artifact_anchor.py` - signed anchors of the artifact write log, kept outside the workspace
 
-*196 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/run_checkpoints.py`, `tools/artifacts.py` · used by: `agent/runtime.py` · not re-exported at the package root*
+*202 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/run_checkpoints.py`, `tools/artifacts.py` · used by: `agent/runtime.py` · not re-exported at the package root*
 
 **Role in the workflow.** The artifact write log chains its records with an unkeyed hash, so an edit in the middle is detected but anyone who can write the file can recompute the whole chain, and the newest records can be cut without a trace. An anchor records the log's length and head hash, signed with a key the writer does not hold, in an append-only sink the operator keeps elsewhere (the same `CheckpointSink` and signer as the run-head checkpoints). Verification detects a log that was resealed, truncated or rewritten after it was anchored.
 

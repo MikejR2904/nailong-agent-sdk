@@ -17,7 +17,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 | [`state/project_state_engine.py`](#stateproject_state_enginepy---mechanical-reducer-and-token-bounded-projector-over-projectstate) | 533 | mechanical reducer and token-bounded projector over `ProjectState` |
 | [`state/project_state_models.py`](#stateproject_state_modelspy---bounded-hash-sealed-working-memory-contracts) | 363 | bounded, hash-sealed working-memory contracts |
 | [`state/project_state_store.py`](#stateproject_state_storepy---in-memory-and-file-backed-project-state-stores-with-a-hash-chained-audit-trail) | 252 | in-memory and file-backed project-state stores with a hash-chained audit trail |
-| [`state/run_anchor.py`](#staterun_anchorpy---signed-anchors-of-a-graph-runs-record-kept-outside-the-run-root) | 228 | signed anchors of a graph run's record, kept outside the run root |
+| [`state/run_anchor.py`](#staterun_anchorpy---signed-anchors-of-a-graph-runs-record-kept-outside-the-run-root) | 231 | signed anchors of a graph run's record, kept outside the run root |
 | [`state/run_state_store.py`](#staterun_state_storepy---crash-safe-run-persistence-as-a-fixed-state-snapshot-plus-a-growing-state-sidecar) | 451 | crash-safe run persistence as a fixed-state snapshot plus a growing-state sidecar |
 | [`state/shared_state.py`](#stateshared_statepy---typed-lateral-state-payloads-exact-routing-references-and-provenance-records) | 240 | typed lateral-state payloads, exact routing references and provenance records |
 
@@ -604,7 +604,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
 
 ### `state/run_anchor.py` - signed anchors of a graph run's record, kept outside the run root
 
-*228 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/run_checkpoints.py`, `state/run_state_store.py` · used by: `state/harness_coordinator.py` · not re-exported at the package root*
+*231 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/run_checkpoints.py`, `state/run_state_store.py` · used by: `state/harness_coordinator.py` · not re-exported at the package root*
 
 **Role in the workflow.** A run record carries a hash of its history and a hash of itself, but both are unkeyed: whoever can write the run root can re-save an altered or shortened record with consistent hashes, and the store's own check passes. An anchor signs the history length, the hash of that history prefix and the record hash at one moment, in the same append-only sink as the run-head checkpoints. `HarnessCoordinator(anchorer=)` appends one when `execute_run` returns; `verify_run_anchor` replays the history to the anchored length and compares.
 
