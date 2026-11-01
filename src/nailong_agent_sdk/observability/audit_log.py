@@ -83,6 +83,11 @@ class AuditTranscriptStore:
 
     It stores only bounded, redacted public inputs/outputs and result handles. It is
     intentionally external to ProjectState and never feeds raw history into ModelContext.
+
+    Lock order, outermost first: the run's append transaction (``_append_transaction``), then
+    ``self._lock``, which guards only the open-handle cache and the write itself. Listeners run
+    inside the transaction and outside ``self._lock``, so one run's slow listener delays only
+    that run's next append.
     """
 
     _append_locks: dict[Path, threading.RLock] = {}
@@ -173,42 +178,52 @@ class AuditTranscriptStore:
     ) -> AuditLogEntry:
         self._require_writable("append")
         self._fence.wait_until_open(run_id, "append an audit entry")
-        with self._lock:
-            with self._append_transaction(run_id):
-                self._fence.raise_if_fenced(run_id, "append an audit entry")
-                # Append-mode writes use the true end even after tail inspection.
-                handle = self._handle_for(run_id)
-                label = self._jsonl_path(run_id).name
-                handle.seek(0, os.SEEK_END)
-                end, torn = _complete_end(handle, handle.tell())
-                tail = _read_tail_entry(handle, end, label)
-                _require_transcript_owner(tail, run_id, label)
-                if not torn and end:
-                    handle.seek(end - 1)
-                    if handle.read(1) != b"\n":
-                        handle.write(b"\n")
-                if torn:
-                    discarded = _discard_torn_tail(handle, end)
-                    tail = self._write_entry(
-                        handle,
-                        run_id,
-                        tail,
-                        "audit.tail-repaired",
-                        {
-                            "discarded_bytes": len(discarded),
-                            "discarded_sha256": sha256_hex(discarded),
-                            "reason": (
-                                "The transcript ended in an unterminated line that is not a "
-                                "valid entry, the mark of a write interrupted by a crash; "
-                                "nothing in it was acknowledged to a caller."
-                            ),
-                        },
-                        None,
-                        None,
-                    )
-                return self._write_entry(
-                    handle, run_id, tail, event_type, payload, task_id, iteration
-                )
+        with self._append_transaction(run_id):
+            self._fence.raise_if_fenced(run_id, "append an audit entry")
+            with self._lock:
+                written = self._write_locked(run_id, event_type, payload, task_id, iteration)
+            for entry in written:
+                self._append_listeners.notify(entry)
+        return written[-1]
+
+    def _write_locked(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        task_id: str | None,
+        iteration: int | None,
+    ) -> list[AuditLogEntry]:
+        handle = self._handle_for(run_id)
+        label = self._jsonl_path(run_id).name
+        handle.seek(0, os.SEEK_END)
+        end, torn = _complete_end(handle, handle.tell())
+        tail = _read_tail_entry(handle, end, label)
+        _require_transcript_owner(tail, run_id, label)
+        if not torn and end:
+            handle.seek(end - 1)
+            if handle.read(1) != b"\n":
+                handle.write(b"\n")
+        written: list[AuditLogEntry] = []
+        if torn:
+            discarded = _discard_torn_tail(handle, end)
+            repair = {
+                "discarded_bytes": len(discarded),
+                "discarded_sha256": sha256_hex(discarded),
+                "reason": (
+                    "The transcript ended in an unterminated line that is not a valid entry, "
+                    "the mark of a write interrupted by a crash; nothing in it was acknowledged "
+                    "to a caller."
+                ),
+            }
+            tail = self._write_entry(
+                handle, run_id, tail, "audit.tail-repaired", repair, None, None
+            )
+            written.append(tail)
+        written.append(
+            self._write_entry(handle, run_id, tail, event_type, payload, task_id, iteration)
+        )
+        return written
 
     def _write_entry(
         self,
@@ -235,7 +250,6 @@ class AuditTranscriptStore:
         handle.write(b"\n")
         handle.flush()
         os.fsync(handle.fileno())
-        self._append_listeners.notify(complete)
         return complete
 
     def list_entries(
@@ -258,9 +272,8 @@ class AuditTranscriptStore:
         """Wait for an append already inside its transaction to finish."""
 
         self._require_writable("quiesce")
-        with self._lock:
-            with self._append_transaction(run_id):
-                return
+        with self._append_transaction(run_id):
+            return
 
     def footprint(self, run_id: str) -> AuditFootprint:
         path = self._jsonl_path(run_id)
@@ -290,13 +303,13 @@ class AuditTranscriptStore:
             return footprint
         path = self._jsonl_path(run_id)
         rendered = self._root / f"{file_safe_name(run_id)}.transcript.md"
-        with self._lock:
-            with self._append_transaction(run_id):
+        with self._append_transaction(run_id):
+            with self._lock:
                 handle = self._handles.pop(run_id, None)
                 if handle is not None:
                     handle.close()
-                for target in (path, rendered):
-                    target.unlink(missing_ok=True)
+            for target in (path, rendered):
+                target.unlink(missing_ok=True)
         path.with_suffix(".lock").unlink(missing_ok=True)
         return footprint
 

@@ -66,6 +66,8 @@ RECORDER_SCHEMA = "agent-sdk-recorder-v2"
 MAX_LINE_BYTES = 16_777_216
 PAGE_BYTES = 4_194_304
 MAX_PAGE_ENTRIES = 1_000
+RUN_GATES = 64
+DEFAULT_CONNECTIONS = 4
 IDLE_TIMEOUT_SECONDS = 300.0
 APPEND_TOKEN_VARIABLE = "NAILONG_RECORDER_APPEND_TOKEN"
 READ_TOKEN_VARIABLE = "NAILONG_RECORDER_READ_TOKEN"
@@ -132,7 +134,12 @@ class _Stream:
 
 
 class RecorderCore:
-    """The recorder's state and rules; the server and the tests both drive it."""
+    """The recorder's state and rules; the server and the tests both drive it.
+
+    Records of one run are serialized by that run's gate (one of ``RUN_GATES`` striped locks),
+    so runs do not wait for each other's writes to disk. The registry lock is held only to look
+    up or create a stream and is always taken after a gate, never before.
+    """
 
     def __init__(
         self,
@@ -152,7 +159,9 @@ class RecorderCore:
         self._signer = signer
         self._head_every = head_every
         self._durable = durable
-        self._lock = threading.Lock()
+        self._registry = threading.Lock()
+        self._conflicts = threading.Lock()
+        self._gates = [threading.RLock() for _ in range(RUN_GATES)]
         self._heads = FileCheckpointSink(self._directory / "heads")
         self._attestations = FileCheckpointSink(self._directory / "attestations")
         self._extra_sinks = tuple(extra_sinks)
@@ -172,7 +181,7 @@ class RecorderCore:
         return self._attestations
 
     def is_final(self, run_id: str) -> bool:
-        with self._lock:
+        with self._registry:
             return run_id in self._final
 
     def entries(self, run_id: str, store: str, include_records: bool = True) -> list[RecordedEntry]:
@@ -206,7 +215,7 @@ class RecorderCore:
                 f"A page starts after a sequence of 0 or more and holds at least one entry, "
                 f"got after={after} and limit={max_entries}.",
             )
-        with self._lock:
+        with self._gate(run_id):
             stream = self._streams.get((run_id, store))
             if stream is None:
                 return [], None
@@ -238,7 +247,7 @@ class RecorderCore:
         return entries, (entries[-1].sequence if entries and more else None)
 
     def run_ids(self) -> list[str]:
-        with self._lock:
+        with self._registry:
             return sorted({run for run, _ in self._streams})
 
     def append(
@@ -264,7 +273,7 @@ class RecorderCore:
             leaf_data(record_hash)
         except ValueError as error:
             raise _fail("RECORDER_HASH_INVALID", str(error), run_id=run_id) from error
-        with self._lock:
+        with self._gate(run_id):
             stream = self._stream(run_id, store)
             held = len(stream.entries)
             if sequence <= held:
@@ -327,7 +336,7 @@ class RecorderCore:
         self, run_id: str, *, final: bool = False
     ) -> tuple[dict[str, MerkleTreeHead], RunAttestation]:
         heads: dict[str, MerkleTreeHead] = {}
-        with self._lock:
+        with self._gate(run_id):
             state: dict[str, tuple[int, str | None]] = {}
             for store in STORES:
                 stream = self._streams.get((run_id, store))
@@ -349,14 +358,15 @@ class RecorderCore:
                         "Could not copy an attestation to %s: %s", sink.location(name), error
                     )
             if final:
-                self._final.add(run_id)
+                with self._registry:
+                    self._final.add(run_id)
         return heads, attestation
 
     def attestation_lines(self, run_id: str) -> list[str]:
         return self._attestations.read_all(run_id)
 
     def status(self, run_id: str) -> dict[str, Any]:
-        with self._lock:
+        with self._gate(run_id):
             streams = {}
             for store in STORES:
                 stream = self._streams.get((run_id, store))
@@ -445,10 +455,14 @@ class RecorderCore:
 
     def _stream(self, run_id: str, store: str) -> _Stream:
         key = (run_id, store)
-        if key not in self._streams:
-            name = f"{quote(run_id, safe='')}.{store}.jsonl"
-            self._streams[key] = _Stream(self._records / name)
-        return self._streams[key]
+        with self._registry:
+            if key not in self._streams:
+                name = f"{quote(run_id, safe='')}.{store}.jsonl"
+                self._streams[key] = _Stream(self._records / name)
+            return self._streams[key]
+
+    def _gate(self, run_id: str) -> threading.RLock:
+        return self._gates[hash(run_id) % RUN_GATES]
 
     def _persist(self, stream: _Stream, entry: RecordedEntry) -> int:
         try:
@@ -479,7 +493,7 @@ class RecorderCore:
                 "offered": offered,
             }
         )
-        with (self._directory / "conflicts.jsonl").open("ab") as handle:
+        with self._conflicts, (self._directory / "conflicts.jsonl").open("ab") as handle:
             handle.write(line.encode("utf-8") + b"\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -760,9 +774,12 @@ class RecorderClient:
         timeout_seconds: float = 5.0,
         tls: ssl.SSLContext | None = None,
         server_hostname: str | None = None,
+        connections: int = DEFAULT_CONNECTIONS,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError(f"timeout_seconds must be positive, got {timeout_seconds}.")
+        if connections < 1:
+            raise ValueError(f"connections must be at least 1, got {connections}.")
         self._tls = tls
         self._server_hostname = server_hostname or host
         self.last_attestation: RunAttestation | None = None
@@ -770,9 +787,9 @@ class RecorderClient:
         self._append_token = append_token
         self._read_token = read_token
         self._timeout = timeout_seconds
-        self._lock = threading.Lock()
-        self._socket: socket.socket | None = None
-        self._reader: Any = None
+        self._slots = threading.BoundedSemaphore(connections)
+        self._idle: list[_Connection] = []
+        self._idle_lock = threading.Lock()
 
     def append(
         self,
@@ -846,8 +863,10 @@ class RecorderClient:
         return [str(item) for item in reply["lines"]]
 
     def close(self) -> None:
-        with self._lock:
-            self._drop()
+        with self._idle_lock:
+            idle, self._idle = self._idle, []
+        for connection in idle:
+            connection.close()
 
     def _append_token_for(self, run_id: str) -> str:
         token = self._append_token
@@ -862,24 +881,101 @@ class RecorderClient:
             )
         return self._read_token
 
-    def _drop(self) -> None:
+    def _take(self) -> _Connection:
+        with self._idle_lock:
+            if self._idle:
+                return self._idle.pop()
+        return _Connection(self._address, self._timeout, self._tls, self._server_hostname)
+
+    def _give_back(self, connection: _Connection) -> None:
+        with self._idle_lock:
+            self._idle.append(connection)
+
+    def _call(self, request: dict[str, Any]) -> dict[str, Any]:
+        data = json.dumps(request).encode("utf-8") + b"\n"
+        with self._slots:
+            for attempt in (1, 2):
+                connection = self._take()
+                try:
+                    line = connection.exchange(data)
+                except (OSError, ConnectionError) as error:
+                    connection.close()
+                    if attempt == 2:
+                        raise _fail(
+                            "RECORDER_UNREACHABLE",
+                            f"The recorder at {self._address[0]}:{self._address[1]} cannot be "
+                            f"reached: {type(error).__name__}: {error}",
+                            host=self._address[0],
+                            port=self._address[1],
+                        ) from error
+                    continue
+                except AgentSdkError:
+                    connection.close()
+                    raise
+                self._give_back(connection)
+                break
+        reply = parse_reply(line, self._address)
+        if not reply.get("ok"):
+            raise _fail(
+                str(reply.get("code", "RECORDER_ERROR")),
+                str(reply.get("detail") or reply.get("code") or "the recorder refused the call"),
+            )
+        return reply
+
+
+def parse_reply(line: bytes, address: tuple[str, int]) -> dict[str, Any]:
+    try:
+        reply = json.loads(line)
+    except ValueError as error:
+        raise _fail(
+            "RECORDER_REPLY_INVALID",
+            f"The recorder at {address[0]}:{address[1]} sent a reply that is not JSON "
+            f"({type(error).__name__}: {error}).",
+            host=address[0],
+            port=address[1],
+        ) from error
+    return dict(reply)
+
+
+class _Connection:
+    """One socket to the recorder, opened on first use and checked against the protocol version."""
+
+    def __init__(
+        self,
+        address: tuple[str, int],
+        timeout: float,
+        tls: ssl.SSLContext | None,
+        server_hostname: str,
+    ) -> None:
+        self._address = address
+        self._timeout = timeout
+        self._tls = tls
+        self._server_hostname = server_hostname
+        self._socket: socket.socket | None = None
+        self._reader: Any = None
+
+    def exchange(self, data: bytes) -> bytes:
+        if self._socket is None:
+            self._open()
+        return self._roundtrip(data)
+
+    def close(self) -> None:
         if self._reader is not None:
             self._reader.close()
         if self._socket is not None:
             self._socket.close()
         self._reader = self._socket = None
 
-    def _connect(self) -> None:
-        self._socket = socket.create_connection(self._address, self._timeout)
+    def _open(self) -> None:
+        opened = socket.create_connection(self._address, self._timeout)
         if self._tls is not None:
-            self._socket = self._tls.wrap_socket(
-                self._socket, server_hostname=self._server_hostname
-            )
-        self._socket.settimeout(self._timeout)
-        self._reader = self._socket.makefile("rb")
-        greeting = self._parse(self._roundtrip(b'{"op": "ping"}\n'))
+            opened = self._tls.wrap_socket(opened, server_hostname=self._server_hostname)
+        opened.settimeout(self._timeout)
+        self._socket = opened
+        self._reader = opened.makefile("rb")
+        greeting = parse_reply(self._roundtrip(b'{"op": "ping"}\n'), self._address)
         if greeting.get("schema") != RECORDER_SCHEMA:
-            self._drop()
+            self.close()
             raise _fail(
                 "RECORDER_PROTOCOL_MISMATCH",
                 f"The recorder at {self._address[0]}:{self._address[1]} speaks protocol "
@@ -896,7 +992,7 @@ class RecorderClient:
         if not line:
             raise ConnectionError("the recorder closed the connection")
         if len(line) > MAX_LINE_BYTES and not line.endswith(b"\n"):
-            self._drop()
+            self.close()
             raise _fail(
                 "RECORDER_REPLY_TOO_LARGE",
                 f"The recorder at {self._address[0]}:{self._address[1]} sent a reply over "
@@ -905,46 +1001,6 @@ class RecorderClient:
                 port=self._address[1],
             )
         return line
-
-    def _parse(self, line: bytes) -> dict[str, Any]:
-        try:
-            reply = json.loads(line)
-        except ValueError as error:
-            raise _fail(
-                "RECORDER_REPLY_INVALID",
-                f"The recorder at {self._address[0]}:{self._address[1]} sent a reply that is "
-                f"not JSON ({type(error).__name__}: {error}).",
-                host=self._address[0],
-                port=self._address[1],
-            ) from error
-        return dict(reply)
-
-    def _call(self, request: dict[str, Any]) -> dict[str, Any]:
-        data = json.dumps(request).encode("utf-8") + b"\n"
-        with self._lock:
-            for attempt in (1, 2):
-                try:
-                    if self._socket is None:
-                        self._connect()
-                    line = self._roundtrip(data)
-                    break
-                except (OSError, ConnectionError) as error:
-                    self._drop()
-                    if attempt == 2:
-                        raise _fail(
-                            "RECORDER_UNREACHABLE",
-                            f"The recorder at {self._address[0]}:{self._address[1]} cannot be "
-                            f"reached: {type(error).__name__}: {error}",
-                            host=self._address[0],
-                            port=self._address[1],
-                        ) from error
-        reply = self._parse(line)
-        if not reply.get("ok"):
-            raise _fail(
-                str(reply.get("code", "RECORDER_ERROR")),
-                str(reply.get("detail") or reply.get("code") or "the recorder refused the call"),
-            )
-        return dict(reply)
 
 
 class _HeadSink:

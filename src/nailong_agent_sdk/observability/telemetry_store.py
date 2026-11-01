@@ -43,6 +43,7 @@ from .telemetry_models import (
 )
 
 DEFAULT_MAX_PAYLOAD_CHARS = 8_388_608
+RUN_GATES = 64
 _EVENT_TIME = "json_extract(event_json, '$.occurred_at_utc')"
 _EVENT_STATUS = "json_extract(event_json, '$.status')"
 _EVENT_TYPE = "json_extract(event_json, '$.event_type')"
@@ -51,7 +52,13 @@ _LOCK_RETRY_SECONDS = 10.0
 
 
 class TelemetryStore:
-    """Append-only SQLite ledger with an integrity hash chain and metric observations."""
+    """Append-only SQLite ledger with an integrity hash chain and metric observations.
+
+    ``append`` takes the run's gate (one of ``RUN_GATES`` striped locks), then the database lock
+    for the insert and commit alone, and runs the append listeners after the database lock is
+    released but still inside the gate. Records of one run therefore reach a listener in
+    sequence order, while a slow listener holds up only the runs that share its gate.
+    """
 
     def __init__(
         self,
@@ -63,6 +70,7 @@ class TelemetryStore:
         if max_payload_chars < 256:
             raise ValueError("max_payload_chars must be at least 256.")
         self._max_payload_chars = max_payload_chars
+        self._gates = [threading.RLock() for _ in range(RUN_GATES)]
         self._root = root.resolve() / ".agent-telemetry"
         self._database_path = self._root / "telemetry.sqlite3"
         self._fence = RunFence(root)
@@ -157,53 +165,59 @@ class TelemetryStore:
         """
 
         self._fence.wait_until_open(event.context.run_id, "append a telemetry event")
-        with self._lock, self._connection as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._fence.raise_if_fenced(event.context.run_id, "append a telemetry event")
-            previous = connection.execute(
-                "SELECT sequence, integrity_hash FROM events "
-                "WHERE run_id = ? ORDER BY sequence DESC LIMIT 1",
-                (event.context.run_id,),
-            ).fetchone()
-            sequence = (int(previous[0]) + 1) if previous else 1
-            predecessor = str(previous[1]) if previous else None
-            prepared = event.model_copy(
-                update={
-                    "sequence": sequence,
-                    "previous_event_hash": predecessor,
-                    "integrity_hash": "",
-                    "payload": bound_payload(
-                        redact_secrets(event.payload), self._max_payload_chars
+        with self._gate_for(event.context.run_id):
+            with self._lock, self._connection as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._fence.raise_if_fenced(event.context.run_id, "append a telemetry event")
+                previous = connection.execute(
+                    "SELECT sequence, integrity_hash FROM events "
+                    "WHERE run_id = ? ORDER BY sequence DESC LIMIT 1",
+                    (event.context.run_id,),
+                ).fetchone()
+                sequence = (int(previous[0]) + 1) if previous else 1
+                predecessor = str(previous[1]) if previous else None
+                prepared = event.model_copy(
+                    update={
+                        "sequence": sequence,
+                        "previous_event_hash": predecessor,
+                        "integrity_hash": "",
+                        "payload": bound_payload(
+                            redact_secrets(event.payload), self._max_payload_chars
+                        ),
+                        "links": bound_payload(
+                            redact_secrets(event.links), self._max_payload_chars
+                        ),
+                    }
+                )
+                digest = event_hash(prepared)
+                prepared = prepared.model_copy(update={"integrity_hash": digest})
+                connection.execute(
+                    """
+                    INSERT INTO events (
+                        event_id, run_id, sequence, occurred_at_utc, event_type, status, severity,
+                        integrity_hash, previous_event_hash, payload_json, event_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        prepared.event_id,
+                        prepared.context.run_id,
+                        prepared.sequence,
+                        prepared.occurred_at_utc,
+                        prepared.event_type,
+                        prepared.status,
+                        prepared.severity.value,
+                        prepared.integrity_hash,
+                        prepared.previous_event_hash,
+                        canonical_json(prepared.payload),
+                        prepared.model_dump_json(),
                     ),
-                    "links": bound_payload(redact_secrets(event.links), self._max_payload_chars),
-                }
-            )
-            digest = event_hash(prepared)
-            prepared = prepared.model_copy(update={"integrity_hash": digest})
-            connection.execute(
-                """
-                INSERT INTO events (
-                    event_id, run_id, sequence, occurred_at_utc, event_type, status, severity,
-                    integrity_hash, previous_event_hash, payload_json, event_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    prepared.event_id,
-                    prepared.context.run_id,
-                    prepared.sequence,
-                    prepared.occurred_at_utc,
-                    prepared.event_type,
-                    prepared.status,
-                    prepared.severity.value,
-                    prepared.integrity_hash,
-                    prepared.previous_event_hash,
-                    canonical_json(prepared.payload),
-                    prepared.model_dump_json(),
-                ),
-            )
-            connection.commit()
+                )
+                connection.commit()
             self._append_listeners.notify(prepared)
-            return prepared
+        return prepared
+
+    def _gate_for(self, run_id: str) -> threading.RLock:
+        return self._gates[hash(run_id) % RUN_GATES]
 
     def record_metric(self, observation: MetricObservation) -> MetricObservation:
         if observation.availability is MetricAvailability.AVAILABLE and observation.value is None:
