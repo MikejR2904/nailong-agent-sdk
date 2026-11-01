@@ -22,7 +22,7 @@ from pydantic import Field, ValidationError
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import canonical_json
-from ..observability.run_checkpoints import CheckpointSigner, CheckpointSink
+from ..observability.run_checkpoints import CheckpointSigner, CheckpointSink, resolve_verifier
 from .run_state_store import RunStateStore
 
 ANCHOR_SCHEMA = "agent-sdk-run-record-anchor-v1"
@@ -155,15 +155,21 @@ def verify_run_anchor(
                 f'Anchor {number} of "{name}" is not a valid anchor record: '
                 f"{type(error).__name__}: {error}",
             )
+        resolved, problem = resolve_verifier(signer, anchor.signer_id, anchor.anchored_at_utc)
+        if resolved is None:
+            return verdict(
+                RunAnchorVerdict.SIGNATURE_INVALID,
+                f'Anchor {number} of "{name}" cannot be trusted: {problem}.',
+            )
         if (
             anchor.schema_version != ANCHOR_SCHEMA
             or anchor.run_id != run_id
-            or not signer.verify(anchor.signed_message(), anchor.signature)
+            or not resolved.verify(anchor.signed_message(), anchor.signature)
         ):
             return verdict(
                 RunAnchorVerdict.SIGNATURE_INVALID,
                 f'Anchor {number} of "{name}" does not carry a valid signature from signer '
-                f'"{signer.signer_id}" for run "{run_id}": it was edited or signed with another '
+                f'"{resolved.signer_id}" for run "{run_id}": it was edited or signed with another '
                 "key.",
             )
         anchors.append(anchor)

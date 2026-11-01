@@ -15,6 +15,7 @@ from pathlib import Path
 
 import yaml
 
+from ..agent.evidence_profile import EvidenceProfile, EvidenceSettings
 from ..agent.retention import (
     RetentionPolicy,
     export_tombstone_anchor,
@@ -26,6 +27,8 @@ from ..agent.retention_inventory import DEFAULT_MAX_ITEMS, inventory_run_root
 from ..foundations.errors import AgentSdkError
 from ..foundations.suffix_search import SuffixStrategy
 from ..observability.audit_log import AuditTranscriptStore
+from ..observability.ed25519 import Ed25519Signer
+from ..observability.keyring import KeyRing
 from ..observability.otlp import (
     SIGNALS,
     OtlpExportLedger,
@@ -92,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         "authority-matrix": lambda: _authority_matrix(),
         "checkpoint-run": lambda: _checkpoint_run(arguments),
         "verify-checkpoints": lambda: _verify_checkpoints(arguments),
+        "verify-run-evidence": lambda: _verify_run_evidence(arguments),
     }
     try:
         result = commands[arguments.command]()
@@ -280,7 +284,14 @@ def _parser() -> argparse.ArgumentParser:
         help="Sign each new tombstone with the HMAC key in this file (at least 32 bytes), so "
         "a verifier holding the key can tell a real prune from a forged tombstone.",
     )
-    prune.add_argument("--signer-id", default="hmac-sha256")
+    prune.add_argument("--signer-id")
+    prune.add_argument(
+        "--algorithm",
+        choices=("hmac-sha256", "ed25519"),
+        default="hmac-sha256",
+        help="hmac-sha256: the key file holds a shared secret (at least 32 bytes). ed25519: it "
+        "holds the 32-byte private key as hex; a verifier then needs only a public key.",
+    )
     prune.add_argument(
         "--apply",
         action="store_true",
@@ -397,7 +408,14 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="File whose text is the HMAC key (at least 32 bytes); it is never printed.",
     )
-    run_checkpoint.add_argument("--signer-id", default="hmac-sha256")
+    run_checkpoint.add_argument("--signer-id")
+    run_checkpoint.add_argument(
+        "--algorithm",
+        choices=("hmac-sha256", "ed25519"),
+        default="hmac-sha256",
+        help="hmac-sha256: the key file holds a shared secret (at least 32 bytes). ed25519: it "
+        "holds the 32-byte private key as hex; a verifier then needs only a public key.",
+    )
     run_checkpoint.add_argument(
         "--require-signed-tombstones",
         action="store_true",
@@ -418,14 +436,46 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="The run's checkpoint file, or the directory that holds it.",
     )
-    verify_heads.add_argument("--key-file", type=Path, required=True)
-    verify_heads.add_argument("--signer-id", default="hmac-sha256")
+    verify_heads.add_argument("--key-file", type=Path)
+    verify_heads.add_argument(
+        "--public-key-file",
+        type=Path,
+        help="File holding an Ed25519 public key as hex; replaces --key-file for a verifier "
+        "that must hold no secret.",
+    )
+    verify_heads.add_argument(
+        "--keyring",
+        type=Path,
+        help="A key ring file of public keys with validity windows and revocations; the key "
+        "a record names, and the time it claims, decide which key verifies it.",
+    )
+    verify_heads.add_argument("--signer-id")
+    verify_heads.add_argument(
+        "--algorithm",
+        choices=("hmac-sha256", "ed25519"),
+        default="hmac-sha256",
+        help="hmac-sha256: the key file holds a shared secret (at least 32 bytes). ed25519: it "
+        "holds the 32-byte private key as hex; a verifier then needs only a public key.",
+    )
     verify_heads.add_argument(
         "--require-signed-tombstones",
         action="store_true",
         help="Accept a retention tombstone as proof of a prune only when it carries a valid "
         "signature from the same key; without it an unsigned tombstone is accepted and the "
         "verdict says so.",
+    )
+
+    evidence = subparsers.add_parser(
+        "verify-run-evidence",
+        help="Check a run against everything an evidence profile keeps outside it: signed "
+        "checkpoints, tree heads, trusted timestamps, signed tombstones and the recorder's copy.",
+    )
+    evidence.add_argument("run_root", type=Path)
+    evidence.add_argument("run_id")
+    evidence.add_argument(
+        "profile",
+        type=Path,
+        help="Evidence profile JSON; tokens are read from the environment variables it names.",
     )
 
     quality = subparsers.add_parser(
@@ -680,12 +730,28 @@ def _authority_matrix() -> object:
     return authority_matrix()
 
 
-def _checkpoint_signer(arguments: argparse.Namespace) -> HmacSha256Signer:
+def _checkpoint_signer(arguments: argparse.Namespace) -> HmacSha256Signer | Ed25519Signer:
     key = arguments.key_file.read_text(encoding="utf-8").strip()
-    return HmacSha256Signer(key, signer_id=arguments.signer_id)
+    if arguments.algorithm == "ed25519":
+        return Ed25519Signer(key, signer_id=arguments.signer_id)
+    return HmacSha256Signer(key, signer_id=arguments.signer_id or "hmac-sha256")
 
 
-def _pruned_lookup(arguments: argparse.Namespace, signer: HmacSha256Signer) -> object:
+def _checkpoint_verifier(arguments: argparse.Namespace) -> object:
+    if arguments.keyring is not None:
+        return KeyRing.from_file(arguments.keyring).verifier()
+    if arguments.public_key_file is not None:
+        public = arguments.public_key_file.read_text(encoding="utf-8").strip()
+        return Ed25519Signer(public_key=public, signer_id=arguments.signer_id)
+    if arguments.key_file is None:
+        raise ValueError(
+            "verify-checkpoints needs one of --key-file, --public-key-file or --keyring to "
+            "know which key to trust; none was given."
+        )
+    return _checkpoint_signer(arguments)
+
+
+def _pruned_lookup(arguments: argparse.Namespace, signer: object) -> object:
     verifier = signer if arguments.require_signed_tombstones else None
     return pruned_heads_lookup(arguments.run_root, verifier)
 
@@ -709,7 +775,7 @@ def _checkpoint_run(arguments: argparse.Namespace) -> object:
 
 
 def _verify_checkpoints(arguments: argparse.Namespace) -> object:
-    signer = _checkpoint_signer(arguments)
+    signer = _checkpoint_verifier(arguments)
     source = arguments.checkpoint_file
     if source.is_dir():
         source = checkpoint_path(source, arguments.run_id)
@@ -724,6 +790,17 @@ def _verify_checkpoints(arguments: argparse.Namespace) -> object:
             signer,
             pruned_lookup=_pruned_lookup(arguments, signer),
         )
+    finally:
+        telemetry.close()
+        audit.close()
+
+
+def _verify_run_evidence(arguments: argparse.Namespace) -> object:
+    profile = EvidenceProfile(EvidenceSettings.load(arguments.profile))
+    telemetry = TelemetryStore(arguments.run_root, read_only=True)
+    audit = AuditTranscriptStore(arguments.run_root, read_only=True)
+    try:
+        return profile.verify_stores(arguments.run_root, telemetry, audit, arguments.run_id)
     finally:
         telemetry.close()
         audit.close()

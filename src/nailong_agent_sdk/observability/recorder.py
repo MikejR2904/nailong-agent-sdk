@@ -16,6 +16,7 @@ independent as the operating-system account, container or machine it runs in.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -23,12 +24,14 @@ import queue
 import secrets
 import socket
 import socketserver
+import ssl
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
@@ -40,12 +43,13 @@ from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import sha256_hex
 from ..foundations.logging import get_logger
-from .audit_log import AuditLogEntry, AuditTranscriptStore
+from .attestation import RunAttestation, attestation_name, sign_attestation
+from .audit_log import AuditLogEntry, AuditTranscriptStore, audit_entry_hash
 from .ed25519 import Ed25519Signer
 from .merkle import MerkleAccumulator
 from .run_checkpoints import CheckpointSigner, CheckpointSink, FileCheckpointSink
 from .telemetry_models import TelemetryEvent
-from .telemetry_store import TelemetryStore
+from .telemetry_store import TelemetryStore, event_hash
 from .transparency import (
     STORES,
     MerkleTreeHead,
@@ -60,9 +64,11 @@ from .transparency import (
 _logger = get_logger("recorder")
 RECORDER_SCHEMA = "agent-sdk-recorder-v1"
 MAX_LINE_BYTES = 1_048_576
+IDLE_TIMEOUT_SECONDS = 300.0
 APPEND_TOKEN_VARIABLE = "NAILONG_RECORDER_APPEND_TOKEN"
 READ_TOKEN_VARIABLE = "NAILONG_RECORDER_READ_TOKEN"
 KEY_FILE = "recorder.key"
+SCOPED_TOKEN_CONTEXT = b"nailong-recorder-append-v1:"
 
 
 class RecordedEntry(StrictModel):
@@ -70,6 +76,13 @@ class RecordedEntry(StrictModel):
     hash: str
     previous: str | None = None
     record: str | None = None
+    received_at_utc: str | None = None
+    claimed_at_utc: str | None = None
+
+
+def scoped_append_token(secret: str, run_id: str) -> str:
+    message = SCOPED_TOKEN_CONTEXT + run_id.encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 class RecorderVerdict(StrEnum):
@@ -124,6 +137,7 @@ class RecorderCore:
         head_every: int = 50,
         durable: bool = True,
         extra_sinks: Sequence[CheckpointSink] = (),
+        verify_records: bool = False,
     ) -> None:
         if head_every < 1:
             raise ValueError(f"head_every must be at least 1, got {head_every}.")
@@ -135,7 +149,10 @@ class RecorderCore:
         self._durable = durable
         self._lock = threading.Lock()
         self._heads = FileCheckpointSink(self._directory / "heads")
+        self._attestations = FileCheckpointSink(self._directory / "attestations")
         self._extra_sinks = tuple(extra_sinks)
+        self._verify_records = verify_records
+        self._final: set[str] = set()
         self._streams: dict[tuple[str, str], _Stream] = {}
         self._load()
 
@@ -145,6 +162,13 @@ class RecorderCore:
 
     def head_sink(self) -> CheckpointSink:
         return self._heads
+
+    def attestation_sink(self) -> CheckpointSink:
+        return self._attestations
+
+    def is_final(self, run_id: str) -> bool:
+        with self._lock:
+            return run_id in self._final
 
     def entries(self, run_id: str, store: str) -> list[RecordedEntry]:
         self._require_store(store)
@@ -216,8 +240,16 @@ class RecorderCore:
                     store=store,
                     sequence=sequence,
                 )
+            claimed = self._check_record(
+                run_id, store, sequence, record_hash, previous_hash, record
+            )
             entry = RecordedEntry(
-                sequence=sequence, hash=record_hash, previous=previous_hash, record=record
+                sequence=sequence,
+                hash=record_hash,
+                previous=previous_hash,
+                record=record,
+                received_at_utc=datetime.now(UTC).isoformat(),
+                claimed_at_utc=claimed,
             )
             self._persist(stream, entry)
             stream.entries.append(entry)
@@ -227,13 +259,119 @@ class RecorderCore:
             return {"size": len(stream.entries), "duplicate": False}
 
     def seal(self, run_id: str) -> dict[str, MerkleTreeHead]:
+        return self.attest(run_id, final=False)[0]
+
+    def attest(
+        self, run_id: str, *, final: bool = False
+    ) -> tuple[dict[str, MerkleTreeHead], RunAttestation]:
         heads: dict[str, MerkleTreeHead] = {}
         with self._lock:
+            state: dict[str, tuple[int, str | None]] = {}
             for store in STORES:
                 stream = self._streams.get((run_id, store))
                 if stream is not None and stream.entries:
                     heads[store] = self._publish(run_id, store, stream)
-        return heads
+                    state[store] = (len(stream.entries), stream.entries[-1].hash)
+                else:
+                    state[store] = (0, None)
+            attestation = sign_attestation(
+                run_id, state["telemetry"], state["audit"], self._signer, final=final
+            )
+            name = attestation_name(run_id)
+            self._attestations.append(run_id, attestation.model_dump_json())
+            for sink in self._extra_sinks:
+                try:
+                    sink.append(name, attestation.model_dump_json())
+                except AgentSdkError as error:
+                    _logger.warning(
+                        "Could not copy an attestation to %s: %s", sink.location(name), error
+                    )
+            if final:
+                self._final.add(run_id)
+        return heads, attestation
+
+    def attestation_lines(self, run_id: str) -> list[str]:
+        return self._attestations.read_all(run_id)
+
+    def status(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            streams = {}
+            for store in STORES:
+                stream = self._streams.get((run_id, store))
+                held = stream.entries if stream is not None else []
+                streams[store] = {
+                    "held": len(held),
+                    "first_received_at_utc": held[0].received_at_utc if held else None,
+                    "last_received_at_utc": held[-1].received_at_utc if held else None,
+                }
+            return {"run_id": run_id, "final": run_id in self._final, "streams": streams}
+
+    def _check_record(
+        self,
+        run_id: str,
+        store: str,
+        sequence: int,
+        record_hash: str,
+        previous: str | None,
+        record: str | None,
+    ) -> str | None:
+        if not self._verify_records:
+            return _claimed_time(record)
+        if record is None:
+            if self._verify_records:
+                raise _fail(
+                    "RECORDER_RECORD_REQUIRED",
+                    f'The {store} ledger of run "{run_id}" sent record {sequence} without its '
+                    "text, but this recorder verifies the records it accepts.",
+                    run_id=run_id,
+                    store=store,
+                    sequence=sequence,
+                )
+            return None
+        try:
+            if store == "audit":
+                audit = AuditLogEntry.model_validate_json(record)
+                facts = (audit.run_id, audit.sequence, audit.previous_hash, audit_entry_hash(audit))
+                claimed = audit.occurred_at_utc
+            else:
+                event = TelemetryEvent.parse_stored(record)
+                facts = (
+                    event.context.run_id,
+                    event.sequence,
+                    event.previous_event_hash,
+                    event_hash(event),
+                )
+                claimed = event.occurred_at_utc
+        except ValueError as error:
+            raise _fail(
+                "RECORDER_RECORD_INVALID",
+                f'Record {sequence} of the {store} ledger of run "{run_id}" is not a '
+                f"readable record ({type(error).__name__}): {str(error)[:200]}",
+                run_id=run_id,
+                store=store,
+                sequence=sequence,
+            ) from error
+        mismatches = [
+            label
+            for label, found, wanted in (
+                ("run id", facts[0], run_id),
+                ("sequence", facts[1], sequence),
+                ("previous hash", facts[2], previous),
+                ("integrity hash", facts[3], record_hash),
+            )
+            if found != wanted
+        ]
+        if mismatches:
+            raise _fail(
+                "RECORDER_RECORD_INVALID",
+                f'Record {sequence} of the {store} ledger of run "{run_id}" disagrees with '
+                f"its text on: {', '.join(mismatches)}. The text hashes to "
+                f"{facts[3][:12]} but {record_hash[:12]} was announced.",
+                run_id=run_id,
+                store=store,
+                sequence=sequence,
+            )
+        return claimed
 
     def _require_store(self, store: str) -> None:
         if store not in STORES:
@@ -305,6 +443,10 @@ class RecorderCore:
                 stream.entries.append(entry)
                 stream.accumulator.append(leaf_data(entry.hash))
             self._streams[(run_id, store)] = stream
+        for run_id in {run for run, _ in self._streams}:
+            lines = self._attestations.read_all(run_id)
+            if lines and RunAttestation.model_validate_json(lines[-1]).final:
+                self._final.add(run_id)
 
 
 def _read_records(path: Path) -> list[RecordedEntry]:
@@ -353,12 +495,65 @@ def _read_records(path: Path) -> list[RecordedEntry]:
     return entries
 
 
+def _claimed_time(record: str | None) -> str | None:
+    if record is None:
+        return None
+    try:
+        claimed = json.loads(record).get("occurred_at_utc")
+    except (ValueError, AttributeError):
+        return None
+    return claimed if isinstance(claimed, str) else None
+
+
+def server_ssl_context(
+    certificate_file: Path, key_file: Path, *, client_ca_file: Path | None = None
+) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(str(certificate_file), str(key_file))
+    if client_ca_file is not None:
+        context.load_verify_locations(str(client_ca_file))
+        context.verify_mode = ssl.CERT_REQUIRED
+    return context
+
+
+def client_ssl_context(
+    ca_file: Path,
+    *,
+    certificate_file: Path | None = None,
+    key_file: Path | None = None,
+) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_verify_locations(str(ca_file))
+    if certificate_file is not None:
+        context.load_cert_chain(str(certificate_file), str(key_file) if key_file else None)
+    return context
+
+
 class _Handler(socketserver.StreamRequestHandler):
     server: RecorderServer
+    timeout = IDLE_TIMEOUT_SECONDS
+
+    def setup(self) -> None:
+        if self.server.tls is not None:
+            self.request.settimeout(self.timeout)
+            try:
+                self.request = self.server.tls.wrap_socket(self.request, server_side=True)
+            except (ssl.SSLError, OSError) as error:
+                _logger.warning("A TLS handshake with the recorder failed: %s", error)
+                self.request.close()
+                raise ConnectionError("TLS handshake failed") from error
+        super().setup()
 
     def handle(self) -> None:
         while True:
-            line = self.rfile.readline(MAX_LINE_BYTES + 1)
+            try:
+                line = self.rfile.readline(MAX_LINE_BYTES + 1)
+            except TimeoutError:
+                return
             if not line:
                 return
             if len(line) > MAX_LINE_BYTES:
@@ -383,10 +578,14 @@ class RecorderServer(socketserver.ThreadingTCPServer):
         read_token: str,
         host: str = "127.0.0.1",
         port: int = 0,
+        scoped_append: bool = False,
+        tls: ssl.SSLContext | None = None,
     ) -> None:
         if not append_token or not read_token or append_token == read_token:
             raise ValueError("append_token and read_token are required and must differ.")
         self.core = core
+        self.tls = tls
+        self._scoped = scoped_append
         self._append_token = append_token
         self._read_token = read_token
         super().__init__((host, port), _Handler)
@@ -403,14 +602,29 @@ class RecorderServer(socketserver.ThreadingTCPServer):
         except (ValueError, KeyError, TypeError):
             return {"ok": False, "code": "RECORDER_REQUEST_INVALID", "detail": "not a request"}
         writes = operation in {"append", "seal"}
-        wanted = self._append_token if writes else self._read_token
-        if operation not in {"append", "seal", "read", "heads", "ping"}:
+        if operation not in {"append", "seal", "read", "heads", "ping", "status", "attestations"}:
             return {"ok": False, "code": "RECORDER_OPERATION_UNKNOWN", "detail": str(operation)}
+        wanted = self._read_token
+        scope = "read"
+        if writes:
+            wanted, scope = self._append_token, "append"
+            if self._scoped:
+                run = request.get("run_id")
+                if not isinstance(run, str) or not run:
+                    return {
+                        "ok": False,
+                        "code": "RECORDER_REQUEST_INVALID",
+                        "detail": f"{operation} needs a run_id to pick the token that applies",
+                    }
+                wanted, scope = (
+                    scoped_append_token(self._append_token, run),
+                    "append token for this run",
+                )
         if not hmac.compare_digest(token, wanted):
             return {
                 "ok": False,
                 "code": "RECORDER_TOKEN_REFUSED",
-                "detail": f"the {'append' if writes else 'read'} token is required for {operation}",
+                "detail": f"the {scope} token is required for {operation}",
             }
         try:
             return {"ok": True, **self._run(operation, request)}
@@ -437,8 +651,17 @@ class RecorderServer(socketserver.ThreadingTCPServer):
                 request.get("record"),
             )
         if operation == "seal":
-            heads = core.seal(str(request["run_id"]))
-            return {"heads": {store: head.model_dump(mode="json") for store, head in heads.items()}}
+            heads, attestation = core.attest(
+                str(request["run_id"]), final=bool(request.get("final", False))
+            )
+            return {
+                "heads": {store: head.model_dump(mode="json") for store, head in heads.items()},
+                "attestation": attestation.model_dump(mode="json"),
+            }
+        if operation == "status":
+            return core.status(str(request["run_id"]))
+        if operation == "attestations":
+            return {"lines": core.attestation_lines(str(request["run_id"]))}
         if operation == "read":
             found = core.entries(str(request["run_id"]), str(request["store"]))
             return {"entries": [item.model_dump(mode="json") for item in found]}
@@ -453,12 +676,17 @@ class RecorderClient:
         host: str,
         port: int,
         *,
-        append_token: str,
+        append_token: str | Callable[[str], str],
         read_token: str | None = None,
         timeout_seconds: float = 5.0,
+        tls: ssl.SSLContext | None = None,
+        server_hostname: str | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError(f"timeout_seconds must be positive, got {timeout_seconds}.")
+        self._tls = tls
+        self._server_hostname = server_hostname or host
+        self.last_attestation: RunAttestation | None = None
         self._address = (host, port)
         self._append_token = append_token
         self._read_token = read_token
@@ -479,7 +707,7 @@ class RecorderClient:
         return self._call(
             {
                 "op": "append",
-                "token": self._append_token,
+                "token": self._append_token_for(run_id),
                 "run_id": run_id,
                 "store": store,
                 "sequence": sequence,
@@ -489,8 +717,17 @@ class RecorderClient:
             }
         )
 
-    def seal(self, run_id: str) -> dict[str, MerkleTreeHead]:
-        reply = self._call({"op": "seal", "token": self._append_token, "run_id": run_id})
+    def seal(self, run_id: str, final: bool = False) -> dict[str, MerkleTreeHead]:
+        reply = self._call(
+            {
+                "op": "seal",
+                "token": self._append_token_for(run_id),
+                "run_id": run_id,
+                "final": final,
+            }
+        )
+        if "attestation" in reply:
+            self.last_attestation = RunAttestation.model_validate(reply["attestation"])
         return {
             store: MerkleTreeHead.model_validate(head) for store, head in reply["heads"].items()
         }
@@ -504,6 +741,14 @@ class RecorderClient:
     def head_sink(self) -> CheckpointSink:
         return _HeadSink(self)
 
+    def status(self, run_id: str) -> dict[str, Any]:
+        reply = self._call({"op": "status", "token": self._need_read(), "run_id": run_id})
+        return {key: value for key, value in reply.items() if key != "ok"}
+
+    def attestation_lines(self, run_id: str) -> list[str]:
+        reply = self._call({"op": "attestations", "token": self._need_read(), "run_id": run_id})
+        return [str(item) for item in reply["lines"]]
+
     def head_lines(self, name: str) -> list[str]:
         reply = self._call({"op": "heads", "token": self._need_read(), "name": name})
         return [str(item) for item in reply["lines"]]
@@ -511,6 +756,10 @@ class RecorderClient:
     def close(self) -> None:
         with self._lock:
             self._drop()
+
+    def _append_token_for(self, run_id: str) -> str:
+        token = self._append_token
+        return token(run_id) if callable(token) else token
 
     def _need_read(self) -> str:
         if self._read_token is None:
@@ -535,6 +784,10 @@ class RecorderClient:
                 try:
                     if self._socket is None:
                         self._socket = socket.create_connection(self._address, self._timeout)
+                        if self._tls is not None:
+                            self._socket = self._tls.wrap_socket(
+                                self._socket, server_hostname=self._server_hostname
+                            )
                         self._socket.settimeout(self._timeout)
                         self._reader = self._socket.makefile("rb")
                     self._socket.sendall(data)
@@ -631,9 +884,40 @@ class RecorderMirror:
             time.sleep(0.005)
         return self._queue.qsize() == 0
 
-    def finish(self, run_id: str, timeout_seconds: float = 10.0) -> dict[str, MerkleTreeHead]:
+    def backfill(
+        self, telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str
+    ) -> dict[str, int]:
+        self.flush()
+        sent = {"telemetry": 0, "audit": 0}
+        for event in telemetry.iter_events(run_id):
+            self._client.append(
+                run_id,
+                "telemetry",
+                event.sequence,
+                event.integrity_hash,
+                event.previous_event_hash,
+                event.model_dump_json() if self._include else None,
+            )
+            sent["telemetry"] += 1
+        for entry in audit.iter_entries(run_id):
+            self._client.append(
+                run_id,
+                "audit",
+                entry.sequence,
+                entry.integrity_hash,
+                entry.previous_hash,
+                entry.model_dump_json() if self._include else None,
+            )
+            sent["audit"] += 1
+        with self._lock:
+            self.stats.degraded -= {(run_id, "telemetry"), (run_id, "audit")}
+        return sent
+
+    def finish(
+        self, run_id: str, timeout_seconds: float = 10.0, final: bool = False
+    ) -> dict[str, MerkleTreeHead]:
         self.flush(timeout_seconds)
-        return self._client.seal(run_id)
+        return self._client.seal(run_id, final)
 
     def close(self) -> None:
         if self._worker is not None:
@@ -684,6 +968,15 @@ class RecorderMirror:
     def _deliver(self, item: tuple[str, str, int, str, str | None, str | None]) -> None:
         run_id, store, sequence, record_hash, previous, record = item
         if (run_id, store) in self.stats.degraded:
+            if self._required and not self._asynchronous:
+                raise _fail(
+                    "RECORDER_DEGRADED",
+                    f'The {store} ledger of run "{run_id}" is no longer mirrored since an '
+                    f"earlier failure ({self.stats.last_error}); a required recorder refuses "
+                    "further records until backfill() has sent the missing ones.",
+                    run_id=run_id,
+                    store=store,
+                )
             return
         try:
             self._client.append(run_id, store, sequence, record_hash, previous, record)
@@ -913,6 +1206,12 @@ def _load_signer(directory: Path) -> Ed25519Signer:
     return signer
 
 
+def _secret(path: Path | None, variable: str) -> str:
+    if path is not None:
+        return path.read_text(encoding="utf-8").strip()
+    return os.environ.get(variable, "")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
@@ -922,22 +1221,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--head-every", type=int, default=50)
     parser.add_argument("--no-fsync", action="store_true")
+    parser.add_argument("--append-token-file", type=Path)
+    parser.add_argument("--read-token-file", type=Path)
+    parser.add_argument("--scoped-append", action="store_true")
+    parser.add_argument("--verify-records", action="store_true")
+    parser.add_argument("--tls-cert", type=Path)
+    parser.add_argument("--tls-key", type=Path)
+    parser.add_argument("--tls-client-ca", type=Path)
     arguments = parser.parse_args(argv)
-    append_token = os.environ.get(APPEND_TOKEN_VARIABLE, "")
-    read_token = os.environ.get(READ_TOKEN_VARIABLE, "")
+    append_token = _secret(arguments.append_token_file, APPEND_TOKEN_VARIABLE)
+    read_token = _secret(arguments.read_token_file, READ_TOKEN_VARIABLE)
     if not append_token or not read_token:
         print(
-            f"{APPEND_TOKEN_VARIABLE} and {READ_TOKEN_VARIABLE} must both be set in the "
-            "environment of the recorder process.",
+            f"The append and read tokens must both be given: in {APPEND_TOKEN_VARIABLE} and "
+            f"{READ_TOKEN_VARIABLE} in the recorder's environment, or in the files named by "
+            "--append-token-file and --read-token-file (files keep them out of child processes).",
             file=sys.stderr,
         )
         return 2
+    if bool(arguments.tls_cert) != bool(arguments.tls_key):
+        print("--tls-cert and --tls-key must be given together.", file=sys.stderr)
+        return 2
+    tls = (
+        server_ssl_context(
+            arguments.tls_cert, arguments.tls_key, client_ca_file=arguments.tls_client_ca
+        )
+        if arguments.tls_cert
+        else None
+    )
     signer = _load_signer(arguments.directory)
     core = RecorderCore(
         arguments.directory,
         signer,
         head_every=arguments.head_every,
         durable=not arguments.no_fsync,
+        verify_records=arguments.verify_records,
     )
     server = RecorderServer(
         core,
@@ -945,6 +1263,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         read_token=read_token,
         host=arguments.host,
         port=arguments.port,
+        scoped_append=arguments.scoped_append,
+        tls=tls,
     )
     print(
         json.dumps(

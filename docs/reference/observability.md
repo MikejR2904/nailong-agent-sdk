@@ -5,15 +5,20 @@ Three independent records of a run, all written outside the model's context: the
 | File | Lines | Role |
 |---|---:|---|
 | [`observability/__init__.py`](#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
+| [`observability/attestation.py`](#observabilityattestationpy---run-heads-signed-by-the-recorder-so-no-key-on-the-host-is-trusted) | 234 | run heads signed by the recorder, so no key on the host is trusted |
 | [`observability/audit_log.py`](#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 550 | append-only, hash-chained, per-run JSONL audit transcript |
+| [`observability/clock_check.py`](#observabilityclock_checkpy---detecting-a-ledger-whose-recorded-times-run-backwards) | 69 | detecting a ledger whose recorded times run backwards |
+| [`observability/keyring.py`](#observabilitykeyringpy---public-verification-keys-with-validity-windows-rotation-and-revocation) | 216 | public verification keys with validity windows, rotation and revocation |
 | [`observability/metric_definitions.py`](#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 450 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
 | [`observability/otlp.py`](#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 1000 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
+| [`observability/payload_bounds.py`](#observabilitypayload_boundspy---size-bounds-on-one-ledger-record-that-keep-the-fields-saying-who-and-what) | 45 | size bounds on one ledger record that keep the fields saying who and what |
 | [`observability/profiler.py`](#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
 | [`observability/run_checkpoints.py`](#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 890 | signed checkpoints of a run's chain heads, kept outside the run root |
 | [`observability/telemetry_helpers.py`](#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
 | [`observability/telemetry_models.py`](#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 261 | telemetry event, context, actor and metric contracts |
 | [`observability/telemetry_store.py`](#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 768 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
+| [`observability/timestamp.py`](#observabilitytimestamppy---rfc-3161-trusted-timestamps-for-checkpoints-and-tree-heads) | 545 | RFC 3161 trusted timestamps for checkpoints and tree heads |
 | [`observability/trace_context.py`](#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 181 | W3C Trace Context ids, the traceparent header and the process resource |
 
 ---
@@ -44,6 +49,28 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
+### `observability/attestation.py` - run heads signed by the recorder, so no key on the host is trusted
+
+*234 lines · depends on: `foundations/jcs.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `observability/recorder.py`, `agent/evidence_profile.py` · not re-exported at the package root*
+
+**Role in the workflow.** A run-head checkpoint is signed by a key on the host that ran the agent, so a host that is compromised can sign whatever it likes. The recorder holds its own copy of both ledgers and signs what it holds with a key that never leaves it. A `RunAttestation` is that signature; checking a run against the recorder's attestations needs only the recorder's public key. `final` marks the host's closing seal.
+
+**Contents**
+
+- `attestation_name(run_id: str) -> str` - `<run_id>.attestation`, the name extra sinks store attestations under. · *Called by:* `observability/recorder.py::RecorderCore.attest`
+- **class `RunAttestation`** *(pydantic model; bases: StrictModel)* - The run id, the telemetry and audit sequence and head the recorder holds, the time it attested, whether the host sealed the run as final, the signer id and the signature.
+  - `RunAttestation.signed_message(self) -> bytes` - The RFC 8785 bytes of the record without its signature.
+- `sign_attestation(run_id, telemetry, audit, signer, *, final, now=None) -> RunAttestation` - Builds and signs one from the (sequence, head) of each ledger. · *Called by:* `observability/recorder.py::RecorderCore.attest`
+- **class `AttestationVerdict`** *(enum; bases: StrEnum)* - `matches`, `advanced` (the ledgers hold more than was attested), `truncated`, `diverged`, `chain-broken`, `signature-invalid`, `not-final` (a closing seal was required and never arrived), `no-attestation` and `unreadable`.
+- **class `AttestationVerification`** *(pydantic model; bases: StrictModel)* - The verdict, the count of attestations, whether the newest is final, the attested and current sequences of each ledger and a sentence.
+  - `AttestationVerification.ok(self) -> bool` *(property)* - True for `matches` and `advanced`.
+- `parse_attestations(lines: Sequence[str], run_id: str) -> list[RunAttestation]` - Reads the records; a record that does not parse, has an unknown schema or belongs to another run raises `ValueError` naming its number. · *Called by:* `observability/attestation.py::verify_attestations`
+- `verify_attestations(telemetry, audit, run_id, lines, verifier, *, require_final=False) -> AttestationVerification` - Checks each signature (a key ring resolves the key the record names, at the time it claims), that the recorder's sequences never went backwards, and the newest against the local ledgers: fewer records is `truncated`, a different record at the attested sequence is `diverged`. With `require_final` a run the recorder never saw closed is `not-final`. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._recorder_findings`
+
+**Algorithms & invariants.** An attestation covers the prefix the recorder received, so it is evidence about what the host sent, not about what the host did afterwards. Records the host wrote after sending its final seal are `advanced`.
+
+---
+
 ### `observability/audit_log.py` - append-only, hash-chained, per-run JSONL audit transcript
 
 *550 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/logging.py`, `foundations/run_fence.py`, `foundations/text.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/retention.py`, `agent/retention_inventory.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/attribute_failure.py`, `developer_tools/cli.py`, `developer_tools/decision_links.py` (+5 more) · re-exported at the package root: 2 name(s)*
@@ -52,7 +79,8 @@ Three independent records of a run, all written outside the model's context: the
 
 **Contents**
 
-- **class `AuditLogEntry`** *(pydantic model; bases: StrictModel)* - One transcript line: schema version, 1-based sequence, event type, UTC time, run/task ids, iteration, bounded payload, previous hash and its own integrity hash. · *Instantiated by:* `observability/audit_log.py::AuditTranscriptStore.append`
+- **class `AuditLogEntry`** *(pydantic model; bases: StrictModel)* - One transcript line: schema version, 1-based sequence, event type, UTC time, run/task ids, iteration, bounded payload, previous hash and its own integrity hash. `schema_version` is `agent-audit-log-v2` for new entries (hash over RFC 8785 JCS bytes); v1 entries still verify, and an unknown version is refused by name. · *Instantiated by:* `observability/audit_log.py::AuditTranscriptStore.append`
+  - `AuditLogEntry.schema_is_known(cls, value: str) -> str` - Refuses a `schema_version` that is not `agent-audit-log-v1` or `-v2`, because its hash could not be recomputed.
   - fields: `schema_version`, `sequence`, `event_type`, `occurred_at_utc`, `run_id`, `task_id`, `iteration`, `payload`, `previous_hash`, `integrity_hash`
   - `AuditLogEntry.identifiers_are_well_formed(value: str | None, info: ValidationInfo) -> str | None` *(validator, classmethod)* - Validator: `event_type`, `run_id` and `task_id` contain no unpaired surrogate (which UTF-8 cannot encode), naming the field and code point.
   - `AuditLogEntry.safe_payload(payload: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: refuses a payload containing a hidden-reasoning key.
@@ -84,7 +112,8 @@ Three independent records of a run, all written outside the model's context: the
   - `AuditTranscriptStore.close() -> None` - Closes all cached append handles (needed before deleting the root on Windows). · *Called within this file by:* `observability/audit_log.py::AuditTranscriptStore._handle_for`, `observability/audit_log.py::AuditTranscriptStore.prune_run`
   - `AuditTranscriptStore._append_transaction(run_id: str) -> Iterator[None]` *(contextmanager)* - Context manager that holds the in-process lock and an `exclusive_file_lock` on `<run>.lock` (timeout code `AUDIT_LOCK_TIMEOUT`) around one append. · *Called by:* `observability/audit_log.py::AuditTranscriptStore.append`, `observability/audit_log.py::AuditTranscriptStore.prune_run`, `observability/audit_log.py::AuditTranscriptStore.quiesce`
   - `AuditTranscriptStore._local_append_lock(path: Path) -> Iterator[None]` *(classmethod, contextmanager)* - Class-level registry of one `RLock` per log path so separate store instances in one process serialize on the same file. · *Called by:* `observability/audit_log.py::AuditTranscriptStore._append_transaction`
-- `_bound_and_redact(value: Any, max_chars: int) -> dict[str, Any]` - Redacts secrets, then keeps the payload if its JSON fits `max_chars`; otherwise replaces it with a truncation record (hash, original size, preview). · *Called by:* `observability/audit_log.py::AuditTranscriptStore.append`
+- `_bound_and_redact(value: Any, max_chars: int) -> dict[str, Any]` - Redacts secrets, then keeps the payload if its JSON fits `max_chars`; otherwise replaces it with a truncation record (hash, original size, preview). · *Called by:* `observability/audit_log.py::AuditTranscriptStore.append` The bounding itself is `bound_payload`.
+- `audit_entry_hash(entry: AuditLogEntry) -> str` - The hash an entry's `schema_version` calls for over its content with the hash blanked: `-v2` is the SHA-256 of RFC 8785 bytes, `-v1` the legacy form. · *Called by:* `observability/audit_log.py::AuditTranscriptStore._write_entry`, `observability/audit_log.py::_entries_chain_break`
 - `_last_line(handle: IO[bytes], end: int) -> bytes` - Reads backwards from `end` in 64 KiB chunks and returns the last non-blank line of the file, however long it is.
 - `_is_torn(line: bytes) -> bool` - True when a line is not a valid audit entry. A final line with no newline that is torn is the half of a write a crash cut off.
 - `_complete_end(handle: IO[bytes], end: int) -> tuple[int, int]` - Where the last complete line ends and how many bytes of an interrupted write follow it. Readers ignore those bytes, so a crashed transcript verifies up to its last whole entry instead of failing.
@@ -100,6 +129,22 @@ Three independent records of a run, all written outside the model's context: the
 *Module-level names:* `_LOCK_TIMEOUT_SECONDS`, `_LOCK_POLL_SECONDS`
   - `AuditTranscriptStore.add_append_listener(self, listener: AppendListener, *, required: bool=False) -> None` - Registers a callback run, inside the append lock, after each entry is written and fsynced; see `AppendListeners`.
   - `AuditTranscriptStore.remove_append_listener(self, listener: AppendListener) -> None` - Unregisters a callback.
+
+---
+
+### `observability/clock_check.py` - detecting a ledger whose recorded times run backwards
+
+*69 lines · depends on: `foundations/contracts.py` · used by: `agent/evidence_profile.py` · not re-exported at the package root*
+
+**Role in the workflow.** A ledger's times are whatever the writer put there, so a backdated event verifies. This reports where the times run backwards so a reader can decide whether it is a clock step or a forgery. The recorder's own receipt times are checked with it as well, since that clock is not the host's.
+
+**Contents**
+
+- **class `TimeRegression`** *(pydantic model; bases: StrictModel)* - One step back: its sequence, the time before it, its time and how many seconds back it went.
+- **class `TimeOrderReport`** *(pydantic model; bases: StrictModel)* - How many records were checked, how many times did not parse, the first few regressions and the total.
+  - `TimeOrderReport.ordered(self) -> bool` *(property)* - True when nothing ran backwards and every time parsed.
+- `parse_utc(text: str) -> datetime | None` - An ISO 8601 time as UTC (a time with no offset is taken as UTC), or None. · *Called by:* `observability/clock_check.py::find_time_regressions`, `agent/evidence_profile.py::EvidenceProfile._receipt_finding`
+- `find_time_regressions(times: Iterable[tuple[int, str]], *, tolerance_seconds: float=0.0, keep: int=5) -> TimeOrderReport` - Walks (sequence, time) pairs in order; a time earlier than the previous one by more than the tolerance is a regression. A time that does not parse is counted and skipped. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._time_order_finding`, `agent/evidence_profile.py::EvidenceProfile._receipt_finding`
 
 ---
 
@@ -127,6 +172,45 @@ Three independent records of a run, all written outside the model's context: the
   - `Ed25519Signer.private_key_hex(self) -> str` - The private key in hex, for a process that stores its own key; a verify-only signer raises `ED25519_SIGNING_KEY_MISSING`.
 
 ---
+### `observability/keyring.py` - public verification keys with validity windows, rotation and revocation
+
+*216 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `observability/ed25519.py`, `observability/run_checkpoints.py` · used by: `agent/evidence_profile.py`, `developer_tools/cli.py`, tests · not re-exported at the package root*
+
+**Role in the workflow.** A verifier that holds only public keys, and can say which key a record named was valid at the time the record claims. It is what makes rotation and revocation possible: the signer id in a checkpoint, tree head or tombstone selects a key, and the key's window decides whether the record is accepted. Pass `KeyRing.verifier()` anywhere a verifier is taken.
+
+**Contents**
+
+- `parse_instant(text: str, label: str) -> datetime` - An ISO 8601 time, taken as UTC when it has no offset; a bad one raises `ValueError` naming the field.
+- **class `VerificationKey`** *(pydantic model; bases: StrictModel)* - One public key: `key_id`, the 32-byte `public_key` as hex, and optional `not_before_utc`, `not_after_utc` and `revoked_at_utc`.
+  - `VerificationKey.public_key_is_hex(cls, value: str) -> str` - Refuses a key that is not 64 hexadecimal characters, naming the field.
+  - `VerificationKey.instants_parse(cls, value: str | None, info: Any) -> str | None` - Refuses a window time that does not parse, naming the field.
+- **class `KeyRing`** *(class)* - The keys by id. A repeated id raises `ValueError`.
+  - `KeyRing.__init__(self, keys: Sequence[VerificationKey]) -> None` - Indexes the keys.
+  - `KeyRing.keys(self) -> list[VerificationKey]` *(property)* - The keys held.
+  - `KeyRing.of(cls, *signers: CheckpointSigner | Ed25519Signer) -> KeyRing` - A ring of the public halves of Ed25519 signers; any other signer type raises `TypeError` naming it.
+  - `KeyRing.from_file(cls, path: Path) -> KeyRing` - Reads a ring file; any failure is `KEYRING_UNREADABLE` naming the path and cause.
+  - `KeyRing.from_json(cls, text: str) -> KeyRing` - Parses the `agent-sdk-keyring-v1` document.
+  - `KeyRing.to_json(self) -> str` - The document; it holds public keys only.
+  - `KeyRing.write(self, path: Path) -> None` - Writes it to a file.
+  - `KeyRing.revoked(self, key_id: str, at_utc: str) -> KeyRing` - A copy in which the key is revoked from that time; records claiming that time or later are refused.
+  - `KeyRing.rotated(self, old_key_id: str, new_key: VerificationKey, at_utc: str) -> KeyRing` - A copy in which the old key expires and the new one starts at that time.
+  - `KeyRing.verifier(self) -> KeyRingVerifier` - The verifier form.
+  - `KeyRing.resolve(self, key_id: str, at_utc: str | None) -> tuple[CheckpointSigner | None, str | None]` - A verify-only Ed25519 signer for the key, or None with a sentence: the ring holds no such key (listing the known ids), the key was not yet valid, had expired, or was revoked at the claimed time.
+  - `KeyRing._known(self, key_id: str) -> VerificationKey` - The key, or `ValueError` listing the known ids.
+  - `KeyRing._replaced(self, key: VerificationKey) -> KeyRing` - A copy with one key swapped.
+  - `KeyRing._window_problem(key: VerificationKey, at_utc: str | None) -> str | None` *(static)* - Why the key cannot be trusted at that time, or None.
+- **class `KeyRingVerifier`** *(class)* - A `CheckpointSigner`-shaped verifier over a ring.
+  - `KeyRingVerifier.__init__(self, ring: KeyRing) -> None` - Holds the ring.
+  - `KeyRingVerifier.signer_id(self) -> str` *(property)* - The constant `keyring`; the id a record names is resolved through `resolve`, not compared with this.
+  - `KeyRingVerifier.ring(self) -> KeyRing` *(property)* - The ring.
+  - `KeyRingVerifier.sign(self, message: bytes) -> str` - Always raises `KEYRING_CANNOT_SIGN`.
+  - `KeyRingVerifier.verify(self, message: bytes, signature: str) -> bool` - Always raises `KEYRING_NEEDS_SIGNER_ID`: trying every key would ignore windows and revocation, so a caller must call `resolve` first.
+  - `KeyRingVerifier.resolve(self, signer_id: str, at_utc: str | None) -> tuple[CheckpointSigner | None, str | None]` - `KeyRing.resolve`.
+
+**Algorithms & invariants.** The time a window is checked against is the one the record claims, or, when the record carries a verified RFC 3161 timestamp, the time the authority attested. Without a trusted timestamp, revocation cannot stop a thief who backdates a record, so a deployment that revokes keys should also require timestamps.
+
+---
+
 ### `observability/metric_definitions.py` - the SDK's standard metric catalogue
 
 *450 lines · depends on: `observability/telemetry_models.py` · used by: `observability/metrics.py` · re-exported at the package root: 1 name(s)*
@@ -257,6 +341,19 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
+### `observability/payload_bounds.py` - size bounds on one ledger record that keep the fields saying who and what
+
+*45 lines · depends on: `foundations/hashing.py` · used by: `observability/audit_log.py`, `observability/telemetry_store.py` · not re-exported at the package root*
+
+**Role in the workflow.** A payload that is too large cannot be stored whole, but cutting it to a preview loses the keys that sort last, such as the tool name. `bound_payload` keeps every short scalar field and, for each field it drops, its length and SHA-256.
+
+**Contents**
+
+- `bound_payload(redacted: Any, max_chars: int) -> dict[str, Any]` - The payload itself when its canonical JSON fits; otherwise `truncated`, `content_hash`, `original_chars`, a `preview` of `max_chars`, the short scalar fields and `omitted_fields`. · *Called by:* `observability/audit_log.py::_bound_and_redact`, `observability/telemetry_store.py::TelemetryStore.append`
+- `identity_fields(payload: dict[str, Any], reserved: set[str]) -> dict[str, Any]` - The short scalar fields (at most 256 characters) and, for the others, `omitted_fields` with each one's length and SHA-256. · *Called by:* `observability/payload_bounds.py::bound_payload`
+
+---
+
 ### `observability/profiler.py` - privacy-conscious timing profile for one agent run
 
 *330 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/hashing.py`, `observability/trace_context.py` · used by: `agent/base_agent/agent.py`, `agent/runtime.py` · re-exported at the package root: 7 name(s)*
@@ -316,13 +413,19 @@ Three independent records of a run, all written outside the model's context: the
 - **class `_Stream`** *(class)* - One run's one ledger as the recorder holds it: its file, its records and a Merkle accumulator.
 - `_Stream.__init__(self, path: Path) -> None` - Starts empty.
 - **class `RecorderCore`** *(class)* - The recorder's state and rules: it accepts a record only if it is the next sequence and chains to the one before, keeps it in its own directory with an fsync, and signs a Merkle tree head every `head_every` records and on `seal`, with a key that never leaves the recorder. The server and the tests both drive it.
-  - `RecorderCore.__init__(self, directory: Path, signer: CheckpointSigner, *, head_every: int=50, durable: bool=True, extra_sinks: Sequence[CheckpointSink]=()) -> None` - Opens `records/` and `heads/` under the directory, reloads every stream it already holds and rebuilds the accumulators. `head_every` below 1 raises naming the value.
+  - `RecorderCore.__init__(self, directory: Path, signer: CheckpointSigner, *, head_every: int=50, durable: bool=True, extra_sinks: Sequence[CheckpointSink]=()) -> None` - Opens `records/` and `heads/` under the directory, reloads every stream it already holds and rebuilds the accumulators. `head_every` below 1 raises naming the value. `verify_records` makes the recorder parse each record, recompute its hash and refuse text that disagrees with what was announced; without it the text is stored as sent.
   - `RecorderCore.sink(self) -> FileCheckpointSink` - The file sink the heads are written to.
   - `RecorderCore.head_sink(self) -> CheckpointSink` - The same sink, as a `RecorderSource` provides it.
+  - `RecorderCore.attestation_sink(self) -> CheckpointSink` - Where the recorder keeps its attestations (a file sink under its directory).
+  - `RecorderCore.is_final(self, run_id: str) -> bool` - Whether the host sealed the run as final; rebuilt from the attestations on restart.
   - `RecorderCore.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - A copy of the records held for a run and ledger; an unknown ledger raises `RECORDER_STORE_UNKNOWN`.
   - `RecorderCore.run_ids(self) -> list[str]` - The run ids it holds records for.
-  - `RecorderCore.append(self, run_id: str, store: str, sequence: int, record_hash: str, previous_hash: str | None, record: str | None) -> dict[str, Any]` - Takes one record. A repeat of a held record is accepted as a duplicate; a different hash for a held sequence is `RECORDER_CONFLICT` (the local ledger was rewritten after sending) and is also written to `conflicts.jsonl`; a sequence beyond the next is `RECORDER_GAP`; a predecessor that is not the held hash is `RECORDER_CHAIN_BROKEN`; a non-hexadecimal hash is `RECORDER_HASH_INVALID`; a sequence below 1 is `RECORDER_SEQUENCE_INVALID` naming the store, the run and the value.
+  - `RecorderCore.append(self, run_id: str, store: str, sequence: int, record_hash: str, previous_hash: str | None, record: str | None) -> dict[str, Any]` - Takes one record. A repeat of a held record is accepted as a duplicate; a different hash for a held sequence is `RECORDER_CONFLICT` (the local ledger was rewritten after sending) and is also written to `conflicts.jsonl`; a sequence beyond the next is `RECORDER_GAP`; a predecessor that is not the held hash is `RECORDER_CHAIN_BROKEN`; a non-hexadecimal hash is `RECORDER_HASH_INVALID`; with `verify_records` the text must be present (`RECORDER_RECORD_REQUIRED`) and agree with the announced run, sequence, predecessor and hash (`RECORDER_RECORD_INVALID` names which). Each accepted record is stamped with the recorder's own clock (`received_at_utc`) and keeps the time the record claims (`claimed_at_utc`); a sequence below 1 is `RECORDER_SEQUENCE_INVALID` naming the store, the run and the value.
   - `RecorderCore.seal(self, run_id: str) -> dict[str, MerkleTreeHead]` - Signs and publishes a tree head for each ledger the run has records in, and returns them.
+  - `RecorderCore.attest(self, run_id: str, *, final: bool=False) -> tuple[dict[str, MerkleTreeHead], RunAttestation]` - Publishes signed tree heads for both streams and a signed attestation of what it holds, appends the attestation to its own sink and every extra sink, and with `final` remembers the run as closed.
+  - `RecorderCore.attestation_lines(self, run_id: str) -> list[str]` - The run's attestations, oldest first.
+  - `RecorderCore.status(self, run_id: str) -> dict[str, Any]` - Whether the run is final and, per ledger, how many records are held and when the first and last arrived.
+  - `RecorderCore._check_record(self, run_id, store, sequence, record_hash, previous, record) -> str | None` - Parses the text as an audit entry or telemetry event, recomputes its hash and compares run, sequence, predecessor and hash; returns the time the record claims. Without `verify_records` it only reads the claimed time.
   - `RecorderCore._require_store(self, store: str) -> None` - Raises `RECORDER_STORE_UNKNOWN` for a ledger that is not `telemetry` or `audit`.
   - `RecorderCore._stream(self, run_id: str, store: str) -> _Stream` - The stream of a run and ledger, created on first use under `records/`.
   - `RecorderCore._persist(self, stream: _Stream, entry: RecordedEntry) -> None` - Appends the record's JSON line and, when durable, fsyncs it before the append is acknowledged; an `OSError` becomes `RECORDER_STORAGE_FAILED` naming the file, so a full disk answers the caller instead of dropping the connection.
@@ -330,20 +433,28 @@ Three independent records of a run, all written outside the model's context: the
   - `RecorderCore._publish(self, run_id: str, store: str, stream: _Stream) -> MerkleTreeHead` - Signs the accumulator's size and root with the recorder's key, appends the head to the heads sink and to any extra sink (a failure of an extra sink is logged).
   - `RecorderCore._load(self) -> None` - Rebuilds every stream from its JSONL file with `_read_records`.
 - `_read_records(path: Path) -> list[RecordedEntry]` - Reads one stream file. An unterminated last line that is not a valid record is the half of a write a crash cut off: it is logged with its length and hash and discarded. A valid record without its newline is kept and the newline restored. A damaged line elsewhere, or a sequence that is not the previous one plus one, raises `RECORDER_RECORDS_CORRUPT` naming the file and line, so the recorder never starts on records it cannot vouch for. · *Called by:* `observability/recorder.py::RecorderCore._load`
+- `_claimed_time(record: str | None) -> str | None` - The `occurred_at_utc` of a record's JSON, or None. · *Called by:* `observability/recorder.py::RecorderCore._check_record`
+- `scoped_append_token(secret: str, run_id: str) -> str` - HMAC-SHA-256 of the run id under the append secret. A server started with `scoped_append` accepts only this token for that run, so a leaked token opens one run and the secret itself opens none. · *Called by:* `observability/recorder.py::RecorderServer.dispatch`, `agent/evidence_profile.py::EvidenceProfile._build_recorder`
+- `server_ssl_context(certificate_file: Path, key_file: Path, *, client_ca_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later; with a client CA, a client certificate signed by it is required. · *Called by:* `observability/recorder.py::main`
+- `client_ssl_context(ca_file: Path, *, certificate_file: Path | None=None, key_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later, the server certificate and its host name verified against the CA, optionally presenting a client certificate. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._build_recorder`
 - **class `_Handler`** *(class)* - The per-connection handler: one JSON request per line, one JSON reply per line.
 - `_Handler.handle(self) -> None` - Reads lines until the peer closes; a line above 1 MiB is refused and ends the connection.
+- `_Handler.setup(self) -> None` - Completes the TLS handshake on the connection's own thread (so a slow client cannot stall accepting others) before the first request; a failed handshake closes the connection.
 - `_Handler._send(self, payload: dict[str, Any]) -> None` - Writes one reply line.
 - **class `RecorderServer`** *(class)* - A threaded loopback TCP server around a `RecorderCore`. Appending and sealing need the append token; reading records and heads needs a different read token. Nothing deletes or replaces a record.
-  - `RecorderServer.__init__(self, core: RecorderCore, *, append_token: str, read_token: str, host: str='127.0.0.1', port: int=0) -> None` - Requires two different non-empty tokens, binds the address (port 0 picks a free one).
+  - `RecorderServer.__init__(self, core: RecorderCore, *, append_token: str, read_token: str, host: str='127.0.0.1', port: int=0) -> None` - Requires two different non-empty tokens, binds the address (port 0 picks a free one). `scoped_append` makes the append token a secret from which each run's token is derived (`scoped_append_token`), and `tls` wraps every connection in TLS, optionally requiring a client certificate.
   - `RecorderServer.port(self) -> int` - The port it is listening on.
-  - `RecorderServer.dispatch(self, line: bytes) -> dict[str, Any]` - Checks the request and the token with a constant-time comparison and runs the operation; every failure is an `ok: false` reply with a code (`RECORDER_REQUEST_INVALID`, `RECORDER_OPERATION_UNKNOWN`, `RECORDER_TOKEN_REFUSED`, or the core's own).
+  - `RecorderServer.dispatch(self, line: bytes) -> dict[str, Any]` - Checks the request and the token with a constant-time comparison and runs the operation; every failure is an `ok: false` reply with a code (`RECORDER_REQUEST_INVALID`, `RECORDER_OPERATION_UNKNOWN`, `RECORDER_TOKEN_REFUSED`, or the core's own). The operations are append, seal (with `final`), read, heads, ping, status and attestations; an append or seal in scoped mode needs the token for the run it names.
   - `RecorderServer._run(self, operation: str, request: dict[str, Any]) -> dict[str, Any]` - The operations: `ping`, `append`, `seal`, `read` (records) and `heads` (the signed head lines of a name).
 - **class `RecorderClient`** *(class)* - The agent-side handle on a recorder. It holds the append token, so it can add records and ask for a seal; reading records or heads needs a read token that only a verifier is given.
-  - `RecorderClient.__init__(self, host: str, port: int, *, append_token: str, read_token: str | None=None, timeout_seconds: float=5.0) -> None` - A non-positive timeout raises naming it.
+  - `RecorderClient.__init__(self, host: str, port: int, *, append_token: str, read_token: str | None=None, timeout_seconds: float=5.0) -> None` - A non-positive timeout raises naming it. `append_token` may be a function of the run id, for per-run tokens; `tls` and `server_hostname` connect over TLS.
   - `RecorderClient.append(self, run_id: str, store: str, sequence: int, record_hash: str, previous_hash: str | None, record: str | None=None) -> dict[str, Any]` - Sends one record; the reply carries the new size and whether it was a duplicate.
-  - `RecorderClient.seal(self, run_id: str) -> dict[str, MerkleTreeHead]` - Asks the recorder to sign heads for a run now and returns them.
+  - `RecorderClient.seal(self, run_id: str) -> dict[str, MerkleTreeHead]` - Asks the recorder to sign heads for a run now and returns them. With `final` the recorder marks the run closed; the signed attestation it returns is kept as `last_attestation`.
   - `RecorderClient.entries(self, run_id: str, store: str) -> list[RecordedEntry]` - Reads the recorder's records for a run and ledger (needs the read token, else `RECORDER_READ_TOKEN_MISSING`).
   - `RecorderClient.head_sink(self) -> CheckpointSink` - A read-only sink over the recorder's heads, for `verify_tree_heads` and `compare_with_recorder`.
+  - `RecorderClient.status(self, run_id: str) -> dict[str, Any]` - `RecorderCore.status` over the wire (needs the read token).
+  - `RecorderClient.attestation_lines(self, run_id: str) -> list[str]` - The run's attestations (needs the read token).
+  - `RecorderClient._append_token_for(self, run_id: str) -> str` - The append token for a run: the given string, or the result of the callable the client was given (a per-run scoped token).
   - `RecorderClient.head_lines(self, name: str) -> list[str]` - The signed head lines the recorder holds under a name.
   - `RecorderClient.close(self) -> None` - Closes the connection.
   - `RecorderClient._need_read(self) -> str` - The read token, or `RECORDER_READ_TOKEN_MISSING`.
@@ -362,7 +473,8 @@ Three independent records of a run, all written outside the model's context: the
   - `RecorderMirror.attach(self, telemetry: TelemetryStore | None=None, audit: AuditTranscriptStore | None=None) -> None` - Registers the mirror on a telemetry store and an audit store.
   - `RecorderMirror.pending(self) -> int` - How many records are queued and not yet sent.
   - `RecorderMirror.flush(self, timeout_seconds: float=10.0) -> bool` - Waits until the queue is empty or the timeout passes and says whether it is empty.
-  - `RecorderMirror.finish(self, run_id: str, timeout_seconds: float=10.0) -> dict[str, MerkleTreeHead]` - Flushes and asks the recorder to seal the run's heads.
+  - `RecorderMirror.backfill(self, telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str) -> dict[str, int]` - Sends every local record of a run to the recorder, in order (a record it already holds is accepted as a duplicate; one it holds differently is `RECORDER_CONFLICT`), then clears the run's degraded mark. For a run that began before the recorder was attached, or after the recorder was unreachable; call it when the run is idle.
+  - `RecorderMirror.finish(self, run_id: str, timeout_seconds: float=10.0) -> dict[str, MerkleTreeHead]` - Flushes and asks the recorder to seal the run's heads. `final=True` is the host's closing seal; a periodic checkpoint passes False.
   - `RecorderMirror.close(self) -> None` - Stops the sender and closes the client.
   - `RecorderMirror._on_event(self, event: TelemetryEvent) -> None` - Listener for a telemetry event.
   - `RecorderMirror._on_entry(self, entry: AuditLogEntry) -> None` - Listener for an audit entry.
@@ -380,6 +492,7 @@ Three independent records of a run, all written outside the model's context: the
   - `RecorderProcess.stop(self) -> None` - Terminates the process, killing it if it does not stop in ten seconds.
 - `spawn_recorder(directory: Path, *, head_every: int=50, durable: bool=True, startup_timeout_seconds: float=30.0) -> RecorderProcess` - Starts `python -m nailong_agent_sdk.observability.recorder` with fresh tokens passed in its environment, waits for its ready line (address, public key) and returns the handle; a recorder that does not report in time raises `RECORDER_START_FAILED` with the end of its stderr.
 - `_load_signer(directory: Path) -> Ed25519Signer` - The recorder's Ed25519 key from `recorder.key`, created with owner-only permissions on first start. It stays in the recorder's directory and is never sent.
+- `_secret(path: Path | None, variable: str) -> str` - A token from a file when one is named, else from the environment; a file keeps it out of the environment child processes inherit. · *Called by:* `observability/recorder.py::main`
 - `main(argv: Sequence[str] | None=None) -> int` - The recorder process: needs both tokens in its environment (else exit status 2 naming them), loads or creates its key, listens and prints one JSON line with its address and public key.
 
 **Algorithms & invariants.** A record is accepted only as the next sequence of its run and ledger with the previous hash the recorder holds, so the recorder's copy is itself a hash chain, and it also refuses a different hash for a sequence it already holds (the local ledger was rewritten after the send) and a gap. A tamper that rewrites a ledger and recomputes its chain therefore fails at the next record sent, during the run, and at the final comparison. The recorder cannot see records the agent process never sent: a synchronous mirror leaves no unsent record, an asynchronous one leaves what is queued, and a mirror that is not required stops after its first failure. The comparison first verifies the recorder's own signed heads, so a recorder whose copy was altered is not trusted. A same-user process that can kill the recorder or delete its directory defeats the arrangement from the host side; deployment on another account, container or machine is what makes that costly.
@@ -404,6 +517,7 @@ Three independent records of a run, all written outside the model's context: the
   - `HmacSha256Signer.sign(message: bytes) -> str` - The hex HMAC of the message. · *Called within this file by:* `observability/run_checkpoints.py::HmacSha256Signer.verify`
   - `HmacSha256Signer.verify(message: bytes, signature: str) -> bool` - Compares in constant time.
   - `HmacSha256Signer.__repr__() -> str` - Names the signer id only.
+- `resolve_verifier(verifier: CheckpointSigner, signer_id: str, at_utc: str | None) -> tuple[CheckpointSigner | None, str | None]` - The verifier to use for a record that names a signer: the given one unchanged, or, for a verifier with a `resolve` method (a `KeyRingVerifier`), the key that signer id names if it was valid at that time, else None and a sentence. · *Called by:* `observability/run_checkpoints.py::_assess`, `observability/transparency.py::verify_tree_heads`, `agent/retention.py::tombstone_signature_problem`
 - `checkpoint_path(destination: Path, run_id: str) -> Path` - `<destination>/<run id>.checkpoints.jsonl`, the run's file of checkpoints. · *Called by:* `developer_tools/cli.py::_verify_checkpoints`, `observability/run_checkpoints.py::FileCheckpointSink.append`, `observability/run_checkpoints.py::FileCheckpointSink.location`, `observability/run_checkpoints.py::FileCheckpointSink.read_all`
 - **class `CheckpointSink`** *(Protocol; bases: Protocol)* - Where a run's signed records are kept: a location label, the records read back in order, an append and whether the sink stores them inside a given run root. A host that wants object storage or a ledger implements it; the SDK ships the file sink.
   - `CheckpointSink.location(run_id: str) -> str` - A label for where the run's records live (a path, a URL), used in messages.
@@ -419,7 +533,7 @@ Three independent records of a run, all written outside the model's context: the
   - `FileCheckpointSink.is_inside(root: Path) -> bool` - True when the directory is the run root or below it.
 - **class `CheckpointVerdict`** *(enum; bases: StrEnum)* - The outcome of checking a run against its checkpoints: `matches`, `advanced` (the run grew), `pruned` (retention removed it and its tombstone accounts for the checkpoint), `truncated`, `diverged` (rewritten), `chain-broken`, `signature-invalid`, `no-checkpoint` (none, or none that covers the run that exists now) and `unreadable`.
   - members: `MATCHES`, `ADVANCED`, `PRUNED`, `TRUNCATED`, `DIVERGED`, `CHAIN_BROKEN`, `SIGNATURE_INVALID`, `NO_CHECKPOINT`, `UNREADABLE`
-- **class `RunHeadCheckpoint`** *(pydantic model; bases: StrictModel)* - One signed record: the run id, a label of the run root, the sequence and head hash of the telemetry chain, the sequence and head hash of the audit chain, the time, the signer id and the signature over the other fields' canonical JSON. · *Instantiated by:* `observability/run_checkpoints.py::_signed_from`
+- **class `RunHeadCheckpoint`** *(pydantic model; bases: StrictModel)* - One signed record: the run id, a label of the run root, the sequence and head hash of the telemetry chain, the sequence and head hash of the audit chain, the time, the signer id and the signature over the other fields' canonical JSON. `timestamp` holds the optional RFC 3161 token; it is left out of the signed message when absent, so unstamped records are unchanged. New checkpoints are `agent-sdk-run-head-checkpoint-v2` (JCS); v1 still verifies. · *Instantiated by:* `observability/run_checkpoints.py::_signed_from`
   - fields: `schema_version`, `run_id`, `run_root_label`, `telemetry_sequence`, `telemetry_head`, `audit_sequence`, `audit_head`, `created_at_utc`, `signer_id`, `signature`
   - `RunHeadCheckpoint.signed_message() -> bytes` - The canonical JSON of the record with the signature blanked, as bytes: the exact message signed and verified. · *Called by:* `observability/run_checkpoints.py::_assess`, `observability/run_checkpoints.py::_signed_from`
 - **class `PrunedHeads`** *(pydantic model; bases: StrictModel)* - A pruned run's final heads as retention's tombstone recorded them: the run id, the last telemetry sequence and head, the audit entry count and head, the prune time, the tombstone's sequence and `authenticated`, True only when the lookup verified the tombstone's signature. `PrunedLookup` is a function from a run id to its tombstones' heads (`agent/retention.py::pruned_heads_lookup`). · *Instantiated by:* `agent/retention.py::pruned_heads_lookup.lookup`
@@ -444,8 +558,8 @@ Three independent records of a run, all written outside the model's context: the
 - `run_root_label_of(telemetry: TelemetryStore) -> str` - A 16-character digest of the run root's path as the telemetry store holds it, so a checkpoint says which root it covers without storing the path. · *Called by:* `observability/run_checkpoints.py::_signed_from`
 - `build_run_head_checkpoint(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, signer: CheckpointSigner, *, now: datetime | None=None) -> RunHeadCheckpoint` - Scans both chains once and signs their heads. A broken chain raises `RUN_CHECKPOINT_CHAIN_BROKEN` naming the store and sequence, and a run with no events and no entries raises `RUN_CHECKPOINT_RUN_ABSENT`. · *No in-package callers (public API, entry point, or protocol hook).*
 - `read_checkpoints(path: Path) -> list[RunHeadCheckpoint]` - Reads a file's checkpoints in order; a line that is not a checkpoint of this schema raises `RUN_CHECKPOINT_UNREADABLE` naming the line. · *Called by:* `observability/run_checkpoints.py::_load`
-- `export_run_head_checkpoint(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, signer: CheckpointSigner, destination: Path | CheckpointSink, *, now: datetim...` - Reads the run's existing checkpoints from the sink (a directory is wrapped in a `FileCheckpointSink`), scans both chains once, refuses when they no longer match (`RUN_CHECKPOINT_MISMATCH` naming the verdict: truncated, rewritten, broken, signed by another key or unreadable), and otherwise signs and appends the heads. A sink inside the run root raises `RUN_CHECKPOINT_INSIDE_RUN_ROOT`. `pruned_lookup` lets a run id that retention pruned start a fresh checkpoint series. · *Called by:* `agent/run_checkpointer.py::RunHeadCheckpointer.export`, `developer_tools/cli.py::_checkpoint_run`
-- `verify_run_head_checkpoints(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, source: Path | CheckpointSink | Sequence[RunHeadCheckpoint], signer: Checkpoi...` - Checks ownership, signer and signature of every checkpoint, that the counts never shrink within one incarnation of the run, both chains, and the newest live checkpoint against the run: fewer events or entries than checkpointed is `truncated`, a different hash at the checkpointed position is `diverged`, more is `advanced`. A run that is gone is `pruned` when a tombstone no older than the checkpoint accounts for it, `truncated` otherwise (a tombstone log that could not be read is named). A file that cannot be read is a verdict, not an exception. · *Called by:* `observability/run_checkpoints.py::check_run_heads`
+- `export_run_head_checkpoint(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, signer: CheckpointSigner, destination: Path | CheckpointSink, *, now: datetim...` - Reads the run's existing checkpoints from the sink (a directory is wrapped in a `FileCheckpointSink`), scans both chains once, refuses when they no longer match (`RUN_CHECKPOINT_MISMATCH` naming the verdict: truncated, rewritten, broken, signed by another key or unreadable), and otherwise signs and appends the heads. A sink inside the run root raises `RUN_CHECKPOINT_INSIDE_RUN_ROOT`. `pruned_lookup` lets a run id that retention pruned start a fresh checkpoint series. With a `timestamper` the checkpoint is stamped by an RFC 3161 authority before it is signed, so the signature also covers the stamp. `verifier` verifies the existing checkpoints (a key ring after a rotation) and `trusted_roots` the stamps on them. · *Called by:* `agent/run_checkpointer.py::RunHeadCheckpointer.export`, `developer_tools/cli.py::_checkpoint_run`
+- `verify_run_head_checkpoints(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, source: Path | CheckpointSink | Sequence[RunHeadCheckpoint], signer: Checkpoi...` - Checks ownership, signer and signature of every checkpoint, that the counts never shrink within one incarnation of the run, both chains, and the newest live checkpoint against the run: fewer events or entries than checkpointed is `truncated`, a different hash at the checkpointed position is `diverged`, more is `advanced`. A run that is gone is `pruned` when a tombstone no older than the checkpoint accounts for it, `truncated` otherwise (a tombstone log that could not be read is named). A file that cannot be read is a verdict, not an exception. With `trusted_roots` each stamped checkpoint's token and certificate chain are verified and the attested time, not the claimed one, selects the key (`max_skew_seconds`, default 600, bounds how far they may differ); without roots a stamp is counted but not believed. The result reports `stamped_checkpoints` and `verified_timestamps`. · *Called by:* `observability/run_checkpoints.py::check_run_heads`
 - `verify_terminal_link(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str) -> TerminalLinkVerification` - Compares the run's last `agent.profile-completed` event with its last `terminal-link` audit entry (the older layout kept `telemetry_head` in `profile-completed`): the audit chain's entry at the event's recorded `audit_head.entries` must have the event's `head_hash`, and the entry's `telemetry_head` must be the event's sequence and hash. A pair with neither half is `absent`; only one half present, or a half that does not match, is `broken`. · *Called by:* `developer_tools/diagnose.py::_integrity`, `observability/run_checkpoints.py::check_run_heads`
 - `check_run_heads(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, source: Path | CheckpointSink | Sequence[RunHeadCheckpoint], signer: Checkpoi...` - `verify_run_head_checkpoints` and `verify_terminal_link` as one `RunHeadReport`. · *Called by:* `agent/run_checkpointer.py::RunHeadCheckpointer.check`, `developer_tools/cli.py::_verify_checkpoints`
 - `_read_lines(path: Path) -> list[str]` - The lines of a checkpoint file; an `OSError` raises `RUN_CHECKPOINT_UNREADABLE` naming the path. · *Called within this file by:* `observability/run_checkpoints.py::FileCheckpointSink.read_all`, `observability/run_checkpoints.py::read_checkpoints`
@@ -474,6 +588,57 @@ Three independent records of a run, all written outside the model's context: the
 
 ---
 
+### `observability/timestamp.py` - RFC 3161 trusted timestamps for checkpoints and tree heads
+
+*545 lines · depends on: `foundations/contracts.py`, `foundations/errors.py` · used by: `observability/run_checkpoints.py`, `observability/transparency.py`, `agent/run_checkpointer.py`, `agent/evidence_profile.py` · not re-exported at the package root*
+
+**Role in the workflow.** A record's own time is the writer's clock. A timestamp authority signs, under a certificate the verifier trusts, that a digest existed at a time, so a record cannot be backdated past the authority's attestation. A checkpoint or tree head is stamped before it is signed; the stamp covers its content without the signature and the stamp itself, and the signature then covers the stamp. It needs the optional `cryptography` package for verification.
+
+**Contents**
+
+- **class `TimestampToken`** *(pydantic model; bases: StrictModel)* - What a record stores: the authority's name, the SHA-256 digest it stamped, the DER token in base64 and the attested time.
+- **class `TimestampAuthority`** *(protocol)* - `name` and `stamp(digest) -> bytes`, a DER `TimeStampResp`.
+  - `TimestampAuthority.name(self) -> str` *(property)* - The authority's label in records.
+  - `TimestampAuthority.stamp(self, digest: bytes) -> bytes` - Asks for a token over a SHA-256 digest.
+- **class `VerifiedTimestamp`** *(dataclass)* - The attested time, serial number and signer subject.
+- `digest_of(content, schema_message, schema) -> bytes` - SHA-256 of the record's canonical bytes without `signature` and `timestamp`.
+- `stamp_content(content, schema, authority, schema_message) -> TimestampToken` - Stamps a record and checks the reply names the digest it was asked about; a reply that does not raises `TIMESTAMP_RESPONSE_INVALID`.
+- `timestamp_problem(token, content, schema, schema_message, trusted_roots, claimed_utc, max_skew_seconds) -> tuple[datetime | None, str | None]` - Whether a stored stamp holds: the digest must still match the content, the token must verify, and with roots given the attested time must lie within `max_skew_seconds` (default 600) of the time the record claims. Returns the attested time (None when no roots were given, so nothing is believed) or a sentence naming the failure.
+- **class `Rfc3161Authority`** *(class)* - A TSA over HTTP.
+  - `Rfc3161Authority.__init__(self, url: str, *, timeout_seconds: float=10.0, name: str | None=None) -> None` - Refuses a URL that is not http(s) and a non-positive timeout.
+  - `Rfc3161Authority.name(self) -> str` *(property)* - The label, the URL by default.
+  - `Rfc3161Authority.stamp(self, digest: bytes) -> bytes` - POSTs a `TimeStampReq` with a random nonce (redirects are not followed). `TIMESTAMP_REQUEST_FAILED` names an HTTP status, `TIMESTAMP_UNREACHABLE` a network failure, `TIMESTAMP_NONCE_MISSING` and `TIMESTAMP_NONCE_MISMATCH` a reply that is not for this request.
+- **class `_NoRedirect`** *(class; bases: HTTPRedirectHandler)* - Turns a redirect into an ordinary 3xx answer.
+  - `_NoRedirect.redirect_request(self, *arguments: Any, **keywords: Any) -> None` - Returns None so the 3xx is raised, not followed.
+- `_der(certificate: Any) -> bytes` - A certificate's DER bytes, the form certificates are compared in (a fingerprint needs a hash algorithm, which an Ed25519 certificate does not have).
+- `_is_root(certificate: Any, roots: Sequence[Any]) -> bool` - True when the certificate's DER equals a supplied root's.
+- `_weak_signature(certificate: Any) -> str | None` - `md5` or `sha1` when the certificate is signed with it, else None.
+- `_issuer_problem(issuer: Any, intermediates_below: int, x509: Any) -> str | None` - Why a non-root certificate may not issue the one below it: no basicConstraints, not a CA, a path length limit that the chain exceeds, or a key usage without certificate signing. Without this a holder of any end-entity certificate under a trusted root could mint a timestamp-authority certificate.
+- `_walk_chain(certificate, embedded, roots, moment, x509) -> None` - From the signer's certificate up: the time-stamping usage, validity at the attested time, no MD5 or SHA-1 signature, an issuer found among the embedded certificates and roots, `_issuer_problem` for each intermediate, ending at a supplied root within six links.
+- `_find_issuer(certificate: Any, pool: Sequence[Any]) -> Any | None` - The first certificate in the pool that signed this one (name and signature).
+- `_expect_nonce(reply: bytes, nonce: int, url: str) -> None` - Checks the reply carries the request's nonce.
+- `_tlv(tag: int, content: bytes) -> bytes` - One DER element with its length.
+- `_integer(value: int) -> bytes` - A DER INTEGER.
+- `_oid(dotted: str) -> bytes` - A DER object identifier from its dotted form.
+- `build_request(digest: bytes, nonce: int) -> bytes` - A DER `TimeStampReq`: version 1, a SHA-256 message imprint, the nonce and `certReq`.
+- **class `_Node`** *(dataclass)* - One DER element: tag, content and raw bytes.
+  - `_Node.children(self) -> list[_Node]` - The elements inside a constructed one.
+- `read_one(data: bytes, offset: int=0) -> tuple[_Node, int]` - A small strict DER reader; a truncated or oversized length raises `TIMESTAMP_DER_INVALID` naming the byte.
+- `read_all(data: bytes) -> list[_Node]` - Every element of a byte string.
+- `_decode_oid(node: _Node) -> str` - An object identifier in dotted form.
+- `_decode_int(node: _Node) -> int` - A signed INTEGER.
+- **class `_TstInfo`** *(dataclass)* - The imprint algorithm and bytes, serial, generation time and nonce of a `TSTInfo`.
+- `_tst_info(response: bytes) -> _TstInfo` - The `TSTInfo` of a reply.
+- `_signed_data(response: bytes) -> tuple[list[_Node], _TstInfo, bytes]` - Walks `TimeStampResp` > `ContentInfo` > `SignedData` > `TSTInfo`; a status other than granted raises `TIMESTAMP_REFUSED` with the PKIStatus.
+- `parse_token(response: bytes, digest: bytes, trusted_roots: Sequence[Any] | None=None) -> VerifiedTimestamp` - Checks the imprint equals the digest (`TIMESTAMP_IMPRINT_MISMATCH`); with roots, also the signature and certificate chain.
+- `_check_signature(signed, econtent, info, roots) -> str` - Finds the signer's certificate, checks the `messageDigest` attribute is the hash of the `TSTInfo`, verifies the signature over the signed attributes (RSA PKCS#1 v1.5 or ECDSA) and then the certificate. `TIMESTAMP_SIGNATURE_INVALID` names which step failed.
+- `_match_certificate(certificates, signer_id, x509) -> Any | None` - The embedded certificate named by issuer and serial, or by subject key identifier.
+- `_check_certificate(certificate, embedded, roots, moment, x509) -> None` - Requires the time-stamping extended key usage, every certificate valid at the attested time, and a chain of at most six links to a supplied root (`TIMESTAMP_CERTIFICATE_INVALID` names the certificate).
+
+**Algorithms & invariants.** There is no default trust store: the caller supplies the roots, so a timestamp from an authority nobody chose proves nothing. Certificate revocation (CRL, OCSP) is not checked. The attested time is the authority's, so it supersedes the writer's claimed time when a key's validity window is checked.
+
+---
+
 ### `observability/transparency.py` - signed Merkle tree heads over a run's ledgers, with inclusion and extension proofs
 
 *359 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `observability/audit_log.py`, `observability/merkle.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `agent/run_checkpointer.py` · not re-exported at the package root*
@@ -484,7 +649,7 @@ Three independent records of a run, all written outside the model's context: the
 
 - `tree_head_name(run_id: str, store: str) -> str` - The sink name of one ledger's heads, `<run>.<store>.merkle`.
 - **class `TreeHeadVerdict`** *(StrEnum)* - The outcome of checking a ledger against its signed Merkle heads: `matches`, `advanced` (records after the newest head, not yet covered), `truncated`, `diverged` (rewritten or resealed), `chain-broken`, `signature-invalid`, `misbound` (validly signed, but for another ledger name or another signer id than the one being checked), `no-head` and `unreadable`.
-- **class `MerkleTreeHead`** *(pydantic model; bases: StrictModel)* - A signed statement that a ledger of `size` records had Merkle root `root` at `published_at_utc`, under `signer_id`.
+- **class `MerkleTreeHead`** *(pydantic model; bases: StrictModel)* - A signed statement that a ledger of `size` records had Merkle root `root` at `published_at_utc`, under `signer_id`. `timestamp` holds the optional token as for a checkpoint; new heads are `agent-sdk-merkle-tree-head-v2`.
   - fields: `schema_version`, `name`, `size`, `root`, `published_at_utc`, `signer_id`, `signature`
   - `MerkleTreeHead.signed_message(self) -> bytes` - The canonical JSON of the head with an empty signature, what the signer signs.
 - **class `TreeHeadVerification`** *(pydantic model; bases: StrictModel)* - A verdict with the number of heads read, the newest published size, the ledger's current size and a sentence saying what was found.
@@ -498,9 +663,9 @@ Three independent records of a run, all written outside the model's context: the
   - fields: `ok`, `detail`
 - `leaf_data(record_hash: str) -> bytes` - A record's hex integrity hash as the leaf bytes; a non-hexadecimal hash raises naming it.
 - `run_hashes(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str) -> dict[str, list[str]]` - The integrity hashes of a run's telemetry events and audit entries, in order.
-- `publish_tree_head(hashes: Sequence[str], sink: CheckpointSink, name: str, signer: CheckpointSigner, *, now: datetime | None=None) -> MerkleTreeHead` - Accumulates the hashes, signs the size and root and appends the head to the sink.
+- `publish_tree_head(hashes: Sequence[str], sink: CheckpointSink, name: str, signer: CheckpointSigner, *, now: datetime | None=None) -> MerkleTreeHead` - Accumulates the hashes, signs the size and root and appends the head to the sink. `timestamper` stamps the head before it is signed.
 - `publish_run_tree_heads(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, sink: CheckpointSink, signer: CheckpointSigner, *, now: datetime | None=None) -> dict[str, MerkleTreeHead]` - Publishes a head for the telemetry ledger and one for the audit ledger of a run; a ledger whose chain is broken is never signed (`TREE_HEAD_CHAIN_BROKEN`).
-- `verify_tree_heads(hashes: Sequence[str], sink: CheckpointSink, name: str, verifier: CheckpointSigner) -> TreeHeadVerification` - Reads every head of a name, refuses an invalid signature and a head that names another ledger or signer (`misbound`), then checks each against the ledger: fewer records than a head is `truncated`, a different root for the same prefix is `diverged`. The newest head decides `matches` or `advanced`.
+- `verify_tree_heads(hashes: Sequence[str], sink: CheckpointSink, name: str, verifier: CheckpointSigner) -> TreeHeadVerification` - Reads every head of a name, refuses an invalid signature and a head that names another ledger or signer (`misbound`), then checks each against the ledger: fewer records than a head is `truncated`, a different root for the same prefix is `diverged`. The newest head decides `matches` or `advanced`. `trusted_roots` and `max_skew_seconds` verify stamped heads as for checkpoints; the result reports `stamped_heads` and `verified_timestamps`. A head's signer is resolved through `resolve_verifier`, so a key ring applies.
 - `verify_run_tree_heads(telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str, sink: CheckpointSink, verifier: CheckpointSigner) -> dict[str, TreeHeadVerification]` - `verify_tree_heads` for both ledgers of a run; an otherwise passing ledger whose chain is broken becomes `chain-broken`.
 - `prove_extension(hashes: Sequence[str], first_size: int, second_size: int | None=None) -> ConsistencyProof` - The consistency proof between two prefix sizes of a hash list (the whole list by default).
 - `verify_extension(first: MerkleTreeHead, second: MerkleTreeHead, proof: ConsistencyProof, verifier: CheckpointSigner) -> ProofCheck` - Checks two signed heads and a proof without the log: both signatures, that both heads are of the same ledger name, the sizes the proof is for, then the RFC 9162 consistency check. Fails with a sentence naming a rewrite or fork.
@@ -554,7 +719,8 @@ Three independent records of a run, all written outside the model's context: the
   - `TelemetryContext.identifiers_are_well_formed(value: str | None, info: ValidationInfo) -> str | None` *(validator, classmethod)* - Validator: every optional id (project, experiment, cohort, attempt, controller, node, task, agent, trace, span, parent span) and the stage and environment contain no unpaired surrogate, which UTF-8 cannot encode, naming the field, the code point and its index. Without it the value passed construction and failed only when the event was serialized, with an error that did not name the field. `run_id` is already refused by its length constraint. The check runs when a context is constructed or parsed, not per emitted event (about 0.4 microseconds per id set, against about 1.7 ms for an emit that writes to SQLite).
   - `TelemetryContext.trace_id_is_a_w3c_trace_id(value: str | None, info: ValidationInfo) -> str | None` *(validator, classmethod)* - Validator: `trace_id`, when set, is 32 lowercase hex characters and not all zeros; the error names the field and echoes at most 64 characters of the value. A context built with an id such as `trace-1` is refused; a record read back from the ledger (`TelemetryEvent.parse_stored`) is not checked, so a run written with a caller-chosen id before this rule existed stays readable and verifiable.
   - `TelemetryContext.span_ids_are_w3c_span_ids(value: str | None, info: ValidationInfo) -> str | None` *(validator, classmethod)* - Validator: `span_id` and `parent_span_id`, when set, are 16 lowercase hex characters and not all zeros, naming the field; skipped for a record read back from the ledger, as for `trace_id`.
-- **class `TelemetryEvent`** *(pydantic model; bases: StrictModel)* - One ledger event: id, per-run sequence, type, UTC and monotonic times, context, actor, authority, status, severity, links, payload and its place in the hash chain. · *Instantiated by:* `observability/telemetry_store.py::TelemetryStore.emit`
+- **class `TelemetryEvent`** *(pydantic model; bases: StrictModel)* - One ledger event: id, per-run sequence, type, UTC and monotonic times, context, actor, authority, status, severity, links, payload and its place in the hash chain. `schema_version` is `telemetry-event-v2` for new events (hash over RFC 8785 JCS bytes); v1 events still verify. · *Instantiated by:* `observability/telemetry_store.py::TelemetryStore.emit`
+  - `TelemetryEvent.schema_is_known(cls, value: str) -> str` - Refuses a `schema_version` that is not `telemetry-event-v1` or `-v2`.
   - fields: `schema_version`, `event_id`, `sequence`, `event_type`, `occurred_at_utc`, `occurred_at_monotonic_ns`, `context`, `actor`, `authority`, `status`, `severity`, `links`, `payload`, `previous_event_hash`, `integrity_hash`
   - `TelemetryEvent.reject_hidden_reasoning(value: dict[str, Any]) -> dict[str, Any]` *(validator, classmethod)* - Validator: payload and links must not contain hidden-reasoning keys.
   - `TelemetryEvent.parse_stored(row: str) -> TelemetryEvent` *(classmethod)* - Parses one persisted event row with the validation context that skips the W3C id shape check, so the ledger's readers (`list_events`, `iter_events`, and through them reports, retention and `verify_run_chain`) never reject or flag as tampered an event that was written before ids were checked. Everything else is validated as for a new event. · *Called by:* `observability/telemetry_store.py::TelemetryStore.iter_events`, `observability/telemetry_store.py::TelemetryStore.list_events`
@@ -590,7 +756,7 @@ Three independent records of a run, all written outside the model's context: the
 **Contents**
 
 - **class `TelemetryStore`** *(class)* - Append-only SQLite store (`.agent-telemetry/telemetry.sqlite3`, WAL mode) holding events, metric observations and metric definitions. · *Instantiated by:* `orchestrator/orchestrator.py::Orchestrator.__init__`, `agent/retention.py::prune_run_root`, `agent/retention_inventory.py::_telemetry_items`, `agent/runtime.py::AgentRuntimeServices.open` (+7 more)
-  - `TelemetryStore.__init__(root: Path, *, read_only: bool=False) -> None` - Creates the directory and one shared connection (guarded by an RLock), enables WAL and foreign keys, and creates the schema; the WAL switch and the schema creation retry for up to ten seconds while another process holds the database lock, so processes that open one run root together all start. With `read_only=True` it requires the database to exist (`FileNotFoundError` naming it), opens it with `mode=ro`, and creates no directory and runs no setup. A read-only store raises `RuntimeError` naming the store and the operation for `prune_run`.
+  - `TelemetryStore.__init__(root: Path, *, read_only: bool=False) -> None` - Creates the directory and one shared connection (guarded by an RLock), enables WAL and foreign keys, and creates the schema; the WAL switch and the schema creation retry for up to ten seconds while another process holds the database lock, so processes that open one run root together all start. With `read_only=True` it requires the database to exist (`FileNotFoundError` naming it), opens it with `mode=ro`, and creates no directory and runs no setup. A read-only store raises `RuntimeError` naming the store and the operation for `prune_run`. `max_payload_chars` (default 8 MiB, at least 256) bounds the payload and links of one event; a larger one keeps its short fields, lengths and digests plus a preview.
   - `TelemetryStore.close() -> None` - Closes the connection (needed before deleting the root on Windows).
   - `TelemetryStore.root() -> Path` *(property)* - Property: the `.agent-telemetry` directory. · *Called within this file by:* `observability/telemetry_store.py::TelemetryStore.__init__`
   - `TelemetryStore.fence() -> RunFence` *(property)* - Property: the `RunFence` of the run root; `append` and `record_metric` wait for it to lift and re-check it inside their transaction, and `vacuum` refuses while any run is fenced.
@@ -622,6 +788,7 @@ Three independent records of a run, all written outside the model's context: the
   - `TelemetryStore._initialize() -> None` - Creates the events, metric_observations and metric_definitions tables and their indexes if absent. · *Called by:* `observability/telemetry_store.py::TelemetryStore.__init__`
 - `_normalized_event_types(event_types: Collection[str] | None) -> list[str] | None` - The distinct event types as a sorted list, or None for no filter. A bare string, an empty collection, a blank name and more than `MAX_EVENT_TYPE_FILTER` (64) names each raise `ValueError` saying what to pass instead. · *Called by:* `observability/telemetry_store.py::TelemetryStore._event_rows`
 - `_retry_when_locked(operation: Callable[[], T]) -> T` - Runs an operation again, with a doubling delay (5 ms up to 100 ms), for up to ten seconds while SQLite reports the database as locked; any other error, or the deadline, raises. · *Called by:* `observability/telemetry_store.py::TelemetryStore.__init__`
+- `event_hash(event: TelemetryEvent) -> str` - The hash an event's `schema_version` calls for over its content with the hash blanked. · *Called by:* `observability/telemetry_store.py::TelemetryStore.append`, `observability/telemetry_store.py::_events_chain_break`
 - `_events_chain_break(events: Iterable[TelemetryEvent]) -> ChainBreak | None` - Runs the shared chain checker over telemetry events (previous-hash field `previous_event_hash`, hash recomputed with `integrity_hash` blanked). · *Called by:* `observability/telemetry_store.py::TelemetryStore._verify_events`, `observability/telemetry_store.py::TelemetryStore.chain_break`, `observability/telemetry_store.py::TelemetryStore.create_run_report`
 - **class `_EventTally`** *(dataclass)* - Counters filled while the events stream past the chain check: the number of events, counts by status and event type, watchdog interventions, the last two event hashes and, on request, every hash. · *Instantiated by:* `observability/telemetry_store.py::TelemetryStore.create_run_report`
   - fields: `keep_hashes`, `count`, `statuses`, `event_types`, `watchdog_interventions`, `event_hashes`, `last_hash`, `hash_before_last`

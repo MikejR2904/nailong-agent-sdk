@@ -17,10 +17,15 @@ from pydantic import Field
 from ..foundations.atomic_io import exclusive_file_lock
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
-from ..foundations.hashing import canonical_hash, canonical_json
+from ..foundations.jcs import jcs_bytes, schema_hash
 from ..memory.context_projection import FileToolResultJournal, JournalFootprint
 from ..observability.audit_log import AuditFootprint, AuditTranscriptStore
-from ..observability.run_checkpoints import CheckpointSigner, PrunedHeads, PrunedLookup
+from ..observability.run_checkpoints import (
+    CheckpointSigner,
+    PrunedHeads,
+    PrunedLookup,
+    resolve_verifier,
+)
 from ..observability.telemetry_helpers import first_chain_break, utc_now
 from ..observability.telemetry_models import (
     ChainBreak,
@@ -43,6 +48,8 @@ TOMBSTONE_FILE = "tombstones.jsonl"
 LOCK_FILE = "retention.lock"
 TERMINAL_EVENT_TYPE = "agent.terminated"
 TOMBSTONE_SIGNATURE_SCHEMA = "agent-sdk-run-tombstone-signature-v1"
+TOMBSTONE_SCHEMAS = ("agent-sdk-run-tombstone-v1", "agent-sdk-run-tombstone-v2")
+CURRENT_TOMBSTONE_SCHEMA = TOMBSTONE_SCHEMAS[-1]
 MAX_OLDER_THAN_SECONDS = 3_153_600_000.0
 DEFAULT_LOCK_TIMEOUT_SECONDS = 30.0
 DECISION_STREAM_ID = "mcp-decisions"
@@ -106,7 +113,7 @@ class RetentionReport(StrictModel):
 
 
 class RunTombstone(StrictModel):
-    schema_version: str = "agent-sdk-run-tombstone-v1"
+    schema_version: str = CURRENT_TOMBSTONE_SCHEMA
     sequence: int = Field(ge=1)
     previous_hash: str | None = None
     run_id: str
@@ -137,28 +144,31 @@ def tombstone_hash(tombstone: RunTombstone) -> str:
     content = tombstone.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
     content.pop("signer_id", None)
     content.pop("signature", None)
-    return canonical_hash(content)
+    return schema_hash(tombstone.schema_version, content)
 
 
 def tombstone_signed_message(tombstone: RunTombstone) -> bytes:
-    return canonical_json(
+    return jcs_bytes(
         {
             "schema": TOMBSTONE_SIGNATURE_SCHEMA,
             "signer_id": tombstone.signer_id,
             "integrity_hash": tombstone.integrity_hash,
         }
-    ).encode("utf-8")
+    )
 
 
 def tombstone_signature_problem(tombstone: RunTombstone, verifier: CheckpointSigner) -> str | None:
     if not tombstone.signature or tombstone.signer_id is None:
         return f'tombstone {tombstone.sequence} of run "{tombstone.run_id}" carries no signature'
-    if tombstone.signer_id != verifier.signer_id:
+    resolved, problem = resolve_verifier(verifier, tombstone.signer_id, tombstone.pruned_at_utc)
+    if resolved is None:
+        return f"tombstone {tombstone.sequence} cannot be trusted: {problem}"
+    if tombstone.signer_id != resolved.signer_id:
         return (
             f'tombstone {tombstone.sequence} was signed by "{tombstone.signer_id}" but the '
-            f'verifier is "{verifier.signer_id}"'
+            f'verifier is "{resolved.signer_id}"'
         )
-    if not verifier.verify(tombstone_signed_message(tombstone), tombstone.signature):
+    if not resolved.verify(tombstone_signed_message(tombstone), tombstone.signature):
         return f"tombstone {tombstone.sequence} fails its signature"
     return None
 

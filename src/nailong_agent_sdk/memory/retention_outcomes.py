@@ -21,6 +21,7 @@ from pydantic import Field
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import sha256_hex, strict_canonical_json
+from ..foundations.text import split_lines
 from .episode_models import CompactionResult
 from .learned_retention import PredictorIdentity
 from .utility_features import FEATURE_SCHEMA_VERSION, RetentionContext
@@ -122,7 +123,7 @@ class RetentionOutcomeLog:
         self._outcomes: dict[tuple[str, int], RetentionOutcome] = {}
         if self._path.exists():
             for number, line in enumerate(
-                self._path.read_text(encoding="utf-8").splitlines(), start=1
+                split_lines(self._path.read_text(encoding="utf-8")), start=1
             ):
                 if line.strip():
                     self._ingest(line, number)

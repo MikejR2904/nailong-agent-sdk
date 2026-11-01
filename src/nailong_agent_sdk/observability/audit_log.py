@@ -19,21 +19,25 @@ from pydantic import Field, ValidationError, ValidationInfo, field_validator
 from ..foundations.atomic_io import exclusive_file_lock, replace_atomic, unique_temporary_path
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError, assert_no_hidden_reasoning, redact_secrets
-from ..foundations.hashing import canonical_hash, canonical_json, sha256_hex
+from ..foundations.hashing import sha256_hex
 from ..foundations.identifiers import file_safe_name
+from ..foundations.jcs import schema_hash
 from ..foundations.logging import get_logger
 from ..foundations.run_fence import RunFence
 from ..foundations.text import assert_well_formed_text
 from .append_listeners import AppendListener, AppendListeners
+from .payload_bounds import bound_payload
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import ChainBreak
 
 _TAIL_CHUNK_BYTES = 65_536
+AUDIT_SCHEMAS = ("agent-audit-log-v1", "agent-audit-log-v2")
+CURRENT_AUDIT_SCHEMA = AUDIT_SCHEMAS[-1]
 _logger = get_logger("audit")
 
 
 class AuditLogEntry(StrictModel):
-    schema_version: str = "agent-audit-log-v1"
+    schema_version: str = CURRENT_AUDIT_SCHEMA
     sequence: int = Field(ge=1)
     event_type: str = Field(min_length=1)
     occurred_at_utc: str
@@ -43,6 +47,16 @@ class AuditLogEntry(StrictModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     previous_hash: str | None = None
     integrity_hash: str = ""
+
+    @field_validator("schema_version")
+    @classmethod
+    def schema_is_known(cls, value: str) -> str:
+        if value not in AUDIT_SCHEMAS:
+            raise ValueError(
+                f'schema_version "{value}" is not one of {list(AUDIT_SCHEMAS)}, so its '
+                "hash cannot be recomputed."
+            )
+        return value
 
     @field_validator("event_type", "run_id", "task_id")
     @classmethod
@@ -216,9 +230,7 @@ class AuditTranscriptStore:
             payload=_bound_and_redact(payload, self._max_payload_chars),
             previous_hash=tail.integrity_hash if tail is not None else None,
         )
-        complete = prepared.model_copy(
-            update={"integrity_hash": canonical_hash(prepared.model_dump(mode="json"))}
-        )
+        complete = prepared.model_copy(update={"integrity_hash": audit_entry_hash(prepared)})
         handle.write(complete.model_dump_json().encode("utf-8"))
         handle.write(b"\n")
         handle.flush()
@@ -420,19 +432,13 @@ class AuditTranscriptStore:
             yield
 
 
+def audit_entry_hash(entry: AuditLogEntry) -> str:
+    content = entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
+    return schema_hash(entry.schema_version, content)
+
+
 def _bound_and_redact(value: Any, max_chars: int) -> dict[str, Any]:
-    redacted = redact_secrets(value)
-    encoded = canonical_json(redacted)
-    if len(encoded) <= max_chars:
-        if isinstance(redacted, dict):
-            return redacted
-        return {"value": redacted}
-    return {
-        "truncated": True,
-        "content_hash": sha256_hex(encoded),
-        "original_chars": len(encoded),
-        "preview": encoded[:max_chars],
-    }
+    return bound_payload(redact_secrets(value), max_chars)
 
 
 def _last_line(handle: IO[bytes], end: int) -> bytes:
@@ -547,9 +553,7 @@ def _entries_chain_break(entries: Iterator[AuditLogEntry]) -> ChainBreak | None:
         entries,
         noun="audit entry",
         previous_attribute="previous_hash",
-        expected_hash=lambda entry: canonical_hash(
-            entry.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
-        ),
+        expected_hash=audit_entry_hash,
     )
 
 

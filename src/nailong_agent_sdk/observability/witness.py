@@ -16,6 +16,7 @@ from urllib import request as urlrequest
 from urllib.parse import quote, unquote, urlparse
 
 from ..foundations.errors import AgentSdkError
+from ..foundations.text import split_lines
 
 RECORDS_PREFIX = "/v1/records/"
 MAX_RECORD_CHARS = 65_536
@@ -154,7 +155,7 @@ class WitnessServer:
         if directory is not None:
             directory.mkdir(parents=True, exist_ok=True)
             for path in sorted(directory.glob("*.jsonl")):
-                lines = [line for line in path.read_text("utf-8").splitlines() if line]
+                lines = [line for line in split_lines(path.read_text("utf-8")) if line]
                 self._records[unquote(path.stem)] = [json.loads(line)["record"] for line in lines]
         self._server = ThreadingHTTPServer((host, port), self._handler())
         self._thread: threading.Thread | None = None

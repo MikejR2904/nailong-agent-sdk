@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **177 files, 654 classes and 2,381 functions** (methods and nested closures included).
+covers **185 files, 675 classes and 2,508 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -603,7 +603,9 @@ the run options. Everything else is a parameter too:
 | [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2711 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/cost_model.py`](agent.md#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
+| [`agent/definition_digest.py`](agent.md#agentdefinition_digestpy---digests-of-an-agents-configured-identity-recorded-with-each-run) | 27 | digests of an agent's configured identity, recorded with each run |
 | [`agent/elastic_context.py`](agent.md#agentelastic_contextpy---bounded-task-text-for-exploration-and-continuation-nodes) | 105 | bounded task text for exploration and continuation nodes |
+| [`agent/evidence_profile.py`](agent.md#agentevidence_profilepy---one-profile-that-turns-on-every-independent-piece-of-run-evidence-and-checks-them-together) | 392 | one profile that turns on every independent piece of run evidence and checks them together |
 | [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 338 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 439 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
@@ -646,6 +648,7 @@ the run options. Everything else is a parameter too:
 | [`foundations/errors.py`](foundations.md#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 284 | typed SDK errors and secret/reasoning redaction for durable records |
 | [`foundations/hashing.py`](foundations.md#foundationshashingpy---canonical-json-encodings-sha-256-digests-and-the-token-estimate) | 56 | canonical JSON encodings, SHA-256 digests and the token estimate |
 | [`foundations/identifiers.py`](foundations.md#foundationsidentifierspy---identifier-validation-injective-file-names-and-collision-free-sequential-ids) | 90 | identifier validation, injective file names and collision-free sequential ids |
+| [`foundations/jcs.py`](foundations.md#foundationsjcspy---rfc-8785-json-canonicalization-for-evidence-hashes-and-signatures) | 120 | RFC 8785 JSON canonicalization for evidence hashes and signatures |
 | [`foundations/json_limits.py`](foundations.md#foundationsjson_limitspy---depth-bound-for-untrusted-json-like-payloads) | 28 | depth bound for untrusted JSON-like payloads |
 | [`foundations/logging.py`](foundations.md#foundationsloggingpy---opt-in-stdlib-logging-namespace-for-the-few-paths-outside-structured-telemetry) | 25 | opt-in stdlib logging namespace for the few paths outside structured telemetry |
 | [`foundations/optimization/__init__.py`](foundations.md#foundationsoptimization__init__py---re-exports-the-pckp-models-and-solvers) | 17 | re-exports the PCKP models and solvers |
@@ -712,18 +715,23 @@ the run options. Everything else is a parameter too:
 | [`memory/utility_training.py`](memory.md#memoryutility_trainingpy---pairwise-logistic-ranking-loss-derivatives-and-explicit-trainers) | 339 | pairwise logistic ranking loss, derivatives and explicit trainers |
 | [`observability/__init__.py`](observability.md#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
 | [`observability/append_listeners.py`](observability.md#observabilityappend_listenerspy---callbacks-a-ledger-runs-after-it-persists-a-record) | 46 | callbacks a ledger runs after it persists a record |
+| [`observability/attestation.py`](observability.md#observabilityattestationpy---run-heads-signed-by-the-recorder-so-no-key-on-the-host-is-trusted) | 234 | run heads signed by the recorder, so no key on the host is trusted |
 | [`observability/audit_log.py`](observability.md#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 550 | append-only, hash-chained, per-run JSONL audit transcript |
+| [`observability/clock_check.py`](observability.md#observabilityclock_checkpy---detecting-a-ledger-whose-recorded-times-run-backwards) | 69 | detecting a ledger whose recorded times run backwards |
 | [`observability/ed25519.py`](observability.md#observabilityed25519py---an-ed25519-checkpoint-signer-with-a-verify-only-form) | 140 | an Ed25519 checkpoint signer with a verify-only form |
+| [`observability/keyring.py`](observability.md#observabilitykeyringpy---public-verification-keys-with-validity-windows-rotation-and-revocation) | 216 | public verification keys with validity windows, rotation and revocation |
 | [`observability/merkle.py`](observability.md#observabilitymerklepy---merkle-tree-hashing-with-inclusion-and-consistency-proofs) | 225 | Merkle tree hashing with inclusion and consistency proofs |
 | [`observability/metric_definitions.py`](observability.md#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 450 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](observability.md#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
 | [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 1000 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
+| [`observability/payload_bounds.py`](observability.md#observabilitypayload_boundspy---size-bounds-on-one-ledger-record-that-keep-the-fields-saying-who-and-what) | 45 | size bounds on one ledger record that keep the fields saying who and what |
 | [`observability/profiler.py`](observability.md#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
 | [`observability/recorder.py`](observability.md#observabilityrecorderpy---a-recorder-in-another-process-that-keeps-its-own-signed-copy-of-the-ledgers) | 909 | a recorder in another process that keeps its own signed copy of the ledgers |
 | [`observability/run_checkpoints.py`](observability.md#observabilityrun_checkpointspy---signed-checkpoints-of-a-runs-chain-heads-kept-outside-the-run-root) | 890 | signed checkpoints of a run's chain heads, kept outside the run root |
 | [`observability/telemetry_helpers.py`](observability.md#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
 | [`observability/telemetry_models.py`](observability.md#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 261 | telemetry event, context, actor and metric contracts |
 | [`observability/telemetry_store.py`](observability.md#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 768 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
+| [`observability/timestamp.py`](observability.md#observabilitytimestamppy---rfc-3161-trusted-timestamps-for-checkpoints-and-tree-heads) | 545 | RFC 3161 trusted timestamps for checkpoints and tree heads |
 | [`observability/trace_context.py`](observability.md#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 181 | W3C Trace Context ids, the traceparent header and the process resource |
 | [`observability/transparency.py`](observability.md#observabilitytransparencypy---signed-merkle-tree-heads-over-a-runs-ledgers-with-inclusion-and-extension-proofs) | 359 | signed Merkle tree heads over a run's ledgers, with inclusion and extension proofs |
 | [`observability/witness.py`](observability.md#observabilitywitnesspy---an-append-only-remote-witness-for-checkpoints) | 256 | an append-only remote witness for checkpoints |
@@ -775,7 +783,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 177 files, 654 classes and 2381 functions (including methods and nested closures), each with a written description.*
+*Coverage: 185 files, 675 classes and 2508 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 

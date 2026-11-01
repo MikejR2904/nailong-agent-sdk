@@ -18,8 +18,11 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..agent.run_checkpointer import RunHeadCheckpointer
+from ..foundations.errors import AgentSdkError
+from ..observability.ed25519 import Ed25519Signer
 from ..observability.run_checkpoints import (
     MAX_SIGNER_ID_CHARS,
+    CheckpointSigner,
     FileCheckpointSink,
     HmacSha256Signer,
 )
@@ -47,6 +50,9 @@ MIN_AUDIT_PAYLOAD_CHARS = 256
 CHECKPOINT_DIRECTORY_VARIABLE = "AGENT_RUNTIME_CHECKPOINT_DIR"
 CHECKPOINT_KEY_FILE_VARIABLE = "AGENT_RUNTIME_CHECKPOINT_KEY_FILE"
 CHECKPOINT_SIGNER_ID_VARIABLE = "AGENT_RUNTIME_CHECKPOINT_SIGNER_ID"
+CHECKPOINT_ALGORITHM_VARIABLE = "AGENT_RUNTIME_CHECKPOINT_ALGORITHM"
+CHECKPOINT_SIGNED_TOMBSTONES_VARIABLE = "AGENT_RUNTIME_CHECKPOINT_SIGNED_TOMBSTONES"
+CHECKPOINT_ALGORITHMS = ("hmac-sha256", "ed25519")
 APPROVAL_MAX_AGE_VARIABLE = "AGENT_RUNTIME_APPROVAL_MAX_AGE_SECONDS"
 
 
@@ -70,7 +76,9 @@ class HttpServiceSettings:
     audit_max_payload_chars: int | None = None
     checkpoint_directory: str | None = None
     checkpoint_key_file: str | None = field(default=None, repr=False)
-    checkpoint_signer_id: str = "hmac-sha256"
+    checkpoint_signer_id: str | None = "hmac-sha256"
+    checkpoint_algorithm: str = "hmac-sha256"
+    checkpoint_signed_tombstones: bool = False
 
     @property
     def scheme(self) -> str:
@@ -98,7 +106,8 @@ class HttpServiceSettings:
             return None
         key = Path(self.checkpoint_key_file).read_text(encoding="utf-8").strip()
         return RunHeadCheckpointer(
-            signer=HmacSha256Signer(key, signer_id=self.checkpoint_signer_id),
+            signer=_checkpoint_signer(key, self.checkpoint_algorithm, self.checkpoint_signer_id),
+            signed_tombstones=self.checkpoint_signed_tombstones,
             sink=FileCheckpointSink(Path(self.checkpoint_directory)),
         )
 
@@ -106,8 +115,10 @@ class HttpServiceSettings:
         if self.checkpoint_directory is None:
             return None
         return (
-            f"run-head checkpoints are written to {self.checkpoint_directory}, signed by "
-            f'"{self.checkpoint_signer_id}" when each task run ends.'
+            f"run-head checkpoints are written to {self.checkpoint_directory}, signed with "
+            f"{self.checkpoint_algorithm} (signer "
+            f'"{self.checkpoint_signer_id or "derived from the public key"}") when each '
+            "task run ends."
         )
 
     def approval_notice(self) -> str | None:
@@ -262,10 +273,24 @@ def _parse_audit_max_payload_chars(environ: Mapping[str, str]) -> int | None:
     return value
 
 
-def _parse_checkpoint(environ: Mapping[str, str]) -> dict[str, str | None]:
+def _checkpoint_signer(key: str, algorithm: str, signer_id: str | None) -> CheckpointSigner:
+    if algorithm == "ed25519":
+        return Ed25519Signer(key, signer_id=signer_id)
+    return HmacSha256Signer(key, signer_id=signer_id or "hmac-sha256")
+
+
+def _parse_checkpoint(environ: Mapping[str, str]) -> dict[str, str | bool | None]:
     directory = environ.get(CHECKPOINT_DIRECTORY_VARIABLE, "").strip()
     key_file = environ.get(CHECKPOINT_KEY_FILE_VARIABLE, "").strip()
-    signer_id = environ.get(CHECKPOINT_SIGNER_ID_VARIABLE, "").strip() or "hmac-sha256"
+    algorithm = environ.get(CHECKPOINT_ALGORITHM_VARIABLE, "").strip() or "hmac-sha256"
+    if algorithm not in CHECKPOINT_ALGORITHMS:
+        raise ServerConfigurationError(
+            f"{CHECKPOINT_ALGORITHM_VARIABLE} must be one of {list(CHECKPOINT_ALGORITHMS)}, "
+            f'got "{algorithm}".'
+        )
+    signer_id = environ.get(CHECKPOINT_SIGNER_ID_VARIABLE, "").strip() or (
+        None if algorithm == "ed25519" else "hmac-sha256"
+    )
     if not directory and not key_file:
         return {}
     if not directory or not key_file:
@@ -274,7 +299,7 @@ def _parse_checkpoint(environ: Mapping[str, str]) -> dict[str, str | None]:
             f"{CHECKPOINT_DIRECTORY_VARIABLE} and {CHECKPOINT_KEY_FILE_VARIABLE} must be set "
             f"together; only {present} is set."
         )
-    if len(signer_id) > MAX_SIGNER_ID_CHARS:
+    if signer_id is not None and len(signer_id) > MAX_SIGNER_ID_CHARS:
         raise ServerConfigurationError(
             f"{CHECKPOINT_SIGNER_ID_VARIABLE} must be at most {MAX_SIGNER_ID_CHARS} characters, "
             f"got {len(signer_id)}."
@@ -285,8 +310,8 @@ def _parse_checkpoint(environ: Mapping[str, str]) -> dict[str, str | None]:
         )
     try:
         key = Path(key_file).read_text(encoding="utf-8").strip()
-        HmacSha256Signer(key, signer_id=signer_id)
-    except (OSError, ValueError) as error:
+        _checkpoint_signer(key, algorithm, signer_id)
+    except (OSError, ValueError, AgentSdkError) as error:
         raise ServerConfigurationError(
             f'{CHECKPOINT_KEY_FILE_VARIABLE} "{key_file}" cannot be used: '
             f"{type(error).__name__}: {error}"
@@ -295,6 +320,8 @@ def _parse_checkpoint(environ: Mapping[str, str]) -> dict[str, str | None]:
         "checkpoint_directory": directory,
         "checkpoint_key_file": key_file,
         "checkpoint_signer_id": signer_id,
+        "checkpoint_algorithm": algorithm,
+        "checkpoint_signed_tombstones": environ.get(CHECKPOINT_SIGNED_TOMBSTONES_VARIABLE) == "1",
     }
 
 

@@ -8,6 +8,7 @@ import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ..foundations.errors import AgentSdkError
 from ..foundations.hashing import sha256_hex
@@ -24,6 +25,7 @@ from ..observability.run_checkpoints import (
     export_run_head_checkpoint,
 )
 from ..observability.telemetry_store import TelemetryStore
+from ..observability.timestamp import TimestampAuthority
 from ..observability.transparency import publish_run_tree_heads
 from .retention import pruned_heads_lookup
 
@@ -49,6 +51,13 @@ class RunHeadCheckpointer:
     sink: CheckpointSink
     tree_heads: bool = False
     signed_tombstones: bool = False
+    verifier: CheckpointSigner | None = None
+    timestamper: TimestampAuthority | None = None
+    trusted_roots: tuple[Any, ...] = ()
+
+    @property
+    def trusted(self) -> CheckpointSigner:
+        return self.verifier or self.signer
 
     def require_outside(self, run_root: Path) -> None:
         if self.sink.is_inside(run_root):
@@ -74,11 +83,22 @@ class RunHeadCheckpointer:
             self.signer,
             self.sink,
             pruned_lookup=pruned_heads_lookup(
-                run_root, self.signer if self.signed_tombstones else None
+                run_root, self.trusted if self.signed_tombstones else None
             ),
+            verifier=self.verifier,
+            timestamper=self.timestamper,
+            trusted_roots=self.trusted_roots or None,
         )
         if self.tree_heads:
-            publish_run_tree_heads(telemetry, audit, run_id, self.sink, self.signer)
+            publish_run_tree_heads(
+                telemetry,
+                audit,
+                run_id,
+                self.sink,
+                self.signer,
+                timestamper=self.timestamper,
+                trusted_roots=self.trusted_roots or None,
+            )
         return checkpoint
 
     def check(
@@ -93,10 +113,11 @@ class RunHeadCheckpointer:
             audit,
             run_id,
             self.sink,
-            self.signer,
+            self.trusted,
             pruned_lookup=pruned_heads_lookup(
-                run_root, self.signer if self.signed_tombstones else None
+                run_root, self.trusted if self.signed_tombstones else None
             ),
+            trusted_roots=self.trusted_roots or None,
         )
 
     @classmethod

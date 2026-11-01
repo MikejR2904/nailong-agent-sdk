@@ -18,10 +18,12 @@ from typing import Any
 
 from ..foundations.atomic_io import replace_atomic, unique_temporary_path
 from ..foundations.errors import AgentSdkError, redact_secrets
-from ..foundations.hashing import canonical_hash, canonical_json
+from ..foundations.hashing import canonical_json
 from ..foundations.identifiers import file_safe_name
+from ..foundations.jcs import schema_hash
 from ..foundations.run_fence import RunFence
 from .append_listeners import AppendListener, AppendListeners
+from .payload_bounds import bound_payload
 from .telemetry_helpers import first_chain_break
 from .telemetry_models import (
     ChainBreak,
@@ -40,6 +42,7 @@ from .telemetry_models import (
     TelemetryVacuum,
 )
 
+DEFAULT_MAX_PAYLOAD_CHARS = 8_388_608
 _EVENT_TIME = "json_extract(event_json, '$.occurred_at_utc')"
 _EVENT_STATUS = "json_extract(event_json, '$.status')"
 _EVENT_TYPE = "json_extract(event_json, '$.event_type')"
@@ -50,7 +53,16 @@ _LOCK_RETRY_SECONDS = 10.0
 class TelemetryStore:
     """Append-only SQLite ledger with an integrity hash chain and metric observations."""
 
-    def __init__(self, root: Path, *, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        read_only: bool = False,
+        max_payload_chars: int = DEFAULT_MAX_PAYLOAD_CHARS,
+    ) -> None:
+        if max_payload_chars < 256:
+            raise ValueError("max_payload_chars must be at least 256.")
+        self._max_payload_chars = max_payload_chars
         self._root = root.resolve() / ".agent-telemetry"
         self._database_path = self._root / "telemetry.sqlite3"
         self._fence = RunFence(root)
@@ -160,11 +172,13 @@ class TelemetryStore:
                     "sequence": sequence,
                     "previous_event_hash": predecessor,
                     "integrity_hash": "",
-                    "payload": redact_secrets(event.payload),
-                    "links": redact_secrets(event.links),
+                    "payload": bound_payload(
+                        redact_secrets(event.payload), self._max_payload_chars
+                    ),
+                    "links": bound_payload(redact_secrets(event.links), self._max_payload_chars),
                 }
             )
-            digest = canonical_hash(prepared.model_dump(mode="json"))
+            digest = event_hash(prepared)
             prepared = prepared.model_copy(update={"integrity_hash": digest})
             connection.execute(
                 """
@@ -680,14 +694,17 @@ def _retry_when_locked[T](operation: Callable[[], T]) -> T:
             delay = min(delay * 2, 0.1)
 
 
+def event_hash(event: TelemetryEvent) -> str:
+    content = event.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
+    return schema_hash(event.schema_version, content)
+
+
 def _events_chain_break(events: Iterable[TelemetryEvent]) -> ChainBreak | None:
     return first_chain_break(
         events,
         noun="event",
         previous_attribute="previous_event_hash",
-        expected_hash=lambda event: canonical_hash(
-            event.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
-        ),
+        expected_hash=event_hash,
     )
 
 

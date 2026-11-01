@@ -23,6 +23,7 @@ from ..memory.context_projection import ContextProjectionPolicy, FileToolResultJ
 from ..memory.episode_store import InMemoryEpisodeStore
 from ..observability.audit_log import AuditTranscriptStore
 from ..observability.profiler import AgentRunProfiler
+from ..observability.recorder import RecorderMirror
 from ..observability.run_checkpoints import RunHeadCheckpoint
 from ..observability.telemetry_models import (
     TelemetryActor,
@@ -37,9 +38,15 @@ from ..tools.artifact_anchor import ArtifactLogAnchor, anchor_artifact_log, arti
 from ..tools.artifacts import ArtifactStore
 from ..tools.tools import ToolAuthorizer, ToolExecutor
 from .base_agent import AgentWatchdogPolicy, BaseAgent, PostToolHook, PreToolHook
+from .evidence_profile import EvidenceProfile
 from .model import AgentModel
 from .retention import RunRetention
-from .run_checkpointer import LOCAL_ANCHOR, RunHeadCheckpointer, resolve_checkpointer
+from .run_checkpointer import (
+    LOCAL_ANCHOR,
+    RunHeadCheckpointer,
+    _LocalAnchor,
+    resolve_checkpointer,
+)
 from .verification import VerificationGateRegistry
 
 _logger = get_logger("runtime")
@@ -61,6 +68,7 @@ class AgentRuntimeServices:
     telemetry: TelemetryStore
     audit_logs: AuditTranscriptStore
     checkpointer: RunHeadCheckpointer | None = None
+    recorder_mirror: RecorderMirror | None = None
 
     @classmethod
     def open(
@@ -70,10 +78,18 @@ class AgentRuntimeServices:
         audit_max_open_handles: int = 32,
         audit_max_payload_chars: int | None = None,
         checkpointer: RunHeadCheckpointer | None = LOCAL_ANCHOR,  # type: ignore[assignment]
+        evidence: EvidenceProfile | None = None,
     ) -> AgentRuntimeServices:
         """Create or reopen SDK-owned durable stores below ``run_root``."""
 
         resolved = run_root.resolve()
+        if evidence is not None:
+            if not isinstance(checkpointer, _LocalAnchor):
+                raise ValueError(
+                    "Pass either checkpointer or evidence, not both: an evidence profile builds "
+                    "its own checkpointer."
+                )
+            checkpointer = evidence.checkpointer()
         checkpointer = resolve_checkpointer(checkpointer, resolved)
         if checkpointer is not None:
             checkpointer.require_outside(resolved)
@@ -83,29 +99,38 @@ class AgentRuntimeServices:
             if audit_max_payload_chars is None
             else {"max_payload_chars": audit_max_payload_chars}
         )
+        telemetry = TelemetryStore(resolved)
+        audit_logs = AuditTranscriptStore(
+            resolved, max_open_handles=audit_max_open_handles, **payload_limit
+        )
+        mirror = evidence.apply(telemetry, audit_logs) if evidence is not None else None
         return cls(
             run_root=resolved,
             result_journal=FileToolResultJournal(resolved),
             project_state_store=FileProjectStateStore(resolved),
-            telemetry=TelemetryStore(resolved),
-            audit_logs=AuditTranscriptStore(
-                resolved, max_open_handles=audit_max_open_handles, **payload_limit
-            ),
+            telemetry=telemetry,
+            audit_logs=audit_logs,
             checkpointer=checkpointer,
+            recorder_mirror=mirror,
         )
 
-    def checkpoint_run(self, run_id: str) -> RunHeadCheckpoint | None:
-        if self.checkpointer is None:
-            return None
-        return self.checkpointer.export(self.run_root, self.telemetry, self.audit_logs, run_id)
+    def checkpoint_run(self, run_id: str, *, final: bool = False) -> RunHeadCheckpoint | None:
+        checkpoint = None
+        if self.checkpointer is not None:
+            checkpoint = self.checkpointer.export(
+                self.run_root, self.telemetry, self.audit_logs, run_id
+            )
+        if self.recorder_mirror is not None:
+            self.recorder_mirror.finish(run_id, final=final)
+        return checkpoint
 
     async def checkpoint_after_run(
         self, run_id: str, context: TelemetryContext | None = None
     ) -> RunHeadCheckpoint | None:
-        if self.checkpointer is None:
+        if self.checkpointer is None and self.recorder_mirror is None:
             return None
         try:
-            return await asyncio.to_thread(self.checkpoint_run, run_id)
+            return await asyncio.to_thread(self.checkpoint_run, run_id, final=True)
         except Exception as error:
             self.record_checkpoint_failure(run_id, context, error)
             return None
@@ -177,6 +202,9 @@ class AgentRuntimeServices:
             telemetry=self.telemetry,
             audit_logs=self.audit_logs,
             result_journal=self.result_journal,
+            signer=self.checkpointer.signer
+            if self.checkpointer is not None and self.checkpointer.signed_tombstones
+            else None,
         )
 
     def create_agent(

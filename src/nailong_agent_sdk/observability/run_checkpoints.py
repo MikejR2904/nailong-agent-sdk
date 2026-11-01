@@ -27,15 +27,25 @@ from pydantic import Field, ValidationError, computed_field
 from ..foundations.atomic_io import exclusive_file_lock, fsync_directory
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
-from ..foundations.hashing import canonical_json, sha256_hex
+from ..foundations.hashing import sha256_hex
 from ..foundations.identifiers import file_safe_name
+from ..foundations.jcs import schema_message
 from ..foundations.logging import get_logger
+from ..foundations.text import split_lines
 from .audit_log import AuditLogEntry, AuditTranscriptStore
 from .telemetry_models import ChainBreak
 from .telemetry_store import TelemetryStore
+from .timestamp import (
+    DEFAULT_MAX_SKEW_SECONDS,
+    TimestampAuthority,
+    TimestampToken,
+    stamp_content,
+    timestamp_problem,
+)
 
 _logger = get_logger("run-checkpoints")
-CHECKPOINT_SCHEMA = "agent-sdk-run-head-checkpoint-v1"
+CHECKPOINT_SCHEMAS = ("agent-sdk-run-head-checkpoint-v1", "agent-sdk-run-head-checkpoint-v2")
+CHECKPOINT_SCHEMA = CHECKPOINT_SCHEMAS[-1]
 MIN_HMAC_KEY_BYTES = 32
 MAX_SIGNER_ID_CHARS = 128
 TERMINAL_TELEMETRY_EVENT = "agent.profile-completed"
@@ -82,6 +92,15 @@ class HmacSha256Signer:
 
     def __repr__(self) -> str:
         return f"HmacSha256Signer(signer_id={self._signer_id!r})"
+
+
+def resolve_verifier(
+    verifier: CheckpointSigner, signer_id: str, at_utc: str | None
+) -> tuple[CheckpointSigner | None, str | None]:
+    resolve = getattr(verifier, "resolve", None)
+    if resolve is None:
+        return verifier, None
+    return resolve(signer_id, at_utc)
 
 
 def checkpoint_path(destination: Path, run_id: str) -> Path:
@@ -167,10 +186,13 @@ class RunHeadCheckpoint(StrictModel):
     created_at_utc: str
     signer_id: str
     signature: str = ""
+    timestamp: TimestampToken | None = None
 
     def signed_message(self) -> bytes:
         unsigned = self.model_copy(update={"signature": ""}).model_dump(mode="json")
-        return canonical_json(unsigned).encode("utf-8")
+        if unsigned.get("timestamp") is None:
+            unsigned.pop("timestamp", None)
+        return schema_message(self.schema_version, unsigned)
 
 
 class PrunedHeads(StrictModel):
@@ -195,6 +217,8 @@ class CheckpointVerification(StrictModel):
     checkpointed_audit_sequence: int = Field(default=0, ge=0)
     current_audit_sequence: int = Field(default=0, ge=0)
     tombstone_signed: bool | None = None
+    stamped_checkpoints: int = Field(default=0, ge=0)
+    verified_timestamps: int = Field(default=0, ge=0)
     detail: str
 
     @property
@@ -252,6 +276,8 @@ class _Assessment:
     retired: list[RunHeadCheckpoint]
     pruned: list[PrunedHeads]
     lookup_problem: str | None
+    stamped: int = 0
+    verified_stamps: int = 0
 
 
 _REFUSES_APPEND = frozenset(
@@ -276,9 +302,11 @@ def build_run_head_checkpoint(
     signer: CheckpointSigner,
     *,
     now: datetime | None = None,
+    timestamper: TimestampAuthority | None = None,
+    trusted_roots: Sequence[Any] | None = None,
 ) -> RunHeadCheckpoint:
     state = _inspect(telemetry, audit, run_id)
-    return _signed_from(state, telemetry, run_id, signer, now)
+    return _signed_from(state, telemetry, run_id, signer, now, timestamper, trusted_roots)
 
 
 def read_checkpoints(path: Path) -> list[RunHeadCheckpoint]:
@@ -294,6 +322,9 @@ def export_run_head_checkpoint(
     *,
     now: datetime | None = None,
     pruned_lookup: PrunedLookup | None = None,
+    verifier: CheckpointSigner | None = None,
+    timestamper: TimestampAuthority | None = None,
+    trusted_roots: Sequence[Any] | None = None,
 ) -> RunHeadCheckpoint:
     sink = destination if not isinstance(destination, Path) else FileCheckpointSink(destination)
     root = telemetry.root.parent
@@ -314,7 +345,9 @@ def export_run_head_checkpoint(
             f"({CheckpointVerdict.UNREADABLE.value}): {error.message} Nothing was appended.",
             {"path": sink.location(run_id), "verdict": CheckpointVerdict.UNREADABLE.value},
         ) from error
-    assessment = _assess(checkpoints, run_id, signer, pruned_lookup)
+    assessment = _assess(
+        checkpoints, run_id, verifier or signer, pruned_lookup, trusted_roots=trusted_roots
+    )
     state = _inspect_for(telemetry, audit, run_id, assessment)
     if checkpoints:
         existing = _verdict(run_id, checkpoints, assessment, state)
@@ -326,7 +359,7 @@ def export_run_head_checkpoint(
                 "Nothing was appended.",
                 {"path": sink.location(run_id), "verdict": existing.verdict.value},
             )
-    checkpoint = _signed_from(state, telemetry, run_id, signer, now)
+    checkpoint = _signed_from(state, telemetry, run_id, signer, now, timestamper, trusted_roots)
     sink.append(run_id, checkpoint.model_dump_json())
     return checkpoint
 
@@ -339,6 +372,8 @@ def verify_run_head_checkpoints(
     signer: CheckpointSigner,
     *,
     pruned_lookup: PrunedLookup | None = None,
+    trusted_roots: Sequence[Any] | None = None,
+    max_skew_seconds: float = DEFAULT_MAX_SKEW_SECONDS,
 ) -> CheckpointVerification:
     try:
         checkpoints = _load(source, run_id)
@@ -349,7 +384,14 @@ def verify_run_head_checkpoints(
             verdict=CheckpointVerdict.NO_CHECKPOINT,
             detail=f'There is no checkpoint of run "{run_id}".',
         )
-    assessment = _assess(checkpoints, run_id, signer, pruned_lookup)
+    assessment = _assess(
+        checkpoints,
+        run_id,
+        signer,
+        pruned_lookup,
+        trusted_roots=trusted_roots,
+        max_skew_seconds=max_skew_seconds,
+    )
     state = _inspect_for(telemetry, audit, run_id, assessment)
     return _verdict(run_id, checkpoints, assessment, state)
 
@@ -436,10 +478,17 @@ def check_run_heads(
     signer: CheckpointSigner,
     *,
     pruned_lookup: PrunedLookup | None = None,
+    trusted_roots: Sequence[Any] | None = None,
 ) -> RunHeadReport:
     return RunHeadReport(
         verification=verify_run_head_checkpoints(
-            telemetry, audit, run_id, source, signer, pruned_lookup=pruned_lookup
+            telemetry,
+            audit,
+            run_id,
+            source,
+            signer,
+            pruned_lookup=pruned_lookup,
+            trusted_roots=trusted_roots,
         ),
         terminal_link=verify_terminal_link(telemetry, audit, run_id),
     )
@@ -456,7 +505,7 @@ def _read_lines(path: Path) -> list[str]:
         ) from error
     if text and not text.endswith("\n"):
         text = text[: text.rfind("\n") + 1]
-    return text.splitlines()
+    return split_lines(text)
 
 
 def _discard_unterminated_tail(path: Path) -> None:
@@ -493,11 +542,11 @@ def _parse(lines: Sequence[str], label: str) -> list[RunHeadCheckpoint]:
                 f"{type(error).__name__}: {error}",
                 {"path": label, "line": number},
             ) from error
-        if checkpoint.schema_version != CHECKPOINT_SCHEMA:
+        if checkpoint.schema_version not in CHECKPOINT_SCHEMAS:
             raise AgentSdkError(
                 "RUN_CHECKPOINT_UNREADABLE",
                 f'Line {number} of the checkpoints at "{label}" has schema_version '
-                f'"{checkpoint.schema_version}", expected "{CHECKPOINT_SCHEMA}".',
+                f'"{checkpoint.schema_version}", expected one of {list(CHECKPOINT_SCHEMAS)}.',
                 {"path": label, "line": number},
             )
         checkpoints.append(checkpoint)
@@ -528,20 +577,51 @@ def _assess(
     run_id: str,
     signer: CheckpointSigner,
     pruned_lookup: PrunedLookup | None,
+    *,
+    trusted_roots: Sequence[Any] | None = None,
+    max_skew_seconds: float = DEFAULT_MAX_SKEW_SECONDS,
 ) -> _Assessment:
+    stamped = verified_stamps = 0
     for index, checkpoint in enumerate(checkpoints, start=1):
         if checkpoint.run_id != run_id:
             return _refused(
                 CheckpointVerdict.UNREADABLE,
                 f'Checkpoint {index} is of run "{checkpoint.run_id}", not "{run_id}".',
             )
-        if checkpoint.signer_id != signer.signer_id:
+        signing_time = checkpoint.created_at_utc
+        if checkpoint.timestamp is not None:
+            stamped += 1
+            moment, stamp_problem = timestamp_problem(
+                checkpoint.timestamp,
+                checkpoint.model_dump(mode="json"),
+                checkpoint.schema_version,
+                schema_message,
+                trusted_roots,
+                checkpoint.created_at_utc,
+                max_skew_seconds,
+            )
+            if stamp_problem is not None:
+                return _refused(
+                    CheckpointVerdict.SIGNATURE_INVALID,
+                    f"Checkpoint {index} cannot be trusted: {stamp_problem}.",
+                )
+            if moment is not None:
+                verified_stamps += 1
+                signing_time = moment.isoformat()
+        resolved, problem = resolve_verifier(signer, checkpoint.signer_id, signing_time)
+        if resolved is None:
+            return _refused(
+                CheckpointVerdict.SIGNATURE_INVALID,
+                f"Checkpoint {index} (created {checkpoint.created_at_utc}) cannot be trusted: "
+                f"{problem}.",
+            )
+        if checkpoint.signer_id != resolved.signer_id:
             return _refused(
                 CheckpointVerdict.SIGNATURE_INVALID,
                 f'Checkpoint {index} was signed by "{checkpoint.signer_id}" but the verifier '
-                f'is "{signer.signer_id}".',
+                f'is "{resolved.signer_id}".',
             )
-        if not signer.verify(checkpoint.signed_message(), checkpoint.signature):
+        if not resolved.verify(checkpoint.signed_message(), checkpoint.signature):
             return _refused(
                 CheckpointVerdict.SIGNATURE_INVALID,
                 f"Checkpoint {index} (created {checkpoint.created_at_utc}) fails its "
@@ -578,6 +658,8 @@ def _assess(
         retired=list(checkpoints[:retired]),
         pruned=pruned,
         lookup_problem=lookup_problem,
+        stamped=stamped,
+        verified_stamps=verified_stamps,
     )
 
 
@@ -651,6 +733,8 @@ def _signed_from(
     run_id: str,
     signer: CheckpointSigner,
     now: datetime | None,
+    timestamper: TimestampAuthority | None = None,
+    trusted_roots: Sequence[Any] | None = None,
 ) -> RunHeadCheckpoint:
     for label, chain in (("telemetry", state.telemetry), ("audit", state.audit)):
         failure = chain.failure
@@ -678,6 +762,15 @@ def _signed_from(
         created_at_utc=(now or datetime.now(UTC)).isoformat(),
         signer_id=signer.signer_id,
     )
+    if timestamper is not None:
+        token = stamp_content(
+            draft.model_dump(mode="json"),
+            draft.schema_version,
+            timestamper,
+            schema_message,
+            trusted_roots,
+        )
+        draft = draft.model_copy(update={"timestamp": token})
     return draft.model_copy(update={"signature": signer.sign(draft.signed_message())})
 
 
@@ -692,6 +785,8 @@ def _verdict(
         "checkpoints": len(checkpoints),
         "checkpointed_telemetry_sequence": newest.telemetry_sequence,
         "checkpointed_audit_sequence": newest.audit_sequence,
+        "stamped_checkpoints": assessment.stamped,
+        "verified_timestamps": assessment.verified_stamps,
     }
     if assessment.refusal is not None:
         return CheckpointVerification(

@@ -1,6 +1,10 @@
 import json
 
-from nailong_agent_sdk.agent.retention import read_tombstones, tombstone_path
+from nailong_agent_sdk.agent.retention import (
+    read_tombstones,
+    tombstone_path,
+    tombstone_signed_message,
+)
 from nailong_agent_sdk.agent.retention_anchor import read_anchor
 from tests.support.mcp_cases import scripted_run
 from tests.support.mcp_server import Server
@@ -64,5 +68,34 @@ def test_the_service_anchors_its_tombstone_log_where_the_operator_says_and_check
         dry = instance.call("prune_runs", {"older_than_seconds": 0.001})
         assert dry["report"]["anchor"]["verdict"] == "truncated"
         assert dry["report"]["problems"][0]["run_id"] == "(tombstone log)"
+    finally:
+        instance.stop()
+
+
+def test_the_service_signs_the_tombstones_it_writes_when_it_is_told_to(tmp_path):
+    from nailong_agent_sdk.observability.ed25519 import Ed25519Signer
+
+    key = tmp_path / "ed.key"
+    signer = Ed25519Signer.generate("service")
+    key.write_text(signer.private_key_hex(), encoding="utf-8")
+    base = tmp_path / "service"
+    base.mkdir()
+    instance = Server(
+        base,
+        extra_environment={
+            "AGENT_RUNTIME_CHECKPOINT_DIR": str(tmp_path / "off-host" / "checkpoints"),
+            "AGENT_RUNTIME_CHECKPOINT_KEY_FILE": str(key),
+            "AGENT_RUNTIME_CHECKPOINT_ALGORITHM": "ed25519",
+            "AGENT_RUNTIME_CHECKPOINT_SIGNER_ID": "service",
+            "AGENT_RUNTIME_CHECKPOINT_SIGNED_TOMBSTONES": "1",
+        },
+    )
+    try:
+        scripted_run(instance, "sign-a")
+        report = instance.call("prune_runs", {"older_than_seconds": 0.001, "dry_run": False})
+        assert report["ok"], report
+        (stone,) = read_tombstones(instance.run_root)
+        assert stone.signer_id == "service" and stone.signature
+        assert signer.verify(tombstone_signed_message(stone), stone.signature)
     finally:
         instance.stop()

@@ -131,8 +131,12 @@ class TelemetryContext(StrictModel):
         return require_span_id(value, info.field_name)
 
 
+TELEMETRY_SCHEMAS = ("telemetry-event-v1", "telemetry-event-v2")
+CURRENT_TELEMETRY_SCHEMA = TELEMETRY_SCHEMAS[-1]
+
+
 class TelemetryEvent(StrictModel):
-    schema_version: str = "telemetry-event-v1"
+    schema_version: str = CURRENT_TELEMETRY_SCHEMA
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     sequence: int = Field(default=0, ge=0)
     event_type: str = Field(min_length=1)
@@ -147,6 +151,16 @@ class TelemetryEvent(StrictModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     previous_event_hash: str | None = None
     integrity_hash: str = ""
+
+    @field_validator("schema_version")
+    @classmethod
+    def schema_is_known(cls, value: str) -> str:
+        if value not in TELEMETRY_SCHEMAS:
+            raise ValueError(
+                f'schema_version "{value}" is not one of {list(TELEMETRY_SCHEMAS)}, so '
+                "its hash cannot be recomputed."
+            )
+        return value
 
     @field_validator("payload", "links")
     @classmethod

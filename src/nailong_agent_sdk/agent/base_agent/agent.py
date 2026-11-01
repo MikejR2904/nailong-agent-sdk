@@ -39,6 +39,7 @@ from ...foundations.contracts import (
 from ...foundations.detached import run_detached
 from ...foundations.errors import AgentSdkError, TransientProviderError, redact_hidden_reasoning
 from ...foundations.hashing import canonical_hash, canonical_json, estimate_tokens
+from ...foundations.jcs import digest_of_value
 from ...memory.context import assemble_initial_context
 from ...memory.context_projection import (
     ContextProjectionPolicy,
@@ -86,6 +87,7 @@ from ...tools.tools import (
     ToolInvocationContext,
 )
 from ..cost_model import PriceTable, RunCostLedger, price_usage
+from ..definition_digest import definition_digests
 from ..model import (
     UNREPORTED_CANCELLATION,
     AgentModel,
@@ -355,7 +357,13 @@ class BaseAgent:
                     iteration=iteration,
                 )
 
-        emit("run-started", 0, model_binding=self.definition.model_binding.model_dump(mode="json"))
+        configuration = definition_digests(self.definition)
+        emit(
+            "run-started",
+            0,
+            model_binding=self.definition.model_binding.model_dump(mode="json"),
+            configuration=configuration,
+        )
         if self.audit_logs is not None:
             self.audit_logs.append(
                 telemetry_context.run_id,
@@ -1709,7 +1717,13 @@ class BaseAgent:
             call=effective_call,
             trace_parent=trace_parent,
         )
-        emit("tool-requested", iteration, tool=call.name, tool_call_id=call.id)
+        emit(
+            "tool-requested",
+            iteration,
+            tool=call.name,
+            tool_call_id=call.id,
+            arguments_sha256=digest_of_value(effective_call.arguments),
+        )
         try:
             for hook in self.pre_tool_hooks:
                 decision = await self._await_with_watchdog(
@@ -2353,6 +2367,13 @@ class BaseAgent:
                     "iterations": iterations,
                     "gen_ai.operation.name": "invoke_agent",
                     "gen_ai.agent.name": _span_attribute_text(self.definition.identity),
+                    "gen_ai.agent.id": _span_attribute_text(self.definition.identity),
+                    "gen_ai.agent.version": _span_attribute_text(
+                        self.definition.instructions.version
+                    ),
+                    "nailong.agent.definition_sha256": definition_digests(self.definition)[
+                        "definition_sha256"
+                    ],
                 },
             )
         profile = self.profiler.finish_run(profile_status)

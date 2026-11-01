@@ -625,7 +625,7 @@ Everything that must survive a restart and be explainable afterwards. There are 
   - fields: `verdict`, `anchors`, `anchored_entries`, `current_entries`, `detail`
   - `RunAnchorVerification.ok() -> bool` *(property)* - Property: true for `matches` and `advanced`.
 - `anchor_run_record(store: RunStateStore, sink: CheckpointSink, run_id: str, signer: CheckpointSigner, *, now: datetime | None=None) -> RunRecordAnchor` - Signs and appends the run's history length and hashes; a record that fails its check raises `RUN_ANCHOR_CHAIN_BROKEN`, a legacy snapshot `RUN_ANCHOR_LEGACY_RECORD`. · *Called by:* `state/harness_coordinator.py::HarnessCoordinator._anchor_run`
-- `verify_run_anchor(store: RunStateStore, sink: CheckpointSink, name: str, run_id: str, signer: CheckpointSigner) -> RunAnchorVerification` - Compares the record with every anchor kept under `name`; the newest decides between `matches` and `advanced`.
+- `verify_run_anchor(store: RunStateStore, sink: CheckpointSink, name: str, run_id: str, signer: CheckpointSigner) -> RunAnchorVerification` - Compares the record with every anchor kept under `name`; the newest decides between `matches` and `advanced`. The anchor's signer is resolved through `resolve_verifier`, as for artifact anchors.
   - `verify_run_anchor.verdict(kind: RunAnchorVerdict, detail: str, **counts: int) -> RunAnchorVerification` - Builds a verification from a verdict, its sentence and optional counts.
 
 ---

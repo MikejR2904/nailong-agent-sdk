@@ -13,6 +13,7 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 | [`foundations/errors.py`](#foundationserrorspy---typed-sdk-errors-and-secretreasoning-redaction-for-durable-records) | 284 | typed SDK errors and secret/reasoning redaction for durable records |
 | [`foundations/hashing.py`](#foundationshashingpy---canonical-json-encodings-sha-256-digests-and-the-token-estimate) | 56 | canonical JSON encodings, SHA-256 digests and the token estimate |
 | [`foundations/identifiers.py`](#foundationsidentifierspy---identifier-validation-injective-file-names-and-collision-free-sequential-ids) | 90 | identifier validation, injective file names and collision-free sequential ids |
+| [`foundations/jcs.py`](#foundationsjcspy---rfc-8785-json-canonicalization-for-evidence-hashes-and-signatures) | 120 | RFC 8785 JSON canonicalization for evidence hashes and signatures |
 | [`foundations/json_limits.py`](#foundationsjson_limitspy---depth-bound-for-untrusted-json-like-payloads) | 28 | depth bound for untrusted JSON-like payloads |
 | [`foundations/logging.py`](#foundationsloggingpy---opt-in-stdlib-logging-namespace-for-the-few-paths-outside-structured-telemetry) | 25 | opt-in stdlib logging namespace for the few paths outside structured telemetry |
 | [`foundations/optimization/__init__.py`](#foundationsoptimization__init__py---re-exports-the-pckp-models-and-solvers) | 17 | re-exports the PCKP models and solvers |
@@ -284,6 +285,30 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
 - `reserve_sequential_identifier(claims: Path, prefix: str, is_taken: Callable[[str], bool], *, start: int=1) -> tuple[str, int]` - Walks `<prefix>-<n>` from `start`, skips ids that `is_taken` reports, and returns the first one whose claim file under `claims` it creates exclusively (`claim_exclusive`) together with the next number to try; two processes can never receive the same id. · *Called by:* `orchestrator/state_store.py::OrchestrationStateStore.reserve_orchestration_id`, `state/orchestration.py::ControllerStateStore.reserve_controller_id`, `state/run_state_store.py::RunStateStore.reserve_run_id`
 
 **Algorithms & invariants.** A safe file name never contains `~`, so a mapped name cannot equal a passthrough name; two different unsafe inputs share a file only if their 12-hex digests collide. Reservation relies on exclusive file creation rather than on checking whether a record exists, which is what makes it safe across processes.
+
+---
+
+### `foundations/jcs.py` - RFC 8785 JSON canonicalization for evidence hashes and signatures
+
+*120 lines · depends on: `foundations/hashing.py` · used by: `observability/audit_log.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/transparency.py`, `agent/retention.py`, `agent/definition_digest.py` · not re-exported at the package root*
+
+**Role in the workflow.** The older `canonical_json` is Python's `json.dumps` with sorted keys; its bytes depend on Python's number and Unicode rules, so a verifier in another language cannot reproduce a hash or signature made over it. This module writes the bytes RFC 8785 defines, so any JCS implementation can. A record whose `schema_version` ends in `-v2` is hashed and signed this way; older records keep the legacy form and still verify.
+
+**Contents**
+
+- `jcs_json(value: Any) -> str` - The canonical text: no whitespace, keys sorted by UTF-16 code units, strings with only the escapes JSON requires, numbers as ECMAScript writes them. A value with no JSON form (a set, a datetime, a non-string key, NaN, Infinity, a lone surrogate) raises `TypeError` or `ValueError` naming its path, instead of being turned into text by `str()`. · *Called by:* `foundations/jcs.py::jcs_bytes`, `foundations/jcs.py::schema_message`
+- `jcs_bytes(value: Any) -> bytes` - The canonical text as UTF-8. · *Called by:* `agent/retention.py::tombstone_signed_message`, `foundations/jcs.py::jcs_hash`
+- `jcs_hash(value: Any) -> str` - SHA-256 of `jcs_bytes`, as hex. · *Called by:* `agent/definition_digest.py::definition_digests`, `foundations/jcs.py::schema_hash`
+- `digest_of_value(value: Any) -> str` - `jcs_hash`, or `legacy:` and the legacy canonical hash for a value with no JSON form (NaN, a set), so recording a digest never fails a run. · *Called by:* `agent/base_agent/agent.py::BaseAgent._call_tool`
+- `uses_jcs(schema_version: str) -> bool` - True when the schema version ends in `-v2`. · *Called by:* `foundations/jcs.py::schema_hash`, `foundations/jcs.py::schema_message`
+- `schema_hash(schema_version: str, value: Any) -> str` - The hash a record of that schema version carries: `jcs_hash` for `-v2`, the legacy `canonical_hash` otherwise. · *Called by:* `observability/audit_log.py::audit_entry_hash`, `observability/telemetry_store.py::event_hash`, `agent/retention.py::tombstone_hash`
+- `schema_message(schema_version: str, value: Any) -> bytes` - The bytes a record of that schema version is signed over, chosen the same way. · *Called by:* `observability/run_checkpoints.py::RunHeadCheckpoint.signed_message`, `observability/transparency.py::MerkleTreeHead.signed_message`
+- `_emit(value: Any, path: str) -> Any` - A generator of the output pieces; it carries the path (`$.a[0]`) so an error says where the bad value is.
+- `_sorted_keys(value: dict[Any, Any], path: str) -> list[str]` - The keys sorted by their UTF-16 big-endian bytes, which orders them by code unit as RFC 8785 requires (a character beyond U+FFFF sorts by its surrogate pair); a non-string key raises `TypeError`.
+- `_string(text: str, path: str) -> str` - `json.dumps` with `ensure_ascii=False`, after refusing a string that has no UTF-8 form (a lone surrogate).
+- `number_text(value: float, path: str='$') -> str` - The ECMAScript `Number::toString` form of a float built from Python's shortest round-trip digits: positional notation from `1e-6` up to below `1e21`, exponent form beyond, `-0` and `0` both `0`, NaN and the infinities refused.
+
+**Algorithms & invariants.** Integers are written exactly. RFC 8785 assumes IEEE-754 doubles, so an integer beyond ±(2^53−1) matches another implementation's output only if that implementation also parses it as an exact integer; the monotonic-clock field of a telemetry event can exceed that after about 104 days of uptime. The schema version, not a flag, picks the algorithm, so a ledger can hold v1 and v2 records in one chain.
 
 ---
 

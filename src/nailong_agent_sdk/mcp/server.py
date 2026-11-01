@@ -117,6 +117,9 @@ def create_mcp_server(
             audit_logs=audit_logs,
             result_journal=result_journal,
             anchor_path=_anchor_path(),
+            signer=checkpointer.signer
+            if checkpointer is not None and checkpointer.signed_tombstones
+            else None,
         ),
         authority=authority or McpAuthorityPolicy(),
     )

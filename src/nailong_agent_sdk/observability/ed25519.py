@@ -30,7 +30,14 @@ def _primitives() -> Any:
 
 
 def _key_bytes(value: bytes | str, label: str) -> bytes:
-    material = bytes.fromhex(value) if isinstance(value, str) else bytes(value)
+    try:
+        material = bytes.fromhex(value) if isinstance(value, str) else bytes(value)
+    except ValueError as error:
+        raise AgentSdkError(
+            "ED25519_KEY_INVALID",
+            f"An Ed25519 {label} key is {KEY_BYTES * 2} hexadecimal characters: {error}",
+            {"key": label},
+        ) from error
     if len(material) != KEY_BYTES:
         raise AgentSdkError(
             "ED25519_KEY_INVALID",
