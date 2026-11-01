@@ -38,7 +38,8 @@ _PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 _RUN_START = r"(?<![A-Za-z0-9_-])"
 _SECRET_CONTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(rf"{_RUN_START}sk-[A-Za-z0-9_-]{{20,}}+"),
-    re.compile(rf"{_RUN_START}sk_(?:live|test)_[A-Za-z0-9]{{16,}}+"),
+    re.compile(rf"{_RUN_START}[sr]k_(?:live|test)_[A-Za-z0-9]{{16,}}+"),
+    re.compile(rf"{_RUN_START}ya29\.[A-Za-z0-9_-]{{20,}}+"),
     re.compile(rf"{_RUN_START}(?:AKIA|ASIA)[0-9A-Z]{{16}}\b"),
     re.compile(rf"{_RUN_START}gh[pousr]_[A-Za-z0-9]{{30,}}+"),
     re.compile(rf"{_RUN_START}github_pat_[A-Za-z0-9_]{{20,}}+"),
@@ -76,6 +77,8 @@ _CONTENT_HINT_SUBSTRINGS = (
     "-----begin",
     "sk-",
     "sk_",
+    "rk_",
+    "ya29.",
     "akia",
     "asia",
     "ghp_",
@@ -200,8 +203,6 @@ def _redact_pem_blocks(text: str) -> str:
     if "-----BEGIN" not in text:
         return text
     ends = list(_PEM_END.finditer(text))
-    if not ends:
-        return text
     end_starts = [match.start() for match in ends]
     pieces: list[str] = []
     cursor = 0
@@ -209,10 +210,10 @@ def _redact_pem_blocks(text: str) -> str:
         if begin.start() < cursor:
             continue
         index = bisect.bisect_left(end_starts, begin.end())
-        if index == len(ends):
-            break
         pieces.append(text[cursor : begin.start()])
         pieces.append("[REDACTED]")
+        if index == len(ends):
+            return "".join(pieces)
         cursor = ends[index].end()
     pieces.append(text[cursor:])
     return "".join(pieces)

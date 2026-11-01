@@ -48,6 +48,7 @@ class RunHeadCheckpointer:
     signer: CheckpointSigner
     sink: CheckpointSink
     tree_heads: bool = False
+    signed_tombstones: bool = False
 
     def require_outside(self, run_root: Path) -> None:
         if self.sink.is_inside(run_root):
@@ -72,7 +73,9 @@ class RunHeadCheckpointer:
             run_id,
             self.signer,
             self.sink,
-            pruned_lookup=pruned_heads_lookup(run_root),
+            pruned_lookup=pruned_heads_lookup(
+                run_root, self.signer if self.signed_tombstones else None
+            ),
         )
         if self.tree_heads:
             publish_run_tree_heads(telemetry, audit, run_id, self.sink, self.signer)
@@ -91,7 +94,9 @@ class RunHeadCheckpointer:
             run_id,
             self.sink,
             self.signer,
-            pruned_lookup=pruned_heads_lookup(run_root),
+            pruned_lookup=pruned_heads_lookup(
+                run_root, self.signer if self.signed_tombstones else None
+            ),
         )
 
     @classmethod

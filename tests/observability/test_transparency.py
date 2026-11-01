@@ -108,7 +108,9 @@ def test_a_log_free_verifier_accepts_an_honest_extension_and_refuses_a_forked_on
     assert len(proof.hashes) <= 8
     assert verify_extension(older, newer, proof, SIGNER).ok
     forked_hashes = [*HASHES[:5], "f" * 64, *HASHES[6:]]
-    forked = publish_tree_head(forked_hashes, sink, "fork.merkle", SIGNER)
+    forked = publish_tree_head(
+        forked_hashes, FileCheckpointSink(sink.directory.parent / "fork"), NAME, SIGNER
+    )
     check = verify_extension(older, forked, prove_extension(forked_hashes, 13), SIGNER)
     assert not check.ok and "rewritten or forked" in check.detail
     assert "valid signature" in verify_extension(older, newer, proof, OTHER).detail

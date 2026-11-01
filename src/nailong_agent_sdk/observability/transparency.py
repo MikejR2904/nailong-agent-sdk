@@ -41,6 +41,7 @@ class TreeHeadVerdict(StrEnum):
     DIVERGED = "diverged"
     CHAIN_BROKEN = "chain-broken"
     SIGNATURE_INVALID = "signature-invalid"
+    MISBOUND = "misbound"
     NO_HEAD = "no-head"
     UNREADABLE = "unreadable"
 
@@ -209,6 +210,14 @@ def verify_tree_heads(
                 f'"{verifier.signer_id}": it was edited or signed with another key.',
                 heads=len(heads),
             )
+        mismatch = _binding_problem(head, name, verifier)
+        if mismatch is not None:
+            return _verdict(
+                TreeHeadVerdict.MISBOUND,
+                f'Tree head {number} of "{name}" is validly signed but {mismatch}: it '
+                "was copied from another ledger or signer.",
+                heads=len(heads),
+            )
         heads.append(head)
     tree = MerkleTree([leaf_data(item) for item in hashes])
     current = tree.size
@@ -295,6 +304,12 @@ def verify_extension(
                 detail=f"The {label} head does not carry a valid signature from signer "
                 f'"{verifier.signer_id}".',
             )
+    if first.name != second.name:
+        return ProofCheck(
+            ok=False,
+            detail=f'The older head is of "{first.name}" but the newer is of '
+            f'"{second.name}"; an extension is only defined within one ledger.',
+        )
     if (proof.first_size, proof.second_size) != (first.size, second.size):
         return ProofCheck(
             ok=False,
@@ -365,6 +380,14 @@ def verify_event_inclusion(
         detail=f"Record {proof.index} with hash {record_hash[:12]} is not in the "
         f"{head.size} records covered by the head.",
     )
+
+
+def _binding_problem(head: MerkleTreeHead, name: str, verifier: CheckpointSigner) -> str | None:
+    if head.name != name:
+        return f'names the ledger "{head.name}" instead of "{name}"'
+    if head.signer_id != verifier.signer_id:
+        return f'names signer "{head.signer_id}" instead of "{verifier.signer_id}"'
+    return None
 
 
 def _verdict(kind: TreeHeadVerdict, detail: str, **counts: int) -> TreeHeadVerification:

@@ -23,6 +23,14 @@ MAX_BODY_BYTES = MAX_RECORD_CHARS + 1_024
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
+class _NoRedirect(urlrequest.HTTPRedirectHandler):
+    def redirect_request(self, *arguments: Any, **keywords: Any) -> None:
+        return None
+
+
+_OPENER = urlrequest.build_opener(_NoRedirect)
+
+
 class HttpWitnessSink:
     """Appends each checkpoint to a witness the writer can add to but cannot read or rewrite."""
 
@@ -112,7 +120,7 @@ class HttpWitnessSink:
             headers["Content-Type"] = "application/json"
         call = urlrequest.Request(url, data=body, method=method, headers=headers)
         try:
-            with urlrequest.urlopen(call, timeout=self._timeout) as response:
+            with _OPENER.open(call, timeout=self._timeout) as response:
                 return response.status, response.read().decode("utf-8", errors="replace")
         except urlerror.HTTPError as failure:
             return failure.code, failure.read().decode("utf-8", errors="replace")

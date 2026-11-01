@@ -275,6 +275,13 @@ def _parser() -> argparse.ArgumentParser:
         "refresh it afterwards; keep it outside the run root.",
     )
     prune.add_argument(
+        "--key-file",
+        type=Path,
+        help="Sign each new tombstone with the HMAC key in this file (at least 32 bytes), so "
+        "a verifier holding the key can tell a real prune from a forged tombstone.",
+    )
+    prune.add_argument("--signer-id", default="hmac-sha256")
+    prune.add_argument(
         "--apply",
         action="store_true",
         help="Delete the runs; without it the command only reports what it would delete.",
@@ -391,6 +398,13 @@ def _parser() -> argparse.ArgumentParser:
         help="File whose text is the HMAC key (at least 32 bytes); it is never printed.",
     )
     run_checkpoint.add_argument("--signer-id", default="hmac-sha256")
+    run_checkpoint.add_argument(
+        "--require-signed-tombstones",
+        action="store_true",
+        help="Accept a retention tombstone as proof of a prune only when it carries a valid "
+        "signature from the same key; without it an unsigned tombstone is accepted and the "
+        "verdict says so.",
+    )
 
     verify_heads = subparsers.add_parser(
         "verify-checkpoints",
@@ -406,6 +420,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     verify_heads.add_argument("--key-file", type=Path, required=True)
     verify_heads.add_argument("--signer-id", default="hmac-sha256")
+    verify_heads.add_argument(
+        "--require-signed-tombstones",
+        action="store_true",
+        help="Accept a retention tombstone as proof of a prune only when it carries a valid "
+        "signature from the same key; without it an unsigned tombstone is accepted and the "
+        "verdict says so.",
+    )
 
     quality = subparsers.add_parser(
         "quality", help="Run the closed Ruff unused-import, lint, and formatting checks."
@@ -525,6 +546,7 @@ def _prune_runs(arguments: argparse.Namespace) -> object:
         policy,
         dry_run=not arguments.apply,
         anchor_path=arguments.anchor,
+        signer=_checkpoint_signer(arguments) if arguments.key_file is not None else None,
     )
 
 
@@ -663,6 +685,11 @@ def _checkpoint_signer(arguments: argparse.Namespace) -> HmacSha256Signer:
     return HmacSha256Signer(key, signer_id=arguments.signer_id)
 
 
+def _pruned_lookup(arguments: argparse.Namespace, signer: HmacSha256Signer) -> object:
+    verifier = signer if arguments.require_signed_tombstones else None
+    return pruned_heads_lookup(arguments.run_root, verifier)
+
+
 def _checkpoint_run(arguments: argparse.Namespace) -> object:
     signer = _checkpoint_signer(arguments)
     telemetry = TelemetryStore(arguments.run_root, read_only=True)
@@ -674,7 +701,7 @@ def _checkpoint_run(arguments: argparse.Namespace) -> object:
             arguments.run_id,
             signer,
             arguments.destination,
-            pruned_lookup=pruned_heads_lookup(arguments.run_root),
+            pruned_lookup=_pruned_lookup(arguments, signer),
         )
     finally:
         telemetry.close()
@@ -695,7 +722,7 @@ def _verify_checkpoints(arguments: argparse.Namespace) -> object:
             arguments.run_id,
             source,
             signer,
-            pruned_lookup=pruned_heads_lookup(arguments.run_root),
+            pruned_lookup=_pruned_lookup(arguments, signer),
         )
     finally:
         telemetry.close()

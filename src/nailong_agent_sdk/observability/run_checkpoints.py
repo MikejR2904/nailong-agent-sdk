@@ -181,6 +181,7 @@ class PrunedHeads(StrictModel):
     audit_head: str | None = None
     pruned_at_utc: str
     tombstone_sequence: int = Field(ge=1)
+    authenticated: bool = False
 
 
 type PrunedLookup = Callable[[str], Sequence[PrunedHeads]]
@@ -193,6 +194,7 @@ class CheckpointVerification(StrictModel):
     current_telemetry_sequence: int = Field(default=0, ge=0)
     checkpointed_audit_sequence: int = Field(default=0, ge=0)
     current_audit_sequence: int = Field(default=0, ge=0)
+    tombstone_signed: bool | None = None
     detail: str
 
     @property
@@ -785,11 +787,12 @@ def _retired_verdict(
     if absent:
         return CheckpointVerification(
             verdict=CheckpointVerdict.PRUNED,
+            tombstone_signed=stone.authenticated,
             detail=(
                 f'Run "{run_id}" was pruned by retention at {stone.pruned_at_utc} '
                 f"(tombstone {stone.tombstone_sequence}); the tombstone holds the same final "
                 f"heads as the newest checkpoint, {last.telemetry_sequence} telemetry events "
-                f"and {last.audit_sequence} audit entries."
+                f"and {last.audit_sequence} audit entries.{_unsigned_note(stone)}"
             ),
             **summary,
         )
@@ -852,13 +855,23 @@ def _tombstone_verdict(
     )
     return CheckpointVerification(
         verdict=CheckpointVerdict.PRUNED,
+        tombstone_signed=stone.authenticated,
         detail=(
             f'Run "{run_id}" was pruned by retention at {stone.pruned_at_utc} (tombstone '
             f"{stone.tombstone_sequence}) after growing by {grown[0]} telemetry events and "
             f"{grown[1]} audit entries beyond its newest checkpoint; those events are gone "
-            "and can no longer be checked against it."
+            f"and can no longer be checked against it.{_unsigned_note(stone)}"
         ),
         **summary,
+    )
+
+
+def _unsigned_note(stone: PrunedHeads) -> str:
+    if stone.authenticated:
+        return " The tombstone's signature was verified."
+    return (
+        " The tombstone was not checked against a signature, so only the retention log's own "
+        "word vouches for the deletion; pass a verifier to pruned_heads_lookup to require one."
     )
 
 

@@ -136,3 +136,26 @@ def test_redaction_stays_linear_on_repeated_prefixes(run_py, unit):
     rows = [line.split() for line in result.stdout.strip().splitlines()]
     t1, t2, t3 = (float(row[2]) for row in rows)
     assert t3 < 8 * max(t1, 0.05) or t3 < 1.0, f"timings {t1}, {t2}, {t3} for {unit!r}"
+
+
+BODY = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj" * 3
+
+
+def test_a_private_key_block_cut_before_its_end_marker_is_masked_to_the_end_of_the_text():
+    text = f"key follows\n-----BEGIN PRIVATE KEY-----\n{BODY}"
+    redacted = redact_secrets(text)
+    assert BODY[:30] not in redacted and redacted == "key follows\n[REDACTED]"
+
+
+def test_a_second_unterminated_block_after_a_complete_one_is_masked_too():
+    complete = f"-----BEGIN PRIVATE KEY-----\n{BODY}\n-----END PRIVATE KEY-----"
+    text = f"{complete}\nmiddle\n-----BEGIN RSA PRIVATE KEY-----\n{BODY}"
+    assert redact_secrets(text) == "[REDACTED]\nmiddle\n[REDACTED]"
+
+
+@pytest.mark.parametrize(
+    "secret",
+    ["ya29." + "a0AfH6SMBx1234567890abcdefghijklmnop", "rk_live_" + "a1B2c3D4e5F6g7H8i9J0"],
+)
+def test_oauth_access_tokens_and_restricted_payment_keys_are_masked(secret):
+    assert redact_secrets(f"before {secret} after") == "before [REDACTED] after"

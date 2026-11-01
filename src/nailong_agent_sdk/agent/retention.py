@@ -17,10 +17,10 @@ from pydantic import Field
 from ..foundations.atomic_io import exclusive_file_lock
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
-from ..foundations.hashing import canonical_hash
+from ..foundations.hashing import canonical_hash, canonical_json
 from ..memory.context_projection import FileToolResultJournal, JournalFootprint
 from ..observability.audit_log import AuditFootprint, AuditTranscriptStore
-from ..observability.run_checkpoints import PrunedHeads, PrunedLookup
+from ..observability.run_checkpoints import CheckpointSigner, PrunedHeads, PrunedLookup
 from ..observability.telemetry_helpers import first_chain_break, utc_now
 from ..observability.telemetry_models import (
     ChainBreak,
@@ -42,6 +42,7 @@ RETENTION_DIRECTORY = ".agent-retention"
 TOMBSTONE_FILE = "tombstones.jsonl"
 LOCK_FILE = "retention.lock"
 TERMINAL_EVENT_TYPE = "agent.terminated"
+TOMBSTONE_SIGNATURE_SCHEMA = "agent-sdk-run-tombstone-signature-v1"
 MAX_OLDER_THAN_SECONDS = 3_153_600_000.0
 DEFAULT_LOCK_TIMEOUT_SECONDS = 30.0
 DECISION_STREAM_ID = "mcp-decisions"
@@ -117,6 +118,8 @@ class RunTombstone(StrictModel):
     journal: JournalFootprint
     report_path: str | None = None
     integrity_hash: str = ""
+    signer_id: str | None = None
+    signature: str = ""
 
 
 class TombstonedHandle(StrictModel):
@@ -131,9 +134,33 @@ def tombstone_path(run_root: Path) -> Path:
 
 
 def tombstone_hash(tombstone: RunTombstone) -> str:
-    return canonical_hash(
-        tombstone.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
-    )
+    content = tombstone.model_copy(update={"integrity_hash": ""}).model_dump(mode="json")
+    content.pop("signer_id", None)
+    content.pop("signature", None)
+    return canonical_hash(content)
+
+
+def tombstone_signed_message(tombstone: RunTombstone) -> bytes:
+    return canonical_json(
+        {
+            "schema": TOMBSTONE_SIGNATURE_SCHEMA,
+            "signer_id": tombstone.signer_id,
+            "integrity_hash": tombstone.integrity_hash,
+        }
+    ).encode("utf-8")
+
+
+def tombstone_signature_problem(tombstone: RunTombstone, verifier: CheckpointSigner) -> str | None:
+    if not tombstone.signature or tombstone.signer_id is None:
+        return f'tombstone {tombstone.sequence} of run "{tombstone.run_id}" carries no signature'
+    if tombstone.signer_id != verifier.signer_id:
+        return (
+            f'tombstone {tombstone.sequence} was signed by "{tombstone.signer_id}" but the '
+            f'verifier is "{verifier.signer_id}"'
+        )
+    if not verifier.verify(tombstone_signed_message(tombstone), tombstone.signature):
+        return f"tombstone {tombstone.sequence} fails its signature"
+    return None
 
 
 def tombstone_chain_break(run_root: Path) -> ChainBreak | None:
@@ -166,8 +193,22 @@ def tombstone_for_run(run_root: Path, run_id: str) -> RunTombstone | None:
     return matching[-1] if matching else None
 
 
-def pruned_heads_lookup(run_root: Path) -> PrunedLookup:
+def pruned_heads_lookup(run_root: Path, verifier: CheckpointSigner | None = None) -> PrunedLookup:
     def lookup(run_id: str) -> list[PrunedHeads]:
+        matching = [item for item in read_tombstones(run_root) if item.run_id == run_id]
+        if verifier is not None:
+            problems = [
+                problem
+                for item in matching
+                if (problem := tombstone_signature_problem(item, verifier)) is not None
+            ]
+            if problems:
+                raise AgentSdkError(
+                    "RETENTION_TOMBSTONE_UNSIGNED",
+                    f'The retention log of "{run_root}" holds tombstones of run "{run_id}" '
+                    f"that cannot be trusted as proof of a prune: {'; '.join(problems)}.",
+                    {"run_id": run_id, "problems": problems},
+                )
         return [
             PrunedHeads(
                 run_id=item.run_id,
@@ -177,9 +218,9 @@ def pruned_heads_lookup(run_root: Path) -> PrunedLookup:
                 audit_head=item.audit.head_hash,
                 pruned_at_utc=item.pruned_at_utc,
                 tombstone_sequence=item.sequence,
+                authenticated=verifier is not None,
             )
-            for item in read_tombstones(run_root)
-            if item.run_id == run_id
+            for item in matching
         ]
 
     return lookup
@@ -243,6 +284,7 @@ class RunRetention:
         lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
         protected_run_ids: Collection[str] = RESERVED_STREAM_IDS,
         anchor_path: Path | None = None,
+        signer: CheckpointSigner | None = None,
     ) -> None:
         if lock_timeout_seconds <= 0:
             raise ValueError("lock_timeout_seconds must be positive.")
@@ -254,6 +296,7 @@ class RunRetention:
         self._lock_timeout_seconds = lock_timeout_seconds
         self._protected_run_ids = frozenset(protected_run_ids)
         self._anchor_path = anchor_path
+        self._signer = signer
 
     def prune(
         self,
@@ -274,7 +317,11 @@ class RunRetention:
             timeout_code="RETENTION_LOCK_TIMEOUT",
         ):
             before = self._anchor_before_pass()
-            report = self._pass(policy, moment, _TombstoneAppender(tombstone_path(self._run_root)))
+            report = self._pass(
+                policy,
+                moment,
+                _TombstoneAppender(tombstone_path(self._run_root), self._signer),
+            )
             return self._anchored(report, before, moment)
 
     def _anchor_before_pass(self) -> RetentionAnchorStatus | None:
@@ -500,6 +547,7 @@ def prune_run_root(
     dry_run: bool = True,
     now: datetime | None = None,
     anchor_path: Path | None = None,
+    signer: CheckpointSigner | None = None,
 ) -> RetentionReport:
     if not run_root.is_dir():
         raise ValueError(f'Run root "{run_root}" does not exist or is not a directory.')
@@ -515,6 +563,7 @@ def prune_run_root(
             audit_logs=audit_logs,
             result_journal=FileToolResultJournal(run_root, read_only=dry_run),
             anchor_path=anchor_path,
+            signer=signer,
         )
         return retention.prune(policy, dry_run=dry_run, now=now)
     finally:
@@ -598,8 +647,9 @@ def _load(path: Path) -> tuple[list[RunTombstone], ChainBreak | None]:
 
 
 class _TombstoneAppender:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, signer: CheckpointSigner | None = None) -> None:
         self._path = path
+        self._signer = signer
         _drop_unfinished_line(path)
         entries, failure = _load(path)
         if failure is not None:
@@ -646,6 +696,11 @@ class _TombstoneAppender:
             report_path=report_path,
         )
         sealed = draft.model_copy(update={"integrity_hash": tombstone_hash(draft)})
+        if self._signer is not None:
+            named = sealed.model_copy(update={"signer_id": self._signer.signer_id})
+            sealed = named.model_copy(
+                update={"signature": self._signer.sign(tombstone_signed_message(named))}
+            )
         line = json.dumps(sealed.model_dump(mode="json"), sort_keys=True).encode("utf-8") + b"\n"
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("ab") as stream:

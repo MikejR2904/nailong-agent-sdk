@@ -38,6 +38,7 @@ from pydantic import Field
 
 from ..foundations.contracts import StrictModel
 from ..foundations.errors import AgentSdkError
+from ..foundations.hashing import sha256_hex
 from ..foundations.logging import get_logger
 from .audit_log import AuditLogEntry, AuditTranscriptStore
 from .ed25519 import Ed25519Signer
@@ -165,6 +166,15 @@ class RecorderCore:
         record: str | None,
     ) -> dict[str, Any]:
         self._require_store(store)
+        if sequence < 1:
+            raise _fail(
+                "RECORDER_SEQUENCE_INVALID",
+                f'The {store} ledger of run "{run_id}" offered sequence {sequence}; '
+                "sequences start at 1.",
+                run_id=run_id,
+                store=store,
+                sequence=sequence,
+            )
         try:
             leaf_data(record_hash)
         except ValueError as error:
@@ -241,11 +251,19 @@ class RecorderCore:
         return self._streams[key]
 
     def _persist(self, stream: _Stream, entry: RecordedEntry) -> None:
-        with stream.path.open("ab") as handle:
-            handle.write(entry.model_dump_json().encode("utf-8") + b"\n")
-            handle.flush()
-            if self._durable:
-                os.fsync(handle.fileno())
+        try:
+            with stream.path.open("ab") as handle:
+                handle.write(entry.model_dump_json().encode("utf-8") + b"\n")
+                handle.flush()
+                if self._durable:
+                    os.fsync(handle.fileno())
+        except OSError as error:
+            raise _fail(
+                "RECORDER_STORAGE_FAILED",
+                f'The recorder could not write record {entry.sequence} to "{stream.path}": '
+                f"{type(error).__name__}: {error}",
+                path=str(stream.path),
+            ) from error
 
     def _note_conflict(
         self, run_id: str, store: str, sequence: int, held: str, offered: str
@@ -283,13 +301,56 @@ class RecorderCore:
                 continue
             run_id = unquote(stem)
             stream = _Stream(path)
-            for line in path.read_text("utf-8").splitlines():
-                if not line.strip():
-                    continue
-                entry = RecordedEntry.model_validate_json(line)
+            for entry in _read_records(path):
                 stream.entries.append(entry)
                 stream.accumulator.append(leaf_data(entry.hash))
             self._streams[(run_id, store)] = stream
+
+
+def _read_records(path: Path) -> list[RecordedEntry]:
+    data = path.read_bytes()
+    if data and not data.endswith(b"\n"):
+        keep = data.rfind(b"\n") + 1
+        tail = data[keep:]
+        try:
+            RecordedEntry.model_validate_json(tail)
+        except ValueError:
+            _logger.warning(
+                'The recorder file "%s" ended in %d unterminated bytes (sha256 %s), a '
+                "write cut off by a crash; they were discarded.",
+                path,
+                len(tail),
+                sha256_hex(tail),
+            )
+            data = data[:keep]
+        else:
+            data += b"\n"
+        path.write_bytes(data)
+    entries: list[RecordedEntry] = []
+    for number, line in enumerate(data.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            entry = RecordedEntry.model_validate_json(line)
+        except ValueError as error:
+            raise _fail(
+                "RECORDER_RECORDS_CORRUPT",
+                f'Line {number} of the recorder file "{path}" is not a valid record '
+                f"({type(error).__name__}): the file was edited or damaged, so the "
+                "recorder will not start on it.",
+                path=str(path),
+                line=number,
+            ) from error
+        if entry.sequence != len(entries) + 1:
+            raise _fail(
+                "RECORDER_RECORDS_CORRUPT",
+                f'Line {number} of the recorder file "{path}" holds sequence '
+                f"{entry.sequence} but sequence {len(entries) + 1} was expected.",
+                path=str(path),
+                line=number,
+            )
+        entries.append(entry)
+    return entries
 
 
 class _Handler(socketserver.StreamRequestHandler):
