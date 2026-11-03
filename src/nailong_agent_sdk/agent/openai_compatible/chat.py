@@ -382,7 +382,11 @@ class OpenAICompatibleAgentModel(AgentModel):
             )
         return ProviderContinuation(
             provider=self._provider,
-            state={"assistant_tool_calls": raw_calls, "tool_results": []},
+            state={
+                "assistant_tool_calls": raw_calls,
+                "assistant_extra": _assistant_extra(_chat_message(response)),
+                "tool_results": [],
+            },
         )
 
     def _continuation_messages(self, continuation: ProviderContinuation) -> list[dict[str, Any]]:
@@ -403,9 +407,11 @@ class OpenAICompatibleAgentModel(AgentModel):
                 "MODEL_CONTINUATION_UNRESOLVED",
                 "Provider continuation requires tool results before the next model turn.",
             )
-        messages: list[dict[str, Any]] = [
-            {"role": "assistant", "content": None, "tool_calls": raw_calls}
-        ]
+        extra = continuation.state.get("assistant_extra")
+        assistant: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": raw_calls}
+        if isinstance(extra, Mapping):
+            assistant.update(extra)
+        messages: list[dict[str, Any]] = [assistant]
         for item in tool_results:
             if (
                 not isinstance(item, Mapping)
@@ -449,6 +455,26 @@ def _chat_tools(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         }
         for entry in entries
     ]
+
+
+_REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
+def _assistant_extra(message: Mapping[str, Any]) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    spoken = message.get("content")
+    if isinstance(spoken, str):
+        visible = _REASONING_BLOCK.sub("", spoken).strip()
+        if visible:
+            extra["content"] = visible
+    for field_name in _REASONING_FIELDS:
+        value = message.get(field_name)
+        if isinstance(value, str) and value:
+            extra[field_name] = value
+    details = message.get("reasoning_details")
+    if isinstance(details, list) and details:
+        extra["reasoning_details"] = details
+    return extra
 
 
 def _text_event(reasoning: bool, text: str) -> ModelTextDelta | ModelReasoningDelta:
@@ -650,6 +676,8 @@ class _ChatStreamAccumulator:
         self._usage: dict[str, Any] | None = None
         self._finish_reason: str | None = None
         self._splitter = ReasoningSplitter()
+        self._reasoning_parts: dict[str, list[str]] = {}
+        self._reasoning_details: list[Any] = []
 
     def flush(self) -> list[ModelTextDelta | ModelReasoningDelta]:
         return [_text_event(reasoning, text) for reasoning, text in self._splitter.flush()]
@@ -681,11 +709,15 @@ class _ChatStreamAccumulator:
         delta = choices[0].get("delta")
         if not isinstance(delta, Mapping):
             return events
-        for field_name in ("reasoning_content", "reasoning"):
+        for field_name in _REASONING_FIELDS:
             reasoning = delta.get(field_name)
             if isinstance(reasoning, str) and reasoning:
                 events.append(ModelReasoningDelta(text=reasoning))
+                self._reasoning_parts.setdefault(field_name, []).append(reasoning)
                 break
+        details = delta.get("reasoning_details")
+        if isinstance(details, list):
+            self._reasoning_details.extend(details)
         content = delta.get("content")
         if isinstance(content, str) and content:
             self._content_parts.append(content)
@@ -729,6 +761,13 @@ class _ChatStreamAccumulator:
         message: dict[str, Any] = {"role": "assistant"}
         if self._tool_calls:
             message["tool_calls"] = [self._tool_calls[index] for index in sorted(self._tool_calls)]
+            spoken = "".join(self._content_parts)
+            if spoken.strip():
+                message["content"] = spoken
+            for field_name, parts in self._reasoning_parts.items():
+                message[field_name] = "".join(parts)
+            if self._reasoning_details:
+                message["reasoning_details"] = self._reasoning_details
         else:
             message["content"] = "".join(self._content_parts)
         choice: dict[str, Any] = {"message": message}

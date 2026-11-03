@@ -153,6 +153,10 @@ def core_tool_definitions() -> list[ToolDefinition]:
         definition(
             "web_fetch",
             "Fetch bounded public HTTP(S) content marked as untrusted evidence. "
+            "An HTML page is returned as its readable text (scripts, styles and markup "
+            "removed) with its title and up to 40 links; a long page is read in "
+            "max_chars slices with page / next_page / total_pages, and raw=true returns "
+            "the HTML source instead. "
             "A PDF URL (content-type application/pdf) is parsed and returned "
             "as many consecutive pages starting at 'page' as fit in max_chars "
             "(usually several pages per call, not just one): the response "
@@ -169,15 +173,19 @@ def core_tool_definitions() -> list[ToolDefinition]:
                 "properties": {
                     "url": {"type": "string"},
                     "max_chars": {"type": "integer", "minimum": 500, "maximum": 20000},
+                    "raw": {
+                        "type": "boolean",
+                        "description": "Return the HTML source instead of readable text.",
+                    },
                     "page": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 10000,
                         "description": (
-                            "1-indexed page to start reading from, for a PDF "
-                            "URL only. Ignored for non-PDF content. Defaults "
-                            "to 1; pass the previous response's next_page to "
-                            "continue reading the same document."
+                            "1-indexed page to start reading from: a PDF page, or "
+                            "the max_chars slice of a long HTML page. Ignored for "
+                            "other content. Defaults to 1; pass the previous "
+                            "response's next_page to continue reading the same document."
                         ),
                     },
                 },

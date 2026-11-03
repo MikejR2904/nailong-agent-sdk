@@ -234,7 +234,8 @@ def test_fetch_content_types_and_http_errors(server):
         text = _fetch_public_text(base + "/text", 1000)
         assert text["content"] == "héllo" and text["untrusted_content"] is True
         assert _fetch_public_text(base + "/json", 1000)["content_type"] == "application/json"
-        assert "<script>" in _fetch_public_text(base + "/html", 1000)["content"]
+        assert "<script>" in _fetch_public_text(base + "/html", 1000, raw=True)["content"]
+        assert _fetch_public_text(base + "/html", 1000)["content"] == "hi"
         for path in ("/image", "/zip"):
             with pytest.raises(ValueError, match="rejects non-textual content type"):
                 _fetch_public_text(base + path, 1000)
@@ -343,3 +344,70 @@ def test_strip_html_and_search_parser_edge_cases():
     _strip_html("<" * 20_000)
     _strip_html("<a" * 10_000)
     assert time.monotonic() - started < 5
+
+
+PAGE = (
+    b"<html><head><title> Team | Example </title><style>.a{color:red}</style>"
+    b"<script>var big = 'x'.repeat(100000);</script></head><body>"
+    b"<nav><a href='/home'>Home</a></nav><h1>Our team</h1>"
+    b"<p>Yihe Duan is a <b>third-year</b> student in ECE.</p>"
+    b"<ul><li>Role: Algorithms</li><li>Since: 2024</li></ul>"
+    b"<a href='/people/duan'>Profile page</a><a href='#top'>skip</a>"
+    b"<a href='mailto:x@example.com'>mail</a></body></html>"
+)
+
+
+def test_an_html_page_is_returned_as_readable_text_with_title_and_links(server):
+    port = server.server_address[1]
+
+    def route(handler):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(PAGE)))
+        handler.end_headers()
+        handler.wfile.write(PAGE)
+
+    _Handler.routes["/team"] = route
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(helpers, "_assert_public_http_url", lambda url, tool_name="web_fetch": None)
+        result = _fetch_public_text(f"http://127.0.0.1:{port}/team", 2000)
+    assert result["title"] == "Team | Example"
+    assert (
+        "# Our team" in result["content"]
+        and "Yihe Duan is a third-year student" in result["content"]
+    )
+    assert "- Role: Algorithms" in result["content"] and "color:red" not in result["content"]
+    assert "x'.repeat" not in result["content"] and "<p>" not in result["content"]
+    urls = {link["text"]: link["url"] for link in result["links"]}
+    assert urls == {
+        "Home": f"http://127.0.0.1:{port}/home",
+        "Profile page": f"http://127.0.0.1:{port}/people/duan",
+    }
+    assert result["truncated"] is False and result["total_pages"] == 1 and "next_page" not in result
+
+
+def test_a_long_page_is_read_in_slices_and_a_bad_slice_names_the_limit(server):
+    port = server.server_address[1]
+    body = (
+        "<html><body>"
+        + "".join(f"<p>paragraph {n} of the page</p>" for n in range(400))
+        + "</body></html>"
+    ).encode()
+
+    def route(handler):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    _Handler.routes["/long"] = route
+    url = f"http://127.0.0.1:{port}/long"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(helpers, "_assert_public_http_url", lambda url, tool_name="web_fetch": None)
+        first = _fetch_public_text(url, 1000)
+        second = _fetch_public_text(url, 1000, page=first["next_page"])
+        assert first["total_pages"] > 3 and first["truncated"] is True and second["page"] == 2
+        assert "paragraph 0 of" in first["content"] and "paragraph 0 of" not in second["content"]
+        with pytest.raises(ValueError, match="past the end"):
+            _fetch_public_text(url, 1000, page=first["total_pages"] + 1)

@@ -145,11 +145,16 @@ class CoreToolServices:
             raise ValueError("Core tool read limits must be positive and safe.")
 
 
+SEARCH_SPACING_SECONDS = 1.2
+
+
 class CoreToolDispatcher:
     """Implementation dispatch for portable typed tools; policy is applied by its caller."""
 
     def __init__(self, services: CoreToolServices) -> None:
         self._services = services
+        self._search_gate = asyncio.Lock()
+        self._last_search_at = 0.0
 
     async def execute(
         self, name: str, arguments: dict[str, Any], *, writer: dict[str, Any] | None = None
@@ -409,6 +414,7 @@ class CoreToolDispatcher:
             self._services.max_web_chars,
         )
         page = _bounded_int(arguments.get("page", 1), "page", 1, 10_000)
+        raw = bool(arguments.get("raw", False))
         return await run_detached(
             _fetch_public_text,
             url,
@@ -417,6 +423,7 @@ class CoreToolDispatcher:
             image_cache=self._services.pdf_image_cache,
             pdf_bytes_cache=self._services.pdf_bytes_cache,
             deadline_seconds=self._services.max_fetch_seconds,
+            raw=raw,
         )
 
     async def _render_pdf_page(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -436,7 +443,15 @@ class CoreToolDispatcher:
         client = self._services.search_client or DuckDuckGoHtmlClient()
         query = _required_text(arguments, "query")
         limit = _bounded_int(arguments.get("max_results", 5), "max_results", 1, 10)
-        results = await client.search(query, limit)
+        async with self._search_gate:
+            loop = asyncio.get_running_loop()
+            wait = SEARCH_SPACING_SECONDS - (loop.time() - self._last_search_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                results = await client.search(query, limit)
+            finally:
+                self._last_search_at = loop.time()
         return {
             "untrusted_content": True,
             "results": [result.__dict__ for result in results[:limit]],

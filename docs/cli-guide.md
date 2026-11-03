@@ -139,6 +139,8 @@ back to the model, or written to the audit log. What you see depends on the mode
 | Anthropic | thinking blocks, which need extended thinking switched on: `[parameters]` with `thinking = { type = "enabled", budget_tokens = 4000 }` (check your model's current requirements) |
 | Models that do not reason | nothing to show |
 
+Reasoning models spend output tokens on thinking. If a run stops with `finish_reason "length"`, raise `max_tokens` (or leave it unset) in your settings.
+
 In `-p` mode reasoning is shown only with `--verbose`; `--output stream-json` always carries it as
 `{"type": "reasoning", "delta": "..."}` events.
 
@@ -221,6 +223,17 @@ by short stubs (the call and a 400-character summary). Three things keep it from
 - **It knows where it is.** The instructions carry the working directory, platform, shell
   (Windows `cmd.exe` is named, so it stops writing bash), whether commands are sandboxed, and
   today's date; the task list it keeps with `todo_write` is returned in full on every update.
+
+- **It remembers its last thought.** For models that send reasoning (DeepSeek-style
+  `reasoning_content`, OpenRouter `reasoning`), the reasoning and spoken text of the previous step
+  go back with its tool calls, in memory only, so it continues its plan instead of re-deriving it.
+  Anthropic thinking blocks were already kept this way.
+- **Web pages are readable.** `web_fetch` returns an HTML page as text (title, headings, lists,
+  up to 40 links) and reads long pages in slices (`page`, `next_page`); it used to return the raw
+  source, which for many sites is all stylesheet and script.
+- **Searches go one at a time**, about a second apart, because search backends rate-limit bursts.
+- **A working style is in the default instructions:** say why before a call, note only what is new
+  after it, never repeat a call, stop when the evidence is enough, answer once with sources.
 
 At the step limit you are asked `Keep going for N more?`; yes sends "Continue from where you
 stopped" in the same session.
