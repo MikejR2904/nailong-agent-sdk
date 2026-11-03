@@ -1,0 +1,56 @@
+"""A task list the agent keeps for a multi-step job, shown to the user as a checklist."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from nailong_agent_sdk.starter import FunctionTool, tool
+
+from .console import Console
+
+STATUSES = ("pending", "in_progress", "completed")
+_MARKS = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+
+
+class TodoList:
+    def __init__(self) -> None:
+        self.items: list[dict[str, str]] = []
+
+    def replace(self, todos: list[dict[str, Any]]) -> None:
+        cleaned: list[dict[str, str]] = []
+        for index, item in enumerate(todos, 1):
+            content = str(item.get("content", "")).strip()
+            status = item.get("status", "pending")
+            if not content:
+                raise ValueError(f"Todo {index} has no content.")
+            if status not in STATUSES:
+                raise ValueError(
+                    f'Todo {index} has status "{status}"; use one of {", ".join(STATUSES)}.'
+                )
+            cleaned.append({"content": content, "status": status})
+        if sum(1 for item in cleaned if item["status"] == "in_progress") > 1:
+            raise ValueError("Only one todo may be in_progress at a time.")
+        self.items = cleaned
+
+    def render(self, console: Console) -> None:
+        for item in self.items:
+            style = "dim" if item["status"] == "completed" else "cyan"
+            console.line(console.style(f"  {_MARKS[item['status']]} {item['content']}", style))
+
+
+def todo_tool(todos: TodoList, console: Console) -> FunctionTool:
+    def todo_write(items: list[dict[str, str]]) -> str:
+        todos.replace(items)
+        todos.render(console)
+        done = sum(1 for item in todos.items if item["status"] == "completed")
+        listing = "; ".join(f"[{item['status']}] {item['content']}" for item in todos.items)
+        return f"{done} of {len(todos.items)} done. Current list: {listing}"
+
+    return tool(
+        todo_write,
+        description=(
+            "Keep a short task list for a multi-step job. Send the whole list each time, each "
+            "item as {content, status} with status pending, in_progress or completed and at most "
+            "one in_progress. Use it for work with three or more steps."
+        ),
+    )

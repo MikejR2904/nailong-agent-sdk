@@ -47,6 +47,7 @@ class AgentWatchdogPolicy:
         transient_retry_base_seconds: float = 0.5,
         transient_retry_max_seconds: float = 30.0,
         max_parallel_tool_calls: int = 16,
+        invalid_output_retries: int = 2,
     ) -> None:
         values = {
             "run_deadline_seconds": run_deadline_seconds,
@@ -71,7 +72,10 @@ class AgentWatchdogPolicy:
         self.verification_timeout_seconds = verification_timeout_seconds
         self.transient_retry_base_seconds = transient_retry_base_seconds
         self.transient_retry_max_seconds = transient_retry_max_seconds
+        if invalid_output_retries < 0:
+            raise ValueError("invalid_output_retries must not be negative.")
         self.max_parallel_tool_calls = max_parallel_tool_calls
+        self.invalid_output_retries = invalid_output_retries
 
 
 PreToolHook = Callable[[ToolInvocationContext], Awaitable[ToolHookDecision | None]]

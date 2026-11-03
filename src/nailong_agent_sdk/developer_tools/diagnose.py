@@ -435,6 +435,22 @@ def _retrying(event: TelemetryEvent) -> list[DiagnosisFinding]:
     ]
 
 
+def _unusable_reply(event: TelemetryEvent) -> list[DiagnosisFinding]:
+    details = _details(event)
+    code = _code(details.get("code"))
+    return [
+        DiagnosisFinding(
+            sequence=event.sequence,
+            event_type=event.event_type,
+            iteration=_iteration(event),
+            severity="warning",
+            code=code,
+            message=f"The model's reply was unusable ({code or 'unknown'}); it was asked again "
+            f"(attempt {details.get('attempt')}).",
+        )
+    ]
+
+
 def _model_cancelled(event: TelemetryEvent) -> list[DiagnosisFinding]:
     return [
         DiagnosisFinding(
@@ -538,6 +554,7 @@ _EXTRACTORS: dict[str, Callable[[TelemetryEvent], list[DiagnosisFinding]]] = {
     "agent.output-rejected": _output_rejected,
     "agent.tool-batch-completed": _tool_outcomes,
     "agent.model-turn-retrying": _retrying,
+    "agent.model-output-rejected": _unusable_reply,
     "agent.model-turn-cancelled": _model_cancelled,
     "agent.stream-listener-failed": _listener_failed,
     "run.terminated": _run_terminated,

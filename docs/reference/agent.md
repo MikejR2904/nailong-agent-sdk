@@ -5,6 +5,10 @@
 | File | Lines | Role |
 |---|---:|---|
 | [`agent/__init__.py`](#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
+| [`agent/anthropic_messages/__init__.py`](#agentanthropic_messages__init__py---public-surface-of-the-anthropic-messages-adapter) | 21 | public surface of the Anthropic Messages adapter |
+| [`agent/anthropic_messages/endpoint.py`](#agentanthropic_messagesendpointpy---host-owned-connection-data-for-the-anthropic-messages-api) | 66 | host-owned connection data for the Anthropic Messages API |
+| [`agent/anthropic_messages/messages.py`](#agentanthropic_messagesmessagespy---messages-api-adapter-for-the-agent-model-contract) | 431 | Messages API adapter for the agent model contract |
+| [`agent/anthropic_messages/stream.py`](#agentanthropic_messagesstreampy---fold-messages-api-server-sent-events-into-one-response) | 154 | fold Messages API server-sent events into one response |
 | [`agent/base_agent/__init__.py`](#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
 | [`agent/base_agent/agent.py`](#agentbase_agentagentpy---the-single-task-agent-loop) | 2739 | the single-task agent loop |
 | [`agent/base_agent/types.py`](#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
@@ -19,20 +23,21 @@
 | [`agent/graph_agent_executor.py`](#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 338 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 439 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
-| [`agent/openai_compatible/chat.py`](#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 796 | Chat Completions adapter for the agent model contract |
+| [`agent/openai_compatible/chat.py`](#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 700 | Chat Completions adapter for the agent model contract |
 | [`agent/openai_compatible/embeddings.py`](#agentopenai_compatibleembeddingspy---synchronous-embedding-provider-for-retrieval-indexes) | 68 | synchronous embedding provider for retrieval indexes |
-| [`agent/openai_compatible/transport.py`](#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 537 | JSON HTTP transports and endpoint configuration |
+| [`agent/openai_compatible/transport.py`](#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 538 | JSON HTTP transports and endpoint configuration |
 | [`agent/openai_compatible/vision.py`](#agentopenai_compatiblevisionpy---image-proposals-through-a-verified-byte-loader) | 163 | image proposals through a verified byte loader |
 | [`agent/orchestrator/__init__.py`](#agentorchestrator__init__py---public-surface-of-the-orchestrator-package) | 31 | public surface of the orchestrator package |
 | [`agent/orchestrator/models.py`](#agentorchestratormodelspy---user-owned-orchestration-policy-request-and-record-contracts) | 180 | user-owned orchestration policy, request and record contracts |
 | [`agent/orchestrator/orchestrator.py`](#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 1004 | deterministic composition of policy, plan, controller and graph execution |
 | [`agent/orchestrator/state_store.py`](#agentorchestratorstate_storepy---atomic-local-persistence-of-orchestration-records-and-policies) | 119 | atomic local persistence of orchestration records and policies |
 | [`agent/periodic_checkpoints.py`](#agentperiodic_checkpointspy---signed-checkpoints-and-artifact-anchors-taken-while-a-run-is-going) | 102 | signed checkpoints and artifact anchors taken while a run is going |
+| [`agent/provider_context.py`](#agentprovider_contextpy---the-provider-neutral-request-context-every-model-adapter-builds-its-messages-from) | 151 | the provider-neutral request context every model adapter builds its messages from |
 | [`agent/retention.py`](#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 748 | opt-in pruning of finished runs with a hash-chained tombstone for each |
 | [`agent/retention_anchor.py`](#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
 | [`agent/retention_inventory.py`](#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
 | [`agent/run_checkpointer.py`](#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 172 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
-| [`agent/runtime.py`](#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 255 | composition root for the durable stores around an agent |
+| [`agent/runtime.py`](#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 262 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
 | [`agent/task_runner.py`](#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 847 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
@@ -44,6 +49,81 @@
 *3 lines · depends on: nothing in the package · used by: `mcp/agent_tools.py` · not re-exported at the package root*
 
 **Role in the workflow.** Docstring only; public names are re-exported from the package root.
+
+---
+
+### `agent/anthropic_messages/__init__.py` - public surface of the Anthropic Messages adapter
+
+*21 lines · depends on: `agent/anthropic_messages/endpoint.py`, `agent/anthropic_messages/messages.py` · used by: `starter/models.py`, tests · Role in the workflow.** Re-exports the endpoint, the adapter and the two defaults so a host imports them from one place. Like the OpenAI-compatible adapter it has no ambient credential lookup and no default model.*
+
+**Contents**
+
+- (no definitions)
+
+---
+
+### `agent/anthropic_messages/endpoint.py` - host-owned connection data for the Anthropic Messages API
+
+*66 lines · depends on: `observability/trace_context.py` · used by: `agent/anthropic_messages/__init__.py`, `agent/anthropic_messages/messages.py` · not re-exported at the package root*
+
+**Role in the workflow.** Holds the key, base URL, API version, timeout and any extra headers (for example a beta header), validates them when built, and produces the request headers: `x-api-key`, `anthropic-version` and `content-type`, never an `Authorization` header. The key is excluded from `repr`. A plain-HTTP URL needs `allow_insecure_http`, and `extra_headers` may not override the three headers the endpoint owns.
+
+**Contents**
+
+- **class `AnthropicEndpoint`** - Connection settings for one Anthropic endpoint; refuses a blank or whitespace-containing key, plain HTTP without an explicit flag, a blank version, a non-positive timeout and extra headers that would replace the key, version or content type.
+  - `AnthropicEndpoint.__post_init__(self) -> None` - Validates the settings and stores the stripped key; each refusal names the field.
+  - `AnthropicEndpoint.url_for(self, suffix: str) -> str` - The base URL without a trailing slash followed by the path.
+  - `AnthropicEndpoint.request_headers(self, trace_parent: str | None=None) -> dict[str, str]` - The key, version and content-type headers plus the extra headers, and a W3C `traceparent` when trace propagation is on and the call has one.
+
+---
+
+### `agent/anthropic_messages/messages.py` - Messages API adapter for the agent model contract
+
+*431 lines · depends on: `agent/anthropic_messages/endpoint.py`, `agent/anthropic_messages/stream.py`, `agent/model.py`, `agent/openai_compatible/transport.py`, `agent/provider_context.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py` · used by: `agent/anthropic_messages/__init__.py`, tests · not re-exported at the package root*
+
+**Role in the workflow.** `BaseAgent` passes a `ModelContext`; `_payload` builds a Messages request (the shared system instruction, the stable context and the volatile context as two user messages, declared tools as native tools) and the response is mapped to an `AgentTurn`: `tool_use` blocks become one dependency-free `tool-batch`, otherwise the text must be one JSON turn (a surrounding code fence is accepted). The assistant's content blocks are kept verbatim in the continuation and sent back with the `tool_result` blocks, so thinking blocks are returned unmodified. The first message block carries a prompt-cache marker unless turned off. `max_tokens` is required by the API and defaults to 8192; a binding parameter overrides it. Usage reports total input tokens (fresh plus cache reads plus cache writes) because the cost model expects cached tokens to be a subset of input. Streaming is supported through `stream_turn`. Not implemented: structured-output and server-side tools.
+
+**Contents**
+
+- **class `AnthropicMessagesAgentModel`** - Maps Anthropic Messages responses into untrusted SDK agent turns; the host owns the endpoint, credential and model binding. Implements tool-result continuation, streaming and cancellation reporting.
+  - `AnthropicMessagesAgentModel.__init__(self, endpoint: AnthropicEndpoint, *, provider: str, model: str, default_max_tokens: int=DEFAULT_MAX_TOKENS, cache_stable_prefix: bool=True, transport: JsonHttpTransport | AsyncJsonHttpTransport | None=None, streaming_transport: StreamingJsonHttpTransport | None=None) -> None` - Requires non-empty provider and model identifiers and a positive default `max_tokens`; defaults to the urllib transport for plain calls and the httpx streaming transport for `stream_turn`; an async transport aborts the request when the task is cancelled.
+  - `AnthropicMessagesAgentModel.next_turn(self, context: ModelContext) -> ModelTurnResponse` - Validates the binding, builds the request, posts it (off the event loop for a blocking transport) and maps the response. A cancelled call records how it ended.
+  - `AnthropicMessagesAgentModel.stream_turn(self, context: ModelContext, on_delta: ModelStreamListener) -> ModelTurnResponse` - Sends the request with `stream` set, hands each text and tool-call delta to the listener as it arrives, folds the events into the same response shape `next_turn` reads, then reports usage once with `ModelStreamCompleted`. Thinking blocks and their signatures are kept so tool results can be returned unmodified.
+  - `AnthropicMessagesAgentModel.cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome | None` - Returns and clears what cancelling the task's in-flight request did.
+  - `AnthropicMessagesAgentModel.accept_tool_results(self, continuation: ProviderContinuation, results: Sequence[ProviderToolResult]) -> ProviderContinuation` - Binds the SDK's tool results to the `tool_use` ids in a continuation; the ids must match exactly, and a failed or blocked result is sent with `is_error`.
+  - `AnthropicMessagesAgentModel._cancellation(self, connection_closed: bool) -> ModelCancellationOutcome` - The honest account of a cancelled request: connection closed or detached thread, and that the provider has no way to stop the work.
+  - `AnthropicMessagesAgentModel._require_binding(self, context: ModelContext) -> ModelBinding` - Returns the declared binding, refusing a missing one or one for another provider or model.
+  - `AnthropicMessagesAgentModel._payload(self, context: ModelContext, binding: ModelBinding) -> dict[str, Any]` - Builds the request body; binding parameters are merged last so they can override `max_tokens` but cannot set `system`, `stream`, `stop_sequences` or any credential or endpoint key.
+  - `AnthropicMessagesAgentModel._continuation_messages(self, continuation: ProviderContinuation) -> list[dict[str, Any]]` - Rebuilds the assistant message and the `tool_result` user message from a continuation, validating their shape.
+  - `AnthropicMessagesAgentModel._turn_response_from(self, response: Mapping[str, Any]) -> ModelTurnResponse` - Maps a response to the turn, its continuation (tool turns only) and its usage.
+- `_content_blocks(response: Mapping[str, Any]) -> list[Any]` - The response's content list; raises for an error body, a truncated stop (`max_tokens`, `model_context_window_exceeded`), a refusal, a paused turn or an empty list, each naming the stop reason.
+- `_turn_from_content(content: Sequence[Any]) -> AgentTurn` - A `tool-batch` from `tool_use` blocks, otherwise the JSON turn in the text, validated against `AgentTurn` with up to five field-path errors.
+- `_call(block: Mapping[str, Any]) -> dict[str, Any]` - One `tool_use` block as a call dict; raises when the id or name is missing or the input is not an object.
+- `_text(content: Sequence[Any]) -> str` - The concatenated text blocks; raises when there is none.
+- `_json_turn(text: str) -> dict[str, Any]` - Decodes the text as one JSON object, unwrapping a surrounding code fence.
+- `_usage(response: Mapping[str, Any]) -> ProviderUsage | None` - Provider usage with input tokens summed over fresh, cache-read and cache-write tokens, cached tokens equal to cache reads, and the message id as the request id.
+- `_counter(raw: Mapping[str, Any], name: str) -> int | None` - A token counter that must be a non-negative integer when present.
+
+---
+
+### `agent/anthropic_messages/stream.py` - fold Messages API server-sent events into one response
+
+*154 lines · depends on: `agent/model.py`, `foundations/errors.py` · used by: `agent/anthropic_messages/messages.py` · not re-exported at the package root*
+
+**Role in the workflow.** The Messages stream sends `message_start`, then per content block a start, deltas and a stop, then `message_delta` (stop reason, final output tokens) and `message_stop`. `StreamAccumulator` turns those into the same dict a non-streaming call returns, so streaming and plain calls share every validation rule. Text and tool-argument fragments are reported as they arrive; tool input is parsed only when the stream finishes; thinking text and signatures are kept. An `error` event, a missing `message_stop`, a delta for a block that never started and invalid tool JSON each raise a named error.
+
+**Contents**
+
+- **class `StreamAccumulator`** - Collects one streamed message.
+  - `StreamAccumulator.__init__(self) -> None` - Starts empty.
+  - `StreamAccumulator.consume(self, chunk: Mapping[str, Any]) -> list[ModelStreamEvent]` - Applies one event and returns the text and tool-call deltas it carries; raises `ANTHROPIC_MESSAGES_PROVIDER_ERROR` for an `error` event.
+  - `StreamAccumulator.finalize(self) -> dict[str, Any]` - The assembled response; raises when the stream ended before `message_stop`.
+  - `StreamAccumulator._start(self, chunk: Mapping[str, Any]) -> None` - Records the message id and the opening usage.
+  - `StreamAccumulator._block_start(self, chunk: Mapping[str, Any]) -> list[ModelStreamEvent]` - Registers a content block; a `tool_use` block gets the next tool index and reports its id and name.
+  - `StreamAccumulator._block_delta(self, chunk: Mapping[str, Any]) -> list[ModelStreamEvent]` - Appends text, a tool-argument fragment, thinking text or a signature to its block.
+  - `StreamAccumulator._message_delta(self, chunk: Mapping[str, Any]) -> None` - Records the stop reason, stop details and the closing usage.
+  - `StreamAccumulator._merge_usage(self, usage: Any) -> None` - Keeps the latest value of each usage counter.
+  - `StreamAccumulator._finished_block(self, index: int) -> dict[str, Any]` - One finished block; a tool block's joined fragments are parsed as its input.
 
 ---
 
@@ -118,7 +198,7 @@
 - `_demote_for_state_failure(status: AgentRunStatus, reason: str | None, failure: AgentFailure | None, state_failure: AgentFailure) -> tuple[AgentRunStatus, str, AgentFailure ...` - Turns a COMPLETED run whose result could not be recorded into FAILED, or appends the recording failure to another status's reason. · *Called by:* `base_agent/agent.py::BaseAgent._terminate`
 - `project_state_hash_from_result(status: AgentRunStatus, output: Any, reason: str | None) -> str` - Content hash of status, output and reason, stored as terminal provenance without retaining the output. · *Called by:* `base_agent/agent.py::BaseAgent._terminate`
 
-**Algorithms & invariants.** Failure handling summary: a transient provider error is retried: the failure becomes an `agent-error` observation and a `model-turn-retrying` event, the run sleeps with exponential backoff (honouring `Retry-After`, capped by `transient_retry_max_seconds`) and the turn repeats at the cost of one iteration; any other model error, a watchdog timeout (`WATCHDOG_MODEL_TIMEOUT` and its tool and verification counterparts), an undeclared tool and a verification rejection end FAILED immediately; invalid tool arguments and unavailable consumed episodes are recoverable failed results the model can correct; a denied or blocked tool ends BLOCKED. The three guards are CONTEXT_DEADLOCK, PROJECT_STATE_BUDGET_EXCEEDED and CONTEXT_BUDGET_EXCEEDED (all BLOCKED). Graph episode ids and episode-store ids are assumed to coincide (both sequential), which holds only for a fresh store. Cancellation is cooperative at the token and forceful at the await: the token is polled, not signalled, so a cancel is noticed within 50 ms, and the interrupted operation receives `CancelledError` at its next await. A blocking call run on a thread cannot be stopped from outside; the OpenAI-compatible adapter runs its request on a detached daemon thread (`foundations/detached.py`), so the run ends at once and the request finishes, or times out, on its own. A tool that is interrupted may already have had side effects. What cancelling a model request did is reported by the adapter, in three levels that are never conflated: the task was cancelled and nothing a late response carries can commit (always); the request was aborted by closing its connection (`HttpxAsyncJsonTransport` and the streaming transport) or left running on a detached thread until the provider answers or its timeout passes (the blocking transports); and the provider confirmed stopping the work (only a host-supplied provider cancellation can say so). The Chat Completions protocol has no stop operation, so a provider may finish and bill a request nobody is waiting for.
+**Algorithms & invariants.** Failure handling summary: a transient provider error is retried: the failure becomes an `agent-error` observation and a `model-turn-retrying` event, the run sleeps with exponential backoff (honouring `Retry-After`, capped by `transient_retry_max_seconds`) and the turn repeats at the cost of one iteration; a model reply the adapter cannot use (`InvalidModelOutputError`: malformed or empty turn, tool arguments that are not a JSON object) is shown to the model as an `agent-error` observation with a `model-output-rejected` event and asked again, up to `invalid_output_retries` (2) times in a row, then the run fails with the count; any other model error, a watchdog timeout (`WATCHDOG_MODEL_TIMEOUT` and its tool and verification counterparts), an undeclared tool and a verification rejection end FAILED immediately; invalid tool arguments and unavailable consumed episodes are recoverable failed results the model can correct; a denied or blocked tool ends BLOCKED. The three guards are CONTEXT_DEADLOCK, PROJECT_STATE_BUDGET_EXCEEDED and CONTEXT_BUDGET_EXCEEDED (all BLOCKED). Graph episode ids and episode-store ids are assumed to coincide (both sequential), which holds only for a fresh store. Cancellation is cooperative at the token and forceful at the await: the token is polled, not signalled, so a cancel is noticed within 50 ms, and the interrupted operation receives `CancelledError` at its next await. A blocking call run on a thread cannot be stopped from outside; the OpenAI-compatible adapter runs its request on a detached daemon thread (`foundations/detached.py`), so the run ends at once and the request finishes, or times out, on its own. A tool that is interrupted may already have had side effects. What cancelling a model request did is reported by the adapter, in three levels that are never conflated: the task was cancelled and nothing a late response carries can commit (always); the request was aborted by closing its connection (`HttpxAsyncJsonTransport` and the streaming transport) or left running on a detached thread until the provider answers or its timeout passes (the blocking transports); and the provider confirmed stopping the work (only a host-supplied provider cancellation can say so). The Chat Completions protocol has no stop operation, so a provider may finish and bill a request nobody is waiting for.
 
 *Module-level names:* `_AGENT_TURN_ADAPTER`, `_STATE_SUMMARY_HEADROOM_CHARS`
 
@@ -140,7 +220,7 @@
   - `WatchdogExpired.__init__(source: str, seconds: float | None) -> None` - Builds the message `<source> expired after <seconds>s` (or just the source).
 - **class `RunCancelled`** *(exception; bases: Exception)* - Raised inside `BaseAgent` when the cancellation token fires while an operation is awaited; the call site that awaited it turns it into a CANCELLED result that names what was interrupted, so it never reaches a caller of `run`.
 - **class `AgentWatchdogPolicy`** *(class)* - Optional wall-clock limits: whole-run deadline and per-model-turn, per-tool-call and per-verification timeouts. · *Instantiated by:* `base_agent/agent.py::BaseAgent.__init__`, `agent/task_runner.py::AgentTaskRunner.run`
-  - `AgentWatchdogPolicy.__init__(*, run_deadline_seconds: float | None=None, model_turn_timeout_seconds: float | None=None, tool_call_timeout_seconds: float | None=None, verificat...` - Stores the four limits, the transient-retry base and cap (0.5 s and 30 s by default) and `max_parallel_tool_calls` (16), rejecting any non-positive, inconsistent or too-small value with a message naming the field.
+  - `AgentWatchdogPolicy.__init__(*, run_deadline_seconds: float | None=None, model_turn_timeout_seconds: float | None=None, tool_call_timeout_seconds: float | None=None, verificat...` - Stores the four limits, the transient-retry base and cap (0.5 s and 30 s by default) `max_parallel_tool_calls` (16) and `invalid_output_retries` (2), rejecting any non-positive, inconsistent or too-small value with a message naming the field.
 - **class `ToolCallOutcome`** *(dataclass)* - One tool call's call, result, model observation and episode id, plus a terminal status and reason when the call must end the run. · *Instantiated by:* `base_agent/agent.py::BaseAgent._record_executed_result`, `base_agent/agent.py::BaseAgent._record_unexecuted_result`
   - fields: `call`, `result`, `observation`, `episode_id`, `episode_kind`, `terminal_status`, `terminal_reason`
 - **class `ToolBatchExecution`** *(dataclass)* - Observations and provider tool-result projections of a completed batch. · *Instantiated by:* `base_agent/agent.py::BaseAgent._execute_tool_batch`
@@ -350,7 +430,7 @@
 
 ### `agent/model.py` - provider-neutral model contract, streaming events and failover
 
-*439 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/episode_models.py`, `state/project_state_models.py` · used by: `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/graph_agent_executor.py`, `agent/openai_compatible/chat.py`, `agent/runtime.py`, `agent/task_runner.py`, `integrations/langchain.py`, `integrations/langgraph.py` · re-exported at the package root: 17 name(s)*
+*439 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/episode_models.py`, `state/project_state_models.py` · used by: `__init__.py`, `agent/anthropic_messages/messages.py`, `agent/base_agent/agent.py`, `agent/base_agent/types.py`, `agent/cost_model.py`, `agent/graph_agent_executor.py`, `agent/openai_compatible/chat.py`, `agent/provider_context.py`, `agent/runtime.py`, `agent/task_runner.py`, `integrations/langchain.py`, `integrations/langgraph.py`, `starter/agent.py`, `starter/models.py`, tests · re-exported at the package root: 17 name(s)*
 
 **Role in the workflow.** `BaseAgent` builds a `ModelContext` each turn and calls `next_turn` (or `stream_turn` when a listener is set and the adapter supports it); adapters return an `AgentTurn` or a `ModelTurnResponse`; `FailoverAgentModel` can wrap several adapters.
 
@@ -367,6 +447,7 @@
   - fields: `provider`, `state`
 - **class `ModelTurnResponse`** *(dataclass)* - An untrusted turn with optional continuation and usage. · *Instantiated by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._turn_response_from`
   - fields: `turn`, `continuation`, `usage`
+- **class `ModelReasoningDelta`** *(dataclass)* - One streamed fragment of the model's visible reasoning, for live display only: it is never added to the turn, the continuation or the audit log. · *Instantiated by:* `openai_compatible/chat.py::_ChatStreamAccumulator.consume`, `anthropic_messages/stream.py::StreamAccumulator._block_delta`
 - **class `ModelTextDelta`** *(dataclass)* - One streamed fragment of assistant text. · *Instantiated by:* `openai_compatible/chat.py::_ChatStreamAccumulator.consume`
   - fields: `text`
 - **class `ModelToolCallDelta`** *(dataclass)* - One streamed fragment of a tool call (id and name only on a call's first chunk). · *Instantiated by:* `openai_compatible/chat.py::_ChatStreamAccumulator._consume_tool_call_deltas`
@@ -418,16 +499,16 @@
 
 ### `agent/openai_compatible/chat.py` - Chat Completions adapter for the agent model contract
 
-*796 lines · depends on: `agent/model.py`, `agent/openai_compatible/transport.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py` · used by: `agent/openai_compatible/__init__.py`, `agent/openai_compatible/vision.py` · re-exported at the package root: 2 name(s)*
+*700 lines · depends on: `agent/cost_model.py`, `agent/model.py`, `agent/openai_compatible/transport.py`, `agent/provider_context.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py`, `foundations/hashing.py` · used by: `agent/openai_compatible/__init__.py`, `agent/openai_compatible/vision.py`, tests · re-exported at the package root: 2 name(s)*
 
-**Role in the workflow.** `BaseAgent` passes a `ModelContext`; `_chat_payload` builds a three-message request (system, stable task context, volatile per-turn context), the transport posts it off the event loop, and the response is mapped to an `AgentTurn`: tool calls become one dependency-free `tool-batch`, otherwise the content must be a JSON `AgentTurn`.
+**Role in the workflow.** `BaseAgent` passes a `ModelContext`; `_chat_payload` builds a three-message request (system, stable task context, volatile per-turn context; the content comes from `agent/provider_context.py`, shared with the Anthropic adapter), the transport posts it off the event loop, and the response is mapped to an `AgentTurn`: tool calls become one dependency-free `tool-batch`, otherwise the content must be a JSON `AgentTurn`.
 
 **Contents**
 
 - **class `ProviderCancelRequest`** *(dataclass)* - Frozen: what a host's provider cancellation is told when a run is cancelled after the provider named the request (the id of a streamed response): the task, the request id, the provider, the model and whether it was streamed. · *Instantiated by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._ask_provider_to_cancel`
   - fields: `task_id`, `request_id`, `provider`, `model`, `streamed`
 - **class `OpenAICompatibleAgentModel`** *(class; bases: AgentModel)* - Adapter for an OpenAI-compatible chat endpoint; implements `next_turn`, `stream_turn` and `accept_tool_results`. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._model_for.adapter`
-  - `OpenAICompatibleAgentModel.__init__(endpoint: OpenAICompatibleEndpoint, *, provider: str, model: str, transport: JsonHttpTransport | AsyncJsonHttpTransport | None=None, streaming_tra...` - Requires non-empty provider and model identifiers; defaults to the urllib and httpx streaming transports. `transport` may also implement `AsyncJsonHttpTransport`; `provider_cancel` is an optional host coroutine asked to cancel a request the provider has already named.
+  - `OpenAICompatibleAgentModel.__init__(endpoint: OpenAICompatibleEndpoint, *, provider: str, model: str, transport: JsonHttpTransport | AsyncJsonHttpTransport | None=None, streaming_tra...` - Requires non-empty provider and model identifiers; defaults to the urllib and httpx streaming transports. `transport` may also implement `AsyncJsonHttpTransport`; `provider_cancel` is an optional host coroutine asked to cancel a request the provider has already named. `json_mode=False` leaves out `response_format: json_object` for a provider that rejects it, such as Anthropic's own OpenAI-compatibility endpoint.
   - `OpenAICompatibleAgentModel.next_turn(context: ModelContext) -> ModelTurnResponse` *(async)* - Validates the binding, builds the payload and posts it on a detached daemon thread (`run_detached`), then maps the response. Cancelling the run abandons the request instead of waiting for it: the thread ends when the provider answers or the endpoint timeout passes. The request carries the model span's `traceparent` when the endpoint has `propagate_trace_context`. With an `AsyncJsonHttpTransport` the request is awaited directly, so cancelling it closes the connection; a blocking transport runs detached as described. Either way a cancellation records its outcome and a late response is dropped.
   - `OpenAICompatibleAgentModel.cancellation_outcome(task_id: str) -> ModelCancellationOutcome | None` - Hands out, once, the outcome recorded when a request of the task was cancelled.
   - `OpenAICompatibleAgentModel._record_cancellation(task_id: str, binding: ModelBinding, connection_closed: bool, *, request_id: str | None, streamed: bool) -> None` *(async)* - Builds the outcome on `CancelledError`: `connection-closed` for an async or streaming request, `detached` for a blocking one (its detail names the transport timeout), and the provider level from `_ask_provider_to_cancel` when a hook exists and the provider had named the request. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.next_turn`, `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
@@ -442,11 +523,10 @@
   - `OpenAICompatibleAgentModel._observe_request(task_id: str, payload: Mapping[str, Any], tools: Sequence[Mapping[str, Any]]) -> None` - Serializes tools then messages, measures the prefix shared with the previous request of the task and stores the estimates (bounded to the 128 most recent tasks).
   - `OpenAICompatibleAgentModel._continuation_from_response(response: Mapping[str, Any], turn: AgentTurn) -> ProviderContinuation | None` - Keeps the raw tool calls of a tool turn for the next request. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._turn_response_from`
   - `OpenAICompatibleAgentModel._continuation_messages(continuation: ProviderContinuation) -> list[dict[str, Any]]` - Rebuilds the assistant tool-call message and the tool-result messages from a continuation, validating their shape. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._chat_payload`
-- `_prompt_without_duplicate_tools(context: ModelContext, tools: Sequence[Mapping[str, Any]]) -> dict[str, Any]` - The prompt as data with tools already sent as native function tools reduced to their names, so each definition is sent once.
-- `_safe_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]` - Requires JSON-compatible finite parameters and forbids credential and endpoint keys. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._chat_payload`
-- `_chat_tools(context: ModelContext) -> list[dict[str, Any]]` - Converts the prompt's declared tools into function-tool schemas. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._chat_payload`
-- `_agent_turn_from_chat_response(response: Mapping[str, Any]) -> AgentTurn` - Raises for a truncated (`finish_reason` length) or filtered response, turns tool calls into a tool batch (names the offending part of a malformed call) or parses JSON content, then validates against `AgentTurn` with up to five field-path errors. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._turn_response_from`
-- `_raise_for_incomplete_completion(response: Mapping[str, Any]) -> None` - Raises `OPENAI_COMPATIBLE_RESPONSE_TRUNCATED` when the first choice stopped at the output limit and `OPENAI_COMPATIBLE_RESPONSE_FILTERED` for `content_filter`, each saying what to change. · *Called by:* `openai_compatible/chat.py::_agent_turn_from_chat_response`
+- `_chat_tools(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]` - Wraps the declared tools (from `declared_tools`) as Chat Completions function-tool schemas. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._chat_payload`
+- `_agent_turn_from_chat_response(response: Mapping[str, Any], text_answer: Callable[[str], dict[str, Any]] | None=None) -> AgentTurn` - With `text_answer`, a non-JSON reply becomes a final turn whose output it builds and a JSON object without a `type` is wrapped as a final output. Raises for a truncated (`finish_reason` length), filtered or `error` response, turns tool calls into a tool batch (names the offending part of a malformed call) or parses JSON content, then validates against `AgentTurn` with up to five field-path errors. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._turn_response_from`
+- `_raise_for_incomplete_completion(response: Mapping[str, Any]) -> None` - Raises `OPENAI_COMPATIBLE_RESPONSE_TRUNCATED` when the first choice stopped at the output limit and `OPENAI_COMPATIBLE_RESPONSE_FILTERED` for `content_filter`, each saying what to change, and `OPENAI_COMPATIBLE_PROVIDER_ERROR` with the choice's own message for `finish_reason` `error` (which OpenRouter returns for an upstream failure inside an HTTP 200). · *Called by:* `openai_compatible/chat.py::_agent_turn_from_chat_response`
+- `_text_event(reasoning: bool, text: str) -> ModelTextDelta | ModelReasoningDelta` - The stream event for one piece of split content.
 - `_provider_error_message(error: Any) -> str` - Message text of a provider `error` object (its message, code or type), redacted, or a sentence saying no message was sent. · *Called by:* `openai_compatible/chat.py::_ChatStreamAccumulator.consume`, `openai_compatible/chat.py::_chat_message`
 - `_chat_message(response: Mapping[str, Any]) -> Mapping[str, Any]` - First choice's message object; a response that carries an `error` and no choices raises `OPENAI_COMPATIBLE_PROVIDER_ERROR` with the provider's message, otherwise a typed error names what is missing. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel._continuation_from_response`, `openai_compatible/chat.py::_agent_turn_from_chat_response`, `openai_compatible/chat.py::_chat_content`
 - `_chat_content(response: Mapping[str, Any]) -> str` - Non-empty text content or a typed error. · *Called by:* `openai_compatible/chat.py::_agent_turn_from_chat_response`, `openai_compatible/vision.py::OpenAICompatibleVisionAdapter.extract`
@@ -455,7 +535,8 @@
 - **class `_ChatStreamAccumulator`** *(class)* - Folds streamed chunks into the single non-streaming response shape. · *Instantiated by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
   - `_ChatStreamAccumulator.__init__() -> None` - Starts empty.
   - `_ChatStreamAccumulator.response_id() -> str | None` *(property)* - Property: the response id of the latest chunk that carried one. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
-  - `_ChatStreamAccumulator.consume(chunk: Mapping[str, Any]) -> list[ModelTextDelta | ModelToolCallDelta]` - Collects id, usage, finish reason, text and tool-call fragments and returns the deltas to emit; a chunk that carries an `error` and no choices raises `OPENAI_COMPATIBLE_PROVIDER_ERROR` naming the mid-stream failure. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
+  - `_ChatStreamAccumulator.flush() -> list[ModelTextDelta | ModelReasoningDelta]` - Releases any text the reasoning-tag splitter was holding back at the end of the stream.
+  - `_ChatStreamAccumulator.consume(chunk: Mapping[str, Any]) -> list[ModelTextDelta | ModelReasoningDelta | ModelToolCallDelta]` - Streams `reasoning_content` or `reasoning` fields and `<think>` blocks in the content as reasoning deltas, and collects id, usage, finish reason, text and tool-call fragments and returns the deltas to emit; a chunk that carries an `error` and no choices raises `OPENAI_COMPATIBLE_PROVIDER_ERROR` naming the mid-stream failure. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
   - `_ChatStreamAccumulator._consume_tool_call_deltas(raw_tool_calls: list[Any]) -> list[ModelToolCallDelta]` - Concatenates per-index tool-call fragments. · *Called by:* `openai_compatible/chat.py::_ChatStreamAccumulator.consume`
   - `_ChatStreamAccumulator.finalize() -> dict[str, Any]` - Produces the full response with tool calls or concatenated content, keeping the finish reason so truncation is detected for streamed turns too. · *Called by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
 - `_emit(on_delta: ModelStreamListener, event: Any) -> None` *(async)* - Calls a sync or async stream listener. · *Called within this file by:* `openai_compatible/chat.py::OpenAICompatibleAgentModel.stream_turn`
@@ -463,6 +544,7 @@
 **Algorithms & invariants.** The blocking call runs on a detached daemon thread (`run_detached`), so a watchdog timeout or a cancellation ends the await at once while the thread runs until the provider answers or the socket timeout; the event loop does not wait for it when it shuts down.
 
 *Module-level names:* `_AGENT_TURN_ADAPTER`
+- `_stable_content(stable: Mapping[str, Any], images: Sequence[Mapping[str, str]]) -> Any` - The stable prompt block as one string for providers without cache markers.
 
 ---
 
@@ -482,9 +564,9 @@
 
 ### `agent/openai_compatible/transport.py` - JSON HTTP transports and endpoint configuration
 
-*537 lines · depends on: `foundations/errors.py`, `observability/trace_context.py` · used by: `agent/openai_compatible/__init__.py`, `agent/openai_compatible/chat.py`, `agent/openai_compatible/embeddings.py`, `agent/openai_compatible/vision.py` · re-exported at the package root: 8 name(s)*
+*538 lines · depends on: `foundations/errors.py`, `observability/trace_context.py` · used by: `agent/anthropic_messages/messages.py`, `agent/openai_compatible/__init__.py`, `agent/openai_compatible/chat.py`, `agent/openai_compatible/embeddings.py`, `agent/openai_compatible/vision.py`, tests · re-exported at the package root: 8 name(s)*
 
-**Role in the workflow.** Chat, embedding, vision and semantic adapters call `post_json`; streaming calls `stream_json`. HTTP failures are classified by `_http_status_error` into transient (429, 500, 502, 503, 504, retryable by the failover model) or terminal, with a likely-cause hint per status.
+**Role in the workflow.** Chat, embedding, vision and semantic adapters call `post_json`; streaming calls `stream_json`. HTTP failures are classified by `_http_status_error` into transient (429, 500, 502, 503, 504, 529, retryable by the failover model) or terminal, with a likely-cause hint per status.
 
 **Contents**
 
@@ -518,7 +600,7 @@
 - `_scrub(text: str, secrets: tuple[str, ...]) -> str` - Replaces each known credential string with `[REDACTED]`, then applies the general secret redactor. · *Called within this file by:* `openai_compatible/transport.py::UrlLibJsonTransport.post_json`, `openai_compatible/transport.py::provider_error_detail`
 - `_read_error_body(error: HTTPError) -> str | None` - Best-effort decoded body of an `HTTPError`, or None if it cannot be read. · *Called by:* `openai_compatible/transport.py::UrlLibJsonTransport.post_json`
 - `provider_error_detail(body: Any, secrets: tuple[str, ...]=()) -> str | None` - Extracts the provider's message from an error body (`error.message`, `error.code`, `error.type`, an `error` string or `message`; plain text unless it looks like HTML), collapses whitespace, redacts credentials and cuts it to 500 characters; None when there is nothing usable. · *Called by:* `openai_compatible/chat.py::_provider_error_message`, `openai_compatible/transport.py::_http_status_error`
-- `_http_status_error(status_code: int, *, retry_after_seconds: float | None, body: Any=None, secrets: tuple[str, ...]=()) -> AgentSdkError` - Builds `OpenAI-compatible provider returned HTTP <code> - likely cause: <hint>.` plus `Provider message: <detail>` when the body has one, as a transient or terminal error; hints cover 301, 302, 307, 308, 400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503 and 504. · *Called by:* `openai_compatible/transport.py::HttpxStreamingJsonTransport.stream_json`, `openai_compatible/transport.py::UrlLibJsonTransport.post_json`, `openai_compatible/transport.py::_decoded_httpx_response`
+- `_http_status_error(status_code: int, *, retry_after_seconds: float | None, body: Any=None, secrets: tuple[str, ...]=()) -> AgentSdkError` - Builds `OpenAI-compatible provider returned HTTP <code> - likely cause: <hint>.` plus `Provider message: <detail>` when the body has one, as a transient or terminal error; hints cover 301, 302, 307, 308, 400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504 and 529; the wording says OpenAI-compatible even when the Anthropic adapter used the shared transport. · *Called by:* `openai_compatible/transport.py::HttpxStreamingJsonTransport.stream_json`, `openai_compatible/transport.py::UrlLibJsonTransport.post_json`, `openai_compatible/transport.py::_decoded_httpx_response`
 - `_parse_retry_after(raw_value: str | None) -> float | None` - Parses a numeric `Retry-After` header; HTTP-date forms are ignored. · *Called by:* `openai_compatible/transport.py::HttpxStreamingJsonTransport.stream_json`, `openai_compatible/transport.py::UrlLibJsonTransport.post_json`, `openai_compatible/transport.py::_decoded_httpx_response`
 - **class `OpenAICompatibleEndpoint`** *(dataclass)* - Host-owned base URL, API key (hidden from repr), timeout, an explicit insecure-HTTP opt-in and an opt-in to send the run's `traceparent` header. · *Instantiated by:* `agent/task_runner.py::AgentTaskRunner._model_for`
   - fields: `base_url`, `api_key`, `timeout_seconds`, `allow_insecure_http`, `propagate_trace_context`
@@ -687,6 +769,29 @@
   - `PeriodicCheckpoints.__exit__(kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None) -> None` - Stops it.
   - `PeriodicCheckpoints._loop() -> None` - Waits one interval, takes a checkpoint, repeats until stopped.
   - `PeriodicCheckpoints._take() -> None` - Exports the run-head checkpoint and, with an artifact store, anchors its log; counts the outcome.
+
+---
+
+### `agent/provider_context.py` - the provider-neutral request context every model adapter builds its messages from
+
+*151 lines · depends on: `agent/model.py`, `foundations/errors.py` · used by: `agent/anthropic_messages/messages.py`, `agent/openai_compatible/chat.py` · not re-exported at the package root*
+
+**Role in the workflow.** The system instruction, the stable task context, the volatile per-turn context and the declared tools are the same for every provider; only their wire format differs. This file builds them once so the OpenAI-compatible and Anthropic adapters send identical content, and a change to what the model sees is made in one place.
+
+**Contents**
+
+- **class `ReasoningSplitter`** - Separates `<think>`, `<thinking>` and `<reasoning>` blocks from answer text in a stream, holding back a possible partial tag until the next chunk.
+  - `ReasoningSplitter.__init__(self) -> None` - Starts outside any block with nothing held.
+  - `ReasoningSplitter.feed(self, text: str) -> list[tuple[bool, str]]` - Returns `(is_reasoning, text)` pieces for one chunk.
+  - `ReasoningSplitter.flush(self) -> list[tuple[bool, str]]` - Releases whatever was held at the end of the stream.
+  - `ReasoningSplitter._emit(parts: list[tuple[bool, str]], reasoning: bool, text: str) -> None` - Appends a non-empty piece.
+- `_partial_suffix(text: str, tags: tuple[str, ...]) -> int` - Length of the longest ending of the text that begins one of the tags.
+- `declared_tools(context: ModelContext) -> list[dict[str, Any]]` - The prompt's declared tools as `name`, `description` and `input_schema` entries, skipping any that are malformed.
+- `stable_context(context: ModelContext, tool_names: Sequence[str]) -> dict[str, Any]` - The slowly changing request part: task id and input, the prompt with declared tools reduced to names, and the output schema. Raises `MODEL_OUTPUT_SCHEMA_REQUIRED` when the context has none.
+- `volatile_context(context: ModelContext) -> dict[str, Any]` - The per-turn request part, slowly changing sections first and project state and iteration last: summaries, compacted stubs, recent observations, episode summaries.
+- `prompt_without_duplicate_tools(context: ModelContext, tool_names: Sequence[str]) -> dict[str, Any]` - The prompt as data with tools already sent natively reduced to their names, so each definition is sent once.
+- `safe_parameters(parameters: Mapping[str, Any], extra_forbidden: frozenset[str]=frozenset()) -> dict[str, Any]` - Requires JSON-compatible finite parameters and forbids credential and endpoint keys, plus any extra keys the adapter owns (`extra_forbidden`).
+- `attached_images(context: ModelContext) -> list[dict[str, str]]` - The validated images attached to a task input, or an empty list.
 
 ---
 
@@ -881,7 +986,7 @@
 
 ### `agent/runtime.py` - composition root for the durable stores around an agent
 
-*255 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/retention.py`, `agent/run_checkpointer.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/context_projection.py`, `memory/episode_store.py`, `observability/audit_log.py`, `observability/profiler.py`, `observability/run_checkpoints.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/artifact_anchor.py`, `tools/artifacts.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py`, `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `integrations/langgraph.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
+*262 lines · depends on: `agent/base_agent/__init__.py`, `agent/cost_model.py`, `agent/evidence_profile/__init__.py`, `agent/model.py`, `agent/retention.py`, `agent/run_checkpointer.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/context_projection.py`, `memory/episode_store.py`, `observability/audit_log.py`, `observability/profiler.py`, `observability/recorder/__init__.py`, `observability/run_checkpoints.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/artifact_anchor.py`, `tools/artifacts.py`, `tools/tools.py` · used by: `__init__.py`, `agent/evidence_profile/profile.py`, `agent/graph_agent_executor.py`, `agent/orchestrator/orchestrator.py`, `agent/periodic_checkpoints.py`, `agent/task_runner.py`, `integrations/langgraph.py`, `mcp/server.py`, `starter/agent.py`, tests · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** `AgentRuntimeServices.open(run_root)` creates the stores once; `create_agent` builds a `BaseAgent` bound to them. The model and tool executor stay host choices.
 
@@ -895,7 +1000,7 @@
   - `AgentRuntimeServices.anchor_artifacts_after_run(run_id: str, store: ArtifactStore, context: TelemetryContext | None=None) -> ArtifactLogAnchor | None` - With a checkpointer, signs and appends the length and head of the artifact write log under `<run_id>.artifacts` in the checkpoint sink; a failure is recorded as `run.checkpoint-failed` and never raises. Without a checkpointer it returns `None`.
   - `AgentRuntimeServices.record_checkpoint_failure(run_id: str, context: TelemetryContext | None, error: Exception, subject: str='run-head') -> None` - Logs a warning and emits `run.checkpoint-failed` (system authority, warning severity) with the `subject` (`run-head`, `artifact-log` or `periodic`), the exception type, the `AgentSdkError` code when there is one and the message cut to 500 characters; a failure to record is logged and dropped. · *Called by:* `agent/runtime.py::AgentRuntimeServices.anchor_artifacts_after_run`, `agent/runtime.py::AgentRuntimeServices.checkpoint_after_run`, `agent/periodic_checkpoints.py::PeriodicCheckpoints._take`
   - `AgentRuntimeServices.retention() -> RunRetention` - A `RunRetention` over this bundle's telemetry, audit and journal stores; pruning needs a `RetentionPolicy` from the caller and does nothing otherwise. Tombstones are signed with the checkpointer's signer when its `signed_tombstones` is set. · *Called by:* `agent/retention.py::prune_run_root`, `agent/retention_inventory.py::_telemetry_items`, `mcp/telemetry_tools.py::register_telemetry_tools.prune_runs`
-  - `AgentRuntimeServices.create_agent(definition: AgentDefinition, model: AgentModel, *, tool_executor: ToolExecutor | None=None, verification_gates: VerificationGateRegistry | None=No...` - Builds a `BaseAgent` using those stores and a fresh profiler per agent; every other dependency is passed through explicitly. An optional `telemetry_context` carries the caller's trace and span ids, and the project, node and attempt ids, into every event the agent records. · *Called by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`, `agent/task_runner.py::AgentTaskRunner.run`, `integrations/langgraph.py::LangGraphSdkNode.__call__`
+  - `AgentRuntimeServices.create_agent(definition: AgentDefinition, model: AgentModel, *, tool_executor: ToolExecutor | None=None, verification_gates: VerificationGateRegistry | None=No...` - Builds a `BaseAgent` using those stores and a fresh profiler per agent; every other dependency is passed through explicitly. An optional `telemetry_context` carries the caller's trace and span ids, and the project, node and attempt ids, into every event the agent records. · *Called by:* `agent/graph_agent_executor.py::GraphAgentExecutor.execute`, `agent/task_runner.py::AgentTaskRunner.run`, `integrations/langgraph.py::LangGraphSdkNode.__call__` `on_model_stream`, `episode_history_limit` and `price_table` are forwarded to the agent: the stream listener, the cap on episodes kept, and the prices that turn provider usage into a cost.
 
 *Module-level names:* `MAX_RECORDED_CHECKPOINT_ERROR_CHARS`
 

@@ -105,6 +105,16 @@ class ModelTextDelta:
 
 
 @dataclass(frozen=True)
+class ModelReasoningDelta:
+    """One incremental fragment of the model's visible reasoning, for live display only.
+
+    Reasoning is never added to the turn, the continuation or the audit log.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
 class ModelToolCallDelta:
     """One incremental fragment of a tool call being generated.
 
@@ -126,7 +136,7 @@ class ModelStreamCompleted:
     usage: ProviderUsage | None = None
 
 
-ModelStreamEvent = ModelTextDelta | ModelToolCallDelta | ModelStreamCompleted
+ModelStreamEvent = ModelTextDelta | ModelReasoningDelta | ModelToolCallDelta | ModelStreamCompleted
 ModelStreamListener = Callable[[ModelStreamEvent], Awaitable[None] | None]
 
 

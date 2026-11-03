@@ -57,3 +57,7 @@ class DockerSandboxOptions(StrictModel):
     memory_bytes: int | None = Field(default=None, ge=1)
     cpu_limit: float | None = Field(default=None, gt=0)
     extra_binds: list[str] = Field(default_factory=list)
+    drop_capabilities: bool = False
+    no_new_privileges: bool = False
+    pids_limit: int | None = Field(default=None, ge=1)
+    user: str | None = Field(default=None, min_length=1)

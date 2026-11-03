@@ -36,3 +36,4 @@ examples/
 scripts/
 .env
 __pycache__/
+.nailong-agent/

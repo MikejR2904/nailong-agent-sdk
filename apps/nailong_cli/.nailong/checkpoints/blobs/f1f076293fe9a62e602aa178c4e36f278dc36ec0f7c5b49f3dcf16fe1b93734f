@@ -1,0 +1,572 @@
+"""Command-line entry point.
+
+nailong                           # interactive session in the current project
+nailong "explain this repo"       # interactive, starting with a message
+nailong -c                        # resume the latest session
+nailong -p "fix the failing test" --output json
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import dataclasses
+import json
+import os
+import sys
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+from nailong_agent_sdk.foundations.errors import AgentSdkError
+from nailong_agent_sdk.starter import Answer, Forge, McpTools, ModelSetup, Session, connect_mcp
+
+from . import __version__, credentials
+from .approvals import NOT_SANDBOXED, Approver
+from .background import make_background
+from .build import (
+    EFFORT_LEVELS,
+    MissingKeyError,
+    build_model,
+    choose_sandbox,
+    effort_parameters,
+    project_root,
+)
+from .checkpoints import CheckpointStore
+from .config import (
+    MODES,
+    PROJECT_DIRECTORY,
+    CliConfig,
+    ConfigError,
+    MissingSettingsError,
+    load_config,
+)
+from .console import Console
+from .cost import BudgetReached, Spending
+from .debug import DebugLog
+from .factory import AgentBuilder, Parts
+from .forge_review import review_proposal
+from .history import enable_history
+from .hooks import LifecycleHooks, build_hooks
+from .keys import KeySource, system_keys
+from .mcp_config import servers_from_table, table_from_json_file
+from .memory import load_memory
+from .modes import ModeRef, parse_rule
+from .permissions import PermissionStore, permissions_path
+from .plugins import load_plugins, plugin_directories
+from .render import Renderer
+from .repl import after_plan, command_descriptions, cycle_mode, mode_hint, repl, toolbar_text
+from .setup import SetupCancelled, run_setup
+from .shell import run_shell
+from .skills import load_skills
+from .state import ReplState
+from .stream_json import JsonStream
+from .todo import TodoList
+from .tui import PlainReader, choose, make_reader
+from .turns import PromptRefused, run_turn, switch_agent
+from .user_commands import load_commands
+from .workflow_commands import MAX_DIFF_CHARS, REVIEW_PROMPT
+from .worktree import Worktree, create_worktree, finish_worktree
+
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_BLOCKED = 2
+EXIT_USAGE = 64
+EXIT_INTERRUPTED = 130
+_STATUS_EXIT = {"completed": EXIT_OK, "failed": EXIT_FAILED, "blocked": EXIT_BLOCKED}
+
+ModelFactory = Callable[..., ModelSetup]
+
+
+def parser() -> argparse.ArgumentParser:
+    cli = argparse.ArgumentParser(prog="nailong", description=__doc__.strip().splitlines()[0])
+    cli.add_argument("initial", nargs="?", help="A first message for the interactive session.")
+    cli.add_argument("-p", "--print", dest="prompt", metavar="PROMPT", help="Run once and exit.")
+    cli.add_argument("--output", choices=["text", "json", "stream-json"], default="text")
+    cli.add_argument("--project", type=Path, default=None, help="Project directory.")
+    cli.add_argument("--add-dir", action="append", default=[], type=Path, metavar="DIR")
+    cli.add_argument("--worktree", nargs="?", const="", default=None, metavar="NAME")
+    cli.add_argument("--provider", choices=["anthropic", "openai-compatible"])
+    cli.add_argument("--model")
+    cli.add_argument("--effort", choices=list(EFFORT_LEVELS))
+    cli.add_argument("--param", action="append", default=[], metavar="KEY=JSON")
+    cli.add_argument("--permission-mode", choices=list(MODES))
+    cli.add_argument("--allow", action="append", default=[], metavar="TOOL[:PATTERN]")
+    cli.add_argument("--disallow", action="append", default=[], metavar="TOOL[:PATTERN]")
+    cli.add_argument("--max-turns", type=int, metavar="N", help="Most model steps per turn.")
+    cli.add_argument("--max-budget-usd", type=float, metavar="USD")
+    cli.add_argument("--system-prompt-append", metavar="TEXT")
+    cli.add_argument("--json-schema", type=Path, metavar="FILE", help="Shape the answer as JSON.")
+    cli.add_argument("--image", action="append", default=[], type=Path, metavar="FILE")
+    cli.add_argument("--mcp-config", action="append", default=[], type=Path, metavar="FILE")
+    cli.add_argument("--plugin-dir", action="append", default=[], type=Path, metavar="DIR")
+    cli.add_argument("--web", action="store_true", help="Let the agent fetch public web pages.")
+    cli.add_argument(
+        "--setup", action="store_true", help="Choose a model service and save settings."
+    )
+    cli.add_argument(
+        "--forget-key",
+        metavar="VARIABLE",
+        help="Delete the saved key for this variable name from the credential store.",
+    )
+    cli.add_argument(
+        "--offline",
+        action="store_true",
+        help="Refuse any setting that would reach beyond your own network.",
+    )
+    cli.add_argument("--search", action="store_true", help="Let the agent search the web.")
+    cli.add_argument("--autocompact", action="store_true")
+    cli.add_argument("-c", "--continue", dest="continue_", action="store_true")
+    cli.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session.")
+    cli.add_argument("--fork", metavar="ID", help="Branch a saved session.")
+    cli.add_argument("--fork-session", action="store_true", help="With -c or -r: branch instead.")
+    cli.add_argument("--at", type=int, metavar="TURN", help="With a fork: branch after this turn.")
+    cli.add_argument("-n", "--name", metavar="NAME", help="Name for a new session.")
+    cli.add_argument("--review", nargs="?", const="HEAD", default=None, metavar="BASE")
+    cli.add_argument("--forge", action="store_true", help="Let the agent propose tools for review.")
+    cli.add_argument("--allow-unsandboxed", action="store_true")
+    cli.add_argument("--verbose", action="store_true", help="Show full tool arguments and results.")
+    cli.add_argument("--debug-file", type=Path, metavar="FILE")
+    cli.add_argument("--no-color", action="store_true")
+    cli.add_argument("--version", action="version", version=f"nailong {__version__}")
+    return cli
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    console: Console | None = None,
+    model_factory: ModelFactory = build_model,
+    home: Path | None = None,
+    cwd: Path | None = None,
+    keys: KeySource | None = None,
+) -> int:
+    args = parser().parse_args(argv)
+    console = console or Console(
+        sys.stdin, sys.stdout, sys.stderr, color=False if args.no_color else None
+    )
+    environ = dict(environ if environ is not None else os.environ)
+    home = home or Path.home()
+    with asyncio.Runner() as runner:
+        worktree: Worktree | None = None
+        try:
+            project = project_root(args.project or cwd or Path.cwd())
+            if args.worktree is not None:
+                worktree = runner.run(create_worktree(project, args.worktree or None))
+            if args.forget_key:
+                forgotten = credentials.forget(args.forget_key)
+                console.line(
+                    f"Deleted the saved key for {args.forget_key}."
+                    if forgotten
+                    else f"No saved key for {args.forget_key} was found."
+                )
+                return EXIT_OK
+            if args.setup:
+                return _only_setup(console, home, environ)
+            built = _first_run(args, console, environ, home, project, worktree, model_factory)
+        except (ConfigError, MissingKeyError, NotADirectoryError, ValueError, OSError) as error:
+            console.error(str(error))
+            return EXIT_USAGE
+        config, setup, parts, user_commands, plugin_names = built
+        builder = AgentBuilder(parts)
+        try:
+            parts.mcp_groups = _connect(runner, config)
+        except (ConnectionError, ValueError, AgentSdkError) as error:
+            console.error(str(error))
+            return EXIT_USAGE
+        try:
+            agent = builder.build(setup)
+            session = _session(args, agent)
+        except (AgentSdkError, ValueError) as error:
+            console.error(str(error))
+            _shutdown(runner, builder, parts, worktree, console)
+            return EXIT_USAGE
+        parts.renderer.announce(session.id)
+        state = ReplState(
+            builder,
+            agent,
+            session,
+            setup,
+            runner,
+            config,
+            _label(config, parts),
+            home,
+            environ,
+            model_factory,
+            PermissionStore(permissions_path(home)),
+            user_commands,
+            plugin_names,
+            first_images=list(args.image),
+        )
+        state.reader = make_reader(
+            console,
+            project=project,
+            history_file=home / ".local" / "state" / "nailong" / "history",
+            editing_mode=config.editing_mode,
+            theme=config.theme,
+            toolbar=lambda: toolbar_text(state),
+            cycle_mode=lambda: cycle_mode(state),
+            commands=lambda: command_descriptions(state),
+            mode_hint=lambda: mode_hint(state),
+            on_expand=lambda: _show_last_output(state),
+        )
+        console.fancy = console.fancy or (
+            not isinstance(state.reader, PlainReader) and console.interactive
+        )
+        if console.fancy:
+            console.chooser = console.chooser or choose
+            state.keys = keys if keys is not None else system_keys()
+        save_history = (
+            enable_history(home)
+            if console.interactive and isinstance(state.reader, PlainReader)
+            else (lambda: None)
+        )
+        try:
+            _lifecycle(state, "session_start")
+            if args.review is not None:
+                return _review(state, args)
+            if args.prompt is not None:
+                return _once(state, args)
+            if not console.interactive:
+                console.error(not_a_terminal_notice(environ))
+            _banner(state)
+            if args.initial:
+                _first_message(state, args.initial)
+            repl(state)
+            return EXIT_OK
+        finally:
+            save_history()
+            _lifecycle(state, "session_end")
+            _shutdown(runner, builder, parts, worktree, console)
+
+
+def not_a_terminal_notice(environ: Mapping[str, str]) -> str:
+    notice = (
+        "Input or output is not a terminal, so nailong is using plain line input (no menus, "
+        "spinner, Esc or colours)."
+    )
+    if environ.get("MSYSTEM"):
+        notice += (
+            " You are in Git Bash, which does not give programs a console: run "
+            "`winpty nailong`, or use PowerShell, cmd or Windows Terminal."
+        )
+    return notice
+
+
+def _only_setup(console: Console, home: Path, environ: dict[str, str]) -> int:
+    if not console.interactive:
+        console.error("nailong --setup asks questions, so it needs a terminal.")
+        return EXIT_USAGE
+    try:
+        run_setup(console, home, environ)
+    except (SetupCancelled, ValueError) as error:
+        console.error(str(error))
+        return EXIT_USAGE
+    console.line("Run nailong to start.")
+    return EXIT_OK
+
+
+def _first_run(args, console, environ, home, project, worktree, model_factory):
+    try:
+        return _context(args, console, environ, home, project, worktree, model_factory)
+    except MissingSettingsError as error:
+        if not console.interactive or args.prompt is not None:
+            raise ConfigError(
+                f"{error} Run nailong --setup in a terminal to create them."
+            ) from error
+        console.line("No settings found, so nailong does not know which model to use yet.")
+        if console.ask("Set it up now? [Y/n] ").lower() in {"n", "no"}:
+            raise
+        try:
+            environ.update(run_setup(console, home, environ).session_keys)
+        except SetupCancelled as cancelled:
+            raise ConfigError(str(cancelled)) from cancelled
+        return _context(args, console, environ, home, project, worktree, model_factory)
+
+
+def _context(
+    args: argparse.Namespace,
+    console: Console,
+    environ: Mapping[str, str],
+    home: Path,
+    project: Path,
+    worktree: Worktree | None,
+    model_factory: ModelFactory,
+):
+    parameters = _parameters(args)
+    config = load_config(
+        project,
+        home=home,
+        overrides={
+            "provider": args.provider,
+            "model": args.model,
+            "permission_mode": args.permission_mode,
+            "max_steps": args.max_turns,
+            "max_budget_usd": args.max_budget_usd,
+            "web": True if args.web else None,
+            "web_search": True if args.search else None,
+            "autocompact": True if args.autocompact else None,
+            "offline": True if args.offline else None,
+            "parameters": parameters or None,
+        },
+    )
+    bundle = load_plugins(plugin_directories(home, args.plugin_dir))
+    mcp = {**config.mcp_servers, **bundle.mcp}
+    for path in args.mcp_config:
+        mcp.update(table_from_json_file(path))
+    extra_dirs = _extra_dirs([*config.add_dirs, *map(str, args.add_dir)])
+    config = dataclasses.replace(
+        config,
+        mcp_servers=mcp,
+        agents={**bundle.agents, **config.agents},
+        hooks=(*config.hooks, *bundle.hooks),
+        project=worktree.path if worktree else config.project,
+    )
+    setup = model_factory(config, environ)
+    sandbox_kwargs, label = choose_sandbox(config, extra_dirs)
+    mode = ModeRef(config.permission_mode)
+    store = PermissionStore(permissions_path(home))
+    approver = Approver(
+        console,
+        store,
+        config.project,
+        label,
+        mode=mode,
+        allow_unsandboxed=args.allow_unsandboxed,
+        allow_rules=[parse_rule(text) for text in args.allow],
+        deny_rules=[parse_rule(text) for text in args.disallow],
+    )
+    before, after = build_hooks(config.hooks, config.project, console)
+    schema = json.loads(args.json_schema.read_text(encoding="utf-8")) if args.json_schema else None
+    renderer = (
+        JsonStream(console)
+        if args.output == "stream-json"
+        else Renderer(console, verbose=args.verbose)
+    )
+    parts = Parts(
+        config=config,
+        console=console,
+        mode=mode,
+        approver=approver,
+        renderer=renderer,
+        checkpoints=CheckpointStore(
+            config.project, config.project / PROJECT_DIRECTORY / "checkpoints", extra_dirs
+        ),
+        todos=TodoList(),
+        memory=load_memory(config.project, home),
+        skills=load_skills(config.project, home, bundle.skills),
+        sandbox_kwargs=sandbox_kwargs,
+        spending=Spending(config.max_budget_usd),
+        forge=_forge(args, console, config.project / PROJECT_DIRECTORY / "forge"),
+        hooks_before=before,
+        hooks_after=after,
+        lifecycle=LifecycleHooks(config.hooks, config.project),
+        background=make_background(sandbox_kwargs, config.project),
+        debug=DebugLog(args.debug_file) if args.debug_file else None,
+        extra_dirs=extra_dirs,
+        json_schema=schema,
+        system_append=args.system_prompt_append,
+    )
+    commands = {**load_commands(config.project, home), **bundle.commands}
+    return config, setup, parts, commands, bundle.names
+
+
+def _parameters(args: argparse.Namespace) -> dict[str, Any]:
+    parameters: dict[str, Any] = {}
+    provider = args.provider or "anthropic"
+    if args.effort:
+        parameters.update(effort_parameters(provider, args.effort))
+    for item in args.param:
+        key, separator, raw = item.partition("=")
+        if not separator or not key.strip():
+            raise ValueError(
+                f'--param "{item}" must look like KEY=JSON, for example temperature=0.2.'
+            )
+        try:
+            parameters[key.strip()] = json.loads(raw)
+        except json.JSONDecodeError:
+            parameters[key.strip()] = raw
+    return parameters
+
+
+def _extra_dirs(entries: Sequence[str]) -> dict[str, Path]:
+    found: dict[str, Path] = {}
+    for entry in entries:
+        path = Path(entry).expanduser().resolve()
+        if not path.is_dir():
+            raise ValueError(f"The added directory {path} does not exist.")
+        name, number = path.name or "root", 2
+        while name in found or name == "project":
+            name, number = f"{path.name}-{number}", number + 1
+        found[name] = path
+    return found
+
+
+def _label(config: CliConfig, parts: Parts) -> str:
+    return choose_sandbox(config, parts.extra_dirs)[1]
+
+
+def _connect(runner: asyncio.Runner, config: CliConfig) -> list[McpTools]:
+    if not config.mcp_servers:
+        return []
+    return [runner.run(connect_mcp(servers_from_table(config.mcp_servers)))]
+
+
+def _shutdown(
+    runner: asyncio.Runner,
+    builder: AgentBuilder,
+    parts: Parts,
+    worktree: Worktree | None,
+    console: Console,
+) -> None:
+    builder.close()
+    if parts.background is not None:
+        runner.run(parts.background.close())
+    for group in parts.mcp_groups:
+        runner.run(group.aclose())
+    if worktree is not None:
+        console.line(runner.run(finish_worktree(worktree)))
+
+
+def _lifecycle(state: ReplState, event: str) -> None:
+    hooks = state.parts.lifecycle
+    if hooks is not None and hooks.has(event):
+        state.runner.run(hooks.run(event, session=state.session.id))
+
+
+def _forge(args: argparse.Namespace, console: Console, directory: Path) -> Forge | None:
+    if not args.forge:
+        return None
+    return Forge(directory, reviewer=lambda proposal: review_proposal(console, proposal))
+
+
+def _session(args: argparse.Namespace, agent) -> Session:
+    if args.fork:
+        return agent.resume(args.fork).fork(at_turn=args.at)
+    if args.resume:
+        base = agent.resume(args.resume)
+        return base.fork(at_turn=args.at) if args.fork_session else base
+    if args.continue_:
+        latest = agent.latest_session()
+        if latest:
+            base = agent.resume(latest)
+            return base.fork(at_turn=args.at) if args.fork_session else base
+    return agent.session(args.name)
+
+
+def _first_message(state: ReplState, text: str) -> None:
+    try:
+        if run_turn(state, text) is not None:
+            after_plan(state)
+    except (BudgetReached, PromptRefused) as error:
+        state.console.error(str(error))
+
+
+def _review(state: ReplState, args: argparse.Namespace) -> int:
+    record = state.runner.run(
+        run_shell(f"git diff {args.review}", state.project, timeout_seconds=30)
+    )
+    if not record.successful:
+        state.console.error(f"git diff failed: {record.output.strip()[-300:]}")
+        return EXIT_USAGE
+    if not record.output.strip():
+        state.console.line("No changes to review.")
+        return EXIT_OK
+    body = record.output
+    if len(body) > MAX_DIFF_CHARS:
+        body = body[:MAX_DIFF_CHARS] + "\n...(truncated)"
+    switch_agent(state, mode="plan")
+    args.prompt = REVIEW_PROMPT + body
+    return _once(state, args)
+
+
+def _once(state: ReplState, args: argparse.Namespace) -> int:
+    console = state.console
+    prompt = args.prompt
+    if not console.interactive:
+        piped = console.stdin.read()
+        if piped.strip():
+            prompt = f"{prompt}\n\n{piped}"
+    original = console.stdout
+    if args.output == "json":
+        console.stdout = _Discard()
+    try:
+        answer = run_turn(state, prompt)
+    except (BudgetReached, PromptRefused) as error:
+        console.stdout = original
+        console.error(str(error))
+        return EXIT_BLOCKED
+    finally:
+        console.stdout = original
+    if answer is None:
+        return EXIT_INTERRUPTED
+    if args.output == "json":
+        console.line(json.dumps(_summary(answer, state.session.id), sort_keys=True))
+    return _STATUS_EXIT.get(answer.status, EXIT_FAILED)
+
+
+def _summary(answer: Answer, session_id: str) -> dict[str, object]:
+    return {
+        "status": answer.status,
+        "answer": answer.text if answer.ok else None,
+        "reason": answer.reason,
+        "steps": answer.steps,
+        "cost": answer.cost,
+        "session": session_id,
+    }
+
+
+def _show_last_output(state: ReplState) -> None:
+    text = state.parts.renderer.expand(None)
+    state.console.line(text if text is not None else "  No tool output yet.")
+
+
+def _banner(state: ReplState) -> None:
+    console = state.console
+    if console.fancy:
+        console.box(
+            [
+                f"✻ nailong {__version__}",
+                f"  {state.config.model}  ·  {state.parts.mode.value} mode  ·  "
+                f"session {state.session.id}",
+                f"  {state.config.project}",
+                "  commands: "
+                + (
+                    "NOT sandboxed" if state.sandbox_label == NOT_SANDBOXED else state.sandbox_label
+                ),
+            ],
+        )
+        console.line(
+            console.style(
+                " Tips: / for commands · @ to attach a file · ! to run a command yourself · "
+                "\⏎ for a new line · Ctrl+D to leave",
+                "dim",
+            )
+        )
+        return
+    console.line(console.style(f"nailong {__version__}", "bold") + f"  {state.config.project}")
+    console.line(
+        f"model {state.config.model}  mode {state.parts.mode.value}  session {state.session.id}"
+    )
+    if state.sandbox_label == NOT_SANDBOXED:
+        console.line(console.style("commands are NOT sandboxed (see /sandbox)", "red"))
+    else:
+        console.line(f"commands run in {state.sandbox_label}")
+    if state.config.ignored_project_keys:
+        console.line(
+            console.style(
+                f"ignored {list(state.config.ignored_project_keys)} in project settings "
+                "(see /doctor)",
+                "yellow",
+            )
+        )
+    console.line("/help for commands, @file to attach, !cmd to run one, Ctrl+D to leave.")
+
+
+class _Discard:
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        return None

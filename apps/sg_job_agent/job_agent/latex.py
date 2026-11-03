@@ -236,7 +236,9 @@ def _compile_texlive_net(tex_path: Path, timeout_seconds: float) -> tuple[bool, 
     except httpx.HTTPError as error:
         return False, None, f"texlive.net request failed: {type(error).__name__}: {error}"
     if response.status_code != 200 or not response.content.startswith(b"%PDF"):
-        detail = response.text[-3000:] if response.status_code == 200 else f"HTTP {response.status_code}"
+        detail = (
+            response.text[-3000:] if response.status_code == 200 else f"HTTP {response.status_code}"
+        )
         return False, None, f"texlive.net did not return a PDF: {detail}"
     pdf = tex_path.with_suffix(".pdf")
     pdf.write_bytes(response.content)

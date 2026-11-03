@@ -9,7 +9,7 @@ from nailong_agent_sdk.agent.openai_compatible import (
 )
 from nailong_agent_sdk.foundations.contracts import AgentRunStatus, ModelBinding
 from nailong_agent_sdk.foundations.errors import AgentSdkError
-from tests.support.agents import arun, definition, final
+from tests.support.agents import arun, definition, final, task
 from tests.support.model_context import FAKE_KEY, model_context
 from tests.support.openai_provider import ECHO, chat, endpoint, model_for, run_agent
 
@@ -111,7 +111,7 @@ def test_tool_batch_roundtrip_continuation_and_usage(server):
 )
 def test_malformed_provider_responses_fail_with_named_errors(server, script_item, fragment):
     url, state = server
-    state["script"] = [script_item]
+    state["script"] = [script_item] * 3
     result = run_agent(url, definition(tools=[ECHO]))
     assert result.status is AgentRunStatus.FAILED
     assert result.failure is not None and result.failure.code.startswith("OPENAI_COMPATIBLE"), (
@@ -213,3 +213,31 @@ def test_embedding_provider_validation():
         assert excinfo.value.code == "OPENAI_COMPATIBLE_EMBEDDING_INVALID"
     with pytest.raises(ValueError, match="non-empty"):
         good.embed("   ")
+
+
+def test_json_mode_can_be_left_out_for_providers_that_reject_response_format(server):
+    from nailong_agent_sdk.agent.base_agent import BaseAgent
+    from nailong_agent_sdk.agent.openai_compatible import OpenAICompatibleAgentModel
+
+    url, state = server
+    state["script"] = [chat(content=json.dumps(final())), chat(content=json.dumps(final()))]
+    for json_mode in (True, False):
+        model = OpenAICompatibleAgentModel(
+            endpoint(url), provider="fake", model="fake-1", json_mode=json_mode
+        )
+        agent = BaseAgent(definition(), model, require_tool_authorization=False)
+        assert arun(agent.run(task())).status
+    sent = [request["json"] for request in state["requests"]]
+    assert sent[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in sent[1]
+
+
+def test_a_choice_that_ends_with_finish_reason_error_names_the_provider_message(server):
+    url, state = server
+    body = chat(content="", finish="error")
+    body["body"]["choices"][0]["error"] = {"code": 502, "message": "upstream model failed"}
+    state["script"] = [body]
+    with pytest.raises(AgentSdkError) as raised:
+        arun(model_for(url).next_turn(model_context()))
+    assert raised.value.code == "OPENAI_COMPATIBLE_PROVIDER_ERROR"
+    assert "upstream model failed" in str(raised.value)

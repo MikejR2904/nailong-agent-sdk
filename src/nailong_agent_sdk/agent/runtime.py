@@ -38,8 +38,9 @@ from ..tools.artifact_anchor import ArtifactLogAnchor, anchor_artifact_log, arti
 from ..tools.artifacts import ArtifactStore
 from ..tools.tools import ToolAuthorizer, ToolExecutor
 from .base_agent import AgentWatchdogPolicy, BaseAgent, PostToolHook, PreToolHook
+from .cost_model import PriceTable
 from .evidence_profile import EvidenceProfile
-from .model import AgentModel
+from .model import AgentModel, ModelStreamListener
 from .retention import RunRetention
 from .run_checkpointer import (
     LOCAL_ANCHOR,
@@ -224,6 +225,9 @@ class AgentRuntimeServices:
         project_state_projection_policy: ProjectStateProjectionPolicy | None = None,
         episode_store_factory: Callable[[], InMemoryEpisodeStore] | None = None,
         telemetry_context: TelemetryContext | None = None,
+        on_model_stream: ModelStreamListener | None = None,
+        episode_history_limit: int | None = None,
+        price_table: PriceTable | None = None,
     ) -> BaseAgent:
         """Construct a BaseAgent with durable local audit and evidence stores.
 
@@ -252,4 +256,7 @@ class AgentRuntimeServices:
             telemetry_context=telemetry_context,
             audit_logs=self.audit_logs,
             profiler=AgentRunProfiler(),
+            on_model_stream=on_model_stream,
+            episode_history_limit=episode_history_limit,
+            price_table=price_table,
         )

@@ -32,7 +32,7 @@ from ...observability.trace_context import TRACEPARENT_HEADER
 # 429 (rate limited) and 5xx (server-side) are conventionally safe to retry;
 # other 4xx codes reflect a request the server has already rejected on its
 # merits, so retrying it unchanged would only reproduce the same rejection.
-_RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504, 529})
 
 _REDIRECT_HINT = (
     "the endpoint redirected the request (check base_url, for example a missing path prefix or "
@@ -60,6 +60,7 @@ _HTTP_STATUS_HINTS: dict[int, str] = {
     502: "the provider's upstream gateway failed",
     503: "the provider is temporarily overloaded or under maintenance",
     504: "the provider's upstream gateway timed out",
+    529: "the provider reports it is overloaded across all of its users",
 }
 
 
@@ -500,6 +501,7 @@ class OpenAICompatibleEndpoint:
     timeout_seconds: float = 30.0
     allow_insecure_http: bool = False
     propagate_trace_context: bool = False
+    require_api_key: bool = True
 
     def __post_init__(self) -> None:
         if not self.base_url.startswith(("http://", "https://")):
@@ -509,7 +511,7 @@ class OpenAICompatibleEndpoint:
                 "OpenAI-compatible base_url must use HTTPS unless allow_insecure_http is explicit."
             )
         cleaned_key = self.api_key.strip()
-        if not cleaned_key:
+        if not cleaned_key and self.require_api_key:
             raise ValueError("OpenAI-compatible api_key must be non-empty.")
         if any(character.isspace() or not character.isprintable() for character in cleaned_key):
             raise ValueError(
@@ -525,10 +527,10 @@ class OpenAICompatibleEndpoint:
 
     @property
     def headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     def request_headers(self, trace_parent: str | None = None) -> dict[str, str]:
         headers = self.headers

@@ -25,19 +25,50 @@ SKIP_DIRS = frozenset(
     "__snapshots__ migrations".split()
 )
 SKIP_SUFFIXES = (".lock", ".min.js", ".min.css", ".map", ".svg", ".csv", ".json.gz", ".snap")
-SKIP_NAMES = frozenset({"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock"})
+SKIP_NAMES = frozenset(
+    {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock"}
+)
 LANGUAGES = {
-    ".py": "Python", ".ts": "TypeScript", ".tsx": "TypeScript", ".js": "JavaScript",
-    ".jsx": "JavaScript", ".java": "Java", ".kt": "Kotlin", ".cpp": "C++", ".cc": "C++",
-    ".cxx": "C++", ".hpp": "C++", ".c": "C", ".h": "C/C++", ".rs": "Rust", ".go": "Go",
-    ".cs": "C#", ".sv": "SystemVerilog", ".v": "Verilog", ".vhd": "VHDL", ".cu": "CUDA",
-    ".swift": "Swift", ".rb": "Ruby", ".sh": "Shell", ".sql": "SQL", ".mlir": "MLIR",
-    ".scala": "Scala", ".php": "PHP", ".dart": "Dart", ".lua": "Lua", ".r": "R",
-    ".ipynb": "Jupyter", ".html": "HTML", ".css": "CSS", ".tex": "LaTeX",
+    ".py": "Python",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".js": "JavaScript",
+    ".jsx": "JavaScript",
+    ".java": "Java",
+    ".kt": "Kotlin",
+    ".cpp": "C++",
+    ".cc": "C++",
+    ".cxx": "C++",
+    ".hpp": "C++",
+    ".c": "C",
+    ".h": "C/C++",
+    ".rs": "Rust",
+    ".go": "Go",
+    ".cs": "C#",
+    ".sv": "SystemVerilog",
+    ".v": "Verilog",
+    ".vhd": "VHDL",
+    ".cu": "CUDA",
+    ".swift": "Swift",
+    ".rb": "Ruby",
+    ".sh": "Shell",
+    ".sql": "SQL",
+    ".mlir": "MLIR",
+    ".scala": "Scala",
+    ".php": "PHP",
+    ".dart": "Dart",
+    ".lua": "Lua",
+    ".r": "R",
+    ".ipynb": "Jupyter",
+    ".html": "HTML",
+    ".css": "CSS",
+    ".tex": "LaTeX",
 }
 MAX_FILE_BYTES = 300_000
 MAX_ARCHIVE_BYTES = 40_000_000
-_TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]*|_test\.|\.test\.|\.spec\.")
+_TEST_PATH = re.compile(
+    r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]*|_test\.|\.test\.|\.spec\."
+)
 
 
 @dataclass
@@ -60,9 +91,8 @@ class CodeFacts:
 
     def to_text(self) -> str:
         languages = ", ".join(
-            f"{name} {lines:,}" for name, lines in sorted(
-                self.lines_by_language.items(), key=lambda pair: -pair[1]
-            )[:6]
+            f"{name} {lines:,}"
+            for name, lines in sorted(self.lines_by_language.items(), key=lambda pair: -pair[1])[:6]
         )
         parts = [
             f"Code facts computed from the repository archive of {self.full_name}:",
@@ -133,7 +163,9 @@ def _python_stats(text: str) -> tuple[int, int, str]:
     except (SyntaxError, ValueError):
         return 0, 0, ""
     classes = sum(isinstance(node, ast.ClassDef) for node in ast.walk(tree))
-    functions = sum(isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) for node in ast.walk(tree))
+    functions = sum(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) for node in ast.walk(tree)
+    )
     doc = (ast.get_docstring(tree) or "").strip().splitlines()
     return classes, functions, doc[0][:160] if doc else ""
 
@@ -192,7 +224,15 @@ def analyze_archive(data: bytes, full_name: str) -> tuple[CodeFacts, dict[str, s
                     facts.module_docs[path] = doc
                 if name in ("__main__.py", "cli.py", "main.py", "app.py", "server.py"):
                     facts.entry_points.append(path)
-            elif name in ("main.go", "main.rs", "main.c", "main.cpp", "index.js", "index.ts", "Main.java"):
+            elif name in (
+                "main.go",
+                "main.rs",
+                "main.c",
+                "main.cpp",
+                "index.js",
+                "index.ts",
+                "Main.java",
+            ):
                 facts.entry_points.append(path)
     facts.lines_by_language = dict(lines_by_language)
     facts.top_directories = dict(directories.most_common(10))
@@ -200,7 +240,9 @@ def analyze_archive(data: bytes, full_name: str) -> tuple[CodeFacts, dict[str, s
     return facts, sources
 
 
-def key_excerpts(facts: CodeFacts, sources: dict[str, str], *, budget: int = 18_000) -> dict[str, str]:
+def key_excerpts(
+    facts: CodeFacts, sources: dict[str, str], *, budget: int = 18_000
+) -> dict[str, str]:
     """First lines of the largest non-test source files, up to a character budget."""
 
     excerpts: dict[str, str] = {}

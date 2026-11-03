@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **205 files, 683 classes and 2,532 functions** (methods and nested closures included).
+covers **231 files, 711 classes and 2,746 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -602,6 +602,10 @@ the run options. Everything else is a parameter too:
 |---|---:|---|
 | [`__init__.py`](root.md#__init__py---the-public-api-surface-lazy-re-exports) | 931 | the public API surface (lazy re-exports) |
 | [`agent/__init__.py`](agent.md#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
+| [`agent/anthropic_messages/__init__.py`](agent.md#agentanthropic_messages__init__py---public-surface-of-the-anthropic-messages-adapter) | 21 | public surface of the Anthropic Messages adapter |
+| [`agent/anthropic_messages/endpoint.py`](agent.md#agentanthropic_messagesendpointpy---host-owned-connection-data-for-the-anthropic-messages-api) | 66 | host-owned connection data for the Anthropic Messages API |
+| [`agent/anthropic_messages/messages.py`](agent.md#agentanthropic_messagesmessagespy---messages-api-adapter-for-the-agent-model-contract) | 431 | Messages API adapter for the agent model contract |
+| [`agent/anthropic_messages/stream.py`](agent.md#agentanthropic_messagesstreampy---fold-messages-api-server-sent-events-into-one-response) | 154 | fold Messages API server-sent events into one response |
 | [`agent/base_agent/__init__.py`](agent.md#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
 | [`agent/base_agent/agent.py`](agent.md#agentbase_agentagentpy---the-single-task-agent-loop) | 2739 | the single-task agent loop |
 | [`agent/base_agent/types.py`](agent.md#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
@@ -616,20 +620,21 @@ the run options. Everything else is a parameter too:
 | [`agent/graph_agent_executor.py`](agent.md#agentgraph_agent_executorpy---runs-registered-baseagent-bindings-as-graph-nodes) | 338 | runs registered BaseAgent bindings as graph nodes |
 | [`agent/model.py`](agent.md#agentmodelpy---provider-neutral-model-contract-streaming-events-and-failover) | 439 | provider-neutral model contract, streaming events and failover |
 | [`agent/openai_compatible/__init__.py`](agent.md#agentopenai_compatible__init__py---public-surface-of-the-openai-compatible-adapters) | 42 | public surface of the OpenAI-compatible adapters |
-| [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 796 | Chat Completions adapter for the agent model contract |
+| [`agent/openai_compatible/chat.py`](agent.md#agentopenai_compatiblechatpy---chat-completions-adapter-for-the-agent-model-contract) | 700 | Chat Completions adapter for the agent model contract |
 | [`agent/openai_compatible/embeddings.py`](agent.md#agentopenai_compatibleembeddingspy---synchronous-embedding-provider-for-retrieval-indexes) | 68 | synchronous embedding provider for retrieval indexes |
-| [`agent/openai_compatible/transport.py`](agent.md#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 537 | JSON HTTP transports and endpoint configuration |
+| [`agent/openai_compatible/transport.py`](agent.md#agentopenai_compatibletransportpy---json-http-transports-and-endpoint-configuration) | 538 | JSON HTTP transports and endpoint configuration |
 | [`agent/openai_compatible/vision.py`](agent.md#agentopenai_compatiblevisionpy---image-proposals-through-a-verified-byte-loader) | 163 | image proposals through a verified byte loader |
 | [`agent/orchestrator/__init__.py`](agent.md#agentorchestrator__init__py---public-surface-of-the-orchestrator-package) | 31 | public surface of the orchestrator package |
 | [`agent/orchestrator/models.py`](agent.md#agentorchestratormodelspy---user-owned-orchestration-policy-request-and-record-contracts) | 180 | user-owned orchestration policy, request and record contracts |
 | [`agent/orchestrator/orchestrator.py`](agent.md#agentorchestratororchestratorpy---deterministic-composition-of-policy-plan-controller-and-graph-execution) | 1004 | deterministic composition of policy, plan, controller and graph execution |
 | [`agent/orchestrator/state_store.py`](agent.md#agentorchestratorstate_storepy---atomic-local-persistence-of-orchestration-records-and-policies) | 119 | atomic local persistence of orchestration records and policies |
 | [`agent/periodic_checkpoints.py`](agent.md#agentperiodic_checkpointspy---signed-checkpoints-and-artifact-anchors-taken-while-a-run-is-going) | 102 | signed checkpoints and artifact anchors taken while a run is going |
+| [`agent/provider_context.py`](agent.md#agentprovider_contextpy---the-provider-neutral-request-context-every-model-adapter-builds-its-messages-from) | 151 | the provider-neutral request context every model adapter builds its messages from |
 | [`agent/retention.py`](agent.md#agentretentionpy---opt-in-pruning-of-finished-runs-with-a-hash-chained-tombstone-for-each) | 748 | opt-in pruning of finished runs with a hash-chained tombstone for each |
 | [`agent/retention_anchor.py`](agent.md#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
 | [`agent/retention_inventory.py`](agent.md#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
 | [`agent/run_checkpointer.py`](agent.md#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 172 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
-| [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 255 | composition root for the durable stores around an agent |
+| [`agent/runtime.py`](agent.md#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 262 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](agent.md#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
 | [`agent/task_runner.py`](agent.md#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 847 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](agent.md#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
@@ -765,6 +770,26 @@ the run options. Everything else is a parameter too:
 | [`specifications/retrieval.py`](specifications.md#specificationsretrievalpy---provenance-grounded-candidate-retrieval-with-caches-and-optional-vector-backends) | 548 | provenance-grounded candidate retrieval with caches and optional vector backends |
 | [`specifications/retrieval_models.py`](specifications.md#specificationsretrieval_modelspy---retrieval-document-query-candidate-and-result-contracts) | 121 | retrieval document, query, candidate and result contracts |
 | [`specifications/vision.py`](specifications.md#specificationsvisionpy---vision-extraction-adapter-protocol-and-trivial-adapters) | 43 | vision-extraction adapter protocol and trivial adapters |
+| [`starter/__init__.py`](starter.md#starter__init__py---the-short-path-public-names-of-the-starter-layer) | 53 | the short path: public names of the starter layer |
+| [`starter/agent.py`](starter.md#starteragentpy---one-object-that-builds-the-definition-runtime-and-task-runs-them-and-reports-plainly) | 397 | one object that builds the definition, runtime and task, runs them and reports plainly |
+| [`starter/core_tools.py`](starter.md#startercore_toolspy---the-sdks-governed-file-tools-offered-to-an-agent-with-one-call) | 51 | the SDK's governed file tools, offered to an agent with one call |
+| [`starter/models.py`](starter.md#startermodelspy---name-a-model-once-the-adapter-and-the-binding-the-agent-definition-needs) | 92 | name a model once: the adapter and the binding the agent definition needs |
+| [`starter/toolbox.py`](starter.md#startertoolboxpy---everything-an-agent-may-call-behind-one-executor-that-runs-only-what-was-handed-to-it) | 129 | everything an agent may call, behind one executor that runs only what was handed to it |
+| [`starter/tools.py`](starter.md#startertoolspy---turn-a-plain-python-function-into-a-tool-the-sdk-can-declare-validate-and-run) | 110 | turn a plain Python function into a tool the SDK can declare, validate and run |
+| [`starter/cancel.py`](starter.md#startercancelpy---a-flag-a-caller-sets-to-stop-a-run-between-steps) | 16 | a flag a caller sets to stop a run between steps |
+| [`starter/checks.py`](starter.md#startercheckspy---output-checks-as-plain-functions-accept-an-answer-only-when-something-else-agrees) | 40 | output checks as plain functions: accept an answer only when something else agrees |
+| [`starter/hooks.py`](starter.md#starterhookspy---tool-hooks-as-plain-functions-look-at-a-call-before-it-runs-or-at-its-result-after) | 79 | tool hooks as plain functions: look at a call before it runs, or at its result after |
+| [`starter/images.py`](starter.md#starterimagespy---pictures-to-show-the-model-a-file-becomes-a-size-checked-base64-attachment) | 47 | pictures to show the model: a file becomes a size-checked, base64 attachment |
+| [`starter/mcp_tools.py`](starter.md#startermcp_toolspy---tools-from-external-mcp-servers-offered-to-an-agent-like-any-other-tool) | 96 | tools from external MCP servers, offered to an agent like any other tool |
+| [`starter/skills.py`](starter.md#starterskillspy---skills-as-files-a-markdown-file-becomes-task-context-the-model-is-given) | 23 | skills as files: a markdown file becomes task context the model is given |
+| [`starter/chain_log.py`](starter.md#starterchain_logpy---an-append-only-jsonl-file-whose-records-are-chained-by-hash) | 79 | an append-only JSONL file whose records are chained by hash |
+| [`starter/dev_tools.py`](starter.md#starterdev_toolspy---coding-tools-for-a-project-directory-read-search-write-edit-and-run-commands) | 228 | coding tools for a project directory: read, search, write, edit and run commands |
+| [`starter/forge.py`](starter.md#starterforgepy---tools-an-agent-proposes-a-reviewer-approves-tests-prove-and-the-host-can-roll-back) | 533 | tools an agent proposes, a reviewer approves, tests prove and the host can roll back |
+| [`starter/forge_execution.py`](starter.md#starterforge_executionpy---run-a-forged-tools-source-in-a-disposable-subprocess-and-read-back-its-json-result) | 131 | run a forged tool's source in a disposable subprocess and read back its JSON result |
+| [`starter/forge_report.py`](starter.md#starterforge_reportpy---what-a-proposed-tools-source-reaches-for-as-a-note-for-the-reviewer) | 54 | what a proposed tool's source reaches for, as a note for the reviewer |
+| [`starter/forge_runner.py`](starter.md#starterforge_runnerpy---standalone-script-a-forged-tool-runs-under) | 29 | standalone script a forged tool runs under |
+| [`starter/session_store.py`](starter.md#startersession_storepy---a-sessions-turns-on-disk-as-a-hash-chain) | 118 | a session's turns on disk as a hash chain |
+| [`starter/sessions.py`](starter.md#startersessionspy---sessions-continue-a-conversation-across-runs-and-processes-or-fork-it) | 146 | sessions: continue a conversation across runs and processes, or fork it |
 | [`state/__init__.py`](state.md#state__init__py---package-marker-for-durable-run-state) | 3 | package marker for durable run state |
 | [`state/controller_runtime.py`](state.md#statecontroller_runtimepy---durable-facade-over-the-controller-the-graph-run-project-state-and-telemetry) | 911 | durable facade over the controller, the graph run, project state and telemetry |
 | [`state/coordination_records.py`](state.md#statecoordination_recordspy---durable-run-record-and-its-integrity-hash) | 42 | durable run record and its integrity hash |
@@ -794,11 +819,12 @@ the run options. Everything else is a parameter too:
 | [`tools/core/services.py`](tools.md#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 501 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](tools.md#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 164 | agent-side queue and tool executor for elastic spawn requests |
+| [`tools/os_sandbox.py`](tools.md#toolsos_sandboxpy---sandbox-backends-built-on-the-operating-systems-own-tools-bubblewrap-and-seatbelt) | 188 | sandbox backends built on the operating system's own tools: bubblewrap and Seatbelt |
 | [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 201 | deny-by-default capability policy |
 | [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 373 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/result_cache.py`](tools.md#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
-| [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
-| [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
+| [`tools/sandbox.py`](tools.md#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 330 | pluggable execution backends for registered command templates |
+| [`tools/sandbox_models.py`](tools.md#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 63 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](tools.md#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
 | [`tools/task_models.py`](tools.md#toolstask_modelspy---records-for-background-tasks) | 43 | records for background tasks |
 | [`tools/tasks.py`](tools.md#toolstaskspy---background-task-lifecycle-start-poll-stop) | 258 | background task lifecycle: start, poll, stop |
@@ -806,7 +832,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 205 files, 683 classes and 2532 functions (including methods and nested closures), each with a written description.*
+*Coverage: 231 files, 711 classes and 2746 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 

@@ -408,6 +408,7 @@ class AgentLifecycleEvent(StrictModel):
         "tool-completed",
         "provider-tool-results-forwarded",
         "model-turn-retrying",
+        "model-output-rejected",
         "model-turn-cancelled",
         "stream-listener-failed",
         "output-rejected",

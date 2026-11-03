@@ -1,0 +1,129 @@
+"""Running one turn: hooks, mentions, budget, checkpoint, the agent call, and the result."""
+
+from __future__ import annotations
+
+import time
+
+from nailong_agent_sdk.starter import Answer, CancelToken, ModelSetup
+
+from .cost import BudgetReached
+from .keys import EscapeWatcher
+from .mentions import expand_mentions
+from .state import ReplState
+
+NOTIFY_AFTER_SECONDS = 10.0
+
+
+class PromptRefused(Exception):
+    pass
+
+
+def run_turn(state: ReplState, prompt: str) -> Answer | None:
+    console = state.console
+    parts = state.parts
+    parts.spending.check()
+    if state.mode_dirty:
+        switch_agent(state)
+        state.mode_dirty = False
+    if state.config.autocompact and state.session.history()["omitted_turns"] > 0:
+        _autocompact(state)
+    prompt = _after_prompt_hooks(state, prompt)
+    expanded = expand_mentions(prompt, state.project)
+    images = [*state.first_images, *expanded.images]
+    state.first_images = []
+    if expanded.attached:
+        console.line(console.style("  attached: " + ", ".join(expanded.attached), "dim"))
+    token = CancelToken()
+    parts.checkpoints.begin_turn()
+    parts.repeat_guard.new_turn()
+    parts.renderer.start_turn()
+    started = time.monotonic()
+    try:
+        with EscapeWatcher(console, token.cancel, state.keys if console.fancy else None):
+            answer = state.runner.run(
+                state.session.run(expanded.text, images=images, cancellation=token)
+            )
+    except KeyboardInterrupt:
+        token.cancel()
+        console.stop_spinner()
+        console.line("\nCancelled.")
+        return None
+    finally:
+        console.stop_spinner()
+    if token.is_cancelled():
+        console.line(console.style("Interrupted (Esc).", "yellow"))
+    parts.renderer.finish_turn(answer)
+    parts.spending.add(answer)
+    state.last_answer = answer
+    state.turns_run += 1
+    _after_turn_hooks(state, answer)
+    if (
+        state.config.notify
+        and console.interactive
+        and time.monotonic() - started > NOTIFY_AFTER_SECONDS
+    ):
+        console.write("\a")
+    return answer
+
+
+def ask_read_only(state: ReplState, prompt: str) -> Answer:
+    agent = state.builder.build(state.setup, "plan")
+    try:
+        state.parts.renderer.start_turn()
+        return state.runner.run(agent.run(prompt))
+    finally:
+        agent.close()
+
+
+def switch_agent(
+    state: ReplState, *, setup: ModelSetup | None = None, mode: str | None = None
+) -> None:
+    if mode is not None:
+        state.parts.mode.set(mode)
+    if setup is not None:
+        state.setup = setup
+    previous = state.agent
+    state.agent = state.builder.build(state.setup, state.parts.mode.value)
+    state.session = state.agent.resume(state.session.id)
+    previous.close()
+
+
+def _after_prompt_hooks(state: ReplState, prompt: str) -> str:
+    lifecycle = state.parts.lifecycle
+    if lifecycle is None or not lifecycle.has("prompt_submit"):
+        return prompt
+    results = state.runner.run(lifecycle.run("prompt_submit", prompt=prompt))
+    extra = []
+    for ok, output in results:
+        if not ok:
+            raise PromptRefused(f"A prompt_submit hook refused the message: {output[-300:]}")
+        if output:
+            extra.append(output)
+    return prompt + ("\n\nFrom your hooks:\n" + "\n".join(extra) if extra else "")
+
+
+def _after_turn_hooks(state: ReplState, answer: Answer) -> None:
+    lifecycle = state.parts.lifecycle
+    if lifecycle is not None and lifecycle.has("turn_end"):
+        state.runner.run(
+            lifecycle.run(
+                "turn_end",
+                turn_status=answer.status,
+                session=state.session.id,
+                steps=str(answer.steps),
+            )
+        )
+
+
+def _autocompact(state: ReplState) -> None:
+    from .compaction import compact_session
+
+    try:
+        covered, size = compact_session(state)
+    except ValueError as error:
+        state.console.line(f"  autocompact skipped: {error}")
+        return
+    state.console.line(f"  autocompacted {covered} turn(s) into a {size}-character summary")
+
+
+__all__ = ["BudgetReached", "PromptRefused", "ask_read_only", "run_turn", "switch_agent"]

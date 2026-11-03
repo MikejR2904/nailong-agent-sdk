@@ -12,6 +12,10 @@ OWNERS = {
     "AUDIT_": ("observability/audit_log.py",),
     "TREE_HEAD_": ("observability/transparency.py",),
     "WITNESS_": ("observability/witness.py",),
+    "ANTHROPIC_MESSAGES_": ("agent/anthropic_messages/",),
+    "SESSION_": ("starter/session_store.py",),
+    "CHAIN_LOG_": ("starter/chain_log.py",),
+    "FORGE_": ("starter/forge.py",),
     "RUN_CHECKPOINT_": (
         "observability/run_checkpoints.py",
         "observability/sinks.py",

@@ -212,6 +212,14 @@ class DockerSandbox:
             argv += ["--memory", str(options.memory_bytes)]
         if options.cpu_limit is not None:
             argv += ["--cpus", str(options.cpu_limit)]
+        if options.drop_capabilities:
+            argv += ["--cap-drop", "ALL"]
+        if options.no_new_privileges:
+            argv += ["--security-opt", "no-new-privileges"]
+        if options.pids_limit is not None:
+            argv += ["--pids-limit", str(options.pids_limit)]
+        if options.user is not None:
+            argv += ["--user", options.user]
         argv += ["-v", f"{cwd.resolve()}:{_CONTAINER_WORKDIR}", "-w", _CONTAINER_WORKDIR]
         for bind in options.extra_binds:
             argv += ["-v", bind]

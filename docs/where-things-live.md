@@ -9,6 +9,32 @@ Start from the symptom, open the file named, and you are in the right place. Eac
 - Each verdict has one producer. The check that decides it is the only place to change it.
 - Every definition is described in `docs/reference/`; `tests/test_reference_docs.py` keeps that in step with the code.
 
+## Using the SDK without assembling it
+
+`nailong_agent_sdk.starter` is the short path: `Agent`, `@tool`, `core_tools`, `openai_chat`. It only composes the parts below, so a problem in a run is still found in the layer that owns it.
+
+| You want to | Look in |
+| --- | --- |
+| Change how a function becomes a tool, or its schema | `starter/tools.py` |
+| Change who may call what, or when approval is asked | `starter/toolbox.py` |
+| Offer different built-in file tools | `starter/core_tools.py` |
+| Change how a model is named or reached | `starter/models.py` |
+| Change what every provider is sent (system text, task context, tools) | `agent/provider_context.py` |
+| Change how Claude requests or responses are handled | `agent/anthropic_messages/messages.py` (headers and URL in `endpoint.py`) |
+| Change how Chat Completions providers are handled | `agent/openai_compatible/chat.py` |
+| Retry rules, status hints, redirects | `agent/openai_compatible/transport.py` |
+| Change what a run returns, or how the definition and task are built | `starter/agent.py` |
+| Change hook, check or skill behaviour | `starter/hooks.py`, `starter/checks.py`, `starter/skills.py` |
+| Change MCP tool naming, approval or connection | `starter/mcp_tools.py` (the client itself is `mcp/client.py`) |
+| Change what the coding tools may write or run | `starter/dev_tools.py` (the process machinery is `tools/supervisor.py`, `tools/sandbox.py`) |
+| Change what a sandboxed command can reach | `tools/os_sandbox.py` (bubblewrap, Seatbelt), `tools/sandbox.py` (Docker, native) |
+| Decide where an interactive CLI belongs and how it should behave | `docs/interactive-cli.md` |
+| Learn to use the CLI (install, modes, sessions, hooks, scripts) | `docs/cli-guide.md` |
+| Use a model you host yourself, or keep a run inside your network | `docs/local-models.md`, `apps/nailong_cli/nailong_cli/network.py` (offline check), `starter/models.py` (`openai_chat`, shortcuts) |
+| Change resume, fork or the history the model gets | `starter/sessions.py` (storage and chain in `starter/session_store.py`, `starter/chain_log.py`) |
+| Change how model-written tools are proposed, approved, tested or rolled back | `starter/forge.py` (execution in `starter/forge_execution.py`, the reviewer note in `starter/forge_report.py`, the subprocess script `starter/forge_runner.py`) |
+| Change how a Claude stream is read | `agent/anthropic_messages/stream.py` |
+
 ## A bug: where does it come from?
 
 | Symptom | Look in |

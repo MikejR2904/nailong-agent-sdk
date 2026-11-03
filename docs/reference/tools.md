@@ -17,11 +17,12 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 501 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 164 | agent-side queue and tool executor for elastic spawn requests |
+| [`tools/os_sandbox.py`](#toolsos_sandboxpy---sandbox-backends-built-on-the-operating-systems-own-tools-bubblewrap-and-seatbelt) | 188 | sandbox backends built on the operating system's own tools: bubblewrap and Seatbelt |
 | [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 201 | deny-by-default capability policy |
 | [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 373 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/result_cache.py`](#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
-| [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
-| [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
+| [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 330 | pluggable execution backends for registered command templates |
+| [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 63 | typed configuration for sandbox backends |
 | [`tools/supervisor.py`](#toolssupervisorpy---registered-command-execution-with-timeout-bounded-output-and-process-tree-kill) | 491 | registered-command execution with timeout, bounded output and process-tree kill |
 | [`tools/task_models.py`](#toolstask_modelspy---records-for-background-tasks) | 43 | records for background tasks |
 | [`tools/tasks.py`](#toolstaskspy---background-task-lifecycle-start-poll-stop) | 258 | background task lifecycle: start, poll, stop |
@@ -397,6 +398,34 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ---
 
+### `tools/os_sandbox.py` - sandbox backends built on the operating system's own tools: bubblewrap and Seatbelt
+
+*188 lines · depends on: `foundations/contracts.py`, `tools/sandbox.py`, `tools/sandbox_models.py`, `tools/supervisor.py` · used by: tests · not re-exported at the package root*
+
+**Role in the workflow.** `BubblewrapSandbox` (Linux) and `SeatbeltSandbox` (macOS) wrap a registered command template in the OS tool and run it through the same `ProcessSupervisor` as every other backend, so timeouts, output caps and process-tree termination are unchanged. They run in the directory they are given (the project), then limit what the command can reach: the filesystem is read-only except that directory and any `extra_writable` paths, the home directory is hidden (re-open a toolchain with `extra_read_only`), and the network is off unless `network` is set. Bubblewrap also unshares the process, IPC and host-name namespaces and clears the environment; it adds no seccomp filter. The Seatbelt profile is `(deny default)` with the reads, process rules and temp-directory writes a normal command needs. Neither is a complete jail: the command still has the user's rights over what is left open, and the Seatbelt tool is deprecated by Apple. These backends have been tested here only through unit tests of the command line and profile; the tests marked `os_sandbox` exercise a real sandbox and skip elsewhere. `default_os_sandbox()` picks the right one for the platform or returns none (Windows has no equivalent; use Docker).
+
+**Contents**
+
+- **class `OsSandboxUnavailableError`** - Raised when the OS tool is missing or the platform is wrong; the message names the binary or the platform.
+- **class `OsSandboxOptions`** - What a command may reach: `network` (off), `hide_paths` (the home directory), `extra_read_only` and `extra_writable` absolute paths.
+- **class `BubblewrapSandbox`** - Runs a template under `bwrap` on Linux.
+  - `BubblewrapSandbox.__init__(self, options: OsSandboxOptions | None=None, *, bwrap_binary: str='bwrap') -> None` - Takes the options and the binary name.
+  - `BubblewrapSandbox.available(bwrap_binary: str='bwrap') -> bool` - True on Linux when the binary is on PATH.
+  - `BubblewrapSandbox.run(self, template: CommandTemplate, *, cwd: Path, environment: EnvironmentPolicy | None=None) -> ProcessExecutionRecord` - Resolves the binary, builds the argument list and runs it through the supervisor with the environment policy resolved to a plain mapping.
+- **class `SeatbeltSandbox`** - Runs a template under `sandbox-exec` on macOS.
+  - `SeatbeltSandbox.__init__(self, options: OsSandboxOptions | None=None, *, sandbox_binary: str='sandbox-exec') -> None` - Takes the options and the binary name.
+  - `SeatbeltSandbox.available(sandbox_binary: str='sandbox-exec') -> bool` - True on macOS when the binary is on PATH.
+  - `SeatbeltSandbox.run(self, template: CommandTemplate, *, cwd: Path, environment: EnvironmentPolicy | None=None) -> ProcessExecutionRecord` - Builds the profile for the working directory and runs the wrapped command through the supervisor.
+- `default_os_sandbox(options: OsSandboxOptions | None=None) -> SandboxBackend | None` - A bubblewrap backend on Linux or a Seatbelt backend on macOS when the tool is present, otherwise none.
+- `bubblewrap_argv(binary: str, options: OsSandboxOptions, template: CommandTemplate, cwd: Path, environment: dict[str, str]) -> list[str]` - The `bwrap` argument list: new session and namespaces, the root read-only, hidden paths covered by empty directories, device, process and temp mounts, the read-only and writable paths, the working directory, a cleared environment with `HOME` defaulting to `/tmp`, then `--` and the command. Order matters: hidden paths are covered before the project is bound back in.
+- `seatbelt_profile(options: OsSandboxOptions, cwd: Path) -> str` - The Seatbelt profile text: deny by default, then the allowances, reads everywhere, writes to the project and temp directories, denials for hidden paths, then re-allowances for toolchain paths and a project inside a hidden directory (later rules win).
+- `_inside_any(project: str, hidden: list[str]) -> bool` - True when the project is one of the hidden paths or below one.
+- `_execute(template: CommandTemplate, argv: list[str], cwd: Path, environment: dict[str, str]) -> ProcessExecutionRecord` - Runs the wrapped template through a supervisor and returns its record.
+- `_absolute(path: str) -> str` - Returns an absolute path unchanged; a relative path or one with a NUL byte raises `ValueError`.
+- `_sbpl(path: str) -> str` - Quotes a path as a Seatbelt string, escaping backslashes and quotes; control characters raise `ValueError`.
+
+---
+
 ### `tools/policy.py` - deny-by-default capability policy
 
 *201 lines · depends on: `foundations/contracts.py`, `foundations/paths.py`, `tools/approvals.py` · used by: `agent/orchestrator/models.py`, `agent/task_files.py`, `agent/task_runner.py`, `mcp/client_bridge.py`, `tools/core/services.py`, `tools/registry.py` · re-exported at the package root: 3 name(s)*
@@ -487,7 +516,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/sandbox.py` - pluggable execution backends for registered command templates
 
-*322 lines · depends on: `tools/sandbox_models.py`, `tools/supervisor.py` · used by: `tools/tasks.py` · re-exported at the package root: 4 name(s)*
+*330 lines · depends on: `tools/sandbox_models.py`, `tools/supervisor.py` · used by: `__init__.py`, `starter/dev_tools.py`, `starter/forge.py`, `starter/forge_execution.py`, `tools/tasks.py`, tests · re-exported at the package root: 4 name(s)*
 
 **Role in the workflow.** Selected by the host and used by `BackgroundTaskManager.start_command_task`: the native backend runs the template in a throwaway scratch directory with a scrubbed environment; the Docker backend runs it in an ephemeral network-isolated container.
 
@@ -503,7 +532,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - `DockerSandbox.__init__(options: DockerSandboxOptions, *, docker_binary: str='docker') -> None` - Stores the options and docker binary name.
   - `DockerSandbox.run(template: CommandTemplate, *, cwd: Path, environment: EnvironmentPolicy | None=None) -> ProcessExecutionRecord` *(async)* - Validates the cwd, writes an env file if an environment policy is given (values that cannot be written to one travel as inherited `-e NAME` variables), runs the container and always deletes the env file.
   - `DockerSandbox._run_with_env_file(template: CommandTemplate, cwd: Path, container_name: str, env_file: Path | None, inherited: dict[str, str]) -> ProcessExecutionRecord` *(async)* - Launches the docker CLI, captures bounded output, enforces the template timeout (stopping the container), stops the container and abandons the output reader on cancellation, classifies the exit (137 means resource limit) and builds the `ProcessExecutionRecord`. · *Called by:* `tools/sandbox.py::DockerSandbox.run`
-  - `DockerSandbox._build_argv(template: CommandTemplate, cwd: Path, env_file: Path | None, container_name: str, inherited_names: Sequence[str]=()) -> list[str]` - Builds the docker command: network none, read-only root with tmpfs, memory/cpu limits, mounts, env file, `-e NAME` for inherited variables, image and the template command. · *Called by:* `tools/sandbox.py::DockerSandbox._run_with_env_file`
+  - `DockerSandbox._build_argv(template: CommandTemplate, cwd: Path, env_file: Path | None, container_name: str, inherited_names: Sequence[str]=()) -> list[str]` - Builds the docker command: network none, read-only root with tmpfs, memory/cpu limits, the opt-in hardening flags (`--cap-drop ALL`, `no-new-privileges`, `--pids-limit`, `--user`), mounts, env file, `-e NAME` for inherited variables, image and the template command. · *Called by:* `tools/sandbox.py::DockerSandbox._run_with_env_file`
   - `DockerSandbox._write_env_file(environment: EnvironmentPolicy) -> Path` *(staticmethod)* - Writes the scrubbed environment to a private temp `--env-file` so values never appear on a process command line; a value containing a newline, carriage return or NUL is left out (it is passed as an inherited variable instead). Every name is checked before the file is created, and the file is removed if writing fails. · *Called by:* `tools/sandbox.py::DockerSandbox.run`
   - `DockerSandbox._fits_env_file(name: str, value: str) -> bool` *(staticmethod)* - Validates the variable name and returns whether the value can be written as one env-file line.
   - `DockerSandbox._check_variable_name(name: str) -> None` *(staticmethod)* - Raises naming the variable when its name is empty or contains whitespace, a control character or `=`.
@@ -519,7 +548,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/sandbox_models.py` - typed configuration for sandbox backends
 
-*59 lines · depends on: `foundations/contracts.py` · used by: `tools/sandbox.py`, `tools/supervisor.py`, `tools/tasks.py` · re-exported at the package root: 3 name(s)*
+*63 lines · depends on: `foundations/contracts.py` · used by: `__init__.py`, `starter/dev_tools.py`, `starter/forge_execution.py`, `tools/sandbox.py`, `tools/supervisor.py`, `tools/tasks.py`, tests · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** Used by the supervisor templates, native sandbox and Docker sandbox to decide what the child process sees.
 
@@ -531,7 +560,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
   - fields: `allowed_variable_names`, `literal_variables`
   - `EnvironmentPolicy.resolve() -> dict[str, str]` - Returns only the named host variables that exist, plus the literal overrides.
 - `default_native_environment() -> EnvironmentPolicy` - Allowlist-only environment for the native sandbox: `SYSTEMROOT`, `WINDIR`, `PATH`, `PATHEXT`, `COMSPEC`, `TEMP`, `TMP` on Windows and `PATH`, `LANG`, `LC_ALL`, `TMPDIR` elsewhere. · *Called by:* `tools/sandbox.py::NativeSandbox.run`
-- **class `DockerSandboxOptions`** *(pydantic model; bases: StrictModel)* - Container settings: image, network disabled (default), read-only root (default), memory/cpu limits and extra binds.
+- **class `DockerSandboxOptions`** *(pydantic model; bases: StrictModel)* - Container settings: image, network disabled (default), read-only root (default), memory/cpu limits, extra binds and four opt-in hardening settings that are off unless set: `drop_capabilities`, `no_new_privileges`, `pids_limit` and `user`.
   - fields: `image`, `network_disabled`, `read_only_root`, `memory_bytes`, `cpu_limit`, `extra_binds`
 
 ---

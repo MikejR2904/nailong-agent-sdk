@@ -37,7 +37,12 @@ from ...foundations.contracts import (
     validate_tool_arguments,
 )
 from ...foundations.detached import run_detached
-from ...foundations.errors import AgentSdkError, TransientProviderError, redact_hidden_reasoning
+from ...foundations.errors import (
+    AgentSdkError,
+    InvalidModelOutputError,
+    TransientProviderError,
+    redact_hidden_reasoning,
+)
 from ...foundations.hashing import canonical_hash, canonical_json, estimate_tokens
 from ...foundations.jcs import digest_of_value
 from ...memory.context import assemble_initial_context
@@ -389,6 +394,7 @@ class BaseAgent:
         )
 
         transient_failures = 0
+        invalid_outputs = 0
         for iteration in range(1, self.definition.termination_policy.max_iterations + 1):
             if deadline is not None and asyncio.get_running_loop().time() >= deadline:
                 run_deadline_seconds = self.watchdog_policy.run_deadline_seconds
@@ -826,6 +832,7 @@ class BaseAgent:
                         attributes=_model_turn_attributes(response),
                     )
                 transient_failures = 0
+                invalid_outputs = 0
             except RunCancelled:
                 return self._terminate(
                     AgentRunStatus.CANCELLED,
@@ -887,6 +894,40 @@ class BaseAgent:
                     delay_seconds=delay,
                 )
                 await self._sleep_before_retry(delay, deadline, cancellation)
+                continue
+            except InvalidModelOutputError as error:
+                invalid_outputs += 1
+                limit = self.watchdog_policy.invalid_output_retries
+                if invalid_outputs > limit:
+                    return self._terminate(
+                        AgentRunStatus.FAILED,
+                        task,
+                        iteration,
+                        f"{error.message} The model gave an unusable reply {invalid_outputs} "
+                        f"times in a row (invalid_output_retries is {limit}).",
+                        prompt,
+                        episodes,
+                        events,
+                        emit,
+                        projection_history,
+                        failure=AgentFailure.from_sdk_error(error),
+                    )
+                observations.append(
+                    ModelObservation(
+                        kind="agent-error",
+                        iteration=iteration,
+                        message=(
+                            f"Your previous reply was rejected ({error.code}): {error.message} "
+                            "Reply again with a valid response."
+                        ),
+                    )
+                )
+                emit(
+                    "model-output-rejected",
+                    iteration,
+                    code=error.code,
+                    attempt=invalid_outputs,
+                )
                 continue
             except AgentSdkError as error:
                 return self._terminate(

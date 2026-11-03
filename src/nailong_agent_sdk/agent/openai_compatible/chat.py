@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -16,13 +17,14 @@ from pydantic import TypeAdapter, ValidationError
 
 from ...foundations.contracts import AgentTurn, ModelBinding
 from ...foundations.detached import run_detached
-from ...foundations.errors import AgentSdkError
+from ...foundations.errors import AgentSdkError, InvalidModelOutputError
 from ...foundations.hashing import estimate_tokens
 from ..cost_model import shared_prefix_tokens
 from ..model import (
     AgentModel,
     ModelCancellationOutcome,
     ModelContext,
+    ModelReasoningDelta,
     ModelStreamCompleted,
     ModelStreamListener,
     ModelTextDelta,
@@ -35,6 +37,15 @@ from ..model import (
     RequestDiagnostics,
     TransportCancellation,
 )
+from ..provider_context import (
+    SYSTEM_PROMPT,
+    ReasoningSplitter,
+    attached_images,
+    declared_tools,
+    safe_parameters,
+    stable_context,
+    volatile_context,
+)
 from .transport import (
     AsyncJsonHttpTransport,
     HttpxStreamingJsonTransport,
@@ -46,6 +57,7 @@ from .transport import (
 )
 
 _AGENT_TURN_ADAPTER: TypeAdapter[AgentTurn] = TypeAdapter(AgentTurn)
+_REASONING_BLOCK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
 PROVIDER_CANCEL_TIMEOUT_SECONDS = 5.0
 _DIAGNOSTIC_TASK_LIMIT = 128
 
@@ -79,6 +91,8 @@ class OpenAICompatibleAgentModel(AgentModel):
         transport: JsonHttpTransport | AsyncJsonHttpTransport | None = None,
         streaming_transport: StreamingJsonHttpTransport | None = None,
         provider_cancel: ProviderCancel | None = None,
+        json_mode: bool = True,
+        text_answer: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
         if not provider.strip():
             raise ValueError("OpenAI-compatible provider identifier must be non-empty.")
@@ -90,6 +104,8 @@ class OpenAICompatibleAgentModel(AgentModel):
         self._transport = transport or UrlLibJsonTransport()
         self._streaming_transport = streaming_transport or HttpxStreamingJsonTransport()
         self._provider_cancel = provider_cancel
+        self._json_mode = json_mode
+        self._text_answer = text_answer
         self._cancellations: dict[str, ModelCancellationOutcome] = {}
         self._last_requests: OrderedDict[str, str] = OrderedDict()
         self._diagnostics: OrderedDict[str, RequestDiagnostics] = OrderedDict()
@@ -213,6 +229,8 @@ class OpenAICompatibleAgentModel(AgentModel):
             ):
                 for event in accumulator.consume(chunk):
                     await _emit(on_delta, event)
+            for event in accumulator.flush():
+                await _emit(on_delta, event)
         except asyncio.CancelledError:
             await self._record_cancellation(
                 context.task.id,
@@ -238,7 +256,7 @@ class OpenAICompatibleAgentModel(AgentModel):
         return binding
 
     def _turn_response_from(self, response: Mapping[str, Any]) -> ModelTurnResponse:
-        turn = _agent_turn_from_chat_response(response)
+        turn = _agent_turn_from_chat_response(response, self._text_answer)
         return ModelTurnResponse(
             turn=turn,
             continuation=self._continuation_from_response(response, turn),
@@ -303,68 +321,15 @@ class OpenAICompatibleAgentModel(AgentModel):
             )
 
     def _chat_payload(self, context: ModelContext, binding: ModelBinding) -> dict[str, Any]:
-        parameters = _safe_parameters(binding.parameters)
-        output_schema = context.output_schema
-        if output_schema is None:
-            raise AgentSdkError(
-                "MODEL_OUTPUT_SCHEMA_REQUIRED",
-                "OpenAI-compatible model calls require the declared output schema.",
-            )
-        tools = _chat_tools(context)
-        stable_context = {
-            "task_id": context.task.id,
-            "task_input": context.task.input,
-            "prompt": _prompt_without_duplicate_tools(context, tools),
-            "output_schema": output_schema,
-        }
-        volatile_context: dict[str, Any] = {}
-        if context.semantic_summaries:
-            volatile_context["semantic_summaries"] = [
-                item.model_dump(mode="json") for item in context.semantic_summaries
-            ]
-            volatile_context["omitted_summary_count"] = (
-                context.projection.omitted_summary_count if context.projection else 0
-            )
-        volatile_context["compacted_episodes"] = [
-            stub.model_dump(mode="json") for stub in context.compacted_episodes
-        ]
-        volatile_context["omitted_compacted_count"] = (
-            context.projection.omitted_compacted_count if context.projection else 0
-        )
-        volatile_context["recent_observations"] = [
-            observation.model_dump(mode="json") for observation in context.observations
-        ]
-        volatile_context["episode_summaries"] = [
-            episode.model_dump(mode="json") for episode in context.episodes
-        ]
-        volatile_context["project_state"] = context.project_state.model_dump(mode="json")
-        volatile_context["iteration"] = context.iteration
-        system = (
-            "You are an untrusted proposal component in a governed agent runtime. "
-            "Use only declared function tools when a tool is needed. If no tool is needed, "
-            "return exactly one JSON AgentTurn object: either "
-            '{"type":"final","output":...} matching output_schema or '
-            '{"type":"blocked","reason":"..."}. Do not emit prose outside JSON. '
-            "The second user message's recent_observations lists your own recent tool calls "
-            "this task, oldest first, each tagged with the iteration it happened on, and "
-            "episode_summaries gives a one-line summary of each call still in memory. "
-            "compacted_episodes lists earlier calls whose full results were dropped to save "
-            "space; each keeps a one-line summary, its status, and a handle_id, and if a "
-            "stored-result reader such as get_tool_result is available you can fetch the "
-            "full result by passing it that handle_id. omitted_compacted_count is how many "
-            "still older compacted calls are not listed. Check all of these before choosing "
-            "your next action so you do not repeat a call whose outcome you already have. "
-            "semantic_summaries, when present, are verified digests of groups of earlier "
-            "calls that are no longer listed individually: they carry facts, decisions and "
-            "unresolved_issues with the episode ids they came from. A digest is derived, "
-            "not evidence; fetch a source handle in source_handles when its detail matters. "
-            "The volatile message lists slowly changing sections first and project_state and "
-            "iteration last."
-        )
+        parameters = safe_parameters(binding.parameters)
+        tool_entries = declared_tools(context)
+        tools = _chat_tools(tool_entries)
+        stable = stable_context(context, [entry["name"] for entry in tool_entries])
+        volatile = volatile_context(context)
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(stable_context, separators=(",", ":"))},
-            {"role": "user", "content": json.dumps(volatile_context, separators=(",", ":"))},
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": _stable_content(stable, attached_images(context))},
+            {"role": "user", "content": json.dumps(volatile, separators=(",", ":"))},
         ]
         if context.continuation is not None:
             messages.extend(self._continuation_messages(context.continuation))
@@ -372,7 +337,7 @@ class OpenAICompatibleAgentModel(AgentModel):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        else:
+        elif self._json_mode:
             payload["response_format"] = {"type": "json_object"}
         self._observe_request(context.task.id, payload, tools)
         return payload
@@ -456,118 +421,77 @@ class OpenAICompatibleAgentModel(AgentModel):
         return messages
 
 
-def _prompt_without_duplicate_tools(
-    context: ModelContext, tools: Sequence[Mapping[str, Any]]
-) -> dict[str, Any]:
-    """The prompt as data, with tools already sent as native function tools reduced to names."""
-
-    dump = context.prompt.model_dump(mode="json")
-    declared = [str(tool["function"]["name"]) for tool in tools]
-    if not declared:
-        return dump
-    for section in dump["sections"]:
-        if section["kind"] == "tools" and isinstance(section["value"], list):
-            section["value"] = {
-                "function_tools": declared,
-                "other": [
-                    item
-                    for item in section["value"]
-                    if not (isinstance(item, Mapping) and item.get("name") in declared)
-                ],
-            }
-    return dump
-
-
-def _safe_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
-    try:
-        encoded = json.dumps(dict(parameters), allow_nan=False)
-        decoded = json.loads(encoded)
-    except (TypeError, ValueError) as error:
-        raise AgentSdkError(
-            "MODEL_PARAMETERS_INVALID",
-            f"Model binding parameters must be JSON-compatible finite values: {error}.",
-        ) from error
-    forbidden = {
-        "api_key",
-        "apikey",
-        "authorization",
-        "authorization_header",
-        "base_url",
-        "model",
-        "messages",
-        "tools",
-        "tool_choice",
-        "response_format",
-    }
-    if forbidden & {str(key).lower() for key in decoded}:
-        raise AgentSdkError(
-            "MODEL_PARAMETERS_INVALID",
-            "Credentials and endpoint fields must not appear in model binding parameters.",
-        )
-    return decoded
-
-
-def _chat_tools(context: ModelContext) -> list[dict[str, Any]]:
-    tools_section = next((item for item in context.prompt.sections if item.kind == "tools"), None)
-    if tools_section is None or not isinstance(tools_section.value, list):
-        return []
-    tools: list[dict[str, Any]] = []
-    for raw_tool in tools_section.value:
-        if not isinstance(raw_tool, Mapping):
-            continue
-        name = raw_tool.get("name")
-        description = raw_tool.get("description")
-        parameters = raw_tool.get("input_schema")
-        if (
-            not isinstance(name, str)
-            or not isinstance(description, str)
-            or not isinstance(parameters, dict)
-        ):
-            continue
-        tools.append(
+def _stable_content(stable: Mapping[str, Any], images: Sequence[Mapping[str, str]]) -> Any:
+    text = json.dumps(stable, separators=(",", ":"))
+    if not images:
+        return text
+    return [
+        {"type": "text", "text": text},
+        *(
             {
-                "type": "function",
-                "function": {"name": name, "description": description, "parameters": parameters},
+                "type": "image_url",
+                "image_url": {"url": f"data:{image['media_type']};base64,{image['data']}"},
             }
-        )
-    return tools
+            for image in images
+        ),
+    ]
 
 
-def _agent_turn_from_chat_response(response: Mapping[str, Any]) -> AgentTurn:
-    message = _chat_message(response)
+def _chat_tools(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": entry["name"],
+                "description": entry["description"],
+                "parameters": entry["input_schema"],
+            },
+        }
+        for entry in entries
+    ]
+
+
+def _text_event(reasoning: bool, text: str) -> ModelTextDelta | ModelReasoningDelta:
+    return ModelReasoningDelta(text=text) if reasoning else ModelTextDelta(text=text)
+
+
+def _agent_turn_from_chat_response(
+    response: Mapping[str, Any], text_answer: Callable[[str], dict[str, Any]] | None = None
+) -> AgentTurn:
     _raise_for_incomplete_completion(response)
+    message = _chat_message(response)
     raw_tool_calls = message.get("tool_calls")
     if isinstance(raw_tool_calls, list) and raw_tool_calls:
         calls = []
         for raw_call in raw_tool_calls:
             if not isinstance(raw_call, Mapping):
-                raise AgentSdkError(
+                raise InvalidModelOutputError(
                     "OPENAI_COMPATIBLE_RESPONSE_INVALID",
                     "Tool calls must be JSON objects.",
                 )
             call_id = raw_call.get("id")
             function = raw_call.get("function")
             if not isinstance(call_id, str) or not call_id or not isinstance(function, Mapping):
-                raise AgentSdkError(
+                raise InvalidModelOutputError(
                     "OPENAI_COMPATIBLE_RESPONSE_INVALID",
                     "Tool call lacks an ID or function payload.",
                 )
             name = function.get("name")
             arguments = function.get("arguments")
             if not isinstance(name, str) or not isinstance(arguments, str):
-                raise AgentSdkError(
+                raise InvalidModelOutputError(
                     "OPENAI_COMPATIBLE_RESPONSE_INVALID",
                     "Tool call function must include string name and arguments.",
                 )
             try:
                 decoded_arguments = json.loads(arguments)
             except json.JSONDecodeError as error:
-                raise AgentSdkError(
+                raise InvalidModelOutputError(
                     "OPENAI_COMPATIBLE_RESPONSE_INVALID",
                     "Tool call arguments must be a JSON object.",
                 ) from error
             if not isinstance(decoded_arguments, dict):
-                raise AgentSdkError(
+                raise InvalidModelOutputError(
                     "OPENAI_COMPATIBLE_RESPONSE_INVALID",
                     "Tool call arguments must be a JSON object.",
                 )
@@ -581,13 +505,18 @@ def _agent_turn_from_chat_response(response: Mapping[str, Any]) -> AgentTurn:
             )
         raw_turn: dict[str, Any] = {"type": "tool-batch", "calls": calls}
     else:
+        content = _chat_content(response)
         try:
-            raw_turn = json.loads(_chat_content(response))
+            raw_turn = json.loads(content)
         except json.JSONDecodeError as error:
-            raise AgentSdkError(
-                "OPENAI_COMPATIBLE_RESPONSE_INVALID",
-                "Model response without tool calls must be a JSON AgentTurn object.",
-            ) from error
+            if text_answer is None:
+                raise InvalidModelOutputError(
+                    "OPENAI_COMPATIBLE_RESPONSE_INVALID",
+                    "Model response without tool calls must be a JSON AgentTurn object.",
+                ) from error
+            raw_turn = {"type": "final", "output": text_answer(content.strip())}
+        if text_answer is not None and isinstance(raw_turn, dict) and "type" not in raw_turn:
+            raw_turn = {"type": "final", "output": raw_turn}
     try:
         return _AGENT_TURN_ADAPTER.validate_python(raw_turn)
     except ValidationError as error:
@@ -595,7 +524,7 @@ def _agent_turn_from_chat_response(response: Mapping[str, Any]) -> AgentTurn:
             f"{'.'.join(str(part) for part in issue['loc']) or '(root)'}: {issue['msg']}"
             for issue in error.errors()
         ]
-        raise AgentSdkError(
+        raise InvalidModelOutputError(
             "OPENAI_COMPATIBLE_RESPONSE_INVALID",
             "Provider response does not match the AgentTurn contract: "
             + "; ".join(field_errors[:5])
@@ -614,6 +543,17 @@ def _raise_for_incomplete_completion(response: Mapping[str, Any]) -> None:
             'The provider stopped at its output limit (finish_reason "length") before the '
             "turn was complete; raise max_tokens in the model binding parameters or ask for "
             "less output per turn.",
+        )
+    if finish_reason == "error":
+        raw_error = first.get("error") if isinstance(first, Mapping) else None
+        detail = (
+            _provider_error_message(raw_error)
+            if raw_error is not None
+            else "the provider gave no detail"
+        )
+        raise AgentSdkError(
+            "OPENAI_COMPATIBLE_PROVIDER_ERROR",
+            f'The provider ended the turn with finish_reason "error": {detail}',
         )
     if finish_reason == "content_filter":
         raise AgentSdkError(
@@ -652,12 +592,13 @@ def _chat_message(response: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _chat_content(response: Mapping[str, Any]) -> str:
     content = _chat_message(response).get("content")
-    if not isinstance(content, str) or not content.strip():
-        raise AgentSdkError(
+    visible = _REASONING_BLOCK.sub("", content) if isinstance(content, str) else content
+    if not isinstance(visible, str) or not visible.strip():
+        raise InvalidModelOutputError(
             "OPENAI_COMPATIBLE_RESPONSE_INVALID",
             "Chat response message must contain non-empty text content.",
         )
-    return content
+    return visible.strip()
 
 
 def _provider_usage(response: Mapping[str, Any]) -> ProviderUsage | None:
@@ -708,13 +649,19 @@ class _ChatStreamAccumulator:
         self._tool_calls: dict[int, dict[str, Any]] = {}
         self._usage: dict[str, Any] | None = None
         self._finish_reason: str | None = None
+        self._splitter = ReasoningSplitter()
+
+    def flush(self) -> list[ModelTextDelta | ModelReasoningDelta]:
+        return [_text_event(reasoning, text) for reasoning, text in self._splitter.flush()]
 
     @property
     def response_id(self) -> str | None:
         return self._response_id
 
-    def consume(self, chunk: Mapping[str, Any]) -> list[ModelTextDelta | ModelToolCallDelta]:
-        events: list[ModelTextDelta | ModelToolCallDelta] = []
+    def consume(
+        self, chunk: Mapping[str, Any]
+    ) -> list[ModelTextDelta | ModelReasoningDelta | ModelToolCallDelta]:
+        events: list[ModelTextDelta | ModelReasoningDelta | ModelToolCallDelta] = []
         if "error" in chunk and not chunk.get("choices"):
             raise AgentSdkError(
                 "OPENAI_COMPATIBLE_PROVIDER_ERROR",
@@ -734,10 +681,15 @@ class _ChatStreamAccumulator:
         delta = choices[0].get("delta")
         if not isinstance(delta, Mapping):
             return events
+        for field_name in ("reasoning_content", "reasoning"):
+            reasoning = delta.get(field_name)
+            if isinstance(reasoning, str) and reasoning:
+                events.append(ModelReasoningDelta(text=reasoning))
+                break
         content = delta.get("content")
         if isinstance(content, str) and content:
             self._content_parts.append(content)
-            events.append(ModelTextDelta(text=content))
+            events.extend(_text_event(flag, text) for flag, text in self._splitter.feed(content))
         raw_tool_calls = delta.get("tool_calls")
         if isinstance(raw_tool_calls, list):
             events.extend(self._consume_tool_call_deltas(raw_tool_calls))

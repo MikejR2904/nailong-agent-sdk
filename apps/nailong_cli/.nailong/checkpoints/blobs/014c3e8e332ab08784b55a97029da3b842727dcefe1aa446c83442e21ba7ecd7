@@ -1,0 +1,305 @@
+"""Showing a turn: streamed answer text, one line per tool call, and a footer."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from typing import Any
+
+from nailong_agent_sdk.agent.model import ModelReasoningDelta, ModelStreamEvent, ModelTextDelta
+from nailong_agent_sdk.starter import Answer, ToolEvent
+
+from .console import Console
+from .markdown import BlockSplitter, render_markdown
+
+_ANSWER_KEY = re.compile(r'"answer"\s*:\s*"')
+_SIMPLE_ESCAPES = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
+_RESULT_CHARS = 100
+VERBOSE_CHARS = 2_000
+PREVIEW_LINES = 3
+PREVIEW_WIDTH = 110
+MAX_REMEMBERED_OUTPUTS = 50
+
+
+class AnswerStreamer:
+    def __init__(self) -> None:
+        self._seeking = ""
+        self._inside = False
+        self._done = False
+        self._escape = ""
+        self._high_surrogate = ""
+
+    @property
+    def started(self) -> bool:
+        return self._inside or self._done
+
+    def feed(self, text: str) -> str:
+        if self._done:
+            return ""
+        if not self._inside:
+            self._seeking += text
+            found = _ANSWER_KEY.search(self._seeking)
+            if found is None:
+                return ""
+            text, self._seeking, self._inside = self._seeking[found.end() :], "", True
+        return self._decode(text)
+
+    def _decode(self, text: str) -> str:
+        out: list[str] = []
+        for character in text:
+            if self._escape:
+                self._escape += character
+                piece = self._finish_escape()
+                if piece is not None:
+                    out.append(piece)
+            elif character == "\\":
+                self._escape = "\\"
+            elif character == '"':
+                self._done, self._inside = True, False
+                break
+            else:
+                out.append(character)
+        return "".join(out)
+
+    def _finish_escape(self) -> str | None:
+        kind = self._escape[1]
+        if kind != "u":
+            self._escape = ""
+            return _SIMPLE_ESCAPES.get(kind, kind)
+        if len(self._escape) < 6:
+            return None
+        code = int(self._escape[2:], 16)
+        self._escape = ""
+        if 0xD800 <= code < 0xDC00:
+            self._high_surrogate = chr(code)
+            return ""
+        if 0xDC00 <= code < 0xE000 and self._high_surrogate:
+            pair = (self._high_surrogate + chr(code)).encode("utf-16", "surrogatepass")
+            self._high_surrogate = ""
+            return pair.decode("utf-16")
+        return chr(code)
+
+
+class Renderer:
+    def __init__(
+        self, console: Console, *, verbose: bool = False, show_reasoning: bool = True
+    ) -> None:
+        self._console = console
+        self._verbose = verbose
+        self.show_reasoning = show_reasoning
+        self._thinking = False
+        self._thought_line_start = True
+        self._streamer = AnswerStreamer()
+        self._blocks = BlockSplitter()
+        self._line_open = False
+        self._answer_shown = False
+        self.outputs: list[ToolOutput] = []
+
+    def announce(self, session_id: str) -> None:
+        return None
+
+    def start_turn(self) -> None:
+        self._streamer = AnswerStreamer()
+        self._blocks = BlockSplitter()
+        self._line_open = False
+        self._answer_shown = False
+        self._thinking = False
+        self._console.start_spinner("Thinking…")
+
+    def on_stream(self, event: ModelStreamEvent) -> None:
+        if isinstance(event, ModelReasoningDelta):
+            self._show_thought(event.text)
+            return
+        self._end_thought()
+        if not isinstance(event, ModelTextDelta):
+            return
+        piece = self._streamer.feed(event.text)
+        if not piece:
+            return
+        self._answer_shown = True
+        if self._console.fancy:
+            for block in self._blocks.feed(piece):
+                self._write_block(block)
+            return
+        self._line_open = True
+        self._console.write(piece)
+
+    def before_tool(self, event: ToolEvent) -> None:
+        self._end_streamed_line()
+        shown = _full(event) if self._verbose else _summary(event)
+        if self._console.fancy:
+            self._console.line(self._console.style(f"● {shown}", "bold"))
+            self._console.set_spinner_label("Running…")
+        else:
+            self._console.line(self._console.style(f"  > {shown}", "cyan"))
+
+    def after_tool(self, event: ToolEvent) -> None:
+        result = event.result
+        if result is None:
+            return
+        text = output_text(event.tool, result)
+        self.outputs.append(ToolOutput(event.tool, result.status, text))
+        del self.outputs[:-MAX_REMEMBERED_OUTPUTS]
+        colour = "dim" if result.status == "succeeded" else "yellow"
+        if self._console.fancy and not self._verbose:
+            self._show_collapsed(event, result, text, colour)
+            self._console.set_spinner_label("Thinking…")
+            return
+        shown = (
+            _clip(result.error or "", VERBOSE_CHARS)
+            if self._verbose and result.status != "succeeded"
+            else _clip(str(result.output), VERBOSE_CHARS)
+            if self._verbose
+            else result.error
+            if result.status != "succeeded"
+            else _short(result.output)
+        )
+        marker = "  ⎿ " if self._console.fancy else "    "
+        self._console.line(self._console.style(f"{marker}{result.status}: {shown}", colour))
+        self._console.set_spinner_label("Thinking…")
+
+    def finish_turn(self, answer: Answer) -> None:
+        self._end_thought()
+        self._console.stop_spinner()
+        self._end_streamed_line()
+        rest = self._blocks.flush() if self._console.fancy else None
+        if rest:
+            self._write_block(rest)
+        if not self._answer_shown or not answer.ok:
+            if self._console.fancy and answer.ok:
+                self._write_block(str(answer))
+            else:
+                self._console.line(str(answer))
+        footer = f"[{answer.status}] {answer.steps} step(s)"
+        if answer.cost:
+            footer += f", cost {answer.cost['total']}"
+        self._console.line(self._console.style(footer, "dim"))
+
+    def expand(self, number: int | None = None) -> str | None:
+        if not self.outputs:
+            return None
+        index = len(self.outputs) - 1 if number is None else number - 1
+        if not 0 <= index < len(self.outputs):
+            raise ValueError(f"There is no tool output {number}; there are {len(self.outputs)}.")
+        item = self.outputs[index]
+        return f"{item.tool} ({item.status})\n{item.text}"
+
+    def _write_block(self, source: str) -> None:
+        self._console.write(render_markdown(source) + "\n")
+
+    def _show_collapsed(self, event: ToolEvent, result: Any, text: str, colour: str) -> None:
+        headline, preview = headline_and_preview(event.tool, result, text)
+        console = self._console
+        console.line(console.style(f"  ⎿ {headline}", colour))
+        for line in preview[:PREVIEW_LINES]:
+            console.line(console.style(f"    {_clip(line, PREVIEW_WIDTH)}", "dim"))
+        hidden = len(preview) - PREVIEW_LINES
+        full_lines = len(text.splitlines())
+        if hidden > 0:
+            console.line(console.style(f"    … +{hidden} lines", "dim") + self._hint())
+        elif full_lines > len(preview) + 1:
+            console.line(console.style(f"    … {full_lines} lines in all", "dim") + self._hint())
+
+    def _hint(self) -> str:
+        return self._console.style(f" (Ctrl+O or /expand {len(self.outputs)} for all)", "dim")
+
+    def _show_thought(self, text: str) -> None:
+        if not self.show_reasoning or not (self._console.fancy or self._verbose):
+            return
+        console = self._console
+        if not self._thinking:
+            self._end_streamed_line()
+            console.line(console.style("∴ Thinking", "dim"))
+            self._thinking = True
+            self._thought_line_start = True
+        indented = text.replace("\n", "\n  ")
+        if text.endswith("\n"):
+            indented = indented[:-2]
+        if self._thought_line_start:
+            indented = "  " + indented
+        self._thought_line_start = text.endswith("\n")
+        console.write(console.style(indented, "dim"))
+
+    def _end_thought(self) -> None:
+        if not self._thinking:
+            return
+        self._thinking = False
+        if not self._thought_line_start:
+            self._console.line()
+        self._console.line()
+
+    def _end_streamed_line(self) -> None:
+        if self._line_open:
+            self._console.line()
+            self._line_open = False
+
+
+@dataclass(frozen=True)
+class ToolOutput:
+    tool: str
+    status: str
+    text: str
+
+
+def output_text(tool: str, result: Any) -> str:
+    if result.status != "succeeded":
+        return str(result.error or result.status)
+    output = result.output
+    if isinstance(output, dict):
+        if tool == "run_command" and "output" in output:
+            return f"exit {output.get('exit_code')}\n{output['output']}"
+        if tool == "read_file" and isinstance(output.get("lines"), list):
+            return "\n".join(
+                f"{item.get('line')}\t{item.get('text')}"
+                for item in output["lines"]
+                if isinstance(item, dict)
+            )
+    if isinstance(output, str):
+        return output
+    return json.dumps(output, indent=2, default=str)
+
+
+def headline_and_preview(tool: str, result: Any, text: str) -> tuple[str, list[str]]:
+    if result.status != "succeeded":
+        first, *rest = text.splitlines() or [result.status]
+        return f"{result.status}: {_clip(first, PREVIEW_WIDTH)}", rest
+    output = result.output
+    if tool == "run_command" and isinstance(output, dict):
+        body = str(output.get("output", "")).splitlines()
+        seconds = output.get("seconds")
+        return f"exit {output.get('exit_code')} · {seconds}s", body
+    if tool == "read_file" and isinstance(output, dict) and isinstance(output.get("lines"), list):
+        return f"read {len(output['lines'])} lines", []
+    return f"{result.status}: {_short(output)}", []
+
+
+def _summary(event: ToolEvent) -> str:
+    arguments = event.arguments
+    if event.tool == "run_command":
+        return f"run_command {arguments.get('command', '')}"
+    if "path" in arguments:
+        return f"{event.tool} {arguments['path']}"
+    return f"{event.tool} {json.dumps(arguments, default=str)[:_RESULT_CHARS]}"
+
+
+def _full(event: ToolEvent) -> str:
+    return f"{event.tool} {json.dumps(event.arguments, default=str)}"
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
+def _short(output: Any) -> str:
+    text = " ".join(str(output).split())
+    return text if len(text) <= _RESULT_CHARS else f"{text[:_RESULT_CHARS]}..."

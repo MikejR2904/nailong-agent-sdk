@@ -132,6 +132,16 @@ class TransientProviderError(AgentSdkError):
     retry_after_seconds: float | None = None
 
 
+@dataclass(eq=False)
+class InvalidModelOutputError(AgentSdkError):
+    """A model reply the adapter could not use, which the model can correct on a retry.
+
+    Examples are a reply that is not a valid turn, an empty reply, or tool-call arguments that are
+    not a JSON object. The agent loop shows the message to the model and asks again, up to the
+    watchdog policy's ``invalid_output_retries`` times in a row.
+    """
+
+
 def sanitize_failure_details(details: dict[str, Any] | None) -> dict[str, Any]:
     """Redact, bound, and remove private reasoning before durable result exposure."""
 
