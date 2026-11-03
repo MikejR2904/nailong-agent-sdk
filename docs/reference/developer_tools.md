@@ -4,13 +4,13 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 | File | Lines | Role |
 |---|---:|---|
-| [`developer_tools/__init__.py`](#developer_tools__init__py---public-surface-of-the-developer-utilities) | 94 | public surface of the developer utilities |
+| [`developer_tools/__init__.py`](#developer_tools__init__py---public-surface-of-the-developer-utilities) | 108 | public surface of the developer utilities |
 | [`developer_tools/attribute_defect.py`](#developer_toolsattribute_defectpy---which-write-of-an-artifact-introduced-a-defect-and-which-agent-made-it) | 286 | which write of an artifact introduced a defect, and which agent made it |
 | [`developer_tools/attribute_failure.py`](#developer_toolsattribute_failurepy---which-failure-and-which-model-decision-stopped-a-run) | 390 | which failure, and which model decision, stopped a run |
-| [`developer_tools/attribute_lineage.py`](#developer_toolsattribute_lineagepy---trace-a-failing-run-back-through-what-it-read-to-the-write-or-the-retrieval-that-began-it) | 644 | trace a failing run back through what it read to the write or the retrieval that began it |
+| [`developer_tools/attribute_lineage.py`](#developer_toolsattribute_lineagepy---trace-a-failing-run-back-through-what-it-read-to-the-write-or-the-retrieval-that-began-it) | 650 | trace a failing run back through what it read to the write or the retrieval that began it |
 | [`developer_tools/attribute_result.py`](#developer_toolsattribute_resultpy---which-tool-result-of-an-agent-run-first-failed-the-callers-check-and-which-model-turn-asked-for-it) | 207 | which tool result of an agent run first failed the caller's check, and which model turn asked for it |
 | [`developer_tools/catalog.py`](#developer_toolscatalogpy---public-api-catalogue-generation) | 88 | public API catalogue generation |
-| [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 607 | the `nailong-agent-sdk-dev` command line |
+| [`developer_tools/cli.py`](#developer_toolsclipy---the-nailong-agent-sdk-dev-command-line) | 839 | the `nailong-agent-sdk-dev` command line |
 | [`developer_tools/decision_links.py`](#developer_toolsdecision_linkspy---which-model-turn-a-failing-finding-traces-back-to) | 355 | which model turn a failing finding traces back to |
 | [`developer_tools/diagnose.py`](#developer_toolsdiagnosepy---where-a-run-first-went-wrong-what-ended-it-and-what-it-held-up) | 711 | where a run first went wrong, what ended it and what it held up |
 | [`developer_tools/inspect.py`](#developer_toolsinspectpy---read-only-run-evidence-inspection) | 226 | read-only run evidence inspection |
@@ -21,7 +21,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/__init__.py` - public surface of the developer utilities
 
-*94 lines · depends on: `developer_tools/attribute_defect.py`, `developer_tools/attribute_failure.py`, `developer_tools/attribute_result.py`, `developer_tools/catalog.py`, `developer_tools/decision_links.py`, `developer_tools/diagnose.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
+*108 lines · depends on: `developer_tools/attribute_defect.py`, `developer_tools/attribute_failure.py`, `developer_tools/attribute_result.py`, `developer_tools/catalog.py`, `developer_tools/decision_links.py`, `developer_tools/diagnose.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
 
 **Role in the workflow.** Re-exports the catalogue, validation, inspection, diagnosis, attribution, evidence verification and quality functions and report types.
 
@@ -96,7 +96,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/attribute_lineage.py` - trace a failing run back through what it read to the write or the retrieval that began it
 
-*644 lines · depends on: `developer_tools/attribute_defect.py`, `developer_tools/decision_links.py`, `foundations/contracts.py`, `foundations/hashing.py`, `foundations/text.py`, `memory/context_projection.py`, `observability/audit_log.py`, `tools/artifacts.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
+*650 lines · depends on: `developer_tools/attribute_defect.py`, `developer_tools/decision_links.py`, `foundations/contracts.py`, `foundations/hashing.py`, `foundations/text.py`, `memory/context_projection.py`, `observability/audit_log.py`, `tools/artifacts.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
 
 **Role in the workflow.** The other attribution tools say where a failure became visible: a rejected result, a stopped node, one named path. This one follows data. From the journal of a run it recovers what the run retrieved, asks two caller-supplied checks which retrievals are defective, and follows the first defective one: an artifact version to its writer and then to that writer's own retrievals; a stored result fetched again with `get_tool_result` to the run that recorded it; a command output, a fetched page or a search to the call that retrieved it, where the trace ends because that data comes from outside the SDK's records. It ends the same way at a write whose run read nothing defective (the defect began in that run's own decision), at identical content written twice (reported as ambiguous), at a writer with no run id and at `max_depth`.
 
@@ -174,7 +174,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/attribute_root_cause.py` - one ranked answer to where a failed run began
 
-*431 lines · depends on: `developer_tools/attribute_defect.py`, `developer_tools/attribute_failure.py`, `developer_tools/attribute_lineage.py`, `developer_tools/attribute_result.py`, `developer_tools/decision_links.py`, `foundations/contracts.py`, `foundations/suffix_search.py`, `tools/artifacts.py` · used by: `developer_tools/__init__.py`, `developer_tools/cli.py` · not re-exported at the package root*
+*628 lines · depends on: `developer_tools/attribute_defect.py`, `developer_tools/attribute_failure.py`, `developer_tools/attribute_lineage.py`, `developer_tools/attribute_result.py`, `developer_tools/decision_links.py`, `foundations/contracts.py`, `foundations/suffix_search.py`, `tools/artifacts.py` · used by: `developer_tools/__init__.py`, `developer_tools/cli.py` · not re-exported at the package root*
 
 **Role in the workflow.** `attribute_failure`, `attribute_result_defect`, `attribute_defect` and `attribute_lineage` each answer one question about a failed run. `attribute_root_cause(run_root, run_id, ...)` runs the ones the caller supplies checks for and returns one list of candidates, ranked, with the earliest supported origin as `primary` or the statement that none can be named. It reads only; nothing is replayed.
 
@@ -228,7 +228,7 @@ Five deterministic helpers behind one CLI: generate the public API catalogue fro
 
 ### `developer_tools/cli.py` - the `nailong-agent-sdk-dev` command line
 
-*607 lines · depends on: `agent/retention.py`, `agent/retention_inventory.py`, `developer_tools/attribute_defect.py`, `developer_tools/attribute_failure.py`, `developer_tools/attribute_result.py`, `developer_tools/catalog.py`, `developer_tools/diagnose.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py`, `foundations/errors.py`, `foundations/suffix_search.py`, `mcp/authority_matrix.py`, `observability/audit_log.py`, `observability/otlp.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/run_state_store.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
+*839 lines · depends on: `agent/retention.py`, `agent/retention_inventory.py`, `developer_tools/attribute_defect.py`, `developer_tools/attribute_failure.py`, `developer_tools/attribute_result.py`, `developer_tools/catalog.py`, `developer_tools/diagnose.py`, `developer_tools/inspect.py`, `developer_tools/quality.py`, `developer_tools/validate.py`, `foundations/errors.py`, `foundations/suffix_search.py`, `mcp/authority_matrix.py`, `observability/audit_log.py`, `observability/otlp.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/run_state_store.py` · used by: no other module (entry point or re-exported only) · not re-exported at the package root*
 
 **Role in the workflow.** Subcommands `catalog`, `validate`, `inspect-run`, `verify-evidence` and `quality`; each prints its report as JSON. Exit status: 0 success, 1 the artifact was inspected and is invalid, failed or has a broken chain, 2 usage error (argparse), 3 operational error. `prune-runs` is the one command that can change a run root, and only with `--apply`. `diagnose-run` reads a run's evidence and says where it first went wrong; like `inspect-run` it changes nothing. `attribute-failure` ranks the nodes that stopped a run and names the model turn behind a failure, `attribute-defect` finds the write that introduced a defect into an artifact and `attribute-result` the first tool result a text check rejects; all three read only.
 

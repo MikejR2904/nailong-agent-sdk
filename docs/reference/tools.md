@@ -16,9 +16,9 @@ Everything between a model's tool request and the real world. `tools.py` defines
 | [`tools/core/regex_worker.py`](#toolscoreregex_workerpy---standalone-regex-worker-run-in-an-isolated-interpreter) | 38 | standalone regex worker run in an isolated interpreter |
 | [`tools/core/services.py`](#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 501 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
-| [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 160 | agent-side queue and tool executor for elastic spawn requests |
+| [`tools/elastic_requests.py`](#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 164 | agent-side queue and tool executor for elastic spawn requests |
 | [`tools/policy.py`](#toolspolicypy---deny-by-default-capability-policy) | 201 | deny-by-default capability policy |
-| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 369 | capability-bound harness tool registry and its BaseAgent executor |
+| [`tools/registry.py`](#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 373 | capability-bound harness tool registry and its BaseAgent executor |
 | [`tools/result_cache.py`](#toolsresult_cachepy---opt-in-cache-of-successful-results-of-read-only-tools) | 160 | opt-in cache of successful results of read-only tools |
 | [`tools/sandbox.py`](#toolssandboxpy---pluggable-execution-backends-for-registered-command-templates) | 322 | pluggable execution backends for registered command templates |
 | [`tools/sandbox_models.py`](#toolssandbox_modelspy---typed-configuration-for-sandbox-backends) | 59 | typed configuration for sandbox backends |
@@ -376,7 +376,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/elastic_requests.py` - agent-side queue and tool executor for elastic spawn requests
 
-*160 lines · depends on: `foundations/contracts.py`, `state/elastic.py`, `state/graph_models.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py` · re-exported at the package root: 3 name(s)*
+*164 lines · depends on: `foundations/contracts.py`, `state/elastic.py`, `state/graph_models.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py` · re-exported at the package root: 3 name(s)*
 
 **Role in the workflow.** How an agent asks for exploration. The `request_elastic_node` tool (declared in `core_tool_definitions`, granted to a profile through the `graph.elastic.request` capability) never touches the graph: it queues a typed request that `GraphAgentExecutor` attaches to the node's result when the run completes, so the controller, not the agent, decides what runs.
 
@@ -427,7 +427,7 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ### `tools/registry.py` - capability-bound harness tool registry and its BaseAgent executor
 
-*369 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
+*373 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `memory/context_projection.py`, `state/elastic.py`, `state/planning.py`, `tools/approvals.py`, `tools/artifacts.py`, `tools/core/__init__.py`, `tools/policy.py`, `tools/supervisor.py`, `tools/tools.py` · used by: `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `mcp/client_bridge.py` · re-exported at the package root: 5 name(s)*
 
 **Role in the workflow.** The governed `ToolExecutor`: `BaseAgent` hands it every tool call; it applies policy and approvals, then runs a host handler, a core tool, a registered process command or a built-in spec/artifact reader. The registry is closed: no generic shell and no dynamically named tool.
 

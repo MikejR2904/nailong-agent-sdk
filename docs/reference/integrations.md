@@ -15,7 +15,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 | [`integrations/jev/models.py`](#integrationsjevmodelspy---jev-question-answer-request-result-and-receipt-contracts) | 171 | Jev question, answer, request, result and receipt contracts |
 | [`integrations/jev/receipts.py`](#integrationsjevreceiptspy---receipt-sinks-for-jev-evaluations) | 57 | receipt sinks for Jev evaluations |
 | [`integrations/langchain.py`](#integrationslangchainpy---optional-langchain-adapters) | 266 | optional LangChain adapters |
-| [`integrations/langgraph.py`](#integrationslanggraphpy---optional-langgraph-adapters) | 308 | optional LangGraph adapters |
+| [`integrations/langgraph.py`](#integrationslanggraphpy---optional-langgraph-adapters) | 317 | optional LangGraph adapters |
 | [`integrations/receipts.py`](#integrationsreceiptspy---receipt-sinks-for-external-operations) | 65 | receipt sinks for external operations |
 
 ---
@@ -263,7 +263,7 @@ Nothing in this package is imported by the core runtime. Each adapter loads its 
 
 ### `integrations/langgraph.py` - optional LangGraph adapters
 
-*308 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/runtime.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/hashing.py`, `integrations/_utils.py`, `integrations/contracts.py`, `integrations/receipts.py`, `observability/telemetry_models.py`, `observability/trace_context.py`, `state/graph_models.py`, `tools/tools.py` · used by: `integrations/__init__.py` · re-exported at the package root: 6 name(s)*
+*317 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/runtime.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/hashing.py`, `integrations/_utils.py`, `integrations/contracts.py`, `integrations/receipts.py`, `observability/telemetry_models.py`, `observability/trace_context.py`, `state/graph_models.py`, `tools/tools.py` · used by: `integrations/__init__.py` · re-exported at the package root: 6 name(s)*
 
 **Role in the workflow.** `LangGraphSdkNode` runs a bounded SDK agent as a LangGraph node and returns a compact digest-bearing transition; `LangGraphNodeExecutor` does the reverse, running a compiled LangGraph inside an SDK graph node through a projector and a typed reducer.
 

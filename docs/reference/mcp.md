@@ -17,8 +17,8 @@ Two directions. **Server** (`server.py` plus seven `*_tools.py` groups): `create
 | [`mcp/orchestration_tools.py`](#mcporchestration_toolspy---mcp-tools-for-plan-validation-graph-runs-and-orchestration-compilation) | 156 | MCP tools for plan validation, graph runs and orchestration compilation |
 | [`mcp/project_state_tools.py`](#mcpproject_state_toolspy---mcp-tools-for-project-working-memory) | 274 | MCP tools for project working memory |
 | [`mcp/run_tools.py`](#mcprun_toolspy---mcp-tools-for-graph-run-state-cancellation-approvals-and-resumption) | 152 | MCP tools for graph run state, cancellation, approvals and resumption |
-| [`mcp/security.py`](#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 443 | bearer-token authentication and host checks for the HTTP service |
-| [`mcp/server.py`](#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 210 | MCP server factory and loopback entry point |
+| [`mcp/security.py`](#mcpsecuritypy---bearer-token-authentication-and-host-checks-for-the-http-service) | 470 | bearer-token authentication and host checks for the HTTP service |
+| [`mcp/server.py`](#mcpserverpy---mcp-server-factory-and-loopback-entry-point) | 214 | MCP server factory and loopback entry point |
 | [`mcp/specification_tools.py`](#mcpspecification_toolspy---mcp-tool-for-specification-parsing) | 40 | MCP tool for specification parsing |
 | [`mcp/telemetry_tools.py`](#mcptelemetry_toolspy---mcp-tools-for-telemetry-audit-logs-and-metrics) | 212 | MCP tools for telemetry, audit logs and metrics |
 | [`mcp/tool_groups.py`](#mcptool_groupspy---the-ordered-tool-groups-every-mcp-server-registers) | 27 | the ordered tool groups every MCP server registers |
@@ -366,7 +366,7 @@ Two directions. **Server** (`server.py` plus seven `*_tools.py` groups): `create
 
 ### `mcp/security.py` - bearer-token authentication and host checks for the HTTP service
 
-*443 lines · depends on: `agent/run_checkpointer.py`, `mcp/authority.py`, `observability/run_checkpoints.py` · used by: `mcp/server.py` · not re-exported at the package root*
+*470 lines · depends on: `agent/run_checkpointer.py`, `mcp/authority.py`, `observability/run_checkpoints.py` · used by: `mcp/server.py` · not re-exported at the package root*
 
 **Role in the workflow.** `main` in `server.py` reads its settings with `load_http_service_settings`, builds the MCP app with `HttpServiceSettings.transport_security()` (Host and Origin allow-lists, DNS-rebinding protection on) and wraps it in `BearerTokenMiddleware`, so every HTTP request must carry the shared secret before any tool is reached. The same settings decide whether the service speaks TLS and how many run transcripts the audit store keeps open. The bearer token also decides what the caller may do: the host token runs and steers work, the approver token reads state and decides approvals (see `mcp/authority.py`).
 
@@ -406,7 +406,7 @@ Two directions. **Server** (`server.py` plus seven `*_tools.py` groups): `create
 
 ### `mcp/server.py` - MCP server factory and loopback entry point
 
-*210 lines · depends on: `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `agent/task_runner.py`, `foundations/errors.py`, `foundations/version.py`, `mcp/_shared.py`, `mcp/arguments.py`, `mcp/authority.py`, `mcp/security.py`, `mcp/tool_groups.py`, `memory/context_projection.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/telemetry_store.py`, `specifications/preprocessing.py`, `state/controller_runtime.py`, `state/harness_coordinator.py`, `state/planning.py`, `state/project_state_store.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 1 name(s)*
+*214 lines · depends on: `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `agent/task_runner.py`, `foundations/errors.py`, `foundations/version.py`, `mcp/_shared.py`, `mcp/arguments.py`, `mcp/authority.py`, `mcp/security.py`, `mcp/tool_groups.py`, `memory/context_projection.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/telemetry_store.py`, `specifications/preprocessing.py`, `state/controller_runtime.py`, `state/harness_coordinator.py`, `state/planning.py`, `state/project_state_store.py` · used by: no other module (entry point or re-exported only) · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** `create_mcp_server` wires the stores and tool groups (no network listener and, by default, no authentication: the embedding host or the stdio parent is the authority; the HTTP service passes a policy that separates host and approver credentials). `main` serves it over streamable HTTP (path `/mcp`, JSON responses, stateless) after validating the environment: `AGENT_RUNTIME_HOST` (default `127.0.0.1`), `AGENT_RUNTIME_PORT` (default `8001`), `AGENT_RUNTIME_AUTH_TOKEN` (required) and `AGENT_RUNTIME_ALLOWED_HOSTS` (required for a non-loopback host). `main` also reads `AGENT_RUNTIME_TLS_CERTFILE`, `AGENT_RUNTIME_TLS_KEYFILE` and `AGENT_RUNTIME_TLS_KEY_PASSWORD` (HTTPS), `AGENT_RUNTIME_ALLOW_PLAIN_HTTP` and `AGENT_RUNTIME_AUDIT_MAX_OPEN_HANDLES`.
 

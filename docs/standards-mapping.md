@@ -76,7 +76,7 @@ second independent witness and trusted timestamps reduce, and do not remove, tha
 | 3.3 | Timestamps non-decreasing | Partly | A caller-supplied `occurred_at_utc` is stored as given and still verifies; the evidence profile reports where times run backwards (fails only with `require_ordered_time`), and the recorder adds its own receipt time |
 | 3.3 | Records at most 64 KB | Partly | Payloads over 8 KiB keep identity fields, lengths and digests plus a preview |
 | 4 | Pre-execution record of state-changing actions | Partly | Intent is recorded before a tool runs, but arguments are stored only after it ran (as a digest before). No risk classification |
-| 5 | Independent recorder, own key, distinct OS principal | Partly | Separate process, own key, signed attestations, TLS with client certificates and per-run tokens (`observability/recorder.py`, `observability/attestation.py`); the same OS account unless the operator arranges otherwise |
+| 5 | Independent recorder, own key, distinct OS principal | Partly | Separate process, own key, signed attestations, TLS with client certificates and per-run tokens (`observability/recorder/`, `observability/attestation.py`); the same OS account unless the operator arranges otherwise |
 | 5.3 | Consequential actions default to L2+ | No | |
 | 6.1 | Chain with SHA-256 over RFC 8785 | Yes | `foundations/jcs.py`, `-v2` schemas; `-v1` records still verify |
 | 6.2 | Per-record signature (ES256, ML-DSA-65) | No | Only checkpoints and heads are signed; Ed25519 and HMAC only; no post-quantum |

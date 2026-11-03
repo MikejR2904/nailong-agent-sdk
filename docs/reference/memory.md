@@ -15,7 +15,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 | [`memory/episodes.py`](#memoryepisodespy---task-scoped-episode-graph-of-one-line-summaries) | 97 | task-scoped episode graph of one-line summaries |
 | [`memory/learned_retention.py`](#memorylearned_retentionpy---opt-in-learned-utility-coefficients-for-dependency-closed-retention) | 215 | opt-in learned utility coefficients for dependency-closed retention |
 | [`memory/memory_snapshot.py`](#memorymemory_snapshotpy---one-file-generation-numbered-snapshots-of-episodic-memory-and-their-validation) | 251 | one-file, generation-numbered snapshots of episodic memory and their validation |
-| [`memory/retention_outcomes.py`](#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 200 | retention decisions and their outcomes, recorded for offline learning |
+| [`memory/retention_outcomes.py`](#memoryretention_outcomespy---retention-decisions-and-their-outcomes-recorded-for-offline-learning) | 201 | retention decisions and their outcomes, recorded for offline learning |
 | [`memory/utility_objectives.py`](#memoryutility_objectivespy---generalized-training-objectives-regret-weighted-pairwise-listwise-regression-group-dro) | 404 | generalized training objectives: regret-weighted pairwise, listwise, regression, Group-DRO |
 | [`memory/utility_calibration.py`](#memoryutility_calibrationpy---utility-calibration-distribution-shift-evidence-and-logged-static-fallback) | 288 | utility calibration, distribution-shift evidence and logged static fallback |
 | [`memory/utility_features_v2.py`](#memoryutility_features_v2py---feature-schema-v2-task-conditioned-bipartite-graph-and-failure-propagation-features) | 225 | feature schema v2: task-conditioned, bipartite-graph and failure-propagation features |
@@ -513,7 +513,7 @@ The model is stateless between calls, so everything it knows on turn *t* is rebu
 
 ### `memory/retention_outcomes.py` - retention decisions and their outcomes, recorded for offline learning
 
-*200 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `memory/episode_models.py`, `memory/learned_retention.py`, `memory/utility_features.py` · used by: `memory/episode_store.py` · not re-exported at the package root*
+*201 lines · depends on: `foundations/contracts.py`, `foundations/hashing.py`, `memory/episode_models.py`, `memory/learned_retention.py`, `memory/utility_features.py` · used by: `memory/episode_store.py` · not re-exported at the package root*
 
 **Role in the workflow.** Lets a host learn from its own runs. The store calls the optional `retention_observer` with a `RetentionDecision` for every compaction that selects episodes; a host attaches the outcome later with `RetentionOutcomeLog.record_outcome`. Retraining, gating and promotion live outside the SDK (`benchmarks/dfl/dfl_bench/evolve`).
 

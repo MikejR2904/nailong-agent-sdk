@@ -6,7 +6,7 @@
 |---|---:|---|
 | [`agent/__init__.py`](#agent__init__py---package-marker-for-agent-execution) | 3 | package marker for agent execution |
 | [`agent/base_agent/__init__.py`](#agentbase_agent__init__py---public-surface-of-the-baseagent-runtime-package) | 30 | public surface of the BaseAgent runtime package |
-| [`agent/base_agent/agent.py`](#agentbase_agentagentpy---the-single-task-agent-loop) | 2711 | the single-task agent loop |
+| [`agent/base_agent/agent.py`](#agentbase_agentagentpy---the-single-task-agent-loop) | 2739 | the single-task agent loop |
 | [`agent/base_agent/types.py`](#agentbase_agenttypespy---small-value-types-used-by-the-baseagent-loop) | 99 | small value types used by the BaseAgent loop |
 | [`agent/cost_model.py`](#agentcost_modelpy---token-prices-per-call-and-per-run-cost-and-prefix-cache-forecasting) | 261 | token prices, per-call and per-run cost, and prefix-cache forecasting |
 | [`agent/definition_digest.py`](#agentdefinition_digestpy---digests-of-an-agents-configured-identity-recorded-with-each-run) | 27 | digests of an agent's configured identity, recorded with each run |
@@ -32,7 +32,7 @@
 | [`agent/retention_anchor.py`](#agentretention_anchorpy---anchors-of-the-tombstone-chains-head-kept-outside-the-run-root) | 179 | anchors of the tombstone chain's head, kept outside the run root |
 | [`agent/retention_inventory.py`](#agentretention_inventorypy---read-only-inventory-of-every-persistent-resource-class-under-a-run-root) | 980 | read-only inventory of every persistent resource class under a run root |
 | [`agent/run_checkpointer.py`](#agentrun_checkpointerpy---opt-in-signed-checkpoints-of-a-runs-chain-heads-taken-when-a-run-ends) | 172 | opt-in signed checkpoints of a run's chain heads, taken when a run ends |
-| [`agent/runtime.py`](#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 226 | composition root for the durable stores around an agent |
+| [`agent/runtime.py`](#agentruntimepy---composition-root-for-the-durable-stores-around-an-agent) | 255 | composition root for the durable stores around an agent |
 | [`agent/task_files.py`](#agenttask_filespy---bounded-paged-listing-and-reading-of-the-files-an-agent-task-left-in-its-workspace) | 213 | bounded, paged listing and reading of the files an agent task left in its workspace |
 | [`agent/task_runner.py`](#agenttask_runnerpy---caller-driven-task-runner-model-tools-permissions-and-limits-all-come-from-the-caller) | 847 | caller-driven task runner: model, tools, permissions and limits all come from the caller |
 | [`agent/verification.py`](#agentverificationpy---host-registered-bounded-output-acceptance-gates) | 474 | host-registered, bounded output-acceptance gates |
@@ -57,7 +57,7 @@
 
 ### `agent/base_agent/agent.py` - the single-task agent loop
 
-*2711 lines · depends on: `agent/base_agent/types.py`, `agent/model.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/context.py`, `memory/context_projection.py`, `memory/episode_models.py`, `memory/episode_store.py`, `memory/episodes.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/profiler.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/project_state_engine.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/tools.py` · used by: `agent/base_agent/__init__.py` · re-exported at the package root: 1 name(s)*
+*2739 lines · depends on: `agent/base_agent/types.py`, `agent/model.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/detached.py`, `foundations/errors.py`, `foundations/hashing.py`, `memory/context.py`, `memory/context_projection.py`, `memory/episode_models.py`, `memory/episode_store.py`, `memory/episodes.py`, `observability/audit_log.py`, `observability/metrics.py`, `observability/profiler.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `observability/trace_context.py`, `state/project_state_engine.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/tools.py` · used by: `agent/base_agent/__init__.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Per iteration: check the run deadline and cancellation; project context (compact episodes, select observations); project the bounded project state; enforce the three budget guards; call the model under a watchdog; validate the response as an `AgentTurn`; then act on it. A `blocked` turn ends BLOCKED; a `final` turn is validated and optionally gated; a tool turn runs a governed batch whose results become observations, episodes and project-state transitions. Every exit goes through `_terminate`, which records the agent result in project state, seals the profile, emits telemetry and audit entries, and builds the `AgentResult`. An instance runs one task (its profiler allows a single run). A cancellation token does more than stop the loop between iterations: it is raced against every awaited model call, tool call, hook and verification gate, so cancelling interrupts a call that is still running. With an episode store built around a `SemanticCompactor`, compacted episodes are archived, summarized and verified by the projection and the model receives their verified digests next to the stubs of the rest.
 
@@ -220,6 +220,8 @@
 
 ### `agent/evidence_profile/__init__.py` - package entry for the evidence profile: re-exports its public names
 
+*33 lines · depends on: `agent/evidence_profile/checks.py`, `agent/evidence_profile/profile.py`, `agent/evidence_profile/settings.py` · used by: `agent/runtime.py`, `developer_tools/cli.py`, tests · not re-exported at the package root*
+
 *Imports from `agent.evidence_profile` keep working.*
 
 **Role in the workflow.** Re-exports the profile's public names and carries a map of the package: `settings.py`, `build.py`, `checks.py`, `profile.py`.
@@ -229,6 +231,8 @@
 ---
 
 ### `agent/evidence_profile/build.py` - turning settings into keys, sink, clients, authority and roots
+
+*237 lines · depends on: `agent/evidence_profile/settings.py`, `foundations/errors.py`, `observability/ed25519.py`, `observability/keyring.py`, `observability/recorder/__init__.py`, `observability/run_checkpoints.py`, `observability/timestamp.py`, `observability/witness.py` · used by: `agent/evidence_profile/checks.py`, `agent/evidence_profile/profile.py` · not re-exported at the package root*
 
 *Part of the `agent/evidence_profile/` package.*
 
@@ -254,6 +258,8 @@
 
 ### `agent/evidence_profile/checks.py` - the checks run on a run, one function each
 
+*314 lines · depends on: `agent/evidence_profile/build.py`, `agent/evidence_profile/settings.py`, `agent/retention.py`, `foundations/contracts.py`, `foundations/errors.py`, `observability/attestation.py`, `observability/audit_log.py`, `observability/clock_check.py`, `observability/recorder/__init__.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/transparency.py` · used by: `agent/evidence_profile/__init__.py`, `agent/evidence_profile/profile.py` · not re-exported at the package root*
+
 *Part of the `agent/evidence_profile/` package.*
 
 **Role in the workflow.** Each check takes an `EvidenceContext` (settings, built parts, stores, run id) and returns findings; `CHECKS` lists them in the order they run. A finding's `check` name tells which function produced it.
@@ -278,6 +284,8 @@
 
 ### `agent/evidence_profile/profile.py` - the evidence profile: checkpointer, recorder mirror and verification
 
+*98 lines · depends on: `agent/evidence_profile/build.py`, `agent/evidence_profile/checks.py`, `agent/evidence_profile/settings.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `foundations/errors.py`, `observability/audit_log.py`, `observability/recorder/__init__.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/timestamp.py` · used by: `agent/evidence_profile/__init__.py` · not re-exported at the package root*
+
 *Part of the `agent/evidence_profile/` package.*
 
 **Role in the workflow.** `EvidenceProfile` is what a host passes to `AgentRuntimeServices.open(evidence=...)` to write the evidence, and what `verify-run-evidence` uses to check a run. It builds its parts with `build.py` and runs the checks in `checks.py`.
@@ -297,6 +305,8 @@
 ---
 
 ### `agent/evidence_profile/settings.py` - what an evidence profile is told
+
+*68 lines · depends on: `foundations/contracts.py`, `foundations/errors.py` · used by: `agent/evidence_profile/__init__.py`, `agent/evidence_profile/build.py`, `agent/evidence_profile/checks.py`, `agent/evidence_profile/profile.py` · not re-exported at the package root*
 
 *Part of the `agent/evidence_profile/` package.*
 
@@ -871,7 +881,7 @@
 
 ### `agent/runtime.py` - composition root for the durable stores around an agent
 
-*226 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/retention.py`, `agent/run_checkpointer.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/context_projection.py`, `memory/episode_store.py`, `observability/audit_log.py`, `observability/profiler.py`, `observability/run_checkpoints.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/artifact_anchor.py`, `tools/artifacts.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py`, `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `integrations/langgraph.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
+*255 lines · depends on: `agent/base_agent/__init__.py`, `agent/model.py`, `agent/retention.py`, `agent/run_checkpointer.py`, `agent/verification.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/logging.py`, `memory/context_projection.py`, `memory/episode_store.py`, `observability/audit_log.py`, `observability/profiler.py`, `observability/run_checkpoints.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `state/project_state_models.py`, `state/project_state_store.py`, `tools/artifact_anchor.py`, `tools/artifacts.py`, `tools/tools.py` · used by: `agent/graph_agent_executor.py`, `agent/orchestrator/orchestrator.py`, `agent/task_runner.py`, `integrations/langgraph.py`, `mcp/server.py` · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** `AgentRuntimeServices.open(run_root)` creates the stores once; `create_agent` builds a `BaseAgent` bound to them. The model and tool executor stay host choices.
 

@@ -6,7 +6,7 @@ Three independent records of a run, all written outside the model's context: the
 |---|---:|---|
 | [`observability/__init__.py`](#observability__init__py---package-marker-for-the-observability-layer) | 3 | package marker for the observability layer |
 | [`observability/attestation.py`](#observabilityattestationpy---run-heads-signed-by-the-recorder-so-no-key-on-the-host-is-trusted) | 244 | run heads signed by the recorder, so no key on the host is trusted |
-| [`observability/audit_log.py`](#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 550 | append-only, hash-chained, per-run JSONL audit transcript |
+| [`observability/audit_log.py`](#observabilityaudit_logpy---append-only-hash-chained-per-run-jsonl-audit-transcript) | 576 | append-only, hash-chained, per-run JSONL audit transcript |
 | [`observability/clock_check.py`](#observabilityclock_checkpy---detecting-a-ledger-whose-recorded-times-run-backwards) | 69 | detecting a ledger whose recorded times run backwards |
 | [`observability/keyring.py`](#observabilitykeyringpy---public-verification-keys-with-validity-windows-rotation-and-revocation) | 216 | public verification keys with validity windows, rotation and revocation |
 | [`observability/ledger_state.py`](#observabilityledger_statepy---what-a-runs-two-ledgers-hold-now) | 68 | what a run's two ledgers hold now |
@@ -32,8 +32,8 @@ Three independent records of a run, all written outside the model's context: the
 | [`observability/signers.py`](#observabilitysignerspy---what-signs-and-verifies-a-record-and-the-shared-secret-signer) | 53 | what signs and verifies a record, and the shared-secret signer |
 | [`observability/sinks.py`](#observabilitysinkspy---where-signed-records-are-kept-outside-the-run-root) | 117 | where signed records are kept outside the run root |
 | [`observability/telemetry_helpers.py`](#observabilitytelemetry_helperspy---tiny-constructors-for-timestamps-and-metric-observations-and-the-shared-hash-chain-checker) | 99 | tiny constructors for timestamps and metric observations, and the shared hash-chain checker |
-| [`observability/telemetry_models.py`](#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 261 | telemetry event, context, actor and metric contracts |
-| [`observability/telemetry_store.py`](#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 768 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
+| [`observability/telemetry_models.py`](#observabilitytelemetry_modelspy---telemetry-event-context-actor-and-metric-contracts) | 275 | telemetry event, context, actor and metric contracts |
+| [`observability/telemetry_store.py`](#observabilitytelemetry_storepy---durable-telemetry-ledger-sqlite-events-with-a-per-run-hash-chain-plus-metrics) | 808 | durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics |
 | [`observability/terminal_link.py`](#observabilityterminal_linkpy---the-cross-link-between-a-runs-last-telemetry-event-and-last-audit-entry) | 124 | the cross-link between a run's last telemetry event and last audit entry |
 | [`observability/timestamp.py`](#observabilitytimestamppy---rfc-3161-trusted-timestamps-for-checkpoints-and-tree-heads) | 629 | RFC 3161 trusted timestamps for checkpoints and tree heads |
 | [`observability/trace_context.py`](#observabilitytrace_contextpy---w3c-trace-context-ids-the-traceparent-header-and-the-process-resource) | 181 | W3C Trace Context ids, the traceparent header and the process resource |
@@ -52,7 +52,7 @@ Three independent records of a run, all written outside the model's context: the
 
 *46 lines · depends on: `foundations/logging.py` · used by: `observability/audit_log.py`, `observability/telemetry_store.py` · not re-exported at the package root*
 
-**Role in the workflow.** The seam that lets something outside a ledger see each record the moment it is stored. `observability/recorder.py` uses it to copy records to another process; nothing else in the SDK registers a listener.
+**Role in the workflow.** The seam that lets something outside a ledger see each record the moment it is stored. `observability/recorder/mirror.py` uses it to copy records to another process; nothing else in the SDK registers a listener.
 
 **Contents**
 
@@ -68,7 +68,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/attestation.py` - run heads signed by the recorder, so no key on the host is trusted
 
-*244 lines · depends on: `foundations/jcs.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `observability/recorder.py`, `agent/evidence_profile.py` · not re-exported at the package root*
+*244 lines · depends on: `foundations/jcs.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py` · used by: `observability/recorder/client.py`, `observability/recorder/core.py`, `agent/evidence_profile/checks.py` · not re-exported at the package root*
 
 **Role in the workflow.** A run-head checkpoint is signed by a key on the host that ran the agent, so a host that is compromised can sign whatever it likes. The recorder holds its own copy of both ledgers and signs what it holds with a key that never leaves it. A `RunAttestation` is that signature; checking a run against the recorder's attestations needs only the recorder's public key. `final` marks the host's closing seal.
 
@@ -82,7 +82,7 @@ Three independent records of a run, all written outside the model's context: the
 - **class `AttestationVerification`** *(pydantic model; bases: StrictModel)* - The verdict, the count of attestations, whether the newest is final, the attested and current sequences of each ledger and a sentence.
   - `AttestationVerification.ok(self) -> bool` *(property)* - True for `matches` and `advanced`.
 - `parse_attestations(lines: Sequence[str], run_id: str) -> list[RunAttestation]` - Reads the records; a record that does not parse, has an unknown schema or belongs to another run raises `ValueError` naming its number. · *Called by:* `observability/attestation.py::verify_attestations`
-- `verify_attestations(telemetry, audit, run_id, lines, verifier, *, require_final=False) -> AttestationVerification` - Checks each signature (a key ring resolves the key the record names, at the time it claims), that the recorder's sequences never went backwards, and the newest against the local ledgers: fewer records is `truncated`, a different record at the attested sequence is `diverged`. With `require_final` a run the recorder never saw closed is `not-final`. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._recorder_findings`
+- `verify_attestations(telemetry, audit, run_id, lines, verifier, *, require_final=False) -> AttestationVerification` - Checks each signature (a key ring resolves the key the record names, at the time it claims), that the recorder's sequences never went backwards, and the newest against the local ledgers: fewer records is `truncated`, a different record at the attested sequence is `diverged`. With `require_final` a run the recorder never saw closed is `not-final`. · *Called by:* `agent/evidence_profile/checks.py::check_recorder`
 
 **Algorithms & invariants.** An attestation covers the prefix the recorder received, so it is evidence about what the host sent, not about what the host did afterwards. Records the host wrote after sending its final seal are `advanced`.
 
@@ -91,7 +91,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/audit_log.py` - append-only, hash-chained, per-run JSONL audit transcript
 
-*550 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/logging.py`, `foundations/run_fence.py`, `foundations/text.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/retention.py`, `agent/retention_inventory.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/attribute_failure.py`, `developer_tools/cli.py`, `developer_tools/decision_links.py` (+5 more) · re-exported at the package root: 2 name(s)*
+*576 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/logging.py`, `foundations/run_fence.py`, `foundations/text.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/retention.py`, `agent/retention_inventory.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/attribute_failure.py`, `developer_tools/cli.py`, `developer_tools/decision_links.py` (+5 more) · re-exported at the package root: 2 name(s)*
 
 **Role in the workflow.** `BaseAgent` appends an entry for every lifecycle event, the received task, each model turn, each tool result and the final profile. Reviewers read it through the MCP `get_audit_log` / `render_audit_transcript` tools or `developer_tools/inspect.py`, which also verify the chain. It never feeds back into the model's context.
 
@@ -153,7 +153,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/clock_check.py` - detecting a ledger whose recorded times run backwards
 
-*69 lines · depends on: `foundations/contracts.py` · used by: `agent/evidence_profile.py` · not re-exported at the package root*
+*69 lines · depends on: `foundations/contracts.py` · used by: `agent/evidence_profile/checks.py` · not re-exported at the package root*
 
 **Role in the workflow.** A ledger's times are whatever the writer put there, so a backdated event verifies. This reports where the times run backwards so a reader can decide whether it is a clock step or a forgery. The recorder's own receipt times are checked with it as well, since that clock is not the host's.
 
@@ -162,14 +162,14 @@ Three independent records of a run, all written outside the model's context: the
 - **class `TimeRegression`** *(pydantic model; bases: StrictModel)* - One step back: its sequence, the time before it, its time and how many seconds back it went.
 - **class `TimeOrderReport`** *(pydantic model; bases: StrictModel)* - How many records were checked, how many times did not parse, the first few regressions and the total.
   - `TimeOrderReport.ordered(self) -> bool` *(property)* - True when nothing ran backwards and every time parsed.
-- `parse_utc(text: str) -> datetime | None` - An ISO 8601 time as UTC (a time with no offset is taken as UTC), or None. · *Called by:* `observability/clock_check.py::find_time_regressions`, `agent/evidence_profile.py::EvidenceProfile._receipt_finding`
-- `find_time_regressions(times: Iterable[tuple[int, str]], *, tolerance_seconds: float=0.0, keep: int=5) -> TimeOrderReport` - Walks (sequence, time) pairs in order; a time earlier than the previous one by more than the tolerance is a regression. A time that does not parse is counted and skipped. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._time_order_finding`, `agent/evidence_profile.py::EvidenceProfile._receipt_finding`
+- `parse_utc(text: str) -> datetime | None` - An ISO 8601 time as UTC (a time with no offset is taken as UTC), or None. · *Called by:* `observability/clock_check.py::find_time_regressions`, `agent/evidence_profile/checks.py::_receipt_finding`
+- `find_time_regressions(times: Iterable[tuple[int, str]], *, tolerance_seconds: float=0.0, keep: int=5) -> TimeOrderReport` - Walks (sequence, time) pairs in order; a time earlier than the previous one by more than the tolerance is a regression. A time that does not parse is counted and skipped. · *Called by:* `agent/evidence_profile/checks.py::check_time_order`, `agent/evidence_profile/checks.py::_receipt_finding`
 
 ---
 
 ### `observability/ed25519.py` - an Ed25519 checkpoint signer with a verify-only form
 
-*140 lines · depends on: `foundations/errors.py` · used by: `observability/witness.py`, tests · not re-exported at the package root*
+*162 lines · depends on: `foundations/errors.py` · used by: `observability/witness.py`, tests · not re-exported at the package root*
 
 **Role in the workflow.** An asymmetric signer for checkpoints. The HMAC signer shares one secret between the process that signs and the one that verifies, so whoever can verify can forge. An Ed25519 verifier holds only the public key, which makes it possible to hand verification (or a remote witness) no secret at all. It needs the optional `cryptography` package (`pip install 'nailong-agent-sdk[signatures]'`).
 
@@ -193,7 +193,7 @@ Three independent records of a run, all written outside the model's context: the
 ---
 ### `observability/keyring.py` - public verification keys with validity windows, rotation and revocation
 
-*216 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `observability/ed25519.py`, `observability/run_checkpoints.py` · used by: `agent/evidence_profile.py`, `developer_tools/cli.py`, tests · not re-exported at the package root*
+*216 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `observability/ed25519.py`, `observability/run_checkpoints.py` · used by: `agent/evidence_profile/build.py`, `developer_tools/cli.py`, tests · not re-exported at the package root*
 
 **Role in the workflow.** A verifier that holds only public keys, and can say which key a record named was valid at the time the record claims. It is what makes rotation and revocation possible: the signer id in a checkpoint, tree head or tombstone selects a key, and the key's window decides whether the record is accepted. Pass `KeyRing.verifier()` anywhere a verifier is taken.
 
@@ -231,6 +231,8 @@ Three independent records of a run, all written outside the model's context: the
 ---
 
 ### `observability/ledger_state.py` - what a run's two ledgers hold now
+
+*68 lines · depends on: `observability/audit_log.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `observability/attestation.py`, `observability/run_checkpoints.py`, `observability/terminal_link.py` · not re-exported at the package root*
 
 *Used by `observability/run_checkpoints.py` and `observability/attestation.py`.*
 
@@ -429,6 +431,8 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/__init__.py` - package entry for the recorder: re-exports its public names
 
+*136 lines · depends on: `observability/recorder/cli.py`, `observability/recorder/client.py`, `observability/recorder/compare.py`, `observability/recorder/core.py`, `observability/recorder/mirror.py`, `observability/recorder/models.py`, `observability/recorder/process.py`, `observability/recorder/protocol.py`, `observability/recorder/server.py`, `observability/recorder/tls.py` · used by: `agent/evidence_profile/build.py`, `agent/evidence_profile/checks.py`, `agent/evidence_profile/profile.py`, `agent/runtime.py`, tests · not re-exported at the package root*
+
 *Imports from `observability.recorder` keep working; each name lives in the module that owns it.*
 
 **Role in the workflow.** Re-exports the recorder's public names so `from nailong_agent_sdk.observability.recorder import RecorderClient` still works after the split, and carries the module overview.
@@ -438,6 +442,8 @@ Three independent records of a run, all written outside the model's context: the
 ---
 
 ### `observability/recorder/__main__.py` - entry point for `python -m nailong_agent_sdk.observability.recorder`
+
+*10 lines · depends on: `observability/recorder/cli.py` · used by: nothing · not re-exported at the package root*
 
 *Runs `cli.main`.*
 
@@ -449,7 +455,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/cli.py` - the recorder's command line
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*109 lines · depends on: `observability/ed25519.py`, `observability/recorder/core.py`, `observability/recorder/protocol.py`, `observability/recorder/server.py`, `observability/recorder/tls.py` · used by: `observability/recorder/__init__.py`, `observability/recorder/__main__.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** `main` is what `python -m nailong_agent_sdk.observability.recorder` runs: it reads the tokens (from files or the environment), builds the core and the server, and prints where it listens.
 
@@ -464,7 +470,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/client.py` - the agent-side handle on a recorder: connection pool and calls
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*284 lines · depends on: `foundations/errors.py`, `observability/attestation.py`, `observability/recorder/models.py`, `observability/recorder/protocol.py`, `observability/run_checkpoints.py`, `observability/transparency.py` · used by: `observability/recorder/__init__.py`, `observability/recorder/mirror.py`, `observability/recorder/process.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** `RecorderClient` turns method calls into request lines over a small pool of connections, pages reads, and turns refusals and broken replies into named errors.
 
@@ -504,7 +510,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/compare.py` - comparing a run's local ledgers with the recorder's copy
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*105 lines · depends on: `observability/audit_log.py`, `observability/recorder/models.py`, `observability/run_checkpoints.py`, `observability/telemetry_store.py`, `observability/transparency.py` · used by: `observability/recorder/__init__.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** `compare_with_recorder` checks the recorder's signed heads vouch for its copy, then compares hashes with the local ledger to say matches, advanced, truncated or diverged.
 
@@ -518,7 +524,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/core.py` - the recorder's storage rules: sequencing, chain, record checks, attestation
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*499 lines · depends on: `foundations/errors.py`, `foundations/hashing.py`, `foundations/logging.py`, `observability/attestation.py`, `observability/audit_log.py`, `observability/merkle.py`, `observability/recorder/models.py`, `observability/recorder/protocol.py`, `observability/run_checkpoints.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `observability/transparency.py` · used by: `observability/recorder/__init__.py`, `observability/recorder/cli.py`, `observability/recorder/server.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** `RecorderCore` decides what the recorder accepts and keeps: records must arrive in sequence and chain to the one before, may be checked against their text, are stamped with the recorder's clock, and are persisted before they are acknowledged. It also publishes signed tree heads and attestations. It knows nothing about sockets.
 
@@ -557,7 +563,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/mirror.py` - feeding each persisted record to a recorder, and what happens when it cannot
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*200 lines · depends on: `foundations/errors.py`, `foundations/logging.py`, `observability/audit_log.py`, `observability/recorder/client.py`, `observability/recorder/protocol.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py`, `observability/transparency.py` · used by: `observability/recorder/__init__.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** `RecorderMirror` is the listener attached to the audit and telemetry stores. It sends each record as it is persisted, and decides what a failure means: a required mirror raises and keeps refusing until `backfill`, an optional one logs and marks the ledger degraded.
 
@@ -585,7 +591,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/models.py` - what the recorder holds and what a comparison with it concludes
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*54 lines · depends on: `foundations/contracts.py`, `observability/run_checkpoints.py` · used by: `observability/recorder/__init__.py`, `observability/recorder/client.py`, `observability/recorder/compare.py`, `observability/recorder/core.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** `RecordedEntry` is one record as the recorder keeps it (hash, predecessor, optional text, and the two times). `RecorderComparison` is the verdict of comparing a local ledger with that copy.
 
@@ -606,7 +612,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/process.py` - starting a recorder as a separate process
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*116 lines · depends on: `observability/ed25519.py`, `observability/recorder/client.py`, `observability/recorder/protocol.py` · used by: `observability/recorder/__init__.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** `spawn_recorder` starts the recorder as a child process with fresh random tokens and returns how to reach it.
 
@@ -625,7 +631,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/protocol.py` - the recorder's wire protocol: version, limits and shared names
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*43 lines · depends on: `foundations/errors.py` · used by: `observability/recorder/__init__.py`, `observability/recorder/cli.py`, `observability/recorder/client.py`, `observability/recorder/core.py`, `observability/recorder/mirror.py`, `observability/recorder/process.py`, `observability/recorder/server.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** The protocol is versioned (`RECORDER_SCHEMA`); a client checks it on connect. Limits live here too: one request or reply line is at most `MAX_LINE_BYTES` (16 MiB), and a `read` reply is cut at `PAGE_BYTES` (4 MiB) or `MAX_PAGE_ENTRIES` entries.
 
@@ -634,12 +640,12 @@ Three independent records of a run, all written outside the model's context: the
 **Contents**
 
 - `recorder_error(code: str, message: str) -> AgentSdkError` - An `AgentSdkError` with a code, a message and details.
-- `scoped_append_token(secret: str, run_id: str) -> str` - HMAC-SHA-256 of the run id under the append secret. A server started with `scoped_append` accepts only this token for that run, so a leaked token opens one run and the secret itself opens none. · *Called by:* `observability/recorder/server.py::RecorderServer.dispatch`, `agent/evidence_profile.py::EvidenceProfile._build_recorder`
+- `scoped_append_token(secret: str, run_id: str) -> str` - HMAC-SHA-256 of the run id under the append secret. A server started with `scoped_append` accepts only this token for that run, so a leaked token opens one run and the secret itself opens none. · *Called by:* `observability/recorder/server.py::RecorderServer.dispatch`, `agent/evidence_profile/build.py::build_recorder`
 ---
 
 ### `observability/recorder/server.py` - the recorder's network face: connections, tokens, operations
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*174 lines · depends on: `foundations/errors.py`, `foundations/logging.py`, `observability/recorder/core.py`, `observability/recorder/protocol.py` · used by: `observability/recorder/__init__.py`, `observability/recorder/cli.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** `RecorderServer` accepts connections (one thread each), completes the TLS handshake on that thread, reads one JSON line per request, checks the token that applies to the operation and the run, and calls `RecorderCore`.
 
@@ -660,7 +666,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/recorder/tls.py` - TLS contexts for the recorder's server and its clients
 
-*Part of the `observability/recorder/` package; the names here are re-exported by it.*
+*36 lines · depends on: nothing in the package · used by: `observability/recorder/__init__.py`, `observability/recorder/cli.py` · Part of the `observability/recorder/` package; the names here are re-exported by it.*
 
 **Role in the workflow.** Builds the `ssl` contexts: TLS 1.2 or later, the client certificate required when a client CA is given, and the host name verified on the client side.
 
@@ -669,12 +675,12 @@ Three independent records of a run, all written outside the model's context: the
 **Contents**
 
 - `server_ssl_context(certificate_file: Path, key_file: Path, *, client_ca_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later; with a client CA, a client certificate signed by it is required. · *Called by:* `observability/recorder/cli.py::main`
-- `client_ssl_context(ca_file: Path, *, certificate_file: Path | None=None, key_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later, the server certificate and its host name verified against the CA, optionally presenting a client certificate. · *Called by:* `agent/evidence_profile.py::EvidenceProfile._build_recorder`
+- `client_ssl_context(ca_file: Path, *, certificate_file: Path | None=None, key_file: Path | None=None) -> ssl.SSLContext` - TLS 1.2 or later, the server certificate and its host name verified against the CA, optionally presenting a client certificate. · *Called by:* `agent/evidence_profile/build.py::build_recorder`
 ---
 
 ### `observability/run_checkpoints.py` - signed checkpoints of a run's chain heads, kept outside the run root
 
-*697 lines · depends on: `foundations/atomic_io.py`, `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `observability/audit_log.py`, `observability/telemetry_models.py`, `observability/telemetry_store.py` · used by: `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `mcp/security.py` · re-exported at the package root: 16 name(s)*
+*697 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/jcs.py`, `observability/audit_log.py`, `observability/ledger_state.py`, `observability/signed_records.py`, `observability/signers.py`, `observability/sinks.py`, `observability/telemetry_store.py`, `observability/terminal_link.py`, `observability/timestamp.py` · used by: `__init__.py`, `agent/evidence_profile/build.py`, `agent/evidence_profile/checks.py`, `agent/evidence_profile/profile.py`, `agent/retention.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py`, `mcp/security.py`, `observability/attestation.py`, `observability/keyring.py`, `observability/recorder/client.py`, `observability/recorder/compare.py`, `observability/recorder/core.py`, `observability/recorder/models.py`, `observability/transparency.py`, `state/run_anchor.py`, `tools/artifact_anchor.py`, tests · re-exported at the package root: 16 name(s)*
 
 **Role in the workflow.** Each run keeps two hash chains, telemetry events and audit entries. Each detects an edit in the middle, but the newest entries can be removed together, or both chains rewritten and resealed, because nothing outside the run root remembers how long they were. `export_run_head_checkpoint` verifies both chains, signs their sequence and head hash with a `CheckpointSigner` and appends the record to a `CheckpointSink` the operator keeps elsewhere; `verify_run_head_checkpoints` later reports a run that was truncated or rewritten. Retention's tombstone holds a pruned run's final heads, so a run that was pruned is `pruned`, not `truncated`, and a run id used again after a prune starts a new series. `nailong-agent-sdk-dev checkpoint-run` and `verify-checkpoints` do the same from the command line, and `AgentRuntimeServices(checkpointer=...)` takes a checkpoint when each task or node-agent run ends. At the end of a run `BaseAgent._terminate` makes its `agent.profile-completed` event record the audit head and appends a `terminal-link` audit entry that records that event's hash, so one checkpoint, or one intact store, vouches for the other.
 
@@ -723,6 +729,8 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/signed_records.py` - the one check every signed record goes through
 
+*106 lines · depends on: `foundations/jcs.py`, `observability/signers.py`, `observability/timestamp.py` · used by: `agent/retention.py`, `observability/attestation.py`, `observability/run_checkpoints.py`, `observability/sinks.py`, `observability/terminal_link.py`, `observability/transparency.py`, `state/run_anchor.py`, `tools/artifact_anchor.py`, tests · not re-exported at the package root*
+
 *Used by every module that verifies a signed record.*
 
 **Role in the workflow.** A signed record is trusted only if three things hold: its stamp (when it carries one) verifies and supplies the time, the key it names is trusted at that time, and the signature is valid and made by that signer. `check_signature` does all three and says which failed; each caller keeps its own verdict names and sentences. A test fails if any module resolves a key without going through it, so a signed record cannot skip the check.
@@ -742,7 +750,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/signers.py` - what signs and verifies a record, and the shared-secret signer
 
-*Re-exported by `observability/run_checkpoints.py`, which is where older imports find these names.*
+*53 lines · depends on: nothing in the package · used by: `observability/run_checkpoints.py`, `observability/signed_records.py`, `observability/sinks.py`, `observability/terminal_link.py` · Re-exported by `observability/run_checkpoints.py`, which is where older imports find these names.*
 
 **Role in the workflow.** `CheckpointSigner` is the interface every signature in the SDK goes through (checkpoints, tree heads, attestations, tombstones, anchors). `HmacSha256Signer` is the standard-library implementation; `Ed25519Signer` and `KeyRingVerifier` are the asymmetric ones. A bug in how a record is signed or verified starts in the signer; a bug in which key is trusted starts in `observability/signed_records.py` or `observability/keyring.py`.
 
@@ -762,7 +770,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/sinks.py` - where signed records are kept outside the run root
 
-*Re-exported by `observability/run_checkpoints.py`.*
+*117 lines · depends on: `foundations/atomic_io.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/logging.py`, `foundations/text.py`, `observability/signed_records.py`, `observability/signers.py` · used by: `observability/run_checkpoints.py` · Re-exported by `observability/run_checkpoints.py`.*
 
 **Role in the workflow.** A sink is an append-only place for signed records: a file under a directory the operator keeps elsewhere, a remote witness, or the recorder's own heads. `FileCheckpointSink` repairs a torn final line before it appends.
 
@@ -789,7 +797,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/terminal_link.py` - the cross-link between a run's last telemetry event and last audit entry
 
-*Re-exported by `observability/run_checkpoints.py`.*
+*124 lines · depends on: `foundations/contracts.py`, `observability/audit_log.py`, `observability/ledger_state.py`, `observability/signed_records.py`, `observability/signers.py`, `observability/telemetry_store.py` · used by: `observability/run_checkpoints.py` · Re-exported by `observability/run_checkpoints.py`.*
 
 **Role in the workflow.** When a run ends, its final telemetry event records the audit ledger's length and head, and its final audit entry records the telemetry event's sequence and hash. `verify_terminal_link` checks both halves agree, which ties the two ledgers to each other.
 
@@ -808,7 +816,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/timestamp.py` - RFC 3161 trusted timestamps for checkpoints and tree heads
 
-*629 lines · depends on: `foundations/contracts.py`, `foundations/errors.py` · used by: `observability/run_checkpoints.py`, `observability/transparency.py`, `agent/run_checkpointer.py`, `agent/evidence_profile.py` · not re-exported at the package root*
+*629 lines · depends on: `foundations/contracts.py`, `foundations/errors.py` · used by: `observability/run_checkpoints.py`, `observability/transparency.py`, `agent/run_checkpointer.py`, `agent/evidence_profile/build.py`, `agent/evidence_profile/profile.py` · not re-exported at the package root*
 
 **Role in the workflow.** A record's own time is the writer's clock. A timestamp authority signs, under a certificate the verifier trusts, that a digest existed at a time, so a record cannot be backdated past the authority's attestation. A checkpoint or tree head is stamped before it is signed; the stamp covers its content without the signature and the stamp itself, and the signature then covers the stamp. It needs the optional `cryptography` package for verification.
 
@@ -915,7 +923,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/telemetry_models.py` - telemetry event, context, actor and metric contracts
 
-*261 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/text.py`, `observability/trace_context.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/orchestrator/orchestrator.py`, `agent/retention.py`, `agent/runtime.py`, `agent/task_runner.py`, `agent/verification.py`, `developer_tools/diagnose.py` (+20 more) · re-exported at the package root: 13 name(s)*
+*275 lines · depends on: `foundations/contracts.py`, `foundations/errors.py`, `foundations/text.py`, `observability/trace_context.py` · used by: `agent/base_agent/agent.py`, `agent/graph_agent_executor.py`, `agent/orchestrator/orchestrator.py`, `agent/retention.py`, `agent/runtime.py`, `agent/task_runner.py`, `agent/verification.py`, `developer_tools/diagnose.py` (+20 more) · re-exported at the package root: 13 name(s)*
 
 **Role in the workflow.** The typed shapes persisted by `TelemetryStore`. They deliberately carry structured outcomes, timings, authority, links and hashes only; hidden reasoning is rejected at validation.
 
@@ -969,7 +977,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/telemetry_store.py` - durable telemetry ledger: SQLite events with a per-run hash chain, plus metrics
 
-*768 lines · depends on: `foundations/atomic_io.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/run_fence.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/orchestrator/orchestrator.py`, `agent/retention.py`, `agent/retention_inventory.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py` (+12 more) · re-exported at the package root: 1 name(s)*
+*808 lines · depends on: `foundations/atomic_io.py`, `foundations/errors.py`, `foundations/hashing.py`, `foundations/identifiers.py`, `foundations/run_fence.py`, `observability/telemetry_helpers.py`, `observability/telemetry_models.py` · used by: `agent/base_agent/agent.py`, `agent/orchestrator/orchestrator.py`, `agent/retention.py`, `agent/retention_inventory.py`, `agent/run_checkpointer.py`, `agent/runtime.py`, `developer_tools/cli.py`, `developer_tools/diagnose.py` (+12 more) · re-exported at the package root: 1 name(s)*
 
 **Role in the workflow.** Every `BaseAgent` lifecycle event becomes an `agent.<type>` telemetry event; metrics are recorded beside them. The MCP telemetry tools and `developer_tools/inspect.py` page the events, verify the chain and build run reports from this store.
 
@@ -1060,7 +1068,7 @@ Three independent records of a run, all written outside the model's context: the
 
 ### `observability/witness.py` - an append-only remote witness for checkpoints
 
-*256 lines · depends on: `foundations/errors.py` · used by: tests, `benchmarks/trust/overhead_merkle.py` · not re-exported at the package root*
+*265 lines · depends on: `foundations/errors.py` · used by: tests, `benchmarks/trust/overhead_merkle.py` · not re-exported at the package root*
 
 **Role in the workflow.** A remote place for checkpoints that the writer cannot rewrite. `HttpWitnessSink` is a `CheckpointSink` whose append token can add records but not read, replace or delete them; the verifier reads with a second token. `WitnessServer` is a reference implementation of the protocol used by the tests; a deployment points the sink at its own append-only service.
 
