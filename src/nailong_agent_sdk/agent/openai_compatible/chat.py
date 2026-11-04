@@ -8,6 +8,7 @@ import asyncio
 import inspect
 import json
 import re
+import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from ..provider_context import (
     ReasoningSplitter,
     attached_images,
     declared_tools,
+    prompted_tool_instructions,
     safe_parameters,
     stable_context,
     volatile_context,
@@ -93,7 +95,10 @@ class OpenAICompatibleAgentModel(AgentModel):
         provider_cancel: ProviderCancel | None = None,
         json_mode: bool = True,
         text_answer: Callable[[str], dict[str, Any]] | None = None,
+        tool_mode: str = "native",
     ) -> None:
+        if tool_mode not in TOOL_MODES:
+            raise ValueError(f'tool_mode must be one of {list(TOOL_MODES)}, not "{tool_mode}".')
         if not provider.strip():
             raise ValueError("OpenAI-compatible provider identifier must be non-empty.")
         if not model.strip():
@@ -106,11 +111,54 @@ class OpenAICompatibleAgentModel(AgentModel):
         self._provider_cancel = provider_cancel
         self._json_mode = json_mode
         self._text_answer = text_answer
+        self._tool_mode = tool_mode
+        self._prompted = tool_mode == "prompted"
         self._cancellations: dict[str, ModelCancellationOutcome] = {}
         self._last_requests: OrderedDict[str, str] = OrderedDict()
         self._diagnostics: OrderedDict[str, RequestDiagnostics] = OrderedDict()
 
+    @property
+    def tool_mode(self) -> str:
+        return "prompted" if self._prompted else "native"
+
     async def next_turn(self, context: ModelContext) -> ModelTurnResponse:
+        for attempt in range(MAX_ADAPTATIONS + 1):
+            try:
+                return await self._next_turn_once(context)
+            except AgentSdkError as error:
+                if attempt == MAX_ADAPTATIONS or not self._switch_to_prompted(error, context):
+                    raise
+        raise AssertionError("unreachable")
+
+    async def stream_turn(
+        self, context: ModelContext, on_delta: ModelStreamListener
+    ) -> ModelTurnResponse:
+        for attempt in range(MAX_ADAPTATIONS + 1):
+            try:
+                return await self._stream_turn_once(context, on_delta)
+            except AgentSdkError as error:
+                if attempt == MAX_ADAPTATIONS or not self._switch_to_prompted(error, context):
+                    raise
+        raise AssertionError("unreachable")
+
+    def _switch_to_prompted(self, error: AgentSdkError, context: ModelContext) -> bool:
+        if error.code not in _PROVIDER_REJECTIONS:
+            return False
+        if self._json_mode and self._tool_mode == "auto" and _REJECTED_FORMAT.search(error.message):
+            self._json_mode = False
+            return True
+        if (
+            self._tool_mode != "auto"
+            or self._prompted
+            or context.continuation is not None
+            or not declared_tools(context)
+            or not _REJECTED_TOOLS.search(error.message)
+        ):
+            return False
+        self._prompted = True
+        return True
+
+    async def _next_turn_once(self, context: ModelContext) -> ModelTurnResponse:
         binding = self._require_binding(context)
         payload = self._chat_payload(context, binding)
         request = {
@@ -205,7 +253,7 @@ class OpenAICompatibleAgentModel(AgentModel):
             return "confirmed", f"the provider confirmed cancelling request {request_id}"
         return "requested", f"the provider did not confirm cancelling request {request_id}"
 
-    async def stream_turn(
+    async def _stream_turn_once(
         self, context: ModelContext, on_delta: ModelStreamListener
     ) -> ModelTurnResponse:
         """Stream incremental text/tool-call deltas while still returning the full turn.
@@ -256,7 +304,7 @@ class OpenAICompatibleAgentModel(AgentModel):
         return binding
 
     def _turn_response_from(self, response: Mapping[str, Any]) -> ModelTurnResponse:
-        turn = _agent_turn_from_chat_response(response, self._text_answer)
+        turn = _agent_turn_from_chat_response(response, self._text_answer, self._prompted)
         return ModelTurnResponse(
             turn=turn,
             continuation=self._continuation_from_response(response, turn),
@@ -326,8 +374,12 @@ class OpenAICompatibleAgentModel(AgentModel):
         tools = _chat_tools(tool_entries)
         stable = stable_context(context, [entry["name"] for entry in tool_entries])
         volatile = volatile_context(context)
+        system = SYSTEM_PROMPT
+        if self._prompted and tool_entries:
+            system += "\n\n" + prompted_tool_instructions(tool_entries)
+            tools = []
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": _stable_content(stable, attached_images(context))},
             {"role": "user", "content": json.dumps(volatile, separators=(",", ":"))},
         ]
@@ -375,6 +427,8 @@ class OpenAICompatibleAgentModel(AgentModel):
         if turn.type not in {"tool-call", "tool-batch"}:
             return None
         raw_calls = _chat_message(response).get("tool_calls")
+        if self._prompted and not raw_calls:
+            return self._prompted_continuation(response, turn)
         if not isinstance(raw_calls, list) or not raw_calls:
             raise AgentSdkError(
                 "OPENAI_COMPATIBLE_RESPONSE_INVALID",
@@ -385,6 +439,29 @@ class OpenAICompatibleAgentModel(AgentModel):
             state={
                 "assistant_tool_calls": raw_calls,
                 "assistant_extra": _assistant_extra(_chat_message(response)),
+                "tool_results": [],
+            },
+        )
+
+    def _prompted_continuation(
+        self, response: Mapping[str, Any], turn: AgentTurn
+    ) -> ProviderContinuation:
+        calls = turn.calls if turn.type == "tool-batch" else [turn.call]
+        raw_calls = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+            }
+            for call in calls
+        ]
+        written = _REASONING_BLOCK.sub("", str(_chat_message(response).get("content") or ""))
+        return ProviderContinuation(
+            provider=self._provider,
+            state={
+                "assistant_tool_calls": raw_calls,
+                "prompted": True,
+                "assistant_text": written.strip(),
                 "tool_results": [],
             },
         )
@@ -407,6 +484,8 @@ class OpenAICompatibleAgentModel(AgentModel):
                 "MODEL_CONTINUATION_UNRESOLVED",
                 "Provider continuation requires tool results before the next model turn.",
             )
+        if continuation.state.get("prompted"):
+            return _prompted_messages(continuation.state, tool_results)
         extra = continuation.state.get("assistant_extra")
         assistant: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": raw_calls}
         if isinstance(extra, Mapping):
@@ -460,6 +539,131 @@ def _chat_tools(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 _REASONING_FIELDS = ("reasoning_content", "reasoning")
 
 
+TOOL_MODES = ("native", "prompted", "auto")
+MAX_ADAPTATIONS = 2
+_PROVIDER_REJECTIONS = frozenset(
+    {"OPENAI_COMPATIBLE_HTTP_ERROR", "OPENAI_COMPATIBLE_PROVIDER_ERROR"}
+)
+_REJECTED_FORMAT = re.compile(r"response_format|json_object|json mode", re.IGNORECASE)
+_REJECTED_TOOLS = re.compile(r"\b(tools?|tool_choice|function[s ]?(calling)?)\b", re.IGNORECASE)
+_FENCE = re.compile(r"^```[a-zA-Z]*\s*(.*?)\s*```$", re.DOTALL)
+
+
+def _first_json_object(text: str) -> Any | None:
+    stripped = text.strip()
+    fenced = _FENCE.match(stripped)
+    if fenced:
+        stripped = fenced.group(1)
+    decoder = json.JSONDecoder()
+    for start, character in enumerate(stripped):
+        if character == "{":
+            try:
+                value, _ = decoder.raw_decode(stripped[start:])
+            except json.JSONDecodeError:
+                continue
+            return value
+    return None
+
+
+def _normalise_prompted_turn(raw: Any) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    kind = raw.get("type")
+    if kind in {"tool-call", "tool-batch"} or "calls" in raw or "call" in raw:
+        calls = raw.get("calls") if "calls" in raw else [raw.get("call")]
+    elif "name" in raw and "arguments" in raw and kind is None:
+        calls = [raw]
+    else:
+        return raw
+    fixed = []
+    for call in calls if isinstance(calls, list) else []:
+        if not isinstance(call, dict) or not isinstance(call.get("name"), str):
+            raise InvalidModelOutputError(
+                "OPENAI_COMPATIBLE_RESPONSE_INVALID",
+                "A tool call in the reply needs a string name and an arguments object.",
+            )
+        arguments = call.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError as error:
+                raise InvalidModelOutputError(
+                    "OPENAI_COMPATIBLE_RESPONSE_INVALID",
+                    f'The arguments of the "{call["name"]}" call are not a JSON object.',
+                ) from error
+        if not isinstance(arguments, dict):
+            raise InvalidModelOutputError(
+                "OPENAI_COMPATIBLE_RESPONSE_INVALID",
+                f'The arguments of the "{call["name"]}" call must be a JSON object.',
+            )
+        fixed.append(
+            {
+                "id": f"pc-{uuid.uuid4().hex[:10]}",
+                "name": call["name"],
+                "arguments": arguments,
+                "depends_on_call_ids": [],
+            }
+        )
+    if not fixed:
+        raise InvalidModelOutputError(
+            "OPENAI_COMPATIBLE_RESPONSE_INVALID", "A tool-batch reply listed no calls."
+        )
+    return {"type": "tool-batch", "calls": fixed}
+
+
+def _validated_turn(raw_turn: Any) -> AgentTurn:
+    try:
+        return _AGENT_TURN_ADAPTER.validate_python(raw_turn)
+    except ValidationError as error:
+        issues = [
+            f"{'.'.join(str(part) for part in issue['loc']) or '(root)'}: {issue['msg']}"
+            for issue in error.errors()
+        ]
+        raise InvalidModelOutputError(
+            "OPENAI_COMPATIBLE_RESPONSE_INVALID",
+            "Provider response does not match the AgentTurn contract: "
+            + "; ".join(issues[:5])
+            + ".",
+        ) from error
+
+
+def _prompted_messages(
+    state: Mapping[str, Any], tool_results: Sequence[Any]
+) -> list[dict[str, Any]]:
+    answers = []
+    names = {
+        call["id"]: call["function"]["name"]
+        for call in state.get("assistant_tool_calls", [])
+        if isinstance(call, Mapping)
+    }
+    for item in tool_results:
+        if (
+            not isinstance(item, Mapping)
+            or not isinstance(item.get("tool_call_id"), str)
+            or not isinstance(item.get("content"), str)
+        ):
+            raise AgentSdkError(
+                "MODEL_CONTINUATION_INVALID",
+                "OpenAI-compatible continuation contains malformed tool results.",
+            )
+        answers.append(
+            {
+                "call_id": item["tool_call_id"],
+                "tool": names.get(item["tool_call_id"]),
+                "result": item["content"],
+            }
+        )
+    return [
+        {"role": "assistant", "content": state.get("assistant_text") or "(tool call)"},
+        {
+            "role": "user",
+            "content": "Tool results: "
+            + json.dumps(answers, separators=(",", ":"))
+            + " Reply with the next JSON turn: another tool call or the final answer.",
+        },
+    ]
+
+
 def _assistant_extra(message: Mapping[str, Any]) -> dict[str, Any]:
     extra: dict[str, Any] = {}
     spoken = message.get("content")
@@ -482,7 +686,9 @@ def _text_event(reasoning: bool, text: str) -> ModelTextDelta | ModelReasoningDe
 
 
 def _agent_turn_from_chat_response(
-    response: Mapping[str, Any], text_answer: Callable[[str], dict[str, Any]] | None = None
+    response: Mapping[str, Any],
+    text_answer: Callable[[str], dict[str, Any]] | None = None,
+    prompted: bool = False,
 ) -> AgentTurn:
     _raise_for_incomplete_completion(response)
     message = _chat_message(response)
@@ -534,7 +740,14 @@ def _agent_turn_from_chat_response(
         content = _chat_content(response)
         try:
             raw_turn = json.loads(content)
+            if prompted:
+                raw_turn = _normalise_prompted_turn(raw_turn)
         except json.JSONDecodeError as error:
+            if prompted:
+                found = _first_json_object(content)
+                if found is not None:
+                    raw_turn = _normalise_prompted_turn(found)
+                    return _validated_turn(raw_turn)
             if text_answer is None:
                 raise InvalidModelOutputError(
                     "OPENAI_COMPATIBLE_RESPONSE_INVALID",

@@ -16,6 +16,7 @@ SANDBOXES = ("auto", "none", "docker")
 MODES = ("default", "accept-edits", "auto", "plan", "bypass")
 HOOK_EVENTS = ("pre_tool", "post_tool", "session_start", "session_end", "prompt_submit", "turn_end")
 EDITING_MODES = ("emacs", "vi")
+TOOL_MODES = ("auto", "native", "prompted")
 SUBAGENT_TOOLS = ("read-only", "edit", "all")
 REQUIRED = ("provider", "model")
 DEFAULTS: dict[str, Any] = {
@@ -33,6 +34,7 @@ DEFAULTS: dict[str, Any] = {
     "autocompact": False,
     "show_reasoning": True,
     "allow_insecure_http": False,
+    "tool_mode": "auto",
     "offline": False,
     "api_key_env": "",
     "editing_mode": "emacs",
@@ -78,6 +80,7 @@ class CliConfig:
     autocompact: bool
     show_reasoning: bool
     allow_insecure_http: bool
+    tool_mode: str
     offline: bool
     editing_mode: str
     theme: str
@@ -148,6 +151,7 @@ def load_config(project: Path, *, home: Path, overrides: dict[str, Any] | None =
         autocompact=bool(merged["autocompact"]),
         show_reasoning=bool(merged["show_reasoning"]),
         allow_insecure_http=bool(merged["allow_insecure_http"]),
+        tool_mode=merged["tool_mode"],
         offline=bool(merged["offline"]),
         editing_mode=merged["editing_mode"],
         theme=merged["theme"],
@@ -184,6 +188,7 @@ def _validate(values: dict[str, Any], tables: dict[str, dict[str, Any]]) -> None
         ("sandbox", SANDBOXES),
         ("permission_mode", MODES),
         ("editing_mode", EDITING_MODES),
+        ("tool_mode", TOOL_MODES),
     ):
         if values[key] not in allowed:
             raise ConfigError(f'{key} must be one of {list(allowed)}, not "{values[key]}".')

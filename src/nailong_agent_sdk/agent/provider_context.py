@@ -117,6 +117,23 @@ def _partial_suffix(text: str, tags: tuple[str, ...]) -> int:
     return longest
 
 
+def prompted_tool_instructions(tools: Sequence[Mapping[str, Any]]) -> str:
+    listing = "\n".join(
+        f"- {tool['name']}: {tool['description']} input_schema="
+        + json.dumps(tool["input_schema"], separators=(",", ":"))
+        for tool in tools
+    )
+    return (
+        "This model has no native tool calling, so call tools by replying with ONLY one JSON "
+        'object and no other text: {"type":"tool-batch","calls":[{"id":"1","name":"<tool name>",'
+        '"arguments":{...}}]}. Put several independent calls in "calls" when you need them. '
+        "The results will be sent back in the next message; never write a tool result yourself. "
+        'When you are done, reply with {"type":"final","output":...} matching output_schema, or '
+        '{"type":"blocked","reason":"..."}.\nAvailable tools (name: description input_schema):\n'
+        + listing
+    )
+
+
 def declared_tools(context: ModelContext) -> list[dict[str, Any]]:
     tools_section = next((item for item in context.prompt.sections if item.kind == "tools"), None)
     if tools_section is None or not isinstance(tools_section.value, list):

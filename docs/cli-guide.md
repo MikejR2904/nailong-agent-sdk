@@ -398,6 +398,7 @@ timeout_seconds = 120
 max_tokens = 4096
 allow_insecure_http = false         # true for plain HTTP beyond this machine
 invalid_output_retries = 2          # re-asks after an unusable model reply
+tool_mode = "auto"                  # auto | native | prompted: for models without tool calling
 
 # behaviour
 permission_mode = "default"

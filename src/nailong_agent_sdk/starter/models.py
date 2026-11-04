@@ -59,6 +59,7 @@ def openai_chat(
     json_mode: bool = True,
     parameters: dict[str, Any] | None = None,
     text_answer: Callable[[str], dict[str, Any]] | None = default_text_answer,
+    tool_mode: str = "auto",
 ) -> ModelSetup:
     endpoint = OpenAICompatibleEndpoint(
         base_url=base_url,
@@ -68,7 +69,12 @@ def openai_chat(
         require_api_key=api_key is not None,
     )
     adapter = OpenAICompatibleAgentModel(
-        endpoint, provider=provider, model=model, json_mode=json_mode, text_answer=text_answer
+        endpoint,
+        provider=provider,
+        model=model,
+        json_mode=json_mode,
+        text_answer=text_answer,
+        tool_mode=tool_mode,
     )
     return ModelSetup(adapter, provider, model, dict(parameters or {}))
 

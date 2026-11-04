@@ -13,10 +13,11 @@ or GPU was available where this was written. Try your model with a one-line task
 ## What your server must offer
 
 - `POST /v1/chat/completions`, streaming optional.
-- **Tool calling**, because the agent's tools are sent as function tools. vLLM needs
-  `--enable-auto-tool-choice` and a `--tool-call-parser` for the model; llama.cpp needs `--jinja`;
-  Ollama needs a model with tool support. A model with no tool support can still answer in text,
-  but the agent can then only reason, not read or edit files.
+- **Tool calling is preferred, not required.** By default the agent's tools are sent as function
+  tools. vLLM needs `--enable-auto-tool-choice` and a `--tool-call-parser` for the model; llama.cpp
+  needs `--jinja`; Ollama needs a model with tool support. If the server rejects tools, the SDK
+  switches to **prompted tools**: the tools are described in the prompt, the model replies with a
+  JSON tool call as text, and the results come back as ordinary messages (see below).
 - A context window large enough for the instructions and tool list (several thousand tokens).
 
 ## SDK
@@ -40,6 +41,26 @@ either. A reply the adapter cannot use at all (empty, malformed tool arguments) 
 model, which is asked again up to twice in a row before the run fails with the count. Reasoning
 models that return their thinking in a separate `reasoning_content` field need no handling: that
 field is ignored.
+
+## Models without tool calling
+
+`tool_mode` on `openai_chat` (and in the CLI settings) is `auto` by default:
+
+| Value | Behaviour |
+|---|---|
+| `auto` | send tools natively; if the server answers that tools (or JSON mode) are not supported, switch to prompted tools for the rest of the session and repeat the request |
+| `native` | always send tools natively; a server that rejects them is an error |
+| `prompted` | never send tools natively: describe them in the prompt and read the tool call from the reply |
+
+In prompted mode the reply may be a bare JSON object, a JSON object after some prose, or one inside
+a code fence; arguments written as a string are decoded; call ids are replaced with unique ones.
+A reply with unusable arguments goes back to the model with the reason (the retry described
+above). Auto mode also drops JSON mode (`response_format`) when the server does not know it.
+
+It is less reliable than native tool calling. A live check on `minimax/minimax-01`, which lists no
+tool support, read a file and answered correctly in two steps, but on a three-part task it
+searched, summarised and stopped before the file it was asked to write. Smaller models skip steps
+and emit malformed calls more often. Native tool calling is worth choosing a model for.
 
 ## CLI
 

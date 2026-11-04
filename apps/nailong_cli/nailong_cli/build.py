@@ -70,6 +70,7 @@ def build_model(config: CliConfig, environ: Mapping[str, str]) -> ModelSetup:
         timeout_seconds=config.timeout_seconds,
         allow_insecure_http=config.allow_insecure_http or is_loopback(host_of(str(base_url))),
         parameters=parameters or None,
+        tool_mode=config.tool_mode,
     )
 
 
