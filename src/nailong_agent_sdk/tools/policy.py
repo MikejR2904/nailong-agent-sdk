@@ -41,6 +41,13 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "*.pem",
     "*.p12",
     "*.pfx",
+    "*.key",
+    "*.keystore",
+    "*.jks",
+    "*/credentials.json",
+    "*/client_secret*.json",
+    "*/service-account*.json",
+    "*/.vault-token",
 )
 
 

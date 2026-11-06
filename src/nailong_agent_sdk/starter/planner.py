@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -385,35 +385,61 @@ class PlanProposal:
         max_parallel: int = DEFAULT_PARALLEL,
         on_task: TaskEvent | None = None,
         close: bool = True,
+        completed: Mapping[str, str] | None = None,
+        attempts: int = 1,
+        notes: Mapping[str, str] | None = None,
+        should_retry: Callable[[PlannedTask], bool] | None = None,
     ) -> TeamResult:
+        if attempts < 1:
+            raise PlannerError(f"attempts must be at least 1, not {attempts}.")
         by_role = {role.name: role for role in self.roles}
         by_id = {task.id: task for task in self.tasks}
+        known = completed or {}
+        unknown = sorted(set(known) - set(by_id))
+        if unknown:
+            raise PlannerError(f"completed names tasks that are not in the plan: {unknown}.")
         outcomes: dict[str, TaskOutcome] = {}
         started: list[str] = []
         gate = asyncio.Semaphore(max_parallel)
         notify = on_task or (lambda event, task, answer: None)
 
+        async def attempt_once(task: PlannedTask, extra: str) -> tuple[Answer | None, str | None]:
+            agent = None
+            try:
+                agent = factory(by_role[task.role], task)
+                prompt = self._worker_prompt(task, outcomes, by_id)
+                return await agent.run(prompt + (f"\n\n{extra}" if extra else "")), None
+            except Exception as error:
+                return None, f"{type(error).__name__}: {error}"
+            finally:
+                if close and agent is not None:
+                    agent.close()
+
         async def work(task: PlannedTask) -> None:
             async with gate:
-                notify("start", task, None)
-                agent = None
-                try:
-                    agent = factory(by_role[task.role], task)
-                    answer = await agent.run(self._worker_prompt(task, outcomes, by_id))
-                except Exception as error:
-                    reason = f"{type(error).__name__}: {error}"
-                    outcomes[task.id] = TaskOutcome("failed", reason=reason)
-                    notify("failed", task, None)
+                if task.id in known:
+                    outcomes[task.id] = TaskOutcome("completed", known[task.id])
+                    notify("replayed", task, None)
                     return
-                finally:
-                    if close and agent is not None:
-                        agent.close()
-                if answer.ok:
-                    outcomes[task.id] = TaskOutcome("completed", answer.text)
-                    notify("done", task, answer)
-                else:
-                    outcomes[task.id] = TaskOutcome("failed", reason=answer.reason)
-                    notify("failed", task, answer)
+                extra = (notes or {}).get(task.id, "")
+                for attempt in range(1, attempts + 1):
+                    notify("start", task, None)
+                    answer, error = await attempt_once(task, extra)
+                    if answer is not None and answer.ok:
+                        outcomes[task.id] = TaskOutcome("completed", answer.text)
+                        notify("done", task, answer)
+                        return
+                    reason = error if answer is None else str(answer.reason)
+                    again = attempt < attempts and (should_retry is None or should_retry(task))
+                    if not again:
+                        outcomes[task.id] = TaskOutcome("failed", reason=reason)
+                        notify("failed", task, answer)
+                        return
+                    notify("retry", task, answer)
+                    extra = (
+                        f"This is attempt {attempt + 1} of {attempts}. The previous attempt "
+                        f"failed: {reason}. Check what it already changed before you continue."
+                    )
 
         remaining = {task.id for task in self.tasks}
         while remaining:

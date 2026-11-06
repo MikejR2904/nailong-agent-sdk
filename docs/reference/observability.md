@@ -594,11 +594,14 @@ Three independent records of a run, all written outside the model's context: the
 
 - **class `MirrorStats`** *(dataclass)* - What a mirror did: records sent, records that failed, the last error and the run and ledger pairs it stopped mirroring.
   - fields: `sent`, `failed`, `last_error`, `degraded`
-- **class `RecorderMirror`** *(class)* - Copies each record to a recorder as the ledgers persist it, through the ledgers' append listeners. Synchronous by default (the record is acknowledged before the next step); `asynchronous=True` sends from a queue, which opens a window equal to what is queued. With `required=True` a synchronous failure raises into the run; otherwise it is logged, counted and the run and ledger stop being mirrored, because a recorder cannot take a record after a gap.
-  - `RecorderMirror.__init__(self, client: RecorderClient, *, required: bool=False, include_records: bool=True, asynchronous: bool=False, queue_size: int=10000) -> None` - Starts the sender thread in asynchronous mode.
+- **class `RecorderMirror`** *(class)* - Copies each record to a recorder as the ledgers persist it, through the ledgers' append listeners. Synchronous by default (the record is acknowledged before the next step); `asynchronous=True` sends from a queue, which opens a window equal to what is queued unless `outbox=` names a local file: each record is then written and flushed there first, acknowledged once the recorder accepted it, and `recover()` resends what a crash or outage left unacknowledged. With `required=True` a synchronous failure raises into the run; otherwise it is logged, counted and the run and ledger stop being mirrored, because a recorder cannot take a record after a gap.
+  - `RecorderMirror.__init__(self, client: RecorderClient, *, required: bool=False, include_records: bool=True, asynchronous: bool=False, queue_size: int=10000, outbox: Path | None=None) -> None` - Starts the sender thread in asynchronous mode; `outbox` makes delivery durable (`recover()`, `unacknowledged()`).
   - `RecorderMirror.attach(self, telemetry: TelemetryStore | None=None, audit: AuditTranscriptStore | None=None) -> None` - Registers the mirror on a telemetry store and an audit store.
-  - `RecorderMirror.pending(self) -> int` - How many records are queued and not yet sent.
-  - `RecorderMirror.flush(self, timeout_seconds: float=10.0) -> bool` - Waits until the queue is empty or the timeout passes and says whether it is empty.
+  - `RecorderMirror.pending(self) -> int` - How many records are queued or being sent.
+  - `RecorderMirror.flush(self, timeout_seconds: float=10.0) -> bool` - Waits until every queued record has been handled, including the one being sent, or the timeout passes, and says whether none is left.
+  - `RecorderMirror.health(self) -> dict[str, object]` - One reading of delivery: `state` (ok, behind when records wait, degraded when a ledger is no longer mirrored), the sent, failed and queued counts, the unacknowledged outbox records, the degraded ledgers, the last error and whether delivery is durable.
+  - `RecorderMirror.unacknowledged(self) -> int` - How many outbox records the recorder has not acknowledged.
+  - `RecorderMirror.recover(self) -> dict[str, int]` - Resends every unacknowledged outbox record; returns `{"sent", "failed"}` and empties the outbox when none failed.
   - `RecorderMirror.backfill(self, telemetry: TelemetryStore, audit: AuditTranscriptStore, run_id: str) -> dict[str, int]` - Sends every local record of a run to the recorder, in order (a record it already holds is accepted as a duplicate; one it holds differently is `RECORDER_CONFLICT`), then clears the run's degraded mark. For a run that began before the recorder was attached, or after the recorder was unreachable; call it when the run is idle.
   - `RecorderMirror.finish(self, run_id: str, timeout_seconds: float=10.0) -> dict[str, MerkleTreeHead]` - Flushes and asks the recorder to seal the run's heads. `final=True` is the host's closing seal; a periodic checkpoint passes False.
   - `RecorderMirror.close(self) -> None` - Stops the sender and closes the client.
@@ -608,6 +611,11 @@ Three independent records of a run, all written outside the model's context: the
   - `RecorderMirror._deliver(self, item: tuple[str, str, int, str, str | None, str | None]) -> None` - Sends one record; a failure is noted, and raised only for a required synchronous mirror.
   - `RecorderMirror._note_failure(self, store: str, run_id: str, error: AgentSdkError) -> None` - Counts the failure, remembers the error and stops mirroring that run and ledger, with a warning that names them.
   - `RecorderMirror._drain(self) -> None` - The sender thread's loop.
+  - `RecorderMirror._outbox_entries(self) -> list[tuple[int, tuple | None]]` - Reads the outbox: records and acknowledgements; a cut-off last line is ignored, damage elsewhere raises `RECORDER_OUTBOX_CORRUPT`.
+  - `RecorderMirror._unacknowledged(self) -> list[tuple[int, tuple]]` - The outbox records no acknowledgement follows, oldest first.
+  - `RecorderMirror._outbox_write(self, data: dict) -> None` - Appends one line to the outbox and syncs it to disk.
+  - `RecorderMirror._acknowledge(self, ident: int | None) -> None` - Records that the recorder accepted an outbox record.
+  - `RecorderMirror._compact_outbox(self) -> None` - Empties the outbox once nothing is waiting.
 ---
 
 ### `observability/recorder/models.py` - what the recorder holds and what a comparison with it concludes

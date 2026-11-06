@@ -313,3 +313,90 @@ def test_harmless_naming_slips_are_fixed_instead_of_sent_back_to_the_model():
     assert set(by_id) == {"read-and-summarize", "write-up"}
     assert by_id["read-and-summarize"].role == "researcher" and by_id["write-up"].role == "writer"
     assert by_id["write-up"].depends_on == ("read-and-summarize",)
+
+
+def flaky_factory(tmp_path, scripts):
+    """scripts maps a task id to one reply list per attempt."""
+    attempts = {}
+    created = []
+
+    def factory(role, item):
+        number = attempts.get(item.id, 0)
+        attempts[item.id] = number + 1
+        replies = scripts[item.id][min(number, len(scripts[item.id]) - 1)]
+        model = setup(*[answer(text) if isinstance(text, str) else text for text in replies])
+        created.append((item.id, model.model))
+        return Agent(
+            model=model,
+            instructions=role.description,
+            workspace=tmp_path / "w" / f"{item.id}-{number}",
+            name=item.id,
+        )
+
+    factory.attempts = attempts
+    factory.created = created
+    return factory
+
+
+def test_a_task_that_fails_is_tried_again_with_the_failure_in_its_prompt(tmp_path):
+    proposal = proposal_for(tmp_path, task("one"))
+    blocked = {"type": "blocked", "reason": "tests were red"}
+    factory = flaky_factory(tmp_path, {"one": [[blocked], ["fixed it"]]})
+    events = []
+    result = asyncio.run(
+        proposal.run_team(factory, attempts=2, on_task=lambda e, t, a: events.append(e))
+    )
+    assert result.ok and result.text == "fixed it" and factory.attempts == {"one": 2}
+    assert events == ["start", "retry", "start", "done"]
+    second_prompt = factory.created[1][1].calls[0].task.instructions
+    assert "attempt 2 of 2" in second_prompt and "tests were red" in second_prompt
+
+
+def test_retries_are_bounded_and_the_last_failure_is_what_is_reported(tmp_path):
+    proposal = proposal_for(tmp_path, task("one"))
+    blocked = {"type": "blocked", "reason": "still red"}
+    factory = flaky_factory(tmp_path, {"one": [[blocked]]})
+    result = asyncio.run(proposal.run_team(factory, attempts=3))
+    assert not result.ok and factory.attempts == {"one": 3}
+    assert result.outcomes["one"].status == "failed" and result.outcomes["one"].reason
+
+
+def test_should_retry_can_stop_the_retries_for_example_after_a_cancel(tmp_path):
+    proposal = proposal_for(tmp_path, task("one"))
+    blocked = {"type": "blocked", "reason": "cancelled by the user"}
+    factory = flaky_factory(tmp_path, {"one": [[blocked]]})
+    result = asyncio.run(proposal.run_team(factory, attempts=5, should_retry=lambda item: False))
+    assert factory.attempts == {"one": 1} and result.outcomes["one"].status == "failed"
+
+
+def test_tasks_an_earlier_run_committed_are_replayed_not_run_and_feed_their_dependents(tmp_path):
+    proposal = proposal_for(
+        tmp_path,
+        task("pricing", produces=["p"]),
+        task("brief", role="writer", needs=["p"]),
+    )
+    factory = flaky_factory(tmp_path, {"pricing": [["would run again"]], "brief": [["the brief"]]})
+    events = []
+    result = asyncio.run(
+        proposal.run_team(
+            factory,
+            completed={"pricing": "per-seat pricing"},
+            on_task=lambda e, t, a: events.append((e, t.id)),
+        )
+    )
+    assert result.ok and result.text == "the brief"
+    assert "pricing" not in factory.attempts and factory.attempts == {"brief": 1}
+    assert ("replayed", "pricing") in events
+    prompt = factory.created[0][1].calls[0].task.instructions
+    assert "## pricing\nper-seat pricing" in prompt
+
+
+def test_notes_are_added_to_a_tasks_first_prompt_and_bad_arguments_are_named(tmp_path):
+    proposal = proposal_for(tmp_path, task("one"))
+    factory = flaky_factory(tmp_path, {"one": [["ok"]]})
+    asyncio.run(proposal.run_team(factory, notes={"one": "A previous run was interrupted."}))
+    assert "A previous run was interrupted." in factory.created[0][1].calls[0].task.instructions
+    with pytest.raises(PlannerError, match="attempts must be at least 1"):
+        asyncio.run(proposal.run_team(factory, attempts=0))
+    with pytest.raises(PlannerError, match=r"not in the plan: \['ghost'\]"):
+        asyncio.run(proposal.run_team(factory, completed={"ghost": "x"}))
