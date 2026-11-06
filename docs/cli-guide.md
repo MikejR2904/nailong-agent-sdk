@@ -228,6 +228,17 @@ before saving it.
 investigates and proposes a plan. Afterwards the CLI asks whether to carry it out accepting edits,
 carry it out asking each time, or stay in plan mode.
 
+### Long pastes
+
+A paste of more than 10 lines or 1,000 characters shows in the prompt box as
+`[Pasted text #1 +40 lines]`, so a pasted log does not fill the screen. The whole text is kept and is
+what the model receives when you send the message; the label is replaced by the text at that moment.
+Alt+E opens the label at the cursor back into its text so you can read or edit it before sending;
+the footer says so while a label is in the box. `/paste` lists this session's pastes and `/paste N`
+prints one in full. Short pastes go in as they are. Labels are per session: one recalled from the
+history file after a restart is sent as the literal label, because the text it stood for is gone.
+Piped or non-terminal input is not collapsed.
+
 ### Splitting a big request: `/plan`
 
 `/plan Compare these two libraries and write a summary file` asks the model for a plan, shows it,
@@ -249,10 +260,22 @@ Suggested: a team - 2 roles are involved (explorer, worker); pricing and securit
 - **Roles.** `explorer` (reads files, searches and fetches; cannot change anything or run commands)
   and `worker` (can edit and run, with your usual approvals) are built in. Each `[agents.NAME]`
   in your settings becomes a role too; one whose `tools` is not `read-only` counts as writable.
-- **How a team runs.** One task at a time, in dependency order, each with its own agent and the
-  earlier tasks' results in its prompt. Tasks that change things are never run together. A failed
-  task makes the tasks that need it skip. Everything goes through your normal approvals, budget and
-  `/rewind`.
+- **How a team runs.** In dependency order, each task with its own agent and the earlier tasks'
+  results in its prompt; one at a time unless `team_parallel` (1 to 4) says otherwise. A failed task
+  is tried again up to `task_attempts` times (default 2) with the failure in its prompt; if it still
+  fails, the tasks that need it skip and you are told what needs you. Everything goes through your
+  normal approvals, budget and `/rewind`.
+- **Plans survive the process.** Every team run is journaled under `.nailong/tasks/`: the plan, each
+  attempt, each committed result. If the process is killed, the next session says
+  `1 unfinished plan(s)`; `/plan list` shows them, `/plan show ID` the tasks, `/plan resume [ID]`
+  runs only what is left. A task finished in the earlier run is kept and not run again, as long as
+  it and everything upstream of it is unchanged; a task that was cut off is run again with a note to
+  check what it already changed. Only one process runs a plan at a time. `/plan abandon ID` drops
+  one.
+- **Side by side without collisions.** A task that edits a file first claims it; another task (or the
+  main agent) that tries to edit a claimed file is refused with the holder's name. Claims end with
+  the task, and a claim left by a dead process is ignored. Background subagents claim their files
+  the same way.
 - **One agent instead.** Option 2 runs the same steps as a single turn in your current session.
 - **Not recorded in the session.** A team run's tasks are not saved as turns of the session you can
   `/resume`; the single-agent option is.
@@ -374,6 +397,28 @@ tools, `/search TEXT` finds text across sessions, `/export [file]` writes the se
 `/compact [focus]` has the model write a summary that replaces older turns in what is sent;
 Old turns are now summarised automatically once they no longer fit (set `autocompact = false` to stop that). `/context` shows what is sent.
 
+**What the agent keeps, and how to keep the one sentence that matters.** Only some things are in
+every request. The instruction files (`NAILONG.md`, `AGENTS.md`, `CLAUDE.md`, `.nailong/rules/`) and
+your **pinned rules** are loaded in full every time and never summarised. The conversation is not:
+only the latest turns are sent, and older ones survive only as a model-written summary. The wiki,
+discoveries, notes and knowledge base are in the prompt only when the agent searches them (accepted
+discoveries that still hold are the exception).
+
+So a policy that must always apply belongs in a pin. `/remember Never push to main without a review.`
+writes one line to `.nailong/pinned.md` (`--user` writes `~/.config/nailong/pinned.md` for every
+project) and puts it at the top of the instructions, ahead of everything else, from the next request.
+A pin is one rule of up to 500 characters; at most 40 per scope and 5,000 characters in all, so pins
+can never be cut off. The files are plain Markdown bullets you can edit by hand. `/memory pins`
+lists them with ids, `/forget ID` removes one, and `/memory` shows the whole picture with sizes. The
+agent has a `memory_pin` tool for "remember that we use UTC", but every pin it proposes needs your
+approval, and it is not offered in planning mode.
+
+When older turns are summarised, sentences in your messages that read as standing rules ("always",
+"never", "from now on", "our policy is", and the like) and are not already pinned are kept word for
+word at the end of the summary (up to 20), and the CLI lists them so you can pin the ones that matter.
+This is a pattern match on your wording, not a judgement of importance: a rule phrased differently can
+still be paraphrased away, which is why the dependable route is to pin it.
+
 ## 8. Undo: `/rewind`
 
 Before each turn the CLI snapshots the files the agent changes **and** what its commands change.
@@ -412,6 +457,10 @@ database, a network call).
 | `/connect` | choose a model service, save the settings and switch to it now |
 | `/ci github\|github-review\|gitlab [write]` | a workflow that runs nailong from issue comments, reviews pull requests inline, or runs in a pipeline |
 | `/plan REQUEST` | split a request into tasks; run them as a team or keep it in one agent |
+| `/plan list\|show ID\|resume [ID]\|abandon ID` | unfinished team plans: see them, continue only what is left, or drop one |
+| `/events [check\|tail [N]]` | the typed event log of this run: counts, open spans; `check` verifies every log in the project |
+| `/health` | the same report as `--health`, inside a session |
+| `/stale [REF]` | what in the wiki, discoveries and knowledge base no longer holds; one item with `file:`, `kb:`, `wiki:` or `discovery:` |
 | `/suggest` | three useful next prompts |
 | `/telemetry [now]` | the OpenTelemetry export: collector, what it sends, last result, send now |
 | `/why` | what the agent is doing and the reasoning it gave for that step (works any time) |
@@ -424,7 +473,10 @@ database, a network call).
 | `/cleanup [days]` | remove old runs' audit and telemetry records (shows them, asks first) |
 | `/expand [N]` | full output of the last (or Nth) tool call |
 | `/reasoning [on\|off]` | show or hide the model's reasoning as it streams |
-| `/tools` `/memory` `/todos` `/plugins` | what the agent has; `/tools new NAME [user]` makes a tool file |
+| `/tools` `/todos` `/plugins` | what the agent has; `/tools new NAME [user]` makes a tool file |
+| `/memory [pins\|show]` | everything the agent carries: pinned rules, instruction files with sizes, the conversation digest and summary, and what is only looked up (notes, wiki, discoveries, knowledge base); `show` prints what is loaded |
+| `/remember [--user] RULE` `/forget ID` | pin a short standing rule into every request (project, or all projects with `--user`), or remove one |
+| `/paste [N]` | long pasted text kept behind a `[Pasted text #N +L lines]` label: list them or show one |
 | `/trust-tools` | read and approve project tool files before they load |
 | `/variant [NAME\|off]` | switch to a saved set of model parameters |
 | `/skills` `/deploy ARGS` `$deploy ARGS` | list skills, make or install one (`/skills new NAME`, `/skills install DIR`), run one by name |
@@ -469,6 +521,8 @@ nailong -p PROMPT                run once, print the answer, exit
 | `--offline` | refuse any setting that reaches beyond your network |
 | `-c` / `-r ID` / `--fork ID --at N` / `--fork-session` / `-n NAME` | sessions |
 | `--autocompact` | summarise old turns automatically (already the default) |
+| `--health` | report the state of this project's agent files (event logs, plans, stale memory, evidence coverage) and exit 1 if any is broken; with `--output json` for a scheduler |
+| `--backup FILE` `--verify-backup FILE` `--restore FILE` `--migrate` | save, check, restore and upgrade the agent state under `.nailong/`; see `docs/operations.md` |
 | `--review [BASE]` | print a read-only review of uncommitted changes and exit |
 | `--forge` | let the agent propose tools for your review |
 | `--verbose` | show full tool arguments and results (and reasoning in `-p` mode) |
@@ -505,6 +559,8 @@ fallback_models = ["other-model"]   # tried in order when the main model fails (
 # behaviour
 permission_mode = "default"
 max_steps = 30                      # model steps per turn; at the limit you are asked whether to keep going
+task_attempts = 2                   # tries per /plan team task before it is escalated to you (1 to 5)
+team_parallel = 1                   # /plan tasks run at once (1 to 4); edits are claimed per file
 context_tokens = 48000              # how much of the conversation the model is shown each step
 tool_result_chars = 12000           # how much of each tool result it sees in full
 sandbox = "auto"                    # auto | none | docker
@@ -527,6 +583,7 @@ model_timeout_seconds = 300    # one model call; 0 = no limit
 tool_timeout_seconds = 600     # one tool call; 0 = no limit
 run_deadline_seconds = 0       # a whole turn; 0 = no limit (the default)
 ssh_hosts = []                 # hosts the agent may open remote shells on (user file only)
+hook_env = []                  # extra environment variables passed to hook commands (user file only)
 small_model = ""               # cheaper model for /compact and /suggest summaries
 instruction_files = []         # extra instruction files or globs, e.g. ["CONTRIBUTING.md", "docs/*.md"]
 format_on_edit = false         # run ruff/prettier/gofmt/rustfmt/shfmt after edits (user file only)
@@ -663,7 +720,11 @@ in `NAILONG_TOOL_INPUT`); `permission_asked` runs just before you are asked to a
 succeed (`NAILONG_TOOL_STATUS` says how); `assistant_message` runs after a completed turn with the
 reply in `NAILONG_MESSAGE`. None of these can refuse anything.
 
-A `pre_tool` hook that exits non-zero refuses the call (the model is told). A failing
+Hook commands run with a short environment (`PATH`, `HOME`, the temp folders and similar) plus
+`NAILONG_*`; anything else, such as an API key, reaches them only if you list its name in
+`hook_env`. Add `on_failure = "warn"` to a hook to make it advisory: a failing one is reported and the
+action goes ahead (the default, `"block"`, refuses it). A `pre_tool` hook that exits non-zero (or
+times out) refuses the call (the model is told). A failing
 `prompt_submit` hook refuses the message; its output is otherwise added to the prompt. Hooks get
 `NAILONG_HOOK_EVENT`, `NAILONG_PROJECT`, and for tool events `NAILONG_TOOL`, `NAILONG_TOOL_INPUT`
 (JSON) and, after a call, `NAILONG_TOOL_STATUS`.
@@ -926,8 +987,8 @@ request from a `NAILONG_PROMPT` variable. Both just run `nailong -p`, so the sam
 
 ### Keys and themes
 
-`[keybinds]` rebinds `cycle_mode` (default `s-tab`), `expand_output` (`c-o`) and `newline`
-(`escape enter` and `c-j`) with prompt_toolkit key names, one or a list, for example
+`[keybinds]` rebinds `cycle_mode` (default `s-tab`), `expand_output` (`c-o`), `expand_paste`
+(`escape e`, Alt+E) and `newline` (`escape enter` and `c-j`) with prompt_toolkit key names, one or a list, for example
 `cycle_mode = ["c-t", "s-tab"]`; an unknown key stops startup naming the action. `theme` may be a
 file: `.nailong/themes/NAME.json` or `~/.config/nailong/themes/NAME.json` holding any of `rule`,
 `hint`, `mode` and `menu` as prompt_toolkit style strings, filling the rest from `default`.
@@ -966,13 +1027,36 @@ a URL says so and names the setting.
 PDF, Word, Excel, CSV) into passages of about 1,000 characters kept in `.nailong/knowledge`;
 `/kb list` shows each source as current, changed since added, or missing; `/kb refresh` re-reads
 changed sources; `/kb search TEXT` and the agent's `knowledge_search` return passages with file,
-location and source hash, and drop any whose source no longer matches. Search is by words, not
-meaning.
+location and source hash. A hit from a file that has changed or gone since it was indexed is
+marked `changed` or `missing` and listed last. Search is by words, not meaning. The index is written
+under a lock, read again before each change and replaced whole with a revision number, so two
+sessions adding files at once keep both.
+
+**One name for every piece of memory.** `file:PATH`, `kb:PATH`, `wiki:PAGE` and `discovery:ID`
+name what the project remembers. A wiki page can cite any of them in `sources`, not only files; the
+page is recorded with the cited thing's fingerprint, so replacing a discovery, rewriting a page it
+rests on or editing a cited file makes every page built on it read as stale. `/stale` lists what no
+longer holds across the wiki, discoveries and knowledge base; `/stale REF` (and the agent's
+`memory_status`) shows one item, its scope and what cites it. Scopes: *private* (one agent's
+notes), *shared* (published discoveries) and *authoritative* (wiki pages, accepted discoveries).
+Only the main agent or you write authoritative pages; a subagent publishes a discovery instead.
+
+**`/discoveries`, findings with evidence.** Agents publish a claim about a topic with the
+project files that support it (`discovery_publish`; a subagent can publish and read, not decide). It
+becomes project knowledge only when you approve `discovery_accept`. Two different claims on one
+topic show as a conflict, and accepting one must name every conflicting one it replaces. If a file
+a discovery rests on changes, it reads as stale and cannot be accepted until it is published again.
+Accepted, current discoveries are added to the agent's instructions. `/discoveries` lists the open
+ones; `/discoveries accepted|rejected|all` or an id (`/discoveries d-0001`) shows more.
 
 **`/wiki`, what the agent has learned.** Linked Markdown pages in `.nailong/wiki` (`/wiki` lists
 them, `/wiki PAGE` shows one, `/wiki search TEXT` searches). The agent uses `wiki_read`,
 `wiki_search` and `wiki_write`; a write needs a reason, rebuilds `index.md`, appends to `log.md`
-and reports `[[links]]` that point nowhere. Plan mode can read but not write.
+and reports `[[links]]` that point nowhere. Every write is a numbered revision kept under
+`.history/`; updating a page needs the `base_revision` that `wiki_read` returned, so a change made
+in between is never overwritten. A page can list the project files it came from (`sources`) and
+reads as stale when one changes. `/wiki history PAGE` shows revisions; `/wiki repair` restores the
+pages, index and log from the history after a crash. Plan mode can read but not write.
 
 **Built-in skills.** `/skills` lists eight skills that ship with the CLI: `paper-summary`,
 `wiki-ingest`, `kb-answer`, `code-review`, `release-notes`, `analyze-spreadsheet`,
@@ -1053,6 +1137,22 @@ the next turn once spending reaches the limit. A model with no price is counted 
 
 `/doctor` checks the key, settings files, git, and sandbox. `--verbose` shows full tool arguments;
 `--debug-file run.jsonl` records the stream.
+
+## Events, health and operations
+
+Everything the CLI does is also written to a typed event log, one per run, under
+`.nailong/events/`: `session`, `turn`, `tool`, `plan` and `task` spans (each a start and an end that
+share a span id) and points such as `task.retry`, `wiki.written`, `discovery.published` and
+`memory.compacted`. Each event carries its session, run, plan, task and agent ids, the id of the event
+that caused it, and W3C trace and span ids, so a tool call can be followed up to its turn and a task
+up to its plan. Each line holds the hash of the line before, so an edited or removed line shows. If a
+run is killed, the next start closes its open spans as `interrupted`. Hooks get `NAILONG_TRACE_ID`,
+`NAILONG_SPAN_ID` and `NAILONG_PARENT_EVENT_ID`.
+
+`/health` and `nailong --health` summarise the project's state; `nailong --backup`, `--verify-backup`,
+`--restore` and `--migrate` look after it. The procedures, what is backed up, rollback and what could
+not be verified are in `docs/operations.md`; the threat model and its tests in `docs/threat-model.md`;
+measured timings in `docs/benchmarks-cli.md`.
 
 ## Known limits
 
