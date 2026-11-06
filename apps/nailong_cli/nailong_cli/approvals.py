@@ -31,6 +31,7 @@ class Approver:
         *,
         mode: ModeRef | None = None,
         allow_unsandboxed: bool = False,
+        require_sandbox: bool = False,
         allow_rules: list[tuple[str, str]] | None = None,
         deny_rules: list[tuple[str, str]] | None = None,
         rules: PermissionRules | None = None,
@@ -41,6 +42,7 @@ class Approver:
         self._sandbox = sandbox_label
         self._mode = mode or ModeRef()
         self._allow_unsandboxed = allow_unsandboxed
+        self._require_sandbox = require_sandbox
         self._allow = allow_rules or []
         self._deny = deny_rules or []
         self._rules = rules
@@ -54,6 +56,12 @@ class Approver:
     async def __call__(self, request: ApprovalRequest) -> bool:
         subject = subject_of(request)
         unsandboxed = request.tool in COMMAND_TOOLS and self._sandbox == NOT_SANDBOXED
+        if unsandboxed and self._require_sandbox:
+            return self._refuse(
+                request,
+                "require_sandbox is on in your settings and commands are not sandboxed here; "
+                'choose a sandbox ("docker", or "auto" where bubblewrap or Seatbelt exists)',
+            )
         attended = self._console.interactive
         if _matches(self._deny, request.tool, subject, denied_by):
             return self._refuse(request, "a --disallow rule forbids it")

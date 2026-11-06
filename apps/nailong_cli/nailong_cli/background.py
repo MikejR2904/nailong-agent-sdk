@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -208,6 +209,8 @@ def _which(binary: str) -> str:
 def _kill_tree(pid: int) -> None:
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+        return
+    if sys.platform == "win32":
         return
     import signal
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 from nailong_agent_sdk.agent.retention import RetentionPolicy, RetentionReport
 from nailong_agent_sdk.foundations.errors import AgentSdkError
@@ -28,6 +29,7 @@ def _telemetry(state: ReplState, arguments: list[str]) -> bool:
             "OTEL_EXPORTER_OTLP_HEADERS."
         )
         return True
+    status: Any
     if arguments[:1] == ["now"]:
         status = exporter.export_now()
     elif arguments:
@@ -117,6 +119,12 @@ def _kb(state: ReplState, arguments: list[str]) -> bool:
             console.line(console.style(f"  skipped {line}", "yellow"))
     elif action == "remove" and len(arguments) == 2:
         console.line(f"  removed {base.remove(arguments[1])} file(s)")
+    elif action == "embed":
+        sent = base.embed()
+        console.line(
+            f"  sent {sent['embedded']} passage(s), {sent['characters_sent']:,} characters, to the "
+            f"embedding service; {sent['already']} already had a current vector"
+        )
     elif action == "refresh":
         result = base.refresh()
         console.line(
@@ -132,8 +140,10 @@ def _kb(state: ReplState, arguments: list[str]) -> bool:
             console.line(f"  {line}")
         if not lines:
             console.line("  Empty. /kb add PATH adds a file or a folder of documents.")
+        else:
+            console.line(f"  meaning-based search: {base.semantic_status()}")
     else:
-        console.line("Usage: /kb [add PATH | list | remove PATH | refresh | search TEXT]")
+        console.line("Usage: /kb [add PATH | list | remove PATH | refresh | embed | search TEXT]")
     return True
 
 
@@ -306,7 +316,7 @@ MAINTENANCE_HELP = {
     "schedule": "/schedule [list|add|remove|install]: prompts that run on a timetable",
     "stale": "/stale [REF]: what in the wiki, discoveries and knowledge base no longer holds",
     "discoveries": "/discoveries [open|accepted|rejected|all|ID]: findings agents published",
-    "kb": "/kb [add PATH|list|remove PATH|refresh|search TEXT]: files the agent can cite",
+    "kb": "/kb [add PATH|list|remove PATH|refresh|embed|search TEXT]: files the agent can cite",
     "wiki": "/wiki [PAGE|search TEXT|history PAGE|repair]: the pages the agent keeps",
     "connect": "choose a model service and save settings, then switch to it now",
     "ci": "/ci github|github-review|gitlab [write]: a workflow for comments, PR reviews or CI",

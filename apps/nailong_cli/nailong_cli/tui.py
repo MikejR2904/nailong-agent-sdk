@@ -247,7 +247,7 @@ class ToolkitReader:
             "completion-menu.meta.completion": colours["menu"] + " italic",
             "completion-menu.meta.completion.current": "reverse italic",
         }
-        self._session = PromptSession(
+        self._session: Any = PromptSession(
             history=FileHistory(str(history_file)),
             key_bindings=bindings,
             bottom_toolbar=self._bottom,

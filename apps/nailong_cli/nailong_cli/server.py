@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO, cast
 
 from .console import Console
 from .network import host_of, is_loopback
@@ -175,7 +175,9 @@ class AgentService:
 
         def work() -> None:
             sink = _LineSink(lines)
-            console = Console(io.StringIO(), sink, io.StringIO(), color=False, interactive=False)
+            console = Console(
+                io.StringIO(), cast(TextIO, sink), io.StringIO(), color=False, interactive=False
+            )
             console.remote_approval = ask
             console.remote_cancel = cancel
             argv = [

@@ -22,6 +22,14 @@ from nailong_agent_sdk import (
 from nailong_agent_sdk.starter import FunctionTool, tool
 
 from .documents import DOCUMENT_SUFFIXES, DocumentReader, _unit
+from .embeddings import (
+    Embedder,
+    EmbeddingError,
+    VectorStore,
+    cosine,
+    fuse,
+    text_hash,
+)
 from .storage import atomic_write, exclusive
 
 CATEGORY = "knowledge"
@@ -81,8 +89,17 @@ def _passages(text: str) -> list[tuple[str, str]]:
 
 
 class KnowledgeBase:
-    def __init__(self, directory: Path, roots: dict[str, Path], workspace: Path) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        roots: dict[str, Path],
+        workspace: Path,
+        embedder: Embedder | None = None,
+    ) -> None:
         self._directory = directory
+        self._embedder = embedder
+        self._vectors = VectorStore(directory / "vectors.json")
+        self.last_notice = ""
         self._project = roots["project"].resolve()
         self._reader = DocumentReader(roots, workspace)
         self._trees: list[DocumentTree] | None = None
@@ -241,6 +258,73 @@ class KnowledgeBase:
 
         return self._change(drop)
 
+    def _nodes(self) -> dict[str, tuple[Any, Any]]:
+        return {node.node_id: (tree, node) for tree in self.trees() for node in tree.nodes}
+
+    def _passage(self, node: Any) -> Passage:
+        return Passage(
+            node.source.relative_path,
+            node.source.location,
+            str(node.content),
+            node.source.source_hash[:12],
+            self._source_status(node.source.relative_path, node.source.source_hash),
+        )
+
+    def semantic_status(self) -> str:
+        if self._embedder is None:
+            return "off (set embedding_model in your settings, then /kb embed)"
+        data = self._vectors.load()
+        nodes = self._nodes()
+        usable = 0
+        if data.get("model") == self._embedder.model:
+            for key, (_, node) in nodes.items():
+                have = data["vectors"].get(key)
+                usable += bool(have and have["hash"] == text_hash(str(node.content)))
+        return f"{usable} of {len(nodes)} passage(s) embedded with {self._embedder.model}"
+
+    def embed(self) -> dict[str, int]:
+        """Send the passages that have no current vector to the embedding service."""
+        if self._embedder is None:
+            raise ValueError(
+                "Meaning-based search is off. Set embedding_model in your user settings (and "
+                "embedding_base_url if your provider is not an OpenAI-compatible service)."
+            )
+        data = self._vectors.load()
+        same = data.get("model") == self._embedder.model
+        todo: list[tuple[str, str]] = []
+        keep: set[str] = set()
+        for key, (_, node) in self._nodes().items():
+            text = str(node.content)
+            keep.add(key)
+            have = data["vectors"].get(key) if same else None
+            if not have or have["hash"] != text_hash(text):
+                todo.append((key, text))
+        vectors = self._embedder.embed([text for _, text in todo]) if todo else []
+        additions = {
+            key: {"hash": text_hash(text), "vector": vector}
+            for (key, text), vector in zip(todo, vectors, strict=True)
+        }
+        self._vectors.update(self._embedder.model, additions, keep)
+        return {
+            "embedded": len(todo),
+            "already": len(keep) - len(todo),
+            "characters_sent": sum(len(text) for _, text in todo),
+        }
+
+    def _semantic_ids(self, query: str, wanted: int) -> list[str]:
+        assert self._embedder is not None
+        data = self._vectors.load()
+        if data.get("model") != self._embedder.model or not data["vectors"]:
+            return []
+        query_vector = self._embedder.embed([query])[0]
+        scored = []
+        for key, (_, node) in self._nodes().items():
+            have = data["vectors"].get(key)
+            if have and have["hash"] == text_hash(str(node.content)):
+                scored.append((cosine(query_vector, have["vector"]), key))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [key for score, key in scored[:wanted] if score > 0]
+
     def listing(self) -> list[str]:
         lines = []
         for tree in self.trees():
@@ -281,16 +365,19 @@ class KnowledgeBase:
             )
         )
         resolved = service.resolve(result, trees)
-        found = [
-            Passage(
-                node.source.relative_path,
-                node.source.location,
-                str(node.content),
-                node.source.source_hash[:12],
-                self._source_status(node.source.relative_path, node.source.source_hash),
-            )
-            for node in resolved.nodes
-        ]
+        self.last_notice = ""
+        lexical = [node.node_id for node in resolved.nodes]
+        ranked = lexical
+        if self._embedder is not None:
+            try:
+                meaning = self._semantic_ids(query, max(1, min(limit, 20)) * 3)
+            except EmbeddingError as error:
+                meaning = []
+                self.last_notice = f"Meaning-based search was skipped: {error}"
+            if meaning:
+                ranked = fuse(lexical, meaning)[: max(1, min(limit, 20))]
+        nodes = self._nodes()
+        found = [self._passage(nodes[key][1]) for key in ranked if key in nodes]
         return sorted(found, key=lambda item: item.status != "current")
 
     def _source_status(self, relative: str, recorded: str) -> str:
@@ -315,7 +402,8 @@ class KnowledgeBase:
             say so. A hit whose status is changed or missing comes from a file that is not the one
             that was indexed: do not rely on it until the user runs /kb refresh.
             """
-            return [
+            hits = self.search(query, limit)
+            shown: list[dict[str, str]] = [
                 {
                     "path": item.path,
                     "location": item.location,
@@ -323,7 +411,10 @@ class KnowledgeBase:
                     "status": item.status,
                     "text": item.text,
                 }
-                for item in self.search(query, limit)
+                for item in hits
             ]
+            if self.last_notice:
+                shown.append({"notice": self.last_notice})
+            return shown
 
         return [tool(knowledge_search, read_only=True)]

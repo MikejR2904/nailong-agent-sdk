@@ -56,6 +56,9 @@ DEFAULTS: dict[str, Any] = {
     "autocompact": True,
     "show_reasoning": True,
     "allow_insecure_http": False,
+    "require_sandbox": False,
+    "embedding_model": "",
+    "embedding_base_url": "",
     "tool_mode": "auto",
     "fallback_models": (),
     "otlp_include": ("telemetry", "audit", "integrity"),
@@ -81,6 +84,9 @@ USER_ONLY = (
     "otlp_include",
     "ssh_hosts",
     "hook_env",
+    "require_sandbox",
+    "embedding_model",
+    "embedding_base_url",
     "format_on_edit",
     "diagnostics_on_edit",
     "formatters",
@@ -145,6 +151,9 @@ class CliConfig:
     autocompact: bool
     show_reasoning: bool
     allow_insecure_http: bool
+    require_sandbox: bool
+    embedding_model: str
+    embedding_base_url: str
     tool_mode: str
     fallback_models: tuple[str, ...]
     otlp_include: tuple[str, ...]
@@ -272,6 +281,9 @@ def load_config(
         autocompact=bool(merged["autocompact"]),
         show_reasoning=bool(merged["show_reasoning"]),
         allow_insecure_http=bool(merged["allow_insecure_http"]),
+        require_sandbox=bool(merged["require_sandbox"]),
+        embedding_model=str(merged["embedding_model"]),
+        embedding_base_url=str(merged["embedding_base_url"]),
         tool_mode=merged["tool_mode"],
         fallback_models=tuple(merged["fallback_models"]),
         otlp_include=tuple(merged["otlp_include"]),

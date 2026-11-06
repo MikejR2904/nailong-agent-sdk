@@ -397,7 +397,7 @@ class Wiki:
         words = [word.lower() for word in re.findall(r"\w+", query) if len(word) > 1]
         if not words:
             raise ValueError("query needs at least one word of two or more letters.")
-        hits = []
+        hits: list[dict[str, Any]] = []
         for name in self.names():
             text = (self._directory / f"{name}.md").read_text(encoding="utf-8")
             lowered = text.lower()

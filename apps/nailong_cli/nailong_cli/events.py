@@ -133,7 +133,7 @@ class EventLog:
             opener = self._open.get(span_id) if is_end else None
             inherited = opener or {}
             self._sequence += 1
-            record = {
+            record: dict[str, Any] = {
                 "sequence": self._sequence,
                 "event_id": f"ev-{uuid.uuid4().hex[:12]}",
                 "event_type": event_type,

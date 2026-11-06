@@ -82,7 +82,7 @@ def backup(root: Path, destination: Path) -> dict[str, Any]:
     total = sum(item.stat().st_size for item in files)
     if total > MAX_BACKUP_BYTES:
         raise StateError(f"The state is {total // 1_000_000} MB; the backup limit is 2000 MB.")
-    manifest = {
+    manifest: dict[str, Any] = {
         "state_version": state_version(root),
         "created": datetime.now().astimezone().isoformat(timespec="seconds"),
         "files": {},

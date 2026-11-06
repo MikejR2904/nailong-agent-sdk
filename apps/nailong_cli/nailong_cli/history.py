@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -9,6 +10,8 @@ MAX_HISTORY = 1_000
 
 
 def enable_history(home: Path) -> Callable[[], None]:
+    if sys.platform == "win32":
+        return lambda: None
     try:
         import readline
     except ImportError:

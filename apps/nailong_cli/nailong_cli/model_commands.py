@@ -115,7 +115,11 @@ def _web(state: ReplState, arguments: list[str]) -> bool:
     if getattr(config, field) == wanted:
         console.line(f"  {field} is already {value}")
         return True
-    state.config = dataclasses.replace(config, **{field: wanted})
+    state.config = (
+        dataclasses.replace(config, web_search=wanted)
+        if field == "web_search"
+        else dataclasses.replace(config, web=wanted)
+    )
     state.parts.config = state.config
     switch_agent(state)
     console.line(f"  {field} is now {value} for this session")

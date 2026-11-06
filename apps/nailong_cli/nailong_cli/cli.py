@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO, cast
 
 from nailong_agent_sdk.foundations.errors import AgentSdkError
 from nailong_agent_sdk.starter import Answer, Forge, McpTools, ModelSetup, Session, connect_mcp
@@ -32,6 +32,7 @@ from .background import make_background
 from .build import (
     EFFORT_LEVELS,
     MissingKeyError,
+    build_embedder,
     build_model,
     choose_sandbox,
     effort_parameters,
@@ -165,6 +166,23 @@ def parser() -> argparse.ArgumentParser:
         "--migrate", action="store_true", help="Bring older agent state up to this version."
     )
     cli.add_argument(
+        "--daemon", action="store_true", help="Stay running and run scheduled prompts when due."
+    )
+    cli.add_argument(
+        "--daemon-status", action="store_true", help="Say whether a daemon is running."
+    )
+    cli.add_argument("--daemon-stop", action="store_true", help="Ask the running daemon to stop.")
+    cli.add_argument(
+        "--daemon-interval",
+        type=float,
+        default=60.0,
+        metavar="SECONDS",
+        help="Seconds between checks.",
+    )
+    cli.add_argument(
+        "--daemon-ticks", type=int, default=None, metavar="N", help="Stop after N checks."
+    )
+    cli.add_argument(
         "--health",
         action="store_true",
         help="Report the state of this project's agent files and exit 1 if any is broken.",
@@ -247,6 +265,8 @@ def main(
         shown = report.as_json() if args.output == "json" else "\n".join(report.lines())
         console.write(shown + "\n")
         return EXIT_OK if report.status != "broken" else 1
+    if args.daemon or args.daemon_status or args.daemon_stop:
+        return _daemon(args, console, environ, home or Path.home(), model_factory)
     if args.backup or args.restore or args.verify_backup or args.migrate:
         return _state_command(args, console, (args.project or cwd or Path.cwd()).resolve())
     with asyncio.Runner() as runner:
@@ -409,7 +429,45 @@ def main(
             _shutdown(runner, builder, parts, worktree, console)
 
 
+def _daemon(args: argparse.Namespace, console, environ, home, model_factory) -> int:
+    from .daemon import Daemon, DaemonError
+
+    def tick() -> list[str]:
+        return _due_lines(environ, home, model_factory)
+
+    try:
+        daemon = Daemon(home, args.daemon_interval, tick)
+        if args.daemon_status:
+            console.line(json.dumps(daemon.status(), indent=2))
+        elif args.daemon_stop:
+            console.line(
+                "Asked the daemon to stop after its current check."
+                if daemon.request_stop()
+                else "No daemon is running."
+            )
+        else:
+            console.line(
+                f"Checking the schedule every {args.daemon_interval:g}s; --daemon-stop ends it."
+            )
+            ticks = daemon.run(args.daemon_ticks)
+            console.line(f"Daemon stopped after {ticks} check(s).")
+    except (DaemonError, ValueError) as error:
+        console.error(str(error))
+        return EXIT_USAGE
+    return EXIT_OK
+
+
 def _run_schedules(console, environ, home, model_factory) -> int:
+    try:
+        for line in _due_lines(environ, home, model_factory):
+            console.line(line)
+    except ValueError as error:
+        console.error(str(error))
+        return EXIT_USAGE
+    return EXIT_OK
+
+
+def _due_lines(environ, home, model_factory) -> list[str]:
     moment = datetime.now().astimezone()
 
     def run_one(item):
@@ -427,13 +485,7 @@ def _run_schedules(console, environ, home, model_factory) -> int:
         path = schedule.record_run(item, status, text, moment)
         return status, f"{schedule.summary_of(text)} -> {path}"
 
-    try:
-        for line in schedule.run_due(home, run_one, moment):
-            console.line(line)
-    except ValueError as error:
-        console.error(str(error))
-        return EXIT_USAGE
-    return EXIT_OK
+    return schedule.run_due(home, run_one, moment)
 
 
 def _serve_mcp(runner, args, console, home, project) -> int:
@@ -575,6 +627,7 @@ def _context(
         label,
         mode=mode,
         allow_unsandboxed=args.allow_unsandboxed,
+        require_sandbox=config.require_sandbox,
         allow_rules=[parse_rule(text) for text in args.allow],
         deny_rules=[parse_rule(text) for text in args.disallow],
         rules=permission_rules,
@@ -586,6 +639,21 @@ def _context(
         if args.output == "stream-json"
         else Renderer(console, verbose=args.verbose, show_reasoning=config.show_reasoning)
     )
+    knowledge = KnowledgeBase(
+        config.project / ".nailong" / "knowledge",
+        {"project": config.project},
+        config.workspace,
+        build_embedder(config, environ),
+    )
+    wiki = Wiki(config.project / ".nailong" / "wiki", config.project)
+    discoveries = DiscoveryStore(config.project / ".nailong" / "discoveries", config.project)
+    memory_index = MemoryIndex(config.project, wiki, discoveries, knowledge)
+    wiki.attach(memory_index)
+    events_dir = config.project / ".nailong" / "events"
+    run_id = f"run-{uuid.uuid4().hex[:12]}"
+    events = EventLog(events_dir / f"{run_id}.jsonl", run_id=run_id)
+    wiki.events = events
+    discoveries.events = events
     parts = Parts(
         config=config,
         console=console,
@@ -607,13 +675,12 @@ def _context(
         background=make_background(sandbox_kwargs, config.project),
         custom_tools=load_custom_tools(config.project, home),
         permission_rules=permission_rules,
-        knowledge=KnowledgeBase(
-            config.project / ".nailong" / "knowledge",
-            {"project": config.project},
-            config.workspace,
-        ),
-        wiki=Wiki(config.project / ".nailong" / "wiki", config.project),
-        discoveries=DiscoveryStore(config.project / ".nailong" / "discoveries", config.project),
+        knowledge=knowledge,
+        wiki=wiki,
+        discoveries=discoveries,
+        events=events,
+        tracer=ToolTracer(events),
+        memory_index=memory_index,
         claims=ArtifactClaims(config.project / ".nailong" / "claims", config.project),
         pins=Pins(config.project, home),
         plans=PlanJournal(config.project / ".nailong" / "tasks"),
@@ -635,8 +702,6 @@ def _context(
         ),
     )
     approver.lifecycle = parts.lifecycle
-    parts.memory_index = MemoryIndex(config.project, parts.wiki, parts.discoveries, parts.knowledge)
-    parts.wiki.attach(parts.memory_index)
     from . import state_ops
 
     state_root = config.project / ".nailong"
@@ -655,12 +720,6 @@ def _context(
         )
     elif not (state_root / state_ops.VERSION_FILE).is_file():
         state_ops.write_version(state_root)
-    events_dir = config.project / ".nailong" / "events"
-    run_id = f"run-{uuid.uuid4().hex[:12]}"
-    parts.events = EventLog(events_dir / f"{run_id}.jsonl", run_id=run_id)
-    parts.tracer = ToolTracer(parts.events)
-    parts.wiki.events = parts.events
-    parts.discoveries.events = parts.events
     mark_alive(parts.events.path)
     closed = recover_dead(events_dir, skip=parts.events.path)
     if closed:
@@ -846,7 +905,7 @@ def _once(state: ReplState, args: argparse.Namespace) -> int:
             prompt = f"{prompt}\n\n{piped}"
     original = console.stdout
     if args.output == "json":
-        console.stdout = _Discard()
+        console.stdout = cast(TextIO, _Discard())
     try:
         answer = run_turn(state, prompt)
     except (BudgetReached, PromptRefused) as error:

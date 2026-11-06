@@ -134,7 +134,7 @@ class DocumentReader:
             from pypdf import PdfReader
 
             reader = PdfReader(io.BytesIO(data))
-            return "pdf", [lambda p=p: p.extract_text() or "" for p in reader.pages], digest
+            return "pdf", [_page_text(page) for page in reader.pages], digest
         if suffix in {".docx", ".pptx", ".xlsx", ".xlsm"}:
             _check_package(data, path.name)
         if suffix == ".docx":
@@ -204,7 +204,7 @@ class DocumentReader:
             raise ValueError("query needs at least one word of two or more letters.")
         path = self._resolve(name)
         kind, units, digest = self.units(path)
-        hits = []
+        hits: list[dict[str, Any]] = []
         for number, unit in enumerate(units, start=1):
             text = unit()
             lowered = text.lower()
@@ -271,6 +271,18 @@ def _check_package(data: bytes, name: str) -> None:
             f"{name} unpacks to {unpacked // packed} times its size, which looks like a zip bomb "
             f"(the limit is {MAX_ZIP_RATIO} times)."
         )
+
+
+def _constant(text: str) -> Callable[[], str]:
+    return lambda: text
+
+
+def _page_text(page: Any) -> Callable[[], str]:
+    return lambda: page.extract_text() or ""
+
+
+def _bound(function: Callable[[str], str], argument: str) -> Callable[[], str]:
+    return lambda: function(argument)
 
 
 def _unit(kind: str) -> str:
@@ -358,7 +370,7 @@ def _pptx_slides(data: bytes) -> list[Callable[[], str]]:
         notes = notes_for(name)
         return body + (f"\n[notes]\n{notes}" if notes else "")
 
-    return [lambda n=n: slide(n) for n in names]
+    return [_bound(slide, name) for name in names]
 
 
 def _group(blocks: list[str]) -> list[Callable[[], str]]:
@@ -373,7 +385,7 @@ def _group(blocks: list[str]) -> list[Callable[[], str]]:
         size += len(block)
     if current or not groups:
         groups.append("\n\n".join(current))
-    return [lambda text=text: text for text in groups]
+    return [_constant(text) for text in groups]
 
 
 def _xlsx_sheets(data: bytes) -> list[Callable[[], str]]:
@@ -389,7 +401,7 @@ def _xlsx_sheets(data: bytes) -> list[Callable[[], str]]:
                 break
             rows.append("\t".join("" if cell is None else str(cell) for cell in row))
         text = f"{sheet.title}\n" + "\n".join(rows)
-        sheets.append(lambda text=text: text)
+        sheets.append(_constant(text))
     workbook.close()
     return sheets
 
@@ -400,7 +412,7 @@ def _csv_chunks(data: bytes, delimiter: str) -> list[Callable[[], str]]:
     chunks = [
         "\n".join(rows[start : start + MAX_ROWS]) for start in range(0, max(len(rows), 1), MAX_ROWS)
     ]
-    return [lambda text=text: text for text in chunks]
+    return [_constant(text) for text in chunks]
 
 
 def document_tools(

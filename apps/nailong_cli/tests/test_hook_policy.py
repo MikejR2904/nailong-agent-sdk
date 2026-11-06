@@ -115,3 +115,30 @@ def test_a_project_cannot_widen_the_hook_environment(project, home):
     write_user_config(home, BASE)
     (project / ".nailong" / "config.toml").write_text('hook_env = ["AWS_SECRET_ACCESS_KEY"]\n')
     assert load_config(project, home=home).hook_env == ()
+
+
+def test_require_sandbox_refuses_every_command_when_none_is_active_even_in_bypass(project, home):
+    write_user_config(home, BASE + 'sandbox = "none"\nrequire_sandbox = true\n')
+    (project / ".nailong" / "config.toml").write_text("", encoding="utf-8")
+    _, out, err, setup = run_cli(
+        project,
+        home,
+        BYPASS,
+        call("run_command", command="echo hi > made.txt"),
+        final("done"),
+        lines="Run it\n/exit\n",
+        interactive=True,
+    )
+    assert not (project / "made.txt").exists()
+    later = " ".join(str(item) for item in setup.model.calls[1].observations) + out + err
+    assert "require_sandbox is on in your settings" in later
+
+
+def test_require_sandbox_can_only_be_set_by_the_user_not_a_project(project, home):
+    (project / ".nailong" / "config.toml").write_text("require_sandbox = false\n", encoding="utf-8")
+    write_user_config(home, BASE + "require_sandbox = true\n")
+    assert load_config(project, home=home).require_sandbox is True
+    write_user_config(home, BASE)
+    (project / ".nailong" / "config.toml").write_text("require_sandbox = true\n", encoding="utf-8")
+    config = load_config(project, home=home)
+    assert config.require_sandbox is False and "require_sandbox" in config.ignored_project_keys

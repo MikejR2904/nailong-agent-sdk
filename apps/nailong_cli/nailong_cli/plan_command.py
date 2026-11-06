@@ -52,7 +52,7 @@ def _ask_architecture(state: ReplState, proposal: PlanProposal) -> str | None:
     if console.chooser is not None:
         with console.reading_input():
             picked = console.chooser("How should this run?", labels)
-        return {0: TEAM, 1: SINGLE}.get(picked)
+        return {0: TEAM, 1: SINGLE}.get(picked) if picked is not None else None
     while True:
         answer = console.ask("Run as a [t]eam, keep it in one [a]gent, or [c]ancel? > ").lower()
         if answer in {"t", "team"}:
@@ -178,7 +178,7 @@ def _run_tasks(
     task_spans: dict[str, dict] = {}
 
     def open_task(task: PlannedTask) -> None:
-        if log is None:
+        if log is None or plan_event is None:
             return
         task_spans[task.id] = log.start(
             "task.start",
@@ -238,7 +238,9 @@ def _run_tasks(
             parts.spending.add(answer)
         if event == "done":
             finished += 1
-            journal.record(plan_id, "done", task.id, text=answer.text, key=keys[task.id])
+            journal.record(
+                plan_id, "done", task.id, text=answer.text if answer else "", key=keys[task.id]
+            )
             close_task(task.id, "completed")
         elif event == "retry":
             journal.record(plan_id, "retry", task.id, reason=str(answer.reason if answer else ""))
@@ -278,7 +280,7 @@ def _run_tasks(
             journal.record(plan_id, "halted", reason="the run was cut short")
             for left in list(task_spans):
                 close_task(left, "interrupted")
-            if log is not None:
+            if log is not None and plan_event is not None:
                 log.end(plan_event, "halted")
     if halted.is_set():
         console.line(console.style("Interrupted (Esc).", "yellow"))
@@ -310,7 +312,7 @@ def _run_tasks(
         journal.record(plan_id, "finished")
     for left in list(task_spans):
         close_task(left, "interrupted")
-    if log is not None:
+    if log is not None and plan_event is not None:
         log.end(plan_event, "halted" if problems else "finished")
 
 

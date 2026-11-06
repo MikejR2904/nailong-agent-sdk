@@ -17,7 +17,7 @@ nailong = "nailong_cli.cli:main"
 nailong-agent-sdk = { path = "../..", editable = true }
 
 [dependency-groups]
-dev = ["pytest>=8.3,<9", "ruff>=0.16.8"]
+dev = ["coverage>=7.6", "mypy>=1.13", "pytest>=8.3,<9", "ruff>=0.16.8"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "../../src"]
@@ -33,3 +33,17 @@ select = ["E", "F", "I", "UP"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["nailong_cli"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["nailong_cli"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.coverage.run]
+source = ["nailong_cli"]
+omit = ["nailong_cli/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = false

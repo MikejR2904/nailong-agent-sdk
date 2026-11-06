@@ -206,10 +206,10 @@ def main() -> None:
     )
     findings = (
         "\n## What these numbers say\n\n"
-        "- Starting the program takes about two seconds, almost all of it importing the SDK and "
-        "the `mcp` package (`python -X importtime` shows `mcp` alone near 0.6 s). That is the "
-        "SDK's import structure, not the CLI's own code, and it is the first thing to fix for "
-        "short-lived commands such as `--health`.\n"
+        "- Starting the program takes about 1.25 s (it was about 2.0 s until the SDK stopped "
+        "importing the `mcp` package unless an MCP server is used). What is left is the SDK "
+        "importing its pydantic model modules, spread over many files, with no single large "
+        "item; further cuts need those modules loaded on demand.\n"
         "- A durable wiki write costs tens of milliseconds because every write syncs the page, "
         "its history copy, the journal and the index to disk. It no longer grows with the number "
         "of pages (an earlier version rebuilt the whole index and log on each write: 225 ms at "

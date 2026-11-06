@@ -73,7 +73,7 @@ class DiscoveryStore:
     def _states(self) -> dict[str, dict[str, Any]]:
         states: dict[str, dict[str, Any]] = {}
         for event in self._events():
-            kind, ident = event.get("event"), event.get("id")
+            kind, ident = str(event.get("event")), str(event.get("id"))
             if kind == "published":
                 states[ident] = {**event, "status": "proposed", "history": []}
             elif ident in states:

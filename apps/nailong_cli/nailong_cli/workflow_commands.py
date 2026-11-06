@@ -316,7 +316,7 @@ def _trust_tools(state: ReplState, arguments: list[str]) -> bool:
             trusted_any = True
     if trusted_any:
         reload_custom_tools(state)
-        for notice in state.parts.custom_tools.notices:
+        for notice in state.parts.custom_tools.notices if state.parts.custom_tools else []:
             console.line(console.style(f"  {notice}", "yellow"))
     return True
 

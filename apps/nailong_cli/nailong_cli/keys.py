@@ -64,6 +64,8 @@ class PosixKeys:
         self._descriptor = sys.stdin.fileno()
 
     def open(self) -> None:
+        if sys.platform == "win32":
+            return
         import termios
         import tty
 
@@ -94,6 +96,8 @@ class PosixKeys:
         return ESCAPE
 
     def close(self) -> None:
+        if sys.platform == "win32":
+            return
         import termios
 
         if self._saved is not None:

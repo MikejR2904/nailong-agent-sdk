@@ -107,7 +107,7 @@ async def serve_stdio(table: Mapping[str, OfferedTool], *, version: str, project
                 types.Tool(
                     name=item.definition.name,
                     description=item.definition.description,
-                    inputSchema=item.definition.input_schema,
+                    input_schema=item.definition.input_schema,
                 )
                 for item in table.values()
             ]
@@ -123,12 +123,12 @@ async def serve_stdio(table: Mapping[str, OfferedTool], *, version: str, project
                         type="text", text=f'No tool "{params.name}"; the tools are {known}.'
                     )
                 ],
-                isError=True,
+                is_error=True,
             )
         result = await item.run(dict(params.arguments or {}))
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=_text(result))],
-            isError=result.status != "succeeded",
+            is_error=result.status != "succeeded",
         )
 
     server = Server(

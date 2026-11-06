@@ -24,7 +24,7 @@ from nailong_agent_sdk.tools.sandbox_models import DockerSandboxOptions
 from . import credentials
 from .approvals import NOT_SANDBOXED
 from .config import CliConfig
-from .network import host_of, is_loopback
+from .network import host_of, is_loopback, is_private_host
 
 EFFORT_LEVELS = ("low", "medium", "high")
 
@@ -41,6 +41,32 @@ def effort_parameters(provider: str, level: str) -> dict[str, Any]:
     return {"reasoning_effort": level}
 
 
+def build_embedder(config: CliConfig, environ: Mapping[str, str]):
+    """The embedding client when `embedding_model` is set; None otherwise."""
+    from .embeddings import HttpEmbedder
+
+    if not config.embedding_model:
+        return None
+    raw = config.embedding_base_url or (
+        config.base_url if config.provider == "openai-compatible" else None
+    )
+    if not raw:
+        raise ValueError(
+            "embedding_model is set but there is no service to ask: set embedding_base_url to an "
+            "OpenAI-compatible service (provider anthropic has no embeddings endpoint)."
+        )
+    base_url = str(OPENAI_COMPATIBLE_BASE_URLS.get(raw, raw))
+    if config.offline and not is_private_host(host_of(base_url)):
+        raise ValueError(
+            f'offline is on and the embedding service host "{host_of(base_url)}" is not on your '
+            "network."
+        )
+    key = None
+    if config.api_key_env:
+        key = environ.get(config.api_key_env, "").strip() or credentials.lookup(config.api_key_env)
+    return HttpEmbedder(base_url, key, config.embedding_model)
+
+
 def build_model(config: CliConfig, environ: Mapping[str, str]) -> ModelSetup:
     key = None
     if config.api_key_env:
@@ -51,13 +77,17 @@ def build_model(config: CliConfig, environ: Mapping[str, str]) -> ModelSetup:
                 "or is empty, and no key is saved for it (nailong --setup can save one)."
             )
     if config.provider == "anthropic":
+        options: dict[str, Any] = {}
+        if config.base_url:
+            options["base_url"] = config.base_url
+        if config.max_tokens:
+            options["max_tokens"] = config.max_tokens
         return anthropic_messages(
-            api_key=key,
+            api_key=key or "",
             model=config.model,
-            **({"base_url": config.base_url} if config.base_url else {}),
-            **({"max_tokens": config.max_tokens} if config.max_tokens else {}),
             timeout_seconds=config.timeout_seconds,
             parameters=dict(config.parameters) or None,
+            **options,
         )
     base_url = OPENAI_COMPATIBLE_BASE_URLS.get(config.base_url or "", config.base_url)
     parameters = dict(config.parameters)
@@ -85,8 +115,8 @@ def choose_sandbox(
         options = DockerSandboxOptions(image=config.docker_image, extra_binds=binds)
         return {"sandbox": DockerSandbox(options)}, f"docker {config.docker_image}"
     if config.sandbox == "auto":
-        options = OsSandboxOptions(extra_writable=[path.as_posix() for path in extra.values()])
-        backend = default_os_sandbox(options)
+        os_options = OsSandboxOptions(extra_writable=[path.as_posix() for path in extra.values()])
+        backend = default_os_sandbox(os_options)
         if isinstance(backend, BubblewrapSandbox):
             return {"sandbox": backend}, "bubblewrap"
         if isinstance(backend, SeatbeltSandbox):

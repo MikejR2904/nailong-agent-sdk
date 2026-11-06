@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from nailong_agent_sdk.agent.run_checkpointer import LOCAL_ANCHOR, resolve_checkpointer
 from nailong_agent_sdk.foundations.errors import AgentSdkError
@@ -166,7 +166,7 @@ class TelemetryExport:
                     audit,
                     run_ids,
                     self._exporter,
-                    resolve_checkpointer(LOCAL_ANCHOR, self._run_root)
+                    cast(Any, resolve_checkpointer(LOCAL_ANCHOR, self._run_root))
                     if "integrity" in parts
                     else None,
                     self._run_root,

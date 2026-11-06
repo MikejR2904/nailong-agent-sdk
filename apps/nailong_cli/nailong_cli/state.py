@@ -33,7 +33,7 @@ class ReplState:
     model_factory: Callable[..., ModelSetup]
     store: PermissionStore
     user_commands: dict[str, UserCommand] = field(default_factory=dict)
-    keys: object | None = None
+    keys: Any = None
     plugin_names: list[str] = field(default_factory=list)
     reader: Any = None
     last_answer: Answer | None = None

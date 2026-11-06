@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from nailong_agent_sdk import ContextProjectionPolicy
 from nailong_agent_sdk.starter import (
@@ -112,15 +112,15 @@ class Parts:
     custom_tools: CustomTools | None = None
     permission_rules: PermissionRules | None = None
     post_edit: PostEdit | None = None
-    knowledge: KnowledgeBase | None = None
-    wiki: Wiki | None = None
-    discoveries: DiscoveryStore | None = None
-    claims: ArtifactClaims | None = None
-    events: EventLog | None = None
-    tracer: ToolTracer | None = None
-    pins: Pins | None = None
-    plans: PlanJournal | None = None
-    memory_index: MemoryIndex | None = None
+    knowledge: KnowledgeBase = field(kw_only=True)
+    wiki: Wiki = field(kw_only=True)
+    discoveries: DiscoveryStore = field(kw_only=True)
+    claims: ArtifactClaims = field(kw_only=True)
+    events: EventLog = field(kw_only=True)
+    tracer: ToolTracer = field(kw_only=True)
+    pins: Pins = field(kw_only=True)
+    plans: PlanJournal = field(kw_only=True)
+    memory_index: MemoryIndex = field(kw_only=True)
     current_agent: Any = None
     notes: NotesStore | None = None
     debug: DebugLog | None = None
@@ -395,17 +395,20 @@ class AgentBuilder:
         return Agent(
             model=chosen,
             instructions=spec["instructions"],
-            tools=[
-                *dev_tools(
-                    parts.config.project,
-                    allow_writes=level in {"edit", "all"},
-                    allow_commands=level == "all",
-                    protected=PROTECTED,
-                    extra_roots=parts.extra_dirs or None,
-                    **(parts.sandbox_kwargs if level == "all" else {}),
-                ),
-                *(parts.discoveries.tools(f"sub-{name}") if parts.discoveries else []),
-            ],
+            tools=cast(
+                Any,
+                [
+                    *dev_tools(
+                        parts.config.project,
+                        allow_writes=level in {"edit", "all"},
+                        allow_commands=level == "all",
+                        protected=PROTECTED,
+                        extra_roots=parts.extra_dirs or None,
+                        **(parts.sandbox_kwargs if level == "all" else {}),
+                    ),
+                    *(parts.discoveries.tools(f"sub-{name}") if parts.discoveries else []),
+                ],
+            ),
             approve=ScopedApprover(name, spec.get("allow", []))
             if background and level != "read-only"
             else parts.approver,
@@ -427,7 +430,7 @@ class AgentBuilder:
         if parts.bg_agents is None:
             parts.bg_agents = BackgroundAgents(
                 lambda name: self._helper(
-                    name, parts.config.agents[name], self.setup_in_use, background=True
+                    name, parts.config.agents[name], self.setup_in_use or setup, background=True
                 ),
                 parts.live,
                 readonly,
