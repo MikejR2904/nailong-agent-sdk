@@ -88,6 +88,11 @@ def _rewind(state: ReplState, arguments: list[str]) -> bool:
     if not arguments:
         if not turns:
             state.console.line("  Nothing to rewind: the agent has not changed anything yet.")
+        if store.untracked_turns():
+            state.console.line(
+                "  Note: this project is too large to snapshot before commands, so what a command "
+                "changed (in the turns marked below) cannot be undone; file edits can."
+            )
         for number, files in turns:
             state.console.line(f"  turn {number}: {', '.join(files)}")
         state.console.line("  /rewind N restores everything the agent changed from turn N on.")

@@ -35,6 +35,7 @@ _MANIFEST = "manifest.json"
 _TREE = "tree.json"
 _BLOBS = "blobs"
 _REDO = "redo"
+_UNTRACKED = "untracked"
 
 
 class CheckpointStore:
@@ -85,6 +86,8 @@ class CheckpointStore:
             names = sorted(self._read(folder))
             if (folder / _TREE).is_file():
                 names.append("(whole project, before a command)")
+            if (folder / _UNTRACKED).is_file():
+                names.append("(a command ran; the project is too large to undo what it changed)")
             found.append((int(folder.name.split("-")[1]), names))
         return found
 
@@ -189,6 +192,7 @@ class CheckpointStore:
                 continue
             total += size
             if len(files) >= MAX_TREE_FILES or total > MAX_TREE_BYTES:
+                self._mark_untracked()
                 return
             data = path.read_bytes()
             digest = hashlib.sha256(data).hexdigest()
@@ -201,6 +205,22 @@ class CheckpointStore:
         stamp = os.times().elapsed
         (folder / _TREE).write_text(json.dumps({"files": files, "stamp": stamp}), encoding="utf-8")
         self._tree_turn = self.turn
+
+    def _mark_untracked(self) -> None:
+        folder = self._directory / f"turn-{self.turn}"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / _UNTRACKED).write_text(
+            f"more than {MAX_TREE_FILES} files or {MAX_TREE_BYTES // (1024 * 1024)} MB",
+            encoding="utf-8",
+        )
+        self._tree_turn = self.turn
+
+    def untracked_turns(self) -> list[int]:
+        return [
+            int(folder.name.split("-")[1])
+            for folder in self._turns()
+            if (folder / _UNTRACKED).is_file()
+        ]
 
     def _tree_difference(self, tree: dict) -> tuple[list[str], list[str]]:
         known = tree["files"]

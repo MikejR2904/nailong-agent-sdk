@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 
 import pytest
 
@@ -13,7 +14,7 @@ BYPASS = ["--permission-mode", "bypass", "--allow-unsandboxed"]
 
 
 def test_command_output_appears_as_the_command_prints_not_only_in_the_summary(project, home):
-    command = "python -c \"import sys; [print(f'row {n}') for n in range(3)]\""
+    command = f"\"{sys.executable}\" -c \"[print(f'row {{n}}') for n in range(3)]\""
     code, out, _ = run_fancy(
         project,
         home,
@@ -28,7 +29,7 @@ def test_command_output_appears_as_the_command_prints_not_only_in_the_summary(pr
 
 
 def test_a_flood_of_output_is_cut_live_with_a_note_and_stays_available_in_expand(project, home):
-    command = "python -c \"[print(f'line {n}') for n in range(100)]\""
+    command = f"\"{sys.executable}\" -c \"[print(f'line {{n}}') for n in range(100)]\""
     code, out, _ = run_fancy(
         project,
         home,

@@ -100,3 +100,24 @@ def test_a_person_saying_no_is_passed_on_as_a_no_not_a_bare_failure(project, hom
     )
     seen = " ".join(str(item) for item in setup.model.calls[1].observations)
     assert "The person declined it" in seen
+
+
+def test_a_project_too_large_to_snapshot_says_so_instead_of_claiming_nothing_changed(
+    tmp_path, monkeypatch
+):
+    from nailong_agent_sdk.starter import ToolEvent
+
+    from nailong_cli import checkpoints
+
+    monkeypatch.setattr(checkpoints, "MAX_TREE_FILES", 3)
+    root = tmp_path / "p"
+    root.mkdir()
+    for number in range(6):
+        (root / f"f{number}.txt").write_text("x\n", encoding="utf-8")
+    store = CheckpointStore(root, tmp_path / "ck", {})
+    store.begin_turn()
+    store.before_tool(ToolEvent("run_command", {"command": "x"}, 1))
+    assert store.untracked_turns() == [1]
+    assert store.turns() == [
+        (1, ["(a command ran; the project is too large to undo what it changed)"])
+    ]

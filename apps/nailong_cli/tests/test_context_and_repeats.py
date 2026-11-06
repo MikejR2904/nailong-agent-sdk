@@ -43,6 +43,7 @@ def test_a_small_local_model_can_shrink_the_context(project, home):
 
 
 def test_the_environment_note_names_the_shell_so_the_agent_does_not_guess(monkeypatch, tmp_path):
+    monkeypatch.setattr("nailong_cli.environment.shutil.which", lambda name: None)
     monkeypatch.setattr(sys, "platform", "win32")
     note = environment_note(tmp_path, sandboxed=False, today=date(2026, 11, 4))
     assert "cmd.exe (not bash)" in note and "Today is 2026-11-04" in note

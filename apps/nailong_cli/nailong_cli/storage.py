@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 import time
 import uuid
 from collections.abc import Iterator
@@ -13,7 +14,7 @@ from pathlib import Path
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
-    if os.name == "nt":
+    if sys.platform == "win32":
         import ctypes
 
         process = ctypes.windll.kernel32.OpenProcess(

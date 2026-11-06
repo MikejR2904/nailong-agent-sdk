@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -117,8 +118,8 @@ class ShellSessions:
         argv, env = self._launch(host)
         options: dict[str, Any] = (
             {"start_new_session": True}
-            if os.name != "nt"
-            else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            if sys.platform != "win32"
+            else {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
         )
         process = await asyncio.create_subprocess_exec(
             *argv,

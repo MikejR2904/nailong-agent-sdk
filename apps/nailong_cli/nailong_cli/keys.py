@@ -40,6 +40,8 @@ class WindowsKeys:
         return None
 
     def poll(self, timeout: float) -> str | None:
+        if sys.platform != "win32":
+            return None
         import msvcrt
         import time
 
