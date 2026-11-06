@@ -461,6 +461,8 @@ A wrapper over the existing parts for a caller who wants a working agent without
 **Contents**
 
 - **class `ApprovalRequest`** - The tool name and the arguments of a call that needs approval.
+- **class `Refusal`** - What an `approve=` callback returns to say no and why: it is false in a condition, and its `reason` is added to the declined result the model reads.
+  - `Refusal.__bool__(self) -> bool` - Always false, so a refusal reads as a refusal wherever the verdict is tested.
 - **class `ToolGroup`** - Anything that declares several tools and runs them by name, such as `CoreTools` and `McpTools`. A group may carry `needs_approval`, which asks the `approve=` callback before every call to it.
   - `ToolGroup.run(self, name: str, call_arguments: dict[str, Any]) -> ToolExecutionResult` - Runs one of the group's tools by name and returns its `ToolExecutionResult`.
 - **class `Toolbox`** - Runs the function tools and tool groups it was given; `enforces_authorization` is true because only handed-over tools can run and approval is checked inside.

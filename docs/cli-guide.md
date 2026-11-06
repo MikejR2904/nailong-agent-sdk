@@ -432,6 +432,18 @@ It restores the state before turn N. It covers the project and any `--add-dir` d
 a convenience, not a substitute for git: it cannot undo effects outside those directories (a
 database, a network call).
 
+**Scratch and test files.** The default instructions tell the agent not to add test or scratch files
+to the project to check its work unless you asked for tests, to check with a command instead, and to
+delete any file it made only for checking. That is an instruction to a model, not a guarantee, so the
+CLI also checks: at the end of every turn it lists the files that turn created and that still exist
+(`created this turn and still there: test_calc.py  (/rewind removes them)`), including files made by
+commands. Nothing is deleted for you. `/rewind N` removes them along with the rest of that turn.
+
+**When a tool is refused.** A refused command, or a question asked in a run with nobody at the
+terminal, now reaches the model with the reason and an instruction not to retry or find another way
+round (a model had been seen trying eight spellings of the same refused command until it ran out of
+steps). The refusal is also printed.
+
 ## 9. Slash commands
 
 | Command | What it does |

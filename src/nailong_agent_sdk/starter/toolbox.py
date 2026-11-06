@@ -21,7 +21,15 @@ class ApprovalRequest:
     arguments: dict[str, Any]
 
 
-Approver = Callable[[ApprovalRequest], bool | Awaitable[bool]]
+@dataclass(frozen=True)
+class Refusal:
+    reason: str
+
+    def __bool__(self) -> bool:
+        return False
+
+
+Approver = Callable[[ApprovalRequest], bool | Refusal | Awaitable[bool | Refusal]]
 
 
 class ToolGroup(Protocol):
@@ -123,7 +131,8 @@ class Toolbox:
             verdict = await verdict
         if verdict:
             return None
+        reason = getattr(verdict, "reason", "")
+        declined = f'Tool "{name}" was declined by the approve= callback.'
         return ToolExecutionResult(
-            status=self._refusal_status,
-            error=f'Tool "{name}" was declined by the approve= callback.',
+            status=self._refusal_status, error=f"{declined} {reason}" if reason else declined
         )
