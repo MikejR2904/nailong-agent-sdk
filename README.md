@@ -17,8 +17,13 @@ Requires Python 3.12 or newer. Status: alpha (`0.1.0`).
 ## Install
 
 ```bash
-pip install -e .
+pip install -e .                       # the SDK, from a checkout
+uv tool install --editable apps/nailong_cli   # the `nailong` command, on PATH everywhere
 ```
+
+Both are built as wheels in CI and installed into a clean environment as a check. They are not on
+PyPI yet; `.github/workflows/release.yml` publishes them (SDK first, then the CLI) when a `v*` tag is
+pushed, once a PyPI trusted publisher is set up for each project.
 
 ## A first agent
 

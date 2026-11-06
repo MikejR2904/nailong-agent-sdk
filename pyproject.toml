@@ -64,7 +64,9 @@ interop = [
 
 [dependency-groups]
 dev = [
+  "coverage>=7.6",
   "cryptography>=43",
+  "mypy>=1.13",
   "pytest>=8.3,<9",
   "ruff>=0.16.8",
 ]
@@ -91,3 +93,61 @@ select = ["E", "F", "I", "UP"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nailong_agent_sdk"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/nailong_agent_sdk"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+# These files still had type errors (191 in all) when this list was written. Every other
+# file must stay clean. Take a name off the list when its file is fixed; do not add one.
+[[tool.mypy.overrides]]
+module = [
+  "nailong_agent_sdk.agent.base_agent.agent",
+  "nailong_agent_sdk.agent.elastic_context",
+  "nailong_agent_sdk.agent.openai_compatible.chat",
+  "nailong_agent_sdk.agent.orchestrator.orchestrator",
+  "nailong_agent_sdk.agent.retention",
+  "nailong_agent_sdk.agent.retention_inventory",
+  "nailong_agent_sdk.agent.runtime",
+  "nailong_agent_sdk.agent.task_files",
+  "nailong_agent_sdk.agent.task_runner",
+  "nailong_agent_sdk.agent.verification",
+  "nailong_agent_sdk.developer_tools.attribute_lineage",
+  "nailong_agent_sdk.developer_tools.attribute_root_cause",
+  "nailong_agent_sdk.developer_tools.cli",
+  "nailong_agent_sdk.developer_tools.decision_links",
+  "nailong_agent_sdk.developer_tools.diagnose",
+  "nailong_agent_sdk.foundations.atomic_io",
+  "nailong_agent_sdk.foundations.contracts",
+  "nailong_agent_sdk.foundations.detached",
+  "nailong_agent_sdk.integrations.langchain",
+  "nailong_agent_sdk.integrations.langgraph",
+  "nailong_agent_sdk.mcp.client",
+  "nailong_agent_sdk.mcp.security",
+  "nailong_agent_sdk.mcp.server",
+  "nailong_agent_sdk.memory.episode_store",
+  "nailong_agent_sdk.memory.episodes",
+  "nailong_agent_sdk.memory.semantic_compaction",
+  "nailong_agent_sdk.observability.attestation",
+  "nailong_agent_sdk.observability.audit_log",
+  "nailong_agent_sdk.observability.otlp",
+  "nailong_agent_sdk.observability.recorder.core",
+  "nailong_agent_sdk.observability.run_checkpoints",
+  "nailong_agent_sdk.observability.telemetry_models",
+  "nailong_agent_sdk.observability.witness",
+  "nailong_agent_sdk.specifications.retrieval",
+  "nailong_agent_sdk.starter.planner",
+  "nailong_agent_sdk.state.graph",
+  "nailong_agent_sdk.state.harness_coordinator",
+  "nailong_agent_sdk.state.project_state_engine",
+  "nailong_agent_sdk.tools.approvals",
+  "nailong_agent_sdk.tools.artifact_anchor",
+  "nailong_agent_sdk.tools.core.definitions",
+  "nailong_agent_sdk.tools.core.helpers",
+  "nailong_agent_sdk.tools.policy",
+  "nailong_agent_sdk.tools.process_freeze",
+  "nailong_agent_sdk.tools.supervisor",
+]
+ignore_errors = true
