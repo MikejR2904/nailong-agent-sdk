@@ -12,6 +12,7 @@ from nailong_agent_sdk.starter.skill_files import parse_frontmatter
 from .config import PROJECT_DIRECTORY
 
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,40}")
+_PLACEHOLDER = re.compile(r"\$ARGUMENTS|\$([1-9])")
 _INJECTION = re.compile(r"!`([^`\n]+)`")
 
 
@@ -51,12 +52,14 @@ class UserCommand:
             words = shlex.split(given) if given else []
         except ValueError:
             words = given.split()
-        body = body.replace("$ARGUMENTS", given)
-        for position in range(9, 0, -1):
-            marker = f"${position}"
-            if marker in body:
-                body = body.replace(marker, words[position - 1] if len(words) >= position else "")
-        return body.strip()
+
+        def fill(found: re.Match[str]) -> str:
+            if found.group(0) == "$ARGUMENTS":
+                return given
+            position = int(found.group(1))
+            return words[position - 1] if len(words) >= position else ""
+
+        return _PLACEHOLDER.sub(fill, body).strip()
 
 
 def injected_commands(text: str) -> list[str]:

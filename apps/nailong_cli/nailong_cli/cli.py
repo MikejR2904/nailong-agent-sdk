@@ -104,7 +104,15 @@ ModelFactory = Callable[..., ModelSetup]
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(prog="nailong", description=__doc__.strip().splitlines()[0])
     cli.add_argument("initial", nargs="?", help="A first message for the interactive session.")
-    cli.add_argument("-p", "--print", dest="prompt", metavar="PROMPT", help="Run once and exit.")
+    cli.add_argument(
+        "-p",
+        "--print",
+        dest="prompt",
+        metavar="PROMPT",
+        nargs="?",
+        const="",
+        help="Run once and exit; with no PROMPT the prompt is read from standard input.",
+    )
     cli.add_argument("--output", choices=["text", "json", "stream-json"], default="text")
     cli.add_argument("--project", type=Path, default=None, help="Project directory.")
     cli.add_argument("--add-dir", action="append", default=[], type=Path, metavar="DIR")
@@ -904,7 +912,10 @@ def _once(state: ReplState, args: argparse.Namespace) -> int:
     if not console.interactive:
         piped = console.stdin.read()
         if piped.strip():
-            prompt = f"{prompt}\n\n{piped}"
+            prompt = f"{prompt}\n\n{piped}" if prompt else piped
+    if not prompt.strip():
+        console.error("-p needs a prompt: give one after -p, or pipe it in on standard input.")
+        return EXIT_USAGE
     original = console.stdout
     if args.output == "json":
         console.stdout = cast(TextIO, _Discard())

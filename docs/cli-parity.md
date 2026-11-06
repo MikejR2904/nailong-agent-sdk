@@ -2,14 +2,16 @@
 
 Compared against the public documentation of Claude Code (CLI reference, commands, memory,
 permissions) and the Codex CLI at the time of writing. "Built" means implemented in
-`apps/nailong_cli` and tested with scripted models; nothing here has been run against a live model.
+`apps/nailong_cli` and tested with scripted models. A small live-model run has been made
+(`openai/gpt-4o-mini` through OpenRouter); see `docs/cli-review-2026-11-06.md` for what was checked
+against Claude Code, Codex and OpenCode and what still differs.
 
 ## Built
 
 | Feature | In Claude Code / Codex | In `nailong` |
 |---|---|---|
 | Interactive session, start with a message | `claude "q"`, `codex` | `nailong "q"` |
-| Run once and exit | `claude -p`, `codex exec` | `nailong -p`; piped stdin is added to the prompt |
+| Run once and exit | `claude -p`, `codex exec` | `nailong -p [PROMPT]`; piped stdin is the prompt, or is added to it |
 | Output formats | text, json, stream-json | `--output text|json|stream-json` |
 | Exit codes for scripts | yes | 0 completed, 1 failed, 2 blocked, 64 setup, 130 interrupted |
 | Continue / resume / fork a session | `-c`, `-r`, `--fork-session` | `-c`, `-r ID`, `--fork-session`, `--fork ID --at N`, `/resume` picker |
@@ -63,7 +65,7 @@ permissions) and the Codex CLI at the time of writing. "Built" means implemented
 | Permission rules | Command-aware matching on each part of a chained command; no learned classifier |
 | Image input | PNG, JPEG, GIF and WebP up to a size limit; no clipboard paste |
 | Background commands | Output is kept in memory per job; jobs end with the session |
-| Sandbox backends | bubblewrap and Seatbelt are unit-tested on their command lines, not run here |
+| Sandbox backends | bubblewrap and Docker run in CI on Linux; Seatbelt is unit-tested on its command line only |
 
 ## Deliberately not built
 
