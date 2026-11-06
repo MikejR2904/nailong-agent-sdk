@@ -14,6 +14,7 @@ from nailong_agent_sdk.starter import CancelToken, FunctionTool, tool
 from nailong_agent_sdk.starter.skill_files import parse_frontmatter
 
 from .approvals import subject_of
+from .claims import current_owner
 from .config import PROJECT_DIRECTORY, SUBAGENT_TOOLS
 from .live import LiveWork
 from .modes import parse_rule
@@ -121,7 +122,14 @@ class BackgroundRun:
 
 
 class BackgroundAgents:
-    def __init__(self, make_helper: Callable[[str], Any], live: LiveWork, readonly: set[str]):
+    def __init__(
+        self,
+        make_helper: Callable[[str], Any],
+        live: LiveWork,
+        readonly: set[str],
+        claims: Any = None,
+    ):
+        self._claims = claims
         self._make_helper = make_helper
         self._live = live
         self._readonly = readonly
@@ -173,6 +181,7 @@ class BackgroundAgents:
         return {"run": run.id, "agent": agent, "note": "Use agent_result to collect the answer."}
 
     def _work(self, run: BackgroundRun, helper: Any, token: CancelToken) -> None:
+        owner = current_owner.set(run.id)
         try:
             answer = asyncio.run(helper.run(run.task, cancellation=token))
             run.steps = answer.steps
@@ -184,6 +193,9 @@ class BackgroundAgents:
         except Exception as error:
             run.status, run.reason = "failed", f"{type(error).__name__}: {error}"
         finally:
+            current_owner.reset(owner)
+            if self._claims is not None:
+                self._claims.release(run.id)
             self._live.remove(run.id)
             helper.close()
 

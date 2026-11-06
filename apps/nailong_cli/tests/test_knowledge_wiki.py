@@ -108,17 +108,20 @@ def test_pages_are_written_linked_indexed_and_logged(tmp_path):
     assert first == {
         "page": "auth/tokens",
         "created": True,
+        "revision": 1,
         "broken_links": ["auth/sessions", "billing"],
     }
     wiki.write("auth/sessions", "# Sessions\n\nBack to [[auth/tokens]].", "sessions too")
-    again = wiki.write("auth/tokens", "# Tokens\n\nNow only [[auth/sessions]].", "trimmed")
+    again = wiki.write(
+        "auth/tokens", "# Tokens\n\nNow only [[auth/sessions]].", "trimmed", base_revision=1
+    )
     assert again["created"] is False and again["broken_links"] == []
     page = wiki.read("auth/tokens")
     assert page["links_to"] == ["auth/sessions"] and page["linked_from"] == ["auth/sessions"]
     index = (tmp_path / "wiki" / "index.md").read_text(encoding="utf-8")
     assert "[[auth/tokens]]: Tokens" in index and "[[auth/sessions]]: Sessions" in index
     log = (tmp_path / "wiki" / "log.md").read_text(encoding="utf-8")
-    assert log.count("\n- ") == 3 and "updated [[auth/tokens]]: trimmed" in log
+    assert log.count("\n- ") == 3 and "updated [[auth/tokens]] r2 by main: trimmed" in log
 
 
 def test_wiki_search_ranks_by_mentions_and_page_names(tmp_path):

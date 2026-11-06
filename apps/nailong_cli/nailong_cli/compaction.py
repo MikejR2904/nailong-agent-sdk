@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .pins import kept_from, standing_rules, with_kept
 from .state import ReplState
 from .turns import ask_read_only
 
@@ -9,7 +10,8 @@ MAX_TURN_CHARS = 3_000
 SUMMARY_PROMPT = (
     "Summarise this conversation so that work can continue from the summary alone. Keep: what "
     "the user wants, decisions made and why, files and commands that matter, what is done, what "
-    "is still open. Use under 300 words and plain text.{focus}\n\nConversation:\n{turns}"
+    "is still open. Use under 300 words and plain text. Leave out any list headed 'Kept word "
+    "for word'; it is stored separately.{focus}\n\nConversation:\n{turns}"
 )
 
 
@@ -30,8 +32,25 @@ def compact_session(state: ReplState, focus: str = "") -> tuple[int, int]:
     )
     if not answer.ok or not answer.text.strip():
         raise ValueError(f"The summary could not be written: {answer}")
-    covered = state.session.compact(answer.text)
+    prompts = [str(turn["prompt"]) for turn in pending]
+    pinned = state.parts.pins.listing() if state.parts.pins is not None else []
+    fresh = standing_rules(prompts, pinned)
+    previous = kept_from(summary["text"]) if summary else []
+    final_text = with_kept(answer.text, [*previous, *fresh])
+    covered = state.session.compact(final_text)
+    if fresh:
+        state.console.line(
+            state.console.style(
+                f"  {len(fresh)} sentence(s) that read as standing rules were kept word for word "
+                "in the summary; /remember pins one for good:",
+                "yellow",
+            )
+        )
+        for sentence in fresh:
+            state.console.line(f"    {sentence}")
+    if state.parts.events is not None:
+        state.parts.events.emit("memory.compacted", {"turns": covered})
     lifecycle = state.parts.lifecycle
     if lifecycle is not None and lifecycle.has("compacted"):
         state.runner.run(lifecycle.run("compacted", session=state.session.id, covered=str(covered)))
-    return covered, len(answer.text)
+    return covered, len(final_text)

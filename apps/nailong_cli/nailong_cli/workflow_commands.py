@@ -15,6 +15,7 @@ from .live_commands import LIVE_COMMANDS, LIVE_HELP
 from .maintenance_commands import MAINTENANCE_COMMANDS, MAINTENANCE_HELP
 from .mcp_config import PRESETS, add_server, remove_server, spec_from_words
 from .memory import INIT_PROMPT
+from .memory_commands import MEMORY_COMMANDS, MEMORY_HELP
 from .model_commands import MODEL_COMMANDS, MODEL_HELP
 from .plan_command import plan_command
 from .session_tools import export_markdown, search_sessions
@@ -107,14 +108,6 @@ def _rewind(state: ReplState, arguments: list[str]) -> bool:
 def _redo(state: ReplState, arguments: list[str]) -> bool:
     restored = state.parts.checkpoints.redo()
     state.console.line(f"  put back {len(restored)} file(s) as they were before the rewind.")
-    return True
-
-
-def _memory(state: ReplState, arguments: list[str]) -> bool:
-    if not state.parts.memory:
-        state.console.line("  No NAILONG.md, AGENTS.md or CLAUDE.md found. /init can draft one.")
-    for file in state.parts.memory:
-        state.console.line(f"  {file.label}: {file.path} ({len(file.text)} characters)")
     return True
 
 
@@ -446,7 +439,6 @@ WORKFLOW_HELP = {
     "diff": "show your uncommitted changes",
     "rewind": "/rewind [N]: undo the agent's file changes from turn N on",
     "redo": "put back what the last /rewind undid (until the next turn)",
-    "memory": "the instruction files in use",
     "skills": "skills in use",
     "agents": "subagents the agent can call",
     "mcp": "tools from MCP servers",
@@ -463,6 +455,7 @@ WORKFLOW_HELP = {
     "suggest": "ask for three useful next prompts",
     "plugins": "installed plugins",
     **MAINTENANCE_HELP,
+    **MEMORY_HELP,
     **TOKEN_HELP,
     **MODEL_HELP,
     **LIVE_HELP,
@@ -476,7 +469,6 @@ WORKFLOW_COMMANDS = {
     "diff": _diff,
     "rewind": _rewind,
     "redo": _redo,
-    "memory": _memory,
     "skills": _skills,
     "agents": _agents,
     "mcp": _mcp,
@@ -493,6 +485,7 @@ WORKFLOW_COMMANDS = {
     "suggest": _suggest,
     "plugins": _plugins,
     **MAINTENANCE_COMMANDS,
+    **MEMORY_COMMANDS,
     **TOKEN_COMMANDS,
     **MODEL_COMMANDS,
     **LIVE_COMMANDS,

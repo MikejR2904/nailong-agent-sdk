@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .console import Console
+from .paste import LABEL, PasteStore
 
 SKIPPED_DIRECTORIES = frozenset(
     {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
@@ -20,6 +21,7 @@ KEY_ACTIONS = {
     "cycle_mode": ["s-tab"],
     "expand_output": ["c-o"],
     "newline": ["escape enter", "c-j"],
+    "expand_paste": ["escape e"],
 }
 PALETTE_KEYS = ("rule", "hint", "mode", "menu")
 _PRETTY = {"c": "Ctrl+", "s": "Shift+", "escape": "Alt+"}
@@ -163,6 +165,7 @@ class ToolkitReader:
         commands: Callable[[], dict[str, str]],
         mode_hint: Callable[[], str] | None = None,
         on_expand: Callable[[], None] | None = None,
+        pastes: PasteStore | None = None,
         input: Any = None,
         output: Any = None,
         keybinds: dict[str, Any] | None = None,
@@ -171,10 +174,12 @@ class ToolkitReader:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
         from prompt_toolkit.styles import Style
 
         colours = palette or THEMES.get(theme, THEMES["default"])
         self._colours = colours
+        self._pastes = pastes if pastes is not None else PasteStore()
         self._toolbar = toolbar
         self._mode_hint = mode_hint or (lambda: "")
         bindings = KeyBindings()
@@ -201,10 +206,25 @@ class ToolkitReader:
         def _newline(event: Any) -> None:
             event.current_buffer.insert_text("\n")
 
+        def _open_paste(event: Any) -> None:
+            buffer = event.current_buffer
+            opened = self._pastes.open_at(buffer.text, buffer.cursor_position)
+            if opened is not None:
+                buffer.text, buffer.cursor_position = opened[0], opened[1]
+
+        @bindings.add(Keys.BracketedPaste)
+        def _pasted(event: Any) -> None:
+            data = event.data.replace("\r\n", "\n").replace("\r", "\n")
+            if self._pastes.should_collapse(data):
+                event.current_buffer.insert_text(self._pastes.add(data))
+            else:
+                event.current_buffer.insert_text(data)
+
         for action, handler in (
             ("cycle_mode", _cycle),
             ("expand_output", _expand),
             ("newline", _newline),
+            ("expand_paste", _open_paste),
         ):
             for chord in key_chords(action, keybinds):
                 try:
@@ -214,6 +234,7 @@ class ToolkitReader:
                         f'keybinds.{action}: "{" ".join(chord)}" is not a key: {error}'
                     ) from error
         self._expand_label = pretty_chord(key_chords("expand_output", keybinds)[0])
+        self._paste_label = pretty_chord(key_chords("expand_paste", keybinds)[0])
 
         history_file.parent.mkdir(parents=True, exist_ok=True)
         style = {
@@ -247,6 +268,14 @@ class ToolkitReader:
         from prompt_toolkit.formatted_text import FormattedText
 
         rule = "─" * self._width()
+        open_hint = ""
+        try:
+            from prompt_toolkit.application import get_app
+
+            if LABEL.search(get_app().current_buffer.text):
+                open_hint = f"  ·  {self._paste_label} open paste"
+        except Exception:
+            open_hint = ""
         return FormattedText(
             [
                 ("class:rule", rule + "\n"),
@@ -255,7 +284,8 @@ class ToolkitReader:
                     "class:hint",
                     " "
                     + self._toolbar()
-                    + f"  ·  / commands  @ files  {self._expand_label} output  \\⏎ new line",
+                    + f"  ·  / commands  @ files  {self._expand_label} output  \\⏎ new line"
+                    + open_hint,
                 ),
             ]
         )
@@ -264,7 +294,7 @@ class ToolkitReader:
         from prompt_toolkit.formatted_text import FormattedText
 
         message = FormattedText([("class:rule", "─" * self._width() + "\n"), ("bold", prompt)])
-        return self._session.prompt(message, default=default).strip()
+        return self._pastes.expand(self._session.prompt(message, default=default).strip())
 
 
 def toolkit_available() -> bool:
@@ -289,6 +319,7 @@ def make_reader(
     on_expand: Callable[[], None] | None = None,
     keybinds: dict[str, Any] | None = None,
     palette: dict[str, str] | None = None,
+    pastes: PasteStore | None = None,
 ) -> PlainReader | ToolkitReader:
     if console.interactive and console.stdin is sys.stdin and toolkit_available():
         return ToolkitReader(
@@ -303,6 +334,7 @@ def make_reader(
             on_expand=on_expand,
             keybinds=keybinds,
             palette=palette,
+            pastes=pastes,
         )
     return PlainReader(console)
 

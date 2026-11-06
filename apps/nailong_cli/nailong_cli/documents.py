@@ -23,6 +23,9 @@ DEFAULT_CHARS = 12_000
 MAX_CHARS = 40_000
 MAX_ROWS = 200
 MAX_HITS = 15
+MAX_UNPACKED_BYTES = 250 * 1024 * 1024
+MAX_ZIP_ENTRIES = 5_000
+MAX_ZIP_RATIO = 200
 FETCH_SECONDS = 90.0
 FETCH_TYPES = {
     "application/pdf": ".pdf",
@@ -132,6 +135,8 @@ class DocumentReader:
 
             reader = PdfReader(io.BytesIO(data))
             return "pdf", [lambda p=p: p.extract_text() or "" for p in reader.pages], digest
+        if suffix in {".docx", ".pptx", ".xlsx", ".xlsm"}:
+            _check_package(data, path.name)
         if suffix == ".docx":
             return "docx", _docx_chunks(data), digest
         if suffix == ".pptx":
@@ -243,6 +248,29 @@ class DocumentReader:
         target = folder / f"{path.stem}-{digest}-p{page}.png"
         image.save(target)
         return target
+
+
+def _check_package(data: bytes, name: str) -> None:
+    """Refuse an Office file that is a zip bomb or not a zip at all, before any parser sees it."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as error:
+        raise ValueError(f"{name} is not a valid Office package ({error})") from None
+    entries = archive.infolist()
+    unpacked = sum(entry.file_size for entry in entries)
+    if len(entries) > MAX_ZIP_ENTRIES:
+        raise ValueError(f"{name} holds {len(entries)} parts; the limit is {MAX_ZIP_ENTRIES}.")
+    if unpacked > MAX_UNPACKED_BYTES:
+        raise ValueError(
+            f"{name} would unpack to {unpacked // (1024 * 1024)} MB; the limit is "
+            f"{MAX_UNPACKED_BYTES // (1024 * 1024)} MB."
+        )
+    packed = max(1, sum(entry.compress_size for entry in entries))
+    if unpacked // packed > MAX_ZIP_RATIO and unpacked > 10 * 1024 * 1024:
+        raise ValueError(
+            f"{name} unpacks to {unpacked // packed} times its size, which looks like a zip bomb "
+            f"(the limit is {MAX_ZIP_RATIO} times)."
+        )
 
 
 def _unit(kind: str) -> str:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,12 +22,15 @@ from nailong_agent_sdk import (
 from nailong_agent_sdk.starter import FunctionTool, tool
 
 from .documents import DOCUMENT_SUFFIXES, DocumentReader, _unit
+from .storage import atomic_write, exclusive
 
 CATEGORY = "knowledge"
 TEXT_SUFFIXES = {".md", ".txt", ".rst", ".tex", ".json", ".yaml", ".yml", ".xml", ".toml"}
 CHUNK_CHARS = 1_000
 MAX_FILES = 400
 MAX_FILE_BYTES = 8 * 1024 * 1024
+LOCK_WAIT_SECONDS = 30.0
+LOCK_STALE_SECONDS = 120.0
 SKIPPED = {".git", "node_modules", ".venv", "venv", "__pycache__", ".nailong"}
 FORMATS = {
     ".md": DocumentFormat.MD,
@@ -54,6 +58,7 @@ class Passage:
     location: str
     text: str
     source_hash: str
+    status: str = "current"
 
 
 def _passages(text: str) -> list[tuple[str, str]]:
@@ -81,26 +86,64 @@ class KnowledgeBase:
         self._project = roots["project"].resolve()
         self._reader = DocumentReader(roots, workspace)
         self._trees: list[DocumentTree] | None = None
+        self._stamp: tuple[int, int] | None = None
+        self._revision = 0
 
     @property
     def _file(self) -> Path:
         return self._directory / "trees.json"
 
+    def _disk_stamp(self) -> tuple[int, int] | None:
+        try:
+            info = self._file.stat()
+        except OSError:
+            return None
+        return info.st_mtime_ns, info.st_size
+
+    def _load(self) -> None:
+        self._stamp = self._disk_stamp()
+        if self._stamp is None:
+            self._trees, self._revision = [], 0
+            return
+        data = json.loads(self._file.read_text(encoding="utf-8"))
+        items = data["trees"] if isinstance(data, dict) else data
+        self._revision = int(data.get("revision", 0)) if isinstance(data, dict) else 0
+        self._trees = [DocumentTree.model_validate(item) for item in items]
+
     def trees(self) -> list[DocumentTree]:
-        if self._trees is None:
-            if self._file.is_file():
-                data = json.loads(self._file.read_text(encoding="utf-8"))
-                self._trees = [DocumentTree.model_validate(item) for item in data]
-            else:
-                self._trees = []
+        if self._trees is None or self._disk_stamp() != self._stamp:
+            self._load()
+        assert self._trees is not None
         return self._trees
 
-    def _save(self, trees: list[DocumentTree]) -> None:
+    @property
+    def revision(self) -> int:
+        self.trees()
+        return self._revision
+
+    def _change(self, apply: Callable[[dict[str, DocumentTree]], Any]) -> Any:
+        """Read the file again under the lock, change it, and replace it whole, revision + 1."""
         self._directory.mkdir(parents=True, exist_ok=True)
-        self._file.write_text(
-            json.dumps([tree.model_dump(mode="json") for tree in trees]), encoding="utf-8"
-        )
-        self._trees = trees
+        with exclusive(
+            self._directory / ".lock",
+            wait=LOCK_WAIT_SECONDS,
+            stale=LOCK_STALE_SECONDS,
+            what="knowledge base",
+        ):
+            self._load()
+            trees = {tree.relative_path: tree for tree in self._trees or []}
+            result = apply(trees)
+            atomic_write(
+                self._file,
+                json.dumps(
+                    {
+                        "revision": self._revision + 1,
+                        "trees": [tree.model_dump(mode="json") for tree in trees.values()],
+                    }
+                ),
+            )
+            self._load()
+        return result
 
     def _files(self, target: Path) -> list[Path]:
         if target.is_file():
@@ -122,17 +165,21 @@ class KnowledgeBase:
             raise ValueError(f'"{name}" has no files the knowledge base reads: {sorted(FORMATS)}.')
         if len(files) > MAX_FILES:
             raise ValueError(f'"{name}" has {len(files)} files; the limit is {MAX_FILES} at once.')
-        trees = {tree.relative_path: tree for tree in self.trees()}
-        added, skipped = 0, []
+        built: dict[str, DocumentTree] = {}
+        skipped: list[str] = []
         for path in files:
             relative = path.resolve().relative_to(self._project).as_posix()
             try:
-                trees[relative] = self._tree(path, relative)
-                added += 1
+                built[relative] = self._tree(path, relative)
             except (ValueError, OSError) as error:
                 skipped.append(f"{relative}: {error}")
-        self._save(list(trees.values()))
-        return {"added": added, "skipped": skipped, "files": len(trees)}
+
+        def merge(trees: dict[str, DocumentTree]) -> int:
+            trees.update(built)
+            return len(trees)
+
+        total = self._change(merge)
+        return {"added": len(built), "skipped": skipped, "files": total}
 
     def _tree(self, path: Path, relative: str) -> DocumentTree:
         if path.stat().st_size > MAX_FILE_BYTES:
@@ -183,16 +230,16 @@ class KnowledgeBase:
 
     def remove(self, name: str) -> int:
         prefix = name.strip("/").replace("\\", "/")
-        kept = [
-            tree
-            for tree in self.trees()
-            if tree.relative_path != prefix and not tree.relative_path.startswith(prefix + "/")
-        ]
-        removed = len(self.trees()) - len(kept)
-        if removed == 0:
-            raise ValueError(f'Nothing in the knowledge base is named "{name}".')
-        self._save(kept)
-        return removed
+
+        def drop(trees: dict[str, DocumentTree]) -> int:
+            doomed = [key for key in trees if key == prefix or key.startswith(prefix + "/")]
+            if not doomed:
+                raise ValueError(f'Nothing in the knowledge base is named "{name}".')
+            for key in doomed:
+                del trees[key]
+            return len(doomed)
+
+        return self._change(drop)
 
     def listing(self) -> list[str]:
         lines = []
@@ -234,28 +281,46 @@ class KnowledgeBase:
             )
         )
         resolved = service.resolve(result, trees)
-        return [
+        found = [
             Passage(
                 node.source.relative_path,
                 node.source.location,
                 str(node.content),
                 node.source.source_hash[:12],
+                self._source_status(node.source.relative_path, node.source.source_hash),
             )
             for node in resolved.nodes
         ]
+        return sorted(found, key=lambda item: item.status != "current")
+
+    def _source_status(self, relative: str, recorded: str) -> str:
+        current = self._project / relative
+        if not current.is_file():
+            return "missing"
+        return (
+            "current" if hashlib.sha256(current.read_bytes()).hexdigest() == recorded else "changed"
+        )
+
+    def source_fingerprint(self, relative: str) -> str | None:
+        for tree in self.trees():
+            if tree.relative_path == relative:
+                return tree.source_hash
+        return None
 
     def tools(self) -> list[FunctionTool]:
         def knowledge_search(query: str, limit: int = 6) -> list[dict[str, str]]:
             """Search the passages added to the knowledge base; each hit says which file and where.
 
             Answer from these and cite the path and location; if nothing relevant comes back,
-            say so.
+            say so. A hit whose status is changed or missing comes from a file that is not the one
+            that was indexed: do not rely on it until the user runs /kb refresh.
             """
             return [
                 {
                     "path": item.path,
                     "location": item.location,
                     "source_hash": item.source_hash,
+                    "status": item.status,
                     "text": item.text,
                 }
                 for item in self.search(query, limit)

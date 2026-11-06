@@ -27,26 +27,32 @@ from .apply_patch import patch_tool
 from .approvals import Approver
 from .background import BackgroundJobs
 from .checkpoints import CheckpointStore
+from .claims import ArtifactClaims
 from .config import PROJECT_DIRECTORY, CliConfig
 from .console import Console
 from .cost import Spending, price_table
 from .custom_tools import CustomTools
 from .debug import DebugLog
+from .discoveries import DiscoveryStore
 from .documents import VISION_INSTRUCTIONS, DocumentReader, document_tools
 from .environment import environment_note
+from .events import EventLog, ToolTracer
 from .hooks import LifecycleHooks
 from .knowledge import KnowledgeBase
 from .live import LiveWork
 from .lsp import navigation_tools
 from .mcp_config import refusal_for
 from .memory import MemoryFile, memory_text, nested_note
+from .memory_refs import MemoryIndex, memory_status_tool
 from .modes import ModeRef, parse_rule
 from .notes import NotesStore
+from .pins import Pins
 from .post_edit import PostEdit
 from .repeat_guard import RepeatGuard
 from .rules import PermissionRules, Rule, rules_hook
 from .shell_sessions import ShellSessions
 from .skills import SkillScope, skill_tool, skills_index
+from .taskstate import PlanJournal
 from .telemetry_export import TelemetryExport
 from .todo import TodoList, todo_tool
 from .wiki import Wiki
@@ -108,6 +114,13 @@ class Parts:
     post_edit: PostEdit | None = None
     knowledge: KnowledgeBase | None = None
     wiki: Wiki | None = None
+    discoveries: DiscoveryStore | None = None
+    claims: ArtifactClaims | None = None
+    events: EventLog | None = None
+    tracer: ToolTracer | None = None
+    pins: Pins | None = None
+    plans: PlanJournal | None = None
+    memory_index: MemoryIndex | None = None
     current_agent: Any = None
     notes: NotesStore | None = None
     debug: DebugLog | None = None
@@ -144,6 +157,7 @@ class AgentBuilder:
             parts.renderer.before_tool,
             parts.checkpoints.before_tool,
             parts.skill_scope.before_tool,
+            parts.claims.before_tool,
             *(
                 [rules_hook(parts.permission_rules, parts.approver)]
                 if parts.permission_rules
@@ -151,8 +165,11 @@ class AgentBuilder:
             ),
             lambda event: refusal_for(parts.config.mcp_servers, event.tool),
             *parts.hooks_before,
+            *([parts.tracer.before] if parts.tracer else []),
         ]
         after = [parts.repeat_guard.after_tool, parts.renderer.after_tool, *parts.hooks_after]
+        if parts.tracer is not None:
+            after.append(parts.tracer.after)
         if parts.post_edit is not None and parts.post_edit.active:
             after.append(parts.post_edit.after_tool)
         if parts.debug is not None:
@@ -209,6 +226,9 @@ class AgentBuilder:
     def instructions_for(self, mode: str) -> str:
         parts = self.parts
         pieces = [parts.config.instructions or DEFAULT_INSTRUCTIONS]
+        pinned = parts.pins.text() if parts.pins is not None else ""
+        if pinned:
+            pieces.append(pinned)
         pieces.append(environment_note(parts.config.project, sandboxed=bool(parts.sandbox_kwargs)))
         if parts.shells is not None:
             pieces.append(
@@ -240,6 +260,16 @@ class AgentBuilder:
                 "The project wiki holds what earlier work learned: check wiki_search first, and "
                 "record durable findings as short linked pages with wiki_write."
             )
+        if parts.discoveries is not None:
+            pieces.append(
+                "Publish a finding others should build on with discovery_publish (a claim plus the "
+                "project files that support it); it becomes project knowledge only when a person "
+                "accepts it, and a different claim on the same topic shows as a conflict. Check "
+                "discovery_list before investigating a topic."
+            )
+            accepted = parts.discoveries.projection()
+            if accepted:
+                pieces.append("Accepted project knowledge (current evidence):\n" + accepted)
         if parts.notes is not None:
             pieces.append(
                 "For a long task, keep notes with notes_write (goal, facts learned, what is done, "
@@ -307,6 +337,14 @@ class AgentBuilder:
             and parts.post_edit.lsp.active
         ):
             tools.extend(navigation_tools(parts.post_edit.lsp, project))
+        if parts.pins is not None and not planning:
+            tools.extend(parts.pins.tools())
+        if parts.memory_index is not None:
+            tools.append(memory_status_tool(parts.memory_index))
+        if parts.discoveries is not None:
+            tools.extend(
+                parts.discoveries.tools("main", can_decide=not planning, can_publish=not planning)
+            )
         if parts.knowledge is not None:
             tools.extend(parts.knowledge.tools())
         if parts.wiki is not None:
@@ -357,14 +395,17 @@ class AgentBuilder:
         return Agent(
             model=chosen,
             instructions=spec["instructions"],
-            tools=dev_tools(
-                parts.config.project,
-                allow_writes=level in {"edit", "all"},
-                allow_commands=level == "all",
-                protected=PROTECTED,
-                extra_roots=parts.extra_dirs or None,
-                **(parts.sandbox_kwargs if level == "all" else {}),
-            ),
+            tools=[
+                *dev_tools(
+                    parts.config.project,
+                    allow_writes=level in {"edit", "all"},
+                    allow_commands=level == "all",
+                    protected=PROTECTED,
+                    extra_roots=parts.extra_dirs or None,
+                    **(parts.sandbox_kwargs if level == "all" else {}),
+                ),
+                *(parts.discoveries.tools(f"sub-{name}") if parts.discoveries else []),
+            ],
             approve=ScopedApprover(name, spec.get("allow", []))
             if background and level != "read-only"
             else parts.approver,
@@ -390,6 +431,7 @@ class AgentBuilder:
                 ),
                 parts.live,
                 readonly,
+                parts.claims,
             )
         self.setup_in_use = setup
         return parts.bg_agents

@@ -159,7 +159,7 @@ def test_a_broken_powerpoint_file_is_refused_by_name(tmp_path):
     try:
         reader.read("bad.pptx")
     except ValueError as error:
-        assert "not a PowerPoint package" in str(error)
+        assert "not a valid Office package" in str(error)
     else:
         raise AssertionError("expected a refusal")
 

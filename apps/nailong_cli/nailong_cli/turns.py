@@ -10,6 +10,8 @@ from nailong_agent_sdk.starter import Answer, CancelToken, ModelSetup
 from nailong_agent_sdk.tools.supervisor import listening_to_command_output
 
 from .cost import BudgetReached
+from .events import Span
+from .events import current as events_current
 from .keys import EscapeWatcher
 from .live import MAIN
 from .live_commands import handle_typed, release_pause
@@ -39,9 +41,14 @@ def _watch_remote_cancel(console, token) -> threading.Event:
     return done
 
 
-async def _run_listening(state: ReplState, text: str, images, token) -> Answer:
-    with listening_to_command_output(state.parts.renderer.command_output):
-        return await state.session.run(text, images=images, cancellation=token)
+async def _run_listening(state: ReplState, text: str, images, token, span=None) -> Answer:
+    marker = events_current.set(span) if span is not None else None
+    try:
+        with listening_to_command_output(state.parts.renderer.command_output):
+            return await state.session.run(text, images=images, cancellation=token)
+    finally:
+        if marker is not None:
+            events_current.reset(marker)
 
 
 def delegate_to_mentioned_agent(state: ReplState, prompt: str) -> str:
@@ -102,14 +109,26 @@ def run_turn(state: ReplState, prompt: str) -> Answer | None:
         state.keys if console.fancy else None,
         on_line=lambda line: handle_typed(state, line),
     )
+    if parts.events is not None:
+        parts.events.session_id = state.session.id
+    turn = parts.events.start("turn.start") if parts.events is not None else None
+    span = (
+        Span(turn["trace_id"], turn["span_id"], turn["event_id"], agent_id="main") if turn else None
+    )
     try:
         with watcher:
-            answer = state.runner.run(_run_listening(state, expanded.text, images, token))
+            answer = state.runner.run(_run_listening(state, expanded.text, images, token, span))
     except KeyboardInterrupt:
         token.cancel()
         console.stop_spinner()
         console.line("\nCancelled.")
+        if turn is not None:
+            parts.events.end(turn, "cancelled")
         return None
+    except BaseException as error:
+        if turn is not None:
+            parts.events.end(turn, "error", error=f"{type(error).__name__}: {error}")
+        raise
     finally:
         stop_watching.set()
         console.stop_spinner()
@@ -119,6 +138,8 @@ def run_turn(state: ReplState, prompt: str) -> Answer | None:
         keep_unread_messages(state, watcher.leftover)
     if token.is_cancelled():
         console.line(console.style("Interrupted (Esc).", "yellow"))
+    if turn is not None:
+        parts.events.end(turn, "cancelled" if token.is_cancelled() else str(answer.status))
     parts.renderer.finish_turn(answer)
     parts.spending.add(answer)
     state.last_answer = answer

@@ -15,6 +15,7 @@ import io
 import json
 import os
 import sys
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
@@ -37,6 +38,7 @@ from .build import (
     project_root,
 )
 from .checkpoints import CheckpointStore
+from .claims import ArtifactClaims
 from .config import (
     MODES,
     PROJECT_DIRECTORY,
@@ -49,6 +51,8 @@ from .console import Console
 from .cost import BudgetReached, Spending
 from .custom_tools import load_custom_tools
 from .debug import DebugLog
+from .discoveries import DiscoveryStore
+from .events import EventLog, Span, ToolTracer, mark_alive, mark_done, recover_dead
 from .factory import AgentBuilder, Parts
 from .forge_review import review_proposal
 from .history import enable_history
@@ -58,9 +62,11 @@ from .knowledge import KnowledgeBase
 from .lsp import LspManager, specs_from_table
 from .mcp_config import load_managed, servers_from_table, table_from_json_file
 from .memory import load_memory
+from .memory_refs import MemoryIndex
 from .modes import ModeRef, parse_rule
 from .notes import NotesStore
 from .permissions import PermissionStore, permissions_path
+from .pins import Pins
 from .plugins import load_plugins, plugin_directories
 from .post_edit import PostEdit, checkers_from_table
 from .render import Renderer
@@ -72,6 +78,7 @@ from .shell_sessions import make_shell_sessions
 from .skills import load_skills
 from .state import ReplState
 from .stream_json import JsonStream
+from .taskstate import PlanJournal
 from .telemetry_export import TelemetryExport
 from .todo import TodoList
 from .tui import PlainReader, choose, load_palette, make_reader
@@ -147,6 +154,21 @@ def parser() -> argparse.ArgumentParser:
     )
     cli.add_argument("--search", action="store_true", help="Let the agent search the web.")
     cli.add_argument("--autocompact", action="store_true")
+    cli.add_argument("--backup", metavar="FILE", help="Save the agent state to a zip and exit.")
+    cli.add_argument(
+        "--restore",
+        metavar="FILE",
+        help="Replace the agent state with a backup (saves a rollback).",
+    )
+    cli.add_argument("--verify-backup", metavar="FILE", help="Check a backup against its manifest.")
+    cli.add_argument(
+        "--migrate", action="store_true", help="Bring older agent state up to this version."
+    )
+    cli.add_argument(
+        "--health",
+        action="store_true",
+        help="Report the state of this project's agent files and exit 1 if any is broken.",
+    )
     cli.add_argument("-c", "--continue", dest="continue_", action="store_true")
     cli.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session.")
     cli.add_argument("--fork", metavar="ID", help="Branch a saved session.")
@@ -218,6 +240,15 @@ def main(
     )
     environ = dict(environ if environ is not None else os.environ)
     home = home or Path.home()
+    if args.health:
+        from .health import collect
+
+        report = collect((args.project or cwd or Path.cwd()).resolve())
+        shown = report.as_json() if args.output == "json" else "\n".join(report.lines())
+        console.write(shown + "\n")
+        return EXIT_OK if report.status != "broken" else 1
+    if args.backup or args.restore or args.verify_backup or args.migrate:
+        return _state_command(args, console, (args.project or cwd or Path.cwd()).resolve())
     with asyncio.Runner() as runner:
         worktree: Worktree | None = None
         try:
@@ -323,6 +354,7 @@ def main(
         try:
             state.reader = make_reader(
                 console,
+                pastes=state.pastes,
                 project=project,
                 history_file=home / ".local" / "state" / "nailong" / "history",
                 editing_mode=config.editing_mode,
@@ -350,6 +382,10 @@ def main(
             if console.interactive and isinstance(state.reader, PlainReader)
             else (lambda: None)
         )
+        session_event = parts.events.start("session.start", session_id=state.session.id)
+        parts.events.root = Span(
+            session_event["trace_id"], session_event["span_id"], session_event["event_id"]
+        )
         try:
             _lifecycle(state, "session_start")
             if args.review is not None:
@@ -367,6 +403,9 @@ def main(
         finally:
             save_history()
             _lifecycle(state, "session_end")
+            parts.events.root = None
+            parts.events.end(session_event)
+            mark_done(parts.events.path)
             _shutdown(runner, builder, parts, worktree, console)
 
 
@@ -540,7 +579,7 @@ def _context(
         deny_rules=[parse_rule(text) for text in args.disallow],
         rules=permission_rules,
     )
-    before, after = build_hooks(config.hooks, config.project, console)
+    before, after = build_hooks(config.hooks, config.project, console, config.hook_env)
     schema = json.loads(args.json_schema.read_text(encoding="utf-8")) if args.json_schema else None
     renderer = (
         JsonStream(console)
@@ -564,7 +603,7 @@ def _context(
         forge=_forge(args, console, config.project / PROJECT_DIRECTORY / "forge"),
         hooks_before=before,
         hooks_after=after,
-        lifecycle=LifecycleHooks(config.hooks, config.project),
+        lifecycle=LifecycleHooks(config.hooks, config.project, config.hook_env),
         background=make_background(sandbox_kwargs, config.project),
         custom_tools=load_custom_tools(config.project, home),
         permission_rules=permission_rules,
@@ -573,7 +612,11 @@ def _context(
             {"project": config.project},
             config.workspace,
         ),
-        wiki=Wiki(config.project / ".nailong" / "wiki"),
+        wiki=Wiki(config.project / ".nailong" / "wiki", config.project),
+        discoveries=DiscoveryStore(config.project / ".nailong" / "discoveries", config.project),
+        claims=ArtifactClaims(config.project / ".nailong" / "claims", config.project),
+        pins=Pins(config.project, home),
+        plans=PlanJournal(config.project / ".nailong" / "tasks"),
         shells=make_shell_sessions(sandbox_kwargs, config.project, config.ssh_hosts),
         notes=NotesStore(config.workspace / "notes"),
         debug=DebugLog(args.debug_file) if args.debug_file else None,
@@ -592,6 +635,42 @@ def _context(
         ),
     )
     approver.lifecycle = parts.lifecycle
+    parts.memory_index = MemoryIndex(config.project, parts.wiki, parts.discoveries, parts.knowledge)
+    parts.wiki.attach(parts.memory_index)
+    from . import state_ops
+
+    state_root = config.project / ".nailong"
+    try:
+        version = state_ops.state_version(state_root)
+    except state_ops.StateError as error:
+        console.error(str(error))
+        version = state_ops.STATE_VERSION
+    if version < state_ops.STATE_VERSION:
+        console.line(
+            console.style(
+                f"The agent state here is version {version}; run nailong --migrate (it makes a "
+                "backup first).",
+                "yellow",
+            )
+        )
+    elif not (state_root / state_ops.VERSION_FILE).is_file():
+        state_ops.write_version(state_root)
+    events_dir = config.project / ".nailong" / "events"
+    run_id = f"run-{uuid.uuid4().hex[:12]}"
+    parts.events = EventLog(events_dir / f"{run_id}.jsonl", run_id=run_id)
+    parts.tracer = ToolTracer(parts.events)
+    parts.wiki.events = parts.events
+    parts.discoveries.events = parts.events
+    mark_alive(parts.events.path)
+    closed = recover_dead(events_dir, skip=parts.events.path)
+    if closed:
+        console.line(
+            console.style(
+                f"closed {sum(closed.values())} unfinished event span(s) left by "
+                f"{len(closed)} earlier run(s) that ended abruptly (/events check)",
+                "yellow",
+            )
+        )
     parts.post_edit = PostEdit(
         config.project,
         console,
@@ -669,6 +748,41 @@ def _shutdown(
         runner.run(group.aclose())
     if worktree is not None:
         console.line(runner.run(finish_worktree(worktree)))
+
+
+def _state_command(args: argparse.Namespace, console: Console, project: Path) -> int:
+    from . import state_ops
+
+    root = project / ".nailong"
+    try:
+        if args.verify_backup:
+            info = state_ops.verify(Path(args.verify_backup))
+            console.line(
+                f"{args.verify_backup}: {info['files']} file(s) verified, state version "
+                f"{info['state_version']}."
+            )
+        elif args.backup:
+            info = state_ops.backup(root, Path(args.backup))
+            console.line(f"Saved {info['files']} file(s) ({info['bytes']} bytes) to {args.backup}.")
+        elif args.restore:
+            info = state_ops.restore(root, Path(args.restore))
+            console.line(f"Restored {info['restored']} file(s).")
+            if info["rollback"]:
+                console.line(
+                    f"What was there before is in {info['rollback']}; --restore it to undo."
+                )
+        else:
+            info = state_ops.migrate(root)
+            detail = (
+                f" (was {info['from']}; {len(info['steps'])} change(s); backup {info['backup']})"
+                if info["steps"] or info["backup"]
+                else "."
+            )
+            console.line(f"State is at version {info['to']}{detail}")
+    except state_ops.StateError as error:
+        console.error(str(error))
+        return EXIT_USAGE
+    return EXIT_OK
 
 
 def _lifecycle(state: ReplState, event: str) -> None:
@@ -810,6 +924,14 @@ def _banner(state: ReplState) -> None:
             )
         )
     console.line("/help for commands, @file to attach, !cmd to run one, Ctrl+D to leave.")
+    pending = state.parts.plans.unfinished() if state.parts.plans is not None else []
+    if pending:
+        console.line(
+            console.style(
+                f"{len(pending)} unfinished plan(s): see /plan list, continue with /plan resume.",
+                "yellow",
+            )
+        )
 
 
 class _Discard:

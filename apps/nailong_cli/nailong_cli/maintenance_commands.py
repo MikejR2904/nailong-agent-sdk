@@ -144,14 +144,81 @@ def _wiki(state: ReplState, arguments: list[str]) -> bool:
         for hit in wiki.search(" ".join(arguments[1:])):
             console.line(f"  {hit['page']}: {hit['snippet']}")
         return True
+    if arguments[:1] == ["history"] and len(arguments) == 2:
+        for entry in wiki.journal(arguments[1].strip().lower()):
+            console.line(
+                f"  r{entry['revision']} {entry['at']} {entry['action']} by "
+                f"{entry.get('author', 'main')}: {entry['why']}"
+            )
+        return True
+    if arguments[:1] == ["repair"]:
+        fixed = wiki.repair()
+        for line in fixed or ["nothing needed repair"]:
+            console.line(f"  {line}")
+        return True
     if arguments:
-        console.line(wiki.read(arguments[0])["text"].rstrip())
+        page = wiki.read(arguments[0])
+        console.line(page["text"].rstrip())
+        if page["stale"]:
+            changed = ", ".join(
+                f"{s['path']} ({s['status']})" for s in page["sources"] if s["status"] != "current"
+            )
+            console.line(console.style(f"  stale: {changed}", "yellow"))
         return True
     names = wiki.names()
+    stale = wiki.stale_pages()
     for name in names:
-        console.line(f"  {name}")
+        console.line(f"  {name}" + (console.style("  (stale)", "yellow") if name in stale else ""))
     if not names:
         console.line("  No pages yet. The agent adds them with wiki_write as it learns.")
+    return True
+
+
+def _stale(state: ReplState, arguments: list[str]) -> bool:
+    console = state.console
+    index = state.parts.memory_index
+    if arguments:
+        info = index.describe(arguments[0])
+        flags = ", ".join(f"{key}={value}" for key, value in info.items() if key != "cited_by")
+        console.line(f"  {flags}")
+        console.line(f"  cited by: {info['cited_by'] or 'nothing'}")
+        return True
+    report = index.stale_report()
+    for kind, lines in report.items():
+        for line in lines:
+            console.line(console.style(f"  stale {kind}: {line}", "yellow"))
+    if not report:
+        console.line("  Nothing in the project's memory is stale.")
+    console.line("  /stale REF shows one item: file:PATH, kb:PATH, wiki:PAGE, discovery:ID.")
+    return True
+
+
+def _discoveries(state: ReplState, arguments: list[str]) -> bool:
+    console = state.console
+    store = state.parts.discoveries
+    if arguments and arguments[0].startswith("d-"):
+        found = store.get(arguments[0])
+        console.line(f"  {found['id']} [{found['status']}] {found['topic']} by {found['owner']}")
+        console.line(f"  {found['claim']}")
+        for item in found["evidence"]:
+            quote = f' "{item["quote"]}"' if item["quote"] else ""
+            console.line(f"    {item['path']} ({item['status']}){quote}")
+        if found["conflicts_with"]:
+            console.line(console.style(f"  conflicts with {found['conflicts_with']}", "yellow"))
+        return True
+    status = arguments[0] if arguments else "open"
+    rows = store.listing(status)
+    for row in rows:
+        flags = (" stale" if row["stale"] else "") + (
+            f" CONFLICT {row['conflicts_with']}" if row["conflicts_with"] else ""
+        )
+        console.line(f"  {row['id']} [{row['status']}] {row['topic']}: {row['claim']}{flags}")
+    if not rows:
+        console.line(f"  No {status} discoveries.")
+    else:
+        console.line(
+            "  The agent accepts or rejects them with your approval; /discoveries ID shows one."
+        )
     return True
 
 
@@ -237,8 +304,10 @@ MAINTENANCE_HELP = {
     "telemetry": "/telemetry [now]: the OpenTelemetry export (collector, last result, send now)",
     "cleanup": "/cleanup [days]: remove old runs' audit and telemetry records (asks first)",
     "schedule": "/schedule [list|add|remove|install]: prompts that run on a timetable",
+    "stale": "/stale [REF]: what in the wiki, discoveries and knowledge base no longer holds",
+    "discoveries": "/discoveries [open|accepted|rejected|all|ID]: findings agents published",
     "kb": "/kb [add PATH|list|remove PATH|refresh|search TEXT]: files the agent can cite",
-    "wiki": "/wiki [PAGE|search TEXT]: the pages the agent keeps about this project",
+    "wiki": "/wiki [PAGE|search TEXT|history PAGE|repair]: the pages the agent keeps",
     "connect": "choose a model service and save settings, then switch to it now",
     "ci": "/ci github|github-review|gitlab [write]: a workflow for comments, PR reviews or CI",
     "editor": "/editor [text]: write a long prompt in your editor ($VISUAL or $EDITOR)",
@@ -251,7 +320,62 @@ MAINTENANCE_COMMANDS = {
     "editor": editor_command,
     "connect": _connect,
     "kb": _kb,
+    "discoveries": _discoveries,
+    "stale": _stale,
     "wiki": _wiki,
     "ci": _ci,
     "stats": stats_command,
 }
+
+
+def _events(state: ReplState, arguments: list[str]) -> bool:
+    from .events import EventError, check, read_events
+
+    console = state.console
+    log = state.parts.events
+    directory = log.path.parent
+    action = arguments[0] if arguments else "summary"
+    if action == "tail":
+        count = int(arguments[1]) if len(arguments) > 1 and arguments[1].isdigit() else 10
+        for event in read_events(log.path)[-count:]:
+            console.line(
+                f"  {event['sequence']:>4} {event['event_type']:<20} "
+                f"{event.get('task_id') or event.get('agent_id') or ''} {event['payload']}"
+            )
+        return True
+    if action == "check":
+        bad = 0
+        paths = sorted(directory.glob("run-*.jsonl"))
+        for path in paths:
+            try:
+                problems = check(read_events(path), running=path == log.path)
+            except EventError as error:
+                problems = [str(error)]
+            bad += len(problems)
+            for item in problems:
+                console.line(f"  {path.name}: {item}")
+        console.line(f"  {len(paths)} log(s) checked, {bad} problem(s).")
+        return True
+    counts: dict[str, int] = {}
+    for event in read_events(log.path):
+        counts[event["event_type"]] = counts.get(event["event_type"], 0) + 1
+    console.line(f"  run {log.run_id}  trace {log.trace_id}")
+    console.line("  " + ", ".join(f"{name} {count}" for name, count in sorted(counts.items())))
+    console.line(f"  open spans: {len(log.open_spans())}.  /events check | tail [N]")
+    return True
+
+
+def _health(state: ReplState, arguments: list[str]) -> bool:
+    from .health import collect
+
+    for line in collect(state.project).lines():
+        state.console.line(line)
+    return True
+
+
+MAINTENANCE_HELP["events"] = "/events [check|tail [N]]: the typed event log of this run"
+MAINTENANCE_HELP["health"] = (
+    "/health: logs, plans, stale memory and evidence coverage in one report"
+)
+MAINTENANCE_COMMANDS["events"] = _events
+MAINTENANCE_COMMANDS["health"] = _health

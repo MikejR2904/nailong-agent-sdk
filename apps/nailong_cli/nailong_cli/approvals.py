@@ -191,6 +191,8 @@ def subject_of(request: ApprovalRequest) -> str:
         return str(arguments.get("command", ""))
     if request.tool in {"web_fetch", "fetch_document"}:
         return str(arguments.get("url", ""))
+    if request.tool.startswith("discovery_"):
+        return str(arguments.get("id", ""))
     if request.tool == "web_search":
         return str(arguments.get("query", ""))
     if request.tool == "apply_patch":

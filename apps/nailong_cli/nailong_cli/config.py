@@ -38,6 +38,8 @@ SUBAGENT_TOOLS = ("read-only", "edit", "all")
 REQUIRED = ("provider", "model")
 DEFAULTS: dict[str, Any] = {
     "max_steps": 30,
+    "task_attempts": 2,
+    "team_parallel": 1,
     "context_tokens": 48_000,
     "tool_result_chars": 12_000,
     "sandbox": "auto",
@@ -58,6 +60,7 @@ DEFAULTS: dict[str, Any] = {
     "fallback_models": (),
     "otlp_include": ("telemetry", "audit", "integrity"),
     "ssh_hosts": (),
+    "hook_env": (),
     "format_on_edit": False,
     "diagnostics_on_edit": False,
     "lsp_on_edit": False,
@@ -77,6 +80,7 @@ USER_ONLY = (
     "otlp_endpoint",
     "otlp_include",
     "ssh_hosts",
+    "hook_env",
     "format_on_edit",
     "diagnostics_on_edit",
     "formatters",
@@ -122,6 +126,8 @@ class CliConfig:
     base_url: str | None
     max_tokens: int | None
     max_steps: int
+    task_attempts: int
+    team_parallel: int
     context_tokens: int
     tool_result_chars: int
     sandbox: str
@@ -143,6 +149,7 @@ class CliConfig:
     fallback_models: tuple[str, ...]
     otlp_include: tuple[str, ...]
     ssh_hosts: tuple[str, ...]
+    hook_env: tuple[str, ...]
     format_on_edit: bool
     diagnostics_on_edit: bool
     lsp_on_edit: bool
@@ -246,6 +253,8 @@ def load_config(
         base_url=merged.get("base_url"),
         max_tokens=merged.get("max_tokens"),
         max_steps=merged["max_steps"],
+        task_attempts=merged["task_attempts"],
+        team_parallel=merged["team_parallel"],
         context_tokens=merged["context_tokens"],
         tool_result_chars=merged["tool_result_chars"],
         sandbox=merged["sandbox"],
@@ -267,6 +276,7 @@ def load_config(
         fallback_models=tuple(merged["fallback_models"]),
         otlp_include=tuple(merged["otlp_include"]),
         ssh_hosts=tuple(merged["ssh_hosts"]),
+        hook_env=tuple(merged["hook_env"]),
         format_on_edit=bool(merged["format_on_edit"]),
         diagnostics_on_edit=bool(merged["diagnostics_on_edit"]),
         lsp_on_edit=bool(merged["lsp_on_edit"]),
@@ -367,6 +377,7 @@ def _validate(values: dict[str, Any], tables: dict[str, dict[str, Any]]) -> None
     _validate_endpoint(values.get("otlp_endpoint"))
     _validate_include(values["otlp_include"])
     _validate_hosts(values["ssh_hosts"])
+    _validate_hook_env(values["hook_env"])
     _validate_checkers(values)
     listed = values["instruction_files"]
     if not isinstance(listed, list | tuple) or any(not isinstance(item, str) for item in listed):
@@ -383,6 +394,8 @@ def _validate(values: dict[str, Any], tables: dict[str, dict[str, Any]]) -> None
     for key, floor, ceiling in (
         ("context_tokens", 2_000, 1_000_000),
         ("tool_result_chars", 200, 100_000),
+        ("task_attempts", 1, 5),
+        ("team_parallel", 1, 4),
     ):
         value = values[key]
         if isinstance(value, bool) or not isinstance(value, int) or not floor <= value <= ceiling:
@@ -405,6 +418,12 @@ def _validate(values: dict[str, Any], tables: dict[str, dict[str, Any]]) -> None
             raise ConfigError(
                 f"hooks entry {index + 1} needs event ({list(HOOK_EVENTS)}) and a command."
             )
+        if hook.get("on_failure", "block") not in {"block", "warn"}:
+            raise ConfigError(
+                f'hooks entry {index + 1} on_failure must be "block" (a failing hook refuses the '
+                f'action) or "warn" (it is reported and the action goes ahead), not '
+                f"{hook['on_failure']!r}."
+            )
     for name, server in values.get("mcp", {}).items():
         if not isinstance(server, dict) or not (server.get("command") or server.get("url")):
             raise ConfigError(f'mcp server "{name}" needs a command (stdio) or a url (http).')
@@ -414,11 +433,13 @@ def _validate(values: dict[str, Any], tables: dict[str, dict[str, Any]]) -> None
                 raise ConfigError(f'mcp server "{name}" {key} must be a list of tool names.')
     for name, agent in tables["agents"].items():
         _validate_agent(name, agent)
-    unknown_actions = sorted(set(tables["keybinds"]) - {"cycle_mode", "expand_output", "newline"})
+    unknown_actions = sorted(
+        set(tables["keybinds"]) - {"cycle_mode", "expand_output", "newline", "expand_paste"}
+    )
     if unknown_actions:
         raise ConfigError(
             f"keybinds has unknown action(s) {unknown_actions}; the actions are cycle_mode, "
-            "expand_output and newline."
+            "expand_output, newline and expand_paste."
         )
     for variant, settings in tables["variants"].items():
         if not isinstance(settings, dict) or not settings:
@@ -506,6 +527,16 @@ def _resolved_base_url(base_url: str | None) -> str | None:
     if base_url is None:
         return None
     return OPENAI_COMPATIBLE_BASE_URLS.get(base_url, base_url)
+
+
+def _validate_hook_env(names: Any) -> None:
+    if not isinstance(names, list | tuple) or any(
+        not isinstance(item, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item)
+        for item in names
+    ):
+        raise ConfigError(
+            'hook_env must be a list of environment variable names such as ["JIRA_URL"].'
+        )
 
 
 def _validate_agent(name: str, agent: Any) -> None:

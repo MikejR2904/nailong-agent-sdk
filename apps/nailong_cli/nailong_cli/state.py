@@ -14,6 +14,7 @@ from .config import CliConfig
 from .console import Console
 from .factory import AgentBuilder, Parts
 from .live import LiveWork
+from .paste import PasteStore
 from .permissions import PermissionStore
 from .user_commands import UserCommand
 
@@ -41,6 +42,7 @@ class ReplState:
     first_images: list[Path] = field(default_factory=list)
     typed_leftover: str = ""
     variant: str | None = None
+    pastes: PasteStore = field(default_factory=PasteStore)
 
     @property
     def live(self) -> LiveWork:
