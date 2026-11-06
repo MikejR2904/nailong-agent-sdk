@@ -172,7 +172,22 @@ Several of these are third-party trackers and reviews; version numbers and dates
 them in places. Treat the competitor columns as a dated snapshot and verify against each vendor's own
 documentation before relying on a single cell.
 
-## 6. Recommended order
+## 6. Follow-up, same day
+
+Each recommendation below was acted on after the audit; this is what happened, not a re-grade.
+
+| # | Recommendation | Outcome |
+|---|---|---|
+| 1 | Commit and push | Done: four commits on `nailong-cli`, pushed. The tree has been clean since. |
+| 2 | CLI in CI | Done in `ci.yml`: lint, types, tests with coverage on two systems and two Python versions, wheel build and clean install. **Not yet run on GitHub**: the workflow was checked locally piece by piece (wheels built and installed in a clean environment; `mypy` and `ruff` clean), but a first push will show what differs on the runners. |
+| 3 | Live model | Three live tests passed against `openai/gpt-4o-mini` via OpenRouter, and the exact arXiv task that failed earlier now completes (fetch, four reads, a six-sentence answer, 7 steps, $0.008). One model, one service. The summary did not cite page numbers although asked to. |
+| 4 | Sandbox | Added `require_sandbox`. Did not change the default: `auto` already uses bubblewrap or Seatbelt where present, and auto-selecting Docker would add a daemon probe to every start and depend on an image being present. The Docker daemon would not start on this machine, so the container tests ran in CI configuration only; a best-effort bubblewrap job was added. |
+| 5 | Start-up | 2.0 s to 1.25 s by loading `mcp` only when an MCP server is used. The rest is the SDK's pydantic model modules. |
+| 6 | Gap document, types, coverage | Gap document refreshed (16 rows). The CLI is `mypy` clean (it had 106 errors, fixed, none of them a runtime bug: the `mcp` keyword complaints were false alarms). The SDK is `mypy` clean apart from 45 files with 191 errors listed in `pyproject.toml` as debt. CLI coverage is **89%** (10,124 statements); CI fails below 85%. The claim in section 2 that 23 modules are "not tested" was too strong: those modules are exercised through end-to-end runs; the lowest are `mcp_serve` 40%, `plugins` 46% and `worktree` 53%. |
+| 7 | Publish | Both wheels build and run from a clean environment; a release workflow is written. **Not published**: that needs your PyPI account and project names. |
+| 8 | Features | Added a resident scheduler (`--daemon`) and optional meaning-based knowledge search (`/kb embed`). **Not done**: browser or computer use (needs a browser engine this repository does not bundle), an IDE extension tested in a real editor, and the other missing rows listed in `feature-gap-analysis.md`. |
+
+## 7. Recommended order (as first written)
 
 1. Commit and push the work (H2). Same day.
 2. Add the CLI to CI: install, lint, test on Linux and Windows (H1). Small, and it turns every other

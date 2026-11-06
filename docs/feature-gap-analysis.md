@@ -1,5 +1,11 @@
 # Feature gaps against Claude Code and Codex
 
+> **Refreshed 2026-11-06.** The `nailong` column was re-checked against the code: 16 rows that said
+> `missing` are now `have` or `partial` (listed in the refresh note at the end). Rows for features not
+> named there are as written on 2026-11-05 and are still absent in the code. The Claude Code and Codex
+> columns were not re-read; see `audit-2026-11-06-comparison.md` for a dated snapshot of the four
+> products.
+
 What Claude Code and Codex document that `nailong` does not do, and how each compares. Written
 2026-11-05 from their public documentation (code.claude.com/docs, learn.chatgpt.com/codex) and
 from this repository's code.
@@ -24,8 +30,8 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 | Mobile | yes | yes | by decision |
 | Move work between surfaces | `--teleport`, `/desktop` | "continue in cloud", `codex apply` | by decision |
 | Drive a local session remotely | `claude remote-control` | `codex remote-control` (experimental) | by decision |
-| Installers, package managers, self-update | script, Homebrew, WinGet, `claude update` | script, npm, Homebrew, `codex update` | missing (uv/pip only) |
-| Shell completion | - | `codex completion` | missing |
+| Installers, package managers, self-update | script, Homebrew, WinGet, `claude update` | script, npm, Homebrew, `codex update` | partial (`uv tool install --editable apps/nailong_cli`; both wheels are built and installed clean in CI; `.github/workflows/release.yml` publishes on a `v*` tag once PyPI is set up; `--upgrade` prints the command, nothing updates itself) |
+| Shell completion | - | `codex completion` | have (`--completion bash\|zsh\|fish\|powershell`) |
 
 ## 2. Accounts and enterprise
 
@@ -56,7 +62,7 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 | Strict MCP config | `--strict-mcp-config` | `required` servers | missing |
 | Continue, resume, fork, name sessions | `-c`, `-r`, `--fork-session`, `-n` | `resume`, `fork` | have |
 | Start from a pull request | `--from-pr` | - | missing |
-| Archive, delete, rename saved sessions | `/rename`, `claude purge` | `archive`, `unarchive`, `delete` | missing (list, resume, fork only) |
+| Archive, delete, rename saved sessions | `/rename`, `claude purge` | `archive`, `unarchive`, `delete` | partial (`/sessions delete`, `/sessions import`, resume, fork; no rename or archive) |
 | Queue a message for an existing session | - | `codex queue` | missing |
 | Diagnostics | `claude doctor` | `codex doctor` | have (`/doctor`) |
 | Local open-source models | env / gateway | `--oss --local-provider` | have |
@@ -89,7 +95,7 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 | Ask why the agent is doing something | - | - | have (`/why`: the step and the reasoning the model gave) |
 | Type ahead / queue a message while it works | queued, sent after | Tab queues, Enter injects | have (Enter queues; `/broadcast` injects into the running agent) |
 | Edit an earlier message and branch (Esc Esc) | rewind menu | edit previous and fork | missing (`/fork N`, `/rewind`) |
-| Open the prompt in your editor | Ctrl+G | - | missing |
+| Open the prompt in your editor | Ctrl+G | - | have (`/editor`) |
 | Paste an image | Ctrl+V | yes | missing (`@image`, `--image`) |
 | Full transcript / raw scrollback | Ctrl+O | Alt+R | partial (`/expand`) |
 | Copy the last answer | `/copy` | Ctrl+O, `/copy` | missing |
@@ -97,7 +103,7 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 | Side question that does not derail the task | `/btw` | `/side` | missing |
 | Voice dictation | `/voice` | F8, `/voice` | missing |
 | Vim editing mode | yes | `/vim` | have |
-| Custom key bindings | `/keybindings` | `/keymap` | missing |
+| Custom key bindings | `/keybindings` | `/keymap` | partial (`[keybinds]` for four actions and theme files; no `/keybindings` command) |
 | Themes | `/theme` | `/theme` | partial (setting only) |
 | Custom status line command | `statusLine` | `/statusline` | missing |
 | Terminal title | - | `/title` | missing |
@@ -108,7 +114,7 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 | Persistent goal for a long task | `/goal` | `/goal` | missing |
 | Session recap | `/recap` | `/recap` | missing |
 | Usage and stats views | `/usage`, `/stats`, `/insights` | `/usage`, `/status` | partial (`/cost`, `/status`) |
-| Import settings from another tool | `/import` | `/import` | missing |
+| Import settings from another tool | `/import` | `/import` | partial (`/sessions import` reads Claude Code and Codex transcripts; settings are not imported) |
 
 ## 5. The agent itself
 
@@ -126,7 +132,7 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 | Custom prompts / commands | skills | `/prompts:<name>` | have |
 | Plugins with a marketplace | yes | `codex plugin marketplace` | partial (local folders; marketplace by decision) |
 | Hooks | 33 events, 5 handler types (command, http, mcp tool, prompt, agent), can allow, deny or rewrite | 14 events, trust by hash, `/hooks` | partial (6 events, command only, exit code only) |
-| Hook that approves or denies a permission request | `PermissionRequest` | `PermissionRequest` | missing |
+| Hook that approves or denies a permission request | `PermissionRequest` | `PermissionRequest` | missing (`permission_asked` is notification only; remote clients can approve over `--serve` and `--acp`) |
 | MCP over stdio and HTTP | yes | yes | have |
 | MCP management commands and scopes | `claude mcp add/list/remove`, three scopes | `codex mcp add/list/login` | have (`/mcp add/remove/preset`, settings file, `--mcp-config`; one user scope) |
 | MCP sign-in (OAuth) | yes | yes | missing |
@@ -138,21 +144,21 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 | Edit notebooks | yes | - | have (`notebook_edit`) |
 | Agent asks *you* a question mid-run | yes | - | have (`ask_human_question`) |
 | Recurring / scheduled tasks | `/loop`, `/schedule`, cron tools | automations (nav only) | have (`/schedule`, `--run-schedules`; fired by cron or Task Scheduler, not by a resident process) |
-| Background sessions and a view of them | `--bg`, `claude agents`, `attach`, `logs`, `stop` | `codex agents`, cloud tasks | missing |
+| Background sessions and a view of them | `--bg`, `claude agents`, `attach`, `logs`, `stop` | `codex agents`, cloud tasks | partial (background subagents and jobs with `/ps`, `/stop`; no detached sessions to reattach to) |
 | Git worktree per session | `-w` | `--worktree` | have |
 | Output styles | built-in and custom | - | missing |
-| Models: aliases, plan with one model and execute with another | yes (`opusplan`) | `review_model` | missing |
+| Models: aliases, plan with one model and execute with another | yes (`opusplan`) | `review_model` | partial (`small_model`, model variants, a model per subagent; no plan-then-execute pairing) |
 
 ## 6. Memory and instructions
 
 | Feature | Claude Code | Codex | nailong |
 |---|---|---|---|
 | Project and user instruction files | `CLAUDE.md` | `AGENTS.md` | have (`NAILONG.md`, `AGENTS.md`, `CLAUDE.md`) |
-| Files in subdirectories, loaded by location | yes | root-to-current directory chain | missing (project root and user file only) |
-| Override and fallback file names | - | `AGENTS.override.md`, `project_doc_fallback_filenames` | missing |
+| Files in subdirectories, loaded by location | yes | root-to-current directory chain | partial (parent files load; subfolder files are listed and the agent is told to read them before changing that folder) |
+| Override and fallback file names | - | `AGENTS.override.md`, `project_doc_fallback_filenames` | partial (`NAILONG.md`, `AGENTS.md`, `CLAUDE.md` and an `instruction_files` list of patterns; no override file) |
 | Imports with `@path` | yes (4 hops) | - | have (three levels, inside the project or settings folder) |
 | Rules folder with path scoping | `.claude/rules/*.md` | `.rules` files (execution) | partial (`.nailong/rules/*.md` always loaded; no path scoping) |
-| Private, untracked local file | `CLAUDE.local.md` | - | missing |
+| Private, untracked local file | `CLAUDE.local.md` | - | have (`NAILONG.local.md`) |
 | The agent keeps its own notes between sessions | auto memory | `/memories` | partial (`/wiki` pages the agent writes and reads, `/kb` for documents; SDK semantic memory is still not used by the CLI) |
 | Read PDF, Word, Excel files | yes (PDF, images) | - | have (`read_document`, `search_document`, `interpret_page`; PowerPoint read as slide text, tables and notes) |
 | Bundled skills | bundled set | bundled set | have (8 built-ins, replaceable by name) |
@@ -168,7 +174,7 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 | OS sandbox for commands | macOS, Linux, WSL2 | macOS, Linux, native Windows | partial (Linux, macOS, Docker; nothing native on Windows) |
 | Network allow-list by domain inside the sandbox | yes | network off or on | missing (all or nothing) |
 | Hide credentials from sandboxed commands | yes | - | missing |
-| Workspace trust prompt | yes | `trust_level` | missing (project hooks and MCP are ignored instead) |
+| Workspace trust prompt | yes | `trust_level` | partial (project hooks, MCP, remote shells and wider hook environments are ignored; project tool files need a hash trust; no prompt) |
 | Protected paths for the agent's file tools | yes | - | have |
 | Tamper-evident audit trail | - | - | have (our strength) |
 
@@ -186,9 +192,9 @@ expose it) · `missing` · `by decision` (left out on purpose; see
 
 | Feature | Claude Code | Codex | nailong |
 |---|---|---|---|
-| GitHub Action | `claude-code-action`, `/install-github-app`, `@claude` | `codex-action`, `@codex review` | missing (`nailong -p` runs in CI) |
-| Automatic PR review and auto-fix | `/autofix-pr` | PR reviews | missing |
-| GitLab CI | yes | - | missing |
+| GitHub Action | `claude-code-action`, `/install-github-app`, `@claude` | `codex-action`, `@codex review` | partial (`/ci github` writes a workflow answering `/nailong` comments; no app) |
+| Automatic PR review and auto-fix | `/autofix-pr` | PR reviews | partial (`/ci github-review` writes a workflow posting one inline COMMENT review, not yet run on GitHub; no auto-fix) |
+| GitLab CI | yes | - | have (`/ci gitlab`) |
 | Slack and Linear | - | in navigation | missing |
 | Python and TypeScript SDKs | Agent SDK | TypeScript and Python | partial (Python SDK; MCP server for other hosts) |
 | App server protocol for custom clients | - | `codex app-server` | partial (MCP HTTP service) |
@@ -225,3 +231,23 @@ SDK.
 9. **Conversation rewind** and background sessions.
 10. **Output styles, a status-line command, key bindings.**
 11. **A native Windows sandbox**, which matters because you develop on Windows.
+
+## 12. Refresh note, 2026-11-06
+
+Rows whose `nailong` status changed since the first version of this page: installers (partial),
+shell completion, archive or delete sessions (partial), open the prompt in your editor, custom key
+bindings (partial), subdirectory instruction files (partial), override file names (partial), a local
+untracked file, workspace trust (partial), GitHub Action (partial), PR review (partial), GitLab CI,
+import from another tool (partial), plan-then-execute models (partial), background sessions
+(partial), and the permission-request hook (clarified, still missing).
+
+Built since, outside this table: pinned rules, a wiki with revisions, discoveries with evidence, a
+cited knowledge base, PDF, Word, Excel and PowerPoint reading, `fetch_document`, durable `/plan`
+runs with resume, retries and per-file claims, a typed event log with `/events` and `/health`,
+backup, restore and migration, collapsed long pastes, `/models`, `/web`, approvals and cancel over
+`--serve` and `--acp`, `code_navigate`, and a type-checked, CI-tested CLI.
+
+Still missing and worth doing, from the rows above: stream-JSON input, `--ephemeral`, profiles and
+`--settings`, `--tools` and `--bare`, a side question command, `/copy`, `/goal`, `/recap`, `/fast`,
+MCP OAuth, a permission-request hook that decides, output styles, model-reviewed approvals,
+rewinding the conversation, a network allow-list inside the sandbox, and commit attribution.

@@ -521,6 +521,7 @@ nailong -p PROMPT                run once, print the answer, exit
 | `--offline` | refuse any setting that reaches beyond your network |
 | `-c` / `-r ID` / `--fork ID --at N` / `--fork-session` / `-n NAME` | sessions |
 | `--autocompact` | summarise old turns automatically (already the default) |
+| `--daemon` `--daemon-status` `--daemon-stop` `--daemon-interval S` | stay running and run scheduled prompts when due (one daemon at a time; the interval is at least 10 s); say whether it runs; ask it to stop |
 | `--health` | report the state of this project's agent files (event logs, plans, stale memory, evidence coverage) and exit 1 if any is broken; with `--output json` for a scheduler |
 | `--backup FILE` `--verify-backup FILE` `--restore FILE` `--migrate` | save, check, restore and upgrade the agent state under `.nailong/`; see `docs/operations.md` |
 | `--review [BASE]` | print a read-only review of uncommitted changes and exit |
@@ -584,6 +585,9 @@ tool_timeout_seconds = 600     # one tool call; 0 = no limit
 run_deadline_seconds = 0       # a whole turn; 0 = no limit (the default)
 ssh_hosts = []                 # hosts the agent may open remote shells on (user file only)
 hook_env = []                  # extra environment variables passed to hook commands (user file only)
+require_sandbox = false        # refuse every command while none is sandboxed, in every mode (user file only)
+embedding_model = ""           # turns on meaning-based knowledge search; see /kb embed (user file only)
+embedding_base_url = ""        # embeddings service; defaults to base_url for openai-compatible (user file only)
 small_model = ""               # cheaper model for /compact and /suggest summaries
 instruction_files = []         # extra instruction files or globs, e.g. ["CONTRIBUTING.md", "docs/*.md"]
 format_on_edit = false         # run ruff/prettier/gofmt/rustfmt/shfmt after edits (user file only)
@@ -1027,7 +1031,11 @@ a URL says so and names the setting.
 PDF, Word, Excel, CSV) into passages of about 1,000 characters kept in `.nailong/knowledge`;
 `/kb list` shows each source as current, changed since added, or missing; `/kb refresh` re-reads
 changed sources; `/kb search TEXT` and the agent's `knowledge_search` return passages with file,
-location and source hash. A hit from a file that has changed or gone since it was indexed is
+location and source hash. With `embedding_model` set in your user settings, `/kb embed` sends the
+passages that have no current vector to an OpenAI-compatible `/embeddings` service (it prints how many
+passages and characters it sent; nothing is sent until you run it), and `knowledge_search` then merges
+word matches with meaning matches, so "vehicle" can find a passage that says "automobile". If the
+service is down the search falls back to words and the result carries a notice. A hit from a file that has changed or gone since it was indexed is
 marked `changed` or `missing` and listed last. Search is by words, not meaning. The index is written
 under a lock, read again before each change and replaced whole with a revision number, so two
 sessions adding files at once keep both.

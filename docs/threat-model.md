@@ -35,6 +35,7 @@ up) the user's hooks and MCP servers.
 | Network | `fetch_document` and `web_fetch` refuse private, loopback, link-local and metadata addresses and non-HTTP schemes, and re-check redirects; both ask for approval; web is off until turned on | `test_fetch_document_refuses_private_addresses_...` |
 | Authority | approvals come only from the mode, rules and the user; text in a document, a skill or a tool result cannot grant anything. A skill's `allowed-tools` only narrows what the user's own `/skill` may do | `test_instructions_inside_a_document_...` |
 | A cloned project | hooks, MCP servers, `ssh_hosts`, `hook_env`, `offline`, formatters, diagnostics, language servers, the OTLP endpoint and `allow` rules are ignored from project settings; custom tools in a project need a hash trust | `test_a_poisoned_project_...`, `test_settings_for_hooks_...` |
+| Unisolated commands | `require_sandbox = true` (user settings only) refuses every command tool while no sandbox is active, even in bypass mode or with allow rules | `test_require_sandbox_refuses_every_command_...` |
 | Hooks | run with a short environment (no API keys unless listed in `hook_env`); `pre_tool` failure blocks unless the hook is marked `warn` | `test_hook_policy.py` |
 | Subagents | cannot write authoritative memory or decide discoveries; background ones run only what their user-level `allow` list pre-approves | `test_a_subagent_cannot_write_...`, `test_agent_files.py` |
 | Shared state | writes are locked across processes, atomic, revisioned; a dead writer's lock is released at once; edits to one file are claimed per task | `test_multiprocess.py`, `test_plan_durability.py` |
@@ -70,5 +71,6 @@ Fixed while writing it:
   `RecorderMirror`) is the answer, and the CLI does not wire one itself.
 - **Local state files are readable by anyone with the user's rights**, including the knowledge index
   and event payloads (clipped, but they hold tool names and topics).
-- **Live providers were not tested.** Whether a real model respects the tool, approval and skill
-  contracts under adversarial input is unmeasured; `tests/live` is the place to start.
+- **Live providers were barely tested.** Three cooperative runs passed against one small model; how a real
+  model behaves under adversarial input (injection in documents, pressure to bypass approvals) is
+  unmeasured. `tests/live` is the place to add those cases.

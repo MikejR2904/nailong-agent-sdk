@@ -92,6 +92,30 @@ revision and gives existing wiki pages a revision 1 in their history), and write
 names the version and the cause. State written by a newer program is never changed: upgrade nailong
 or restore an older backup.
 
+## Running unattended
+
+`nailong --run-schedules` from cron or Task Scheduler runs what is due. Where installing a timer is
+not wanted, `nailong --daemon` stays running instead: it checks the schedule every `--daemon-interval`
+seconds (60 by default, 10 at least) and runs due prompts exactly as `--run-schedules` does.
+`--daemon-status` prints its status file (running or not, checks made, the last lines it produced) and
+`--daemon-stop` asks it to finish its current check and exit. Only one daemon runs at a time; a status
+file left by a dead process is ignored. It does not resume unfinished `/plan` runs by itself, because
+those need a person to answer approvals.
+
+Set `require_sandbox = true` in your user settings on any machine where commands must never run
+unisolated: every command tool is then refused whenever no sandbox is active, whatever the mode or
+the allow rules.
+
+## Packaging and CI
+
+CI (`.github/workflows/ci.yml`) lints and type-checks the SDK and the CLI, runs the SDK tests and the
+CLI tests with coverage on Linux and Windows under Python 3.12 and 3.13, builds both wheels and installs
+them into a clean environment to run `nailong --version` and `nailong --health`, and runs the Docker
+sandbox tests (and, best effort, the bubblewrap ones). `release.yml` publishes the SDK and then the CLI
+to PyPI on a `v*` tag through PyPI trusted publishing; it needs a trusted publisher configured on PyPI
+for each project, and the project names `nailong-agent-sdk` and `nailong-cli` to be yours there. Nothing
+has been published.
+
 ## Deploying to a team
 
 - Install per user with `uv tool install`; give each user their own keys through the credential
@@ -120,10 +144,12 @@ or restore an older backup.
 
 ## Not verified
 
-- No live model service was called in preparing this page (`tests/live` holds the tests; they need
-  `NAILONG_LIVE_TESTS=1` and a key, and cost money).
-- Docker, bubblewrap and Seatbelt sandboxes were not exercised (no Docker daemon was running on the
-  machine used; Linux isolation was not run).
+- The three tests in `tests/live` passed once on 2026-11-06 against `openai/gpt-4o-mini` through OpenRouter
+  (a file read by tool, a PDF read with a page citation, and a complete event log), and the CLI fetched and
+  summarised an arXiv paper for under a cent. That is one model on one service; other providers, streaming
+  paths and long runs are untested.
+- Docker, bubblewrap and Seatbelt sandboxes were not exercised on the machine used (Docker Desktop
+  was started but its engine did not come up; Linux isolation was not run). CI runs the Docker tests.
 - Restore, migration and backup were tested on Windows with synthetic state, not on a large or
   years-old project; there is no tested upgrade path from state version 0 (before wiki revisions
   existed, version 1 is the oldest supported).
