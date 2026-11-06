@@ -67,6 +67,9 @@ DEFAULT_INSTRUCTIONS = (
     "- After a result, note only what is new in it and what you will do next. Do not restate "
     "what you already established; build on it.\n"
     "- If only the user can decide something, ask with ask_human_question instead of guessing.\n"
+    "- Leave the project as you found it apart from what was asked. Do not add test or "
+    "scratch files to check your work unless the user asked for tests; check with a "
+    "command instead, and delete any file you made only for checking before you finish.\n"
     "- Never repeat a call you have already made. If a search returned nothing or a page was "
     "not useful, change the query or the source instead of retrying the same thing.\n"
     "- Independent lookups can go in one step; do not run several web searches at once.\n"
@@ -205,7 +208,10 @@ class AgentBuilder:
     async def _ask_user(self, question: str) -> str | None:
         console = self.parts.console
         if not console.interactive:
-            return None
+            raise ValueError(
+                "Nobody is at the terminal to answer (this run is not interactive). Do not ask "
+                "again: decide for yourself, or finish and say what you could not do."
+            )
 
         def read() -> str:
             console.line()

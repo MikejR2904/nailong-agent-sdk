@@ -141,6 +141,7 @@ def run_turn(state: ReplState, prompt: str) -> Answer | None:
     if turn is not None:
         parts.events.end(turn, "cancelled" if token.is_cancelled() else str(answer.status))
     parts.renderer.finish_turn(answer)
+    _report_created_files(state)
     parts.spending.add(answer)
     state.last_answer = answer
     state.turns_run += 1
@@ -154,6 +155,22 @@ def run_turn(state: ReplState, prompt: str) -> Answer | None:
     ):
         console.write("\a")
     return answer
+
+
+def _report_created_files(state: ReplState) -> None:
+    from .stream_json import JsonStream
+
+    if isinstance(state.parts.renderer, JsonStream):
+        return
+    created = state.parts.checkpoints.created()
+    if not created:
+        return
+    shown = ", ".join(created[:8]) + (f" and {len(created) - 8} more" if len(created) > 8 else "")
+    state.console.line(
+        state.console.style(
+            f"  created this turn and still there: {shown}  (/rewind removes them)", "yellow"
+        )
+    )
 
 
 def small_setup(state: ReplState) -> ModelSetup:

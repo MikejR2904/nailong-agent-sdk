@@ -7,7 +7,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
-from nailong_agent_sdk.starter import ApprovalRequest
+from nailong_agent_sdk.starter import ApprovalRequest, Refusal
 
 from .apply_patch import patch_paths
 from .commandline import allowed_by, denied_by, is_read_only_command
@@ -53,7 +53,7 @@ class Approver:
     def session_tools(self) -> set[str]:
         return self._session_tools
 
-    async def __call__(self, request: ApprovalRequest) -> bool:
+    async def __call__(self, request: ApprovalRequest) -> bool | Refusal:
         subject = subject_of(request)
         unsandboxed = request.tool in COMMAND_TOOLS and self._sandbox == NOT_SANDBOXED
         if unsandboxed and self._require_sandbox:
@@ -101,10 +101,15 @@ class Approver:
             await self.lifecycle.run("permission_asked", tool=request.tool, subject=subject)
         if not attended:
             assert remote is not None
-            return await asyncio.to_thread(self._ask_remote, remote, request, subject)
-        return await asyncio.to_thread(self._ask, request, subject, unsandboxed)
+            answered = await asyncio.to_thread(self._ask_remote, remote, request, subject)
+        else:
+            answered = await asyncio.to_thread(self._ask, request, subject, unsandboxed)
+        return answered or Refusal(
+            "The person declined it. Do not retry it or try another way to do the same thing; "
+            "carry on without it, or say plainly what you could not do."
+        )
 
-    def _ask_remote(self, remote, request: ApprovalRequest, subject: str) -> bool:
+    def _ask_remote(self, remote, request: ApprovalRequest, subject: str) -> bool | Refusal:
         asked = {
             "tool": request.tool,
             "subject": subject,
@@ -145,9 +150,12 @@ class Approver:
                 return True
             return False
 
-    def _refuse(self, request: ApprovalRequest, reason: str) -> bool:
+    def _refuse(self, request: ApprovalRequest, reason: str) -> Refusal:
         self._console.line(f"Refused {request.tool}: {reason}.")
-        return False
+        return Refusal(
+            f"Refused: {reason}. Do not retry it or try another way to do the same thing; "
+            "carry on without it, or finish and say plainly what you could not do or check."
+        )
 
     def _ask(self, request: ApprovalRequest, subject: str, unsandboxed: bool) -> bool:
         console = self._console

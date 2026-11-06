@@ -68,6 +68,17 @@ class CheckpointStore:
             self._snapshot_tree()
         return None
 
+    def created(self, turn: int | None = None) -> list[str]:
+        """Files this turn made that did not exist before it and still exist."""
+        folder = self._directory / f"turn-{turn or self.turn}"
+        if not folder.is_dir():
+            return []
+        found = {key for key, entry in self._read(folder).items() if not entry["existed"]}
+        if (folder / _TREE).is_file():
+            tree = json.loads((folder / _TREE).read_text(encoding="utf-8"))
+            found.update(self._tree_difference(tree)[1])
+        return sorted(key for key in found if self._resolve(key).is_file())
+
     def turns(self) -> list[tuple[int, list[str]]]:
         found = []
         for folder in self._turns():

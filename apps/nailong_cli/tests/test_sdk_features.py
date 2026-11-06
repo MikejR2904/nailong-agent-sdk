@@ -90,13 +90,13 @@ def test_a_question_the_agent_asks_reaches_you_and_your_answer_reaches_it(projec
     assert "blue" in seen and "'answered': True" in seen
 
 
-def test_without_a_terminal_the_question_is_reported_unanswered(project, home):
+def test_without_a_terminal_the_question_is_reported_as_unanswerable(project, home):
     code, _, _, setup = run_cli(
         project, home, ["-p", "go"], call("ask_human_question", question="Which?"), final("done")
     )
     assert code == 0
     seen = " ".join(str(item) for item in setup.model.calls[-1].observations)
-    assert "'answered': False" in seen
+    assert "Nobody is at the terminal to answer" in seen
 
 
 def write_notebook(project):

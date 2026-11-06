@@ -39,8 +39,8 @@ def test_a_saved_rule_approves_without_asking(home, project):
 def test_interactive_answers_are_honoured(home, project):
     approver, out, _ = approver_for(home, project, "y\nn\n\n")
     assert ask(approver, "write_file", path="a.txt", content="x") is True
-    assert ask(approver, "write_file", path="b.txt", content="x") is False
-    assert ask(approver, "write_file", path="c.txt", content="x") is False
+    assert not ask(approver, "write_file", path="b.txt", content="x")
+    assert not ask(approver, "write_file", path="c.txt", content="x")
     assert "Approve write_file?" in out.getvalue() and "create a.txt" in out.getvalue()
 
 
@@ -48,7 +48,7 @@ def test_session_approval_covers_that_tool_only(home, project):
     approver, out, _ = approver_for(home, project, "s\nn\n")
     assert ask(approver, "edit_file", path="a.py", old_text="a", new_text="b") is True
     assert ask(approver, "edit_file", path="z.py", old_text="a", new_text="b") is True
-    assert ask(approver, "write_file", path="x", content="") is False
+    assert not ask(approver, "write_file", path="x", content="")
 
 
 def test_always_saves_the_exact_subject_for_next_time(home, project):
@@ -75,7 +75,7 @@ def test_a_command_is_never_allowed_for_a_whole_session_without_a_sandbox(home, 
 
 def test_without_a_terminal_only_saved_rules_approve_and_the_rest_is_refused(home, project):
     approver, out, store = approver_for(home, project, interactive=False)
-    assert ask(approver, "write_file", path="a", content="") is False
+    assert not ask(approver, "write_file", path="a", content="")
     assert "it needs approval and there is no terminal" in out.getvalue()
     store.add(project, "run_command", "pytest*")
     assert ask(approver, "run_command", command="pytest") is True
@@ -84,7 +84,7 @@ def test_without_a_terminal_only_saved_rules_approve_and_the_rest_is_refused(hom
 def test_unattended_commands_without_a_sandbox_are_refused_even_when_a_rule_matches(home, project):
     approver, out, store = approver_for(home, project, interactive=False, sandbox=NOT_SANDBOXED)
     store.add(project, "run_command", "pytest*")
-    assert ask(approver, "run_command", command="pytest") is False
+    assert not ask(approver, "run_command", command="pytest")
     assert "no sandbox is active and --allow-unsandboxed was not given" in out.getvalue()
     allowed, _, store2 = approver_for(
         home, project, interactive=False, sandbox=NOT_SANDBOXED, allow_unsandboxed=True
