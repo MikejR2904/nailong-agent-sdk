@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ LIFECYCLE_EVENTS = (
     "assistant_message",
     "permission_asked",
     "compacted",
+    "pre_compact",
 )
 SAFE_ENVIRONMENT = (
     "PATH", "PATHEXT", "SYSTEMROOT", "SystemRoot", "COMSPEC", "WINDIR", "TEMP", "TMP",
@@ -69,12 +71,16 @@ def build_hooks(
     project: Path,
     console: Console,
     env_names: tuple[str, ...] = (),
+    allow: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> tuple[list[BeforeTool], list[AfterTool]]:
     before: list[BeforeTool] = []
     after: list[AfterTool] = []
     for hook in hooks:
         if hook["event"] == "pre_tool":
-            before.append(_Hook(hook, project, console, env_names).before)
+            before.append(_Hook(hook, project, console, env_names, allow).before)
+        elif hook["event"] == "subagent_stop":
+            stopped = {key: value for key, value in hook.items() if key != "matcher"}
+            after.append(_Hook({**stopped, "tool": "agent_*"}, project, console, env_names).after)
         elif hook["event"] in {"post_tool", "tool_failed"}:
             after.append(_Hook(hook, project, console, env_names).after)
         elif hook["event"] == "file_edited":
@@ -147,7 +153,9 @@ class _Hook:
         project: Path,
         console: Console,
         env_names: tuple[str, ...] = (),
+        allow: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
+        self._allow = allow
         self._env_names = env_names
         self._on_failure = hook.get("on_failure", "block")
         self._hook = hook
@@ -166,6 +174,14 @@ class _Hook:
             verdict = interpret(record.return_code, record.output, record.timed_out)
             if verdict.blocked:
                 return f"Hook refused {event.tool}: {verdict.reason}"
+            if verdict.updated is not None:
+                changed = dict(verdict.updated)
+                if "file_path" in changed and "path" in event.arguments:
+                    changed["path"] = changed.pop("file_path")
+                event.arguments.clear()
+                event.arguments.update(changed)
+            if verdict.allowed and self._allow is not None:
+                self._allow(event.tool, event.arguments)
             if verdict.warning:
                 self._console.line(f"Hook for {event.tool} failed (continuing): {verdict.warning}")
             return None

@@ -78,6 +78,7 @@ class ClaudeJsonStream(JsonStream):
         self._started = time.monotonic()
         self._pending: list[str] = []
         self._tool_calls = 0
+        self.tools: list[str] = []
 
     def announce(self, session_id: str) -> None:
         self._session = session_id
@@ -89,6 +90,7 @@ class ClaudeJsonStream(JsonStream):
                 "cwd": self._cwd,
                 "model": self._model,
                 "permissionMode": self._mode,
+                "tools": self.tools,
             }
         )
 

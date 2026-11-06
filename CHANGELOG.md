@@ -20,6 +20,8 @@ under "Unreleased" until the first tag.
 - `/rewind` lists files through git when it can, so ignored build folders no longer count toward
   its size limit.
 - `nailong -r` with no id lets you choose a session; `/rename NAME` renames the current one.
+- Hooks can rewrite a call's input and allow it without a prompt; `PreCompact` and `SubagentStop`
+  hooks; `--input-format stream-json`; the init event lists the tools.
 
 ### SDK
 - `BaseAgent` and the starter `Agent` can return an unknown-tool call to the model as an error

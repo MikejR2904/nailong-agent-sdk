@@ -34,6 +34,8 @@ HOOK_EVENTS = (
     "assistant_message",
     "permission_asked",
     "compacted",
+    "pre_compact",
+    "subagent_stop",
 )
 EDITING_MODES = ("emacs", "vi")
 TOOL_MODES = ("auto", "native", "prompted")

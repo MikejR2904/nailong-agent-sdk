@@ -13,6 +13,8 @@ CLAUDE_EVENTS = {
     "SessionEnd": "session_end",
     "Stop": "turn_end",
     "Notification": "permission_asked",
+    "PreCompact": "pre_compact",
+    "SubagentStop": "subagent_stop",
 }
 CLAUDE_NAMES = {value: key for key, value in CLAUDE_EVENTS.items()}
 CLAUDE_TOOLS = {
@@ -96,6 +98,8 @@ class Verdict:
     reason: str = ""
     warning: str = ""
     context: str = ""
+    allowed: bool = False
+    updated: dict[str, Any] | None = None
 
 
 def interpret(return_code: int, output: str, timed_out: bool = False) -> Verdict:
@@ -119,6 +123,15 @@ def interpret(return_code: int, output: str, timed_out: bool = False) -> Verdict
                 return Verdict(
                     blocked=True, reason=str(specific.get("permissionDecisionReason") or reason)
                 )
+            if isinstance(specific, dict):
+                changed = specific.get("updatedInput")
+                allowed = specific.get("permissionDecision") == "allow"
+                if isinstance(changed, dict) or allowed:
+                    return Verdict(
+                        allowed=allowed,
+                        updated=changed if isinstance(changed, dict) else None,
+                        context=str(specific.get("additionalContext") or ""),
+                    )
             if decision in {"block", "deny"}:
                 return Verdict(blocked=True, reason=reason or "the hook blocked it")
             if data.get("continue") is False:

@@ -92,10 +92,13 @@ class Toolbox:
         self, tool: ToolDefinition, context: ToolInvocationContext
     ) -> ToolExecutionResult:
         arguments = context.call.arguments
-        for guard in self._guards:
-            reason = await refusal_reason(guard, event_for(context))
-            if reason is not None:
-                return ToolExecutionResult(status=self._refusal_status, error=reason)
+        if self._guards:
+            event = event_for(context)
+            for guard in self._guards:
+                reason = await refusal_reason(guard, event)
+                if reason is not None:
+                    return ToolExecutionResult(status=self._refusal_status, error=reason)
+            arguments = event.arguments
         function = self._functions.get(tool.name)
         if function is not None:
             if function.needs_approval:

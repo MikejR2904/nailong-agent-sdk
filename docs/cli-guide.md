@@ -1203,8 +1203,12 @@ command = "python check_command.py"
   exit is only reported.
 - A hook may print `{"decision": "block", "reason": "..."}`,
   `{"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "..."}}` or
-  `{"continue": false, "stopReason": "..."}` to block. Rewriting a call's input and `allow`
-  decisions are not supported.
+  `{"continue": false, "stopReason": "..."}` to block.
+- `hookSpecificOutput.updatedInput` replaces the call's arguments before it is approved or run,
+  and `permissionDecision: "allow"` skips the approval prompt for that one call. Deny rules, the
+  sandbox requirement and `ask` rules still apply.
+- Also accepted: `PreCompact` (exit 2 stops the compaction) and `SubagentStop` (after an
+  `agent_*` tool finishes).
 - Hooks that use our own event names (`pre_tool` and so on) and no `matcher` keep the earlier
   behaviour: details in environment variables, any non-zero exit blocks. Set
   `protocol = "claude"` to switch one over.
@@ -1225,4 +1229,6 @@ could widen access (`offline`, `require_sandbox`, `ssh_hosts`, and so on) stay u
 `--output claude-stream-json` prints the event shapes Claude Code's stream uses, so programs
 written for it can read the stream: `system` (init), `assistant`, `user` (tool results) and
 `result` with `subtype`, `is_error`, `duration_ms`, `num_turns`, `total_cost_usd` and `usage`.
-`nailong -p` with no prompt reads the prompt from standard input.
+`nailong -p` with no prompt reads the prompt from standard input. With `--input-format stream-json`
+it reads one `{"type": "user", "message": {"content": "..."}}` object per line instead and runs a
+turn for each; the `system` init event lists the tools.

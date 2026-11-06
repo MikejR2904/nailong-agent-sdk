@@ -78,3 +78,65 @@ def test_a_claude_style_hook_that_only_fails_does_not_block(project, home, tmp_p
         project, home, ["-p", "x", *BYPASS], call("run_command", command="echo fine"), final("done")
     )
     assert "Hook refused" not in out + err and "fine" in out
+
+
+def test_updated_input_and_allow_in_the_json_decision_are_read():
+    verdict = interpret(
+        0,
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "permissionDecision": "allow",
+                    "updatedInput": {"command": "x"},
+                }
+            }
+        ),
+    )
+    assert verdict.allowed and verdict.updated == {"command": "x"} and not verdict.blocked
+
+
+def test_claude_names_for_compaction_and_subagent_events_are_accepted():
+    assert normalise({"event": "PreCompact", "command": "x"})["event"] == "pre_compact"
+    assert normalise({"event": "SubagentStop", "command": "x"})["event"] == "subagent_stop"
+
+
+REWRITER = (
+    "import json, sys\n"
+    "data = json.load(sys.stdin)\n"
+    "print(json.dumps({'hookSpecificOutput': {'permissionDecision': 'allow',\n"
+    "    'updatedInput': {'command': 'echo REWRITTEN'}}}))\n"
+)
+
+
+def test_a_hook_can_rewrite_the_command_and_approve_it_without_a_prompt(project, home, tmp_path):
+    write_user_config(home, hook_config(tmp_path, REWRITER))
+    _, out, err, _ = run_cli(
+        project,
+        home,
+        ["-p", "x", "--allow-unsandboxed"],
+        call("run_command", command="echo ORIGINAL"),
+        final("done"),
+    )
+    assert "REWRITTEN" in out and "ORIGINAL" not in out.replace("echo ORIGINAL", "")
+    assert "needs approval" not in out + err
+
+
+def test_a_pre_compact_hook_can_stop_the_compaction(project, home, tmp_path):
+    script = tmp_path / "stop.py"
+    script.write_text("import sys\nprint('not now', file=sys.stderr)\nsys.exit(2)\n", "utf-8")
+    write_user_config(
+        home,
+        CONFIG
+        + '[[hooks]]\nevent = "PreCompact"\n'
+        + f'command = \'"{sys.executable}" "{script.as_posix()}"\'\n',
+    )
+    _, out, err, _ = run_cli(
+        project,
+        home,
+        [],
+        final("hi"),
+        final("summary"),
+        lines="Hello\n/compact\n/exit\n",
+        interactive=True,
+    )
+    assert "A pre_compact hook stopped the compaction: not now" in out + err

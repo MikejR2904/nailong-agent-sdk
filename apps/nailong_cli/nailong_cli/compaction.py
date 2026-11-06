@@ -19,6 +19,13 @@ def compact_session(state: ReplState, focus: str = "") -> tuple[int, int]:
     pending = state.session.uncompacted_turns()
     if not pending:
         raise ValueError("There is nothing new to compact since the last summary.")
+    before = state.parts.lifecycle
+    if before is not None and before.has("pre_compact"):
+        for allowed, reason in state.runner.run(
+            before.run("pre_compact", session=state.session.id)
+        ):
+            if not allowed:
+                raise ValueError(f"A pre_compact hook stopped the compaction: {reason}")
     summary = state.session.summary
     parts = [f"Earlier summary:\n{summary['text']}"] if summary else []
     for turn in pending:

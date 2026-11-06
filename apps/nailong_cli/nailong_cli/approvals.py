@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,11 @@ class Approver:
         self._deny = deny_rules or []
         self._rules = rules
         self._session_tools: set[str] = set()
+        self._hook_allowed: set[str] = set()
         self.lifecycle: Any = None
+
+    def hook_allows(self, tool: str, arguments: dict[str, Any]) -> None:
+        self._hook_allowed.add(_fingerprint(tool, arguments))
 
     @property
     def session_tools(self) -> set[str]:
@@ -75,6 +80,9 @@ class Approver:
                 request, f"a deny rule forbids it ({verdict.pattern} from {verdict.source})"
             )
         forced_ask = verdict is not None and verdict.action == "ask"
+        if not forced_ask and _fingerprint(request.tool, request.arguments) in self._hook_allowed:
+            self._hook_allowed.discard(_fingerprint(request.tool, request.arguments))
+            return True
         if verdict is not None and verdict.action == "allow":
             return True
         if not forced_ask:
@@ -194,6 +202,10 @@ class Approver:
 
 
 _NUMBERED = {"1": "y", "2": "s", "3": "a", "4": "n"}
+
+
+def _fingerprint(tool: str, arguments: dict[str, Any]) -> str:
+    return tool + json.dumps(arguments, sort_keys=True, default=str)
 
 
 def _matches(rules: list[tuple[str, str]], tool: str, subject: str, test) -> bool:

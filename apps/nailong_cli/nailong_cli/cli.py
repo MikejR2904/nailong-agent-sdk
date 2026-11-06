@@ -202,6 +202,12 @@ def parser() -> argparse.ArgumentParser:
         help="Report the state of this project's agent files and exit 1 if any is broken.",
     )
     cli.add_argument(
+        "--input-format",
+        choices=["text", "stream-json"],
+        default="text",
+        help="With -p, stream-json reads one JSON message per line from standard input.",
+    )
+    cli.add_argument(
         "--trust-project",
         action="store_true",
         help="Read the hooks and MCP servers in this project's settings and approve them.",
@@ -384,6 +390,8 @@ def main(
             _shutdown(runner, builder, parts, worktree, console)
             return EXIT_USAGE
         parts.repeat_guard.attach(console)
+        if isinstance(parts.renderer, ClaudeJsonStream):
+            parts.renderer.tools = sorted(item.name for item in agent.definition.tools)
         parts.renderer.announce(session.id)
         state = ReplState(
             builder,
@@ -663,7 +671,9 @@ def _context(
         deny_rules=[parse_rule(text) for text in args.disallow],
         rules=permission_rules,
     )
-    before, after = build_hooks(config.hooks, config.project, console, config.hook_env)
+    before, after = build_hooks(
+        config.hooks, config.project, console, config.hook_env, approver.hook_allows
+    )
     schema = json.loads(args.json_schema.read_text(encoding="utf-8")) if args.json_schema else None
     renderer: JsonStream | Renderer
     if args.output == "claude-stream-json":
@@ -951,6 +961,8 @@ def _review(state: ReplState, args: argparse.Namespace) -> int:
 
 def _once(state: ReplState, args: argparse.Namespace) -> int:
     console = state.console
+    if args.input_format == "stream-json":
+        return _streamed_input(state, args)
     prompt = args.prompt
     if not console.interactive:
         piped = console.stdin.read()
@@ -975,6 +987,52 @@ def _once(state: ReplState, args: argparse.Namespace) -> int:
     if args.output == "json":
         console.line(json.dumps(_summary(answer, state.session.id), sort_keys=True))
     return _STATUS_EXIT.get(answer.status, EXIT_FAILED)
+
+
+def _streamed_input(state: ReplState, args: argparse.Namespace) -> int:
+    console = state.console
+    code = EXIT_OK
+    for number, line in enumerate(console.stdin, 1):
+        if not line.strip():
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError as error:
+            console.error(f"Input line {number} is not JSON: {error}")
+            return EXIT_USAGE
+        text = _message_text(message)
+        if text is None:
+            console.error(
+                f'Input line {number} needs {{"type": "user", "message": {{"content": ...}}}} '
+                "with text in the content."
+            )
+            return EXIT_USAGE
+        try:
+            answer = run_turn(state, text)
+        except (BudgetReached, PromptRefused) as error:
+            console.error(str(error))
+            return EXIT_BLOCKED
+        if answer is None:
+            return EXIT_INTERRUPTED
+        code = _STATUS_EXIT.get(answer.status, EXIT_FAILED)
+    return code
+
+
+def _message_text(message: object) -> str | None:
+    if not isinstance(message, dict) or message.get("type") != "user":
+        return None
+    body = message.get("message")
+    content = body.get("content") if isinstance(body, dict) else None
+    if isinstance(content, str):
+        return content.strip() or None
+    if isinstance(content, list):
+        pieces = [
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return chr(10).join(pieces).strip() or None
+    return None
 
 
 def _summary(answer: Answer, session_id: str) -> dict[str, object]:

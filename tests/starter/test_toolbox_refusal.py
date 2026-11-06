@@ -34,3 +34,37 @@ def test_a_plain_no_keeps_the_old_message_and_a_yes_lets_the_call_through():
     assert declined is not None
     assert declined.error == 'Tool "risky" was declined by the approve= callback.'
     assert asyncio.run(box_that_answers(True)._refusal("risky", {})) is None
+
+
+def test_a_guard_can_edit_the_arguments_the_tool_then_receives():
+    seen = {}
+
+    def runs(text: str) -> str:
+        seen["text"] = text
+        return text
+
+    def rewrite(event):
+        event.arguments["text"] = "changed"
+        return None
+
+    box = Toolbox([tool(runs, description="Echo text.")], guards=[rewrite], refusal_status="failed")
+    definition = box.definitions[0]
+    from nailong_agent_sdk.foundations.contracts import ScopedAgentTask, TaskScope, ToolCall
+    from nailong_agent_sdk.tools.tools import ToolInvocationContext
+
+    task = ScopedAgentTask(
+        id="t",
+        input={},
+        scope=TaskScope(label="a", boundaries={}),
+        locked_interface={},
+        instructions="x",
+        acceptance_criteria=["done"],
+    )
+    context = ToolInvocationContext(
+        agent_identity="a",
+        task=task,
+        iteration=1,
+        call=ToolCall(id="c1", name="runs", arguments={"text": "original"}),
+    )
+    result = asyncio.run(box.execute(definition, context))
+    assert result.status == "succeeded" and seen["text"] == "changed"
