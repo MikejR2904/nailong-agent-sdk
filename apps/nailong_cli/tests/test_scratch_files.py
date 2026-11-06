@@ -121,3 +121,27 @@ def test_a_project_too_large_to_snapshot_says_so_instead_of_claiming_nothing_cha
     assert store.turns() == [
         (1, ["(a command ran; the project is too large to undo what it changed)"])
     ]
+
+
+def test_files_git_ignores_do_not_count_toward_the_snapshot_limit(tmp_path, monkeypatch):
+    import subprocess
+
+    from nailong_agent_sdk.starter import ToolEvent
+
+    from nailong_cli import checkpoints
+
+    monkeypatch.setattr(checkpoints, "MAX_TREE_FILES", 10)
+    root = tmp_path / "p"
+    (root / "build").mkdir(parents=True)
+    for number in range(60):
+        (root / "build" / f"o{number}.bin").write_text("x\n", encoding="utf-8")
+    (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (root / "keep.py").write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    store = CheckpointStore(root, tmp_path / "ck", {})
+    store.begin_turn()
+    store.before_tool(ToolEvent("run_command", {"command": "x"}, 1))
+    assert store.untracked_turns() == []
+    (root / "made.py").write_text("b\n", encoding="utf-8")
+    assert store.plan(1)["delete"] == ["made.py"]
+    assert store.rewind(1) == ["made.py"] and not (root / "made.py").exists()

@@ -17,6 +17,9 @@ under "Unreleased" until the first tag.
 - `--output claude-stream-json` writes Claude Code's stream event shapes.
 - New commands: `/config`, `/hooks`, `/login`, `/image`.
 - `/rewind` says when a project is too large to undo what a command changed.
+- `/rewind` lists files through git when it can, so ignored build folders no longer count toward
+  its size limit.
+- `nailong -r` with no id lets you choose a session; `/rename NAME` renames the current one.
 
 ### SDK
 - `BaseAgent` and the starter `Agent` can return an unknown-tool call to the model as an error

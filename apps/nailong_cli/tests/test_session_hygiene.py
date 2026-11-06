@@ -54,3 +54,36 @@ def test_continue_picks_the_latest_session_that_has_turns_not_an_empty_one(proje
         project, home, ["-c"], final("x"), lines="/sessions\n/exit\n", interactive=True
     )
     assert f"* {old}" in out
+
+
+def test_rename_keeps_the_turns_under_a_new_name_and_removes_the_old_one(project, home):
+    old = first_session(project, home)
+    _, out, _, _ = run_cli(
+        project,
+        home,
+        ["-r", old],
+        final("x"),
+        lines="/rename thesis\n/sessions\n/exit\n",
+        interactive=True,
+    )
+    assert "Renamed" in out and "(1 turn(s) kept)" in out
+    listed = out.split("kept).")[1]
+    assert "thesis" in listed and old not in listed
+    _, again, _, _ = run_cli(
+        project, home, ["-r", "thesis"], final("x"), lines="/sessions\n/exit\n", interactive=True
+    )
+    assert "* thesis" in again
+
+
+def test_resume_with_no_id_lets_you_choose_from_the_sessions_that_have_turns(project, home):
+    old = first_session(project, home)
+    _, out, _, _ = run_cli(
+        project, home, ["-r"], final("x"), lines="1\n/sessions\n/exit\n", interactive=True
+    )
+    assert f"1. {old}" in out and f"* {old}" in out
+
+
+def test_resume_with_no_id_and_no_terminal_names_the_sessions(project, home):
+    old = first_session(project, home)
+    code, _, err, _ = run_cli(project, home, ["-r"], final("x"), lines="")
+    assert code != 0 and old in err

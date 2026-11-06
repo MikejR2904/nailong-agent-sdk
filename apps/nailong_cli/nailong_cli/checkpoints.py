@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 from nailong_agent_sdk.starter import ToolEvent
@@ -28,6 +29,7 @@ SKIPPED_DIRECTORIES = frozenset(
         "target",
     }
 )
+GIT_LIST_SECONDS = 30
 MAX_TREE_FILES = 5_000
 MAX_TREE_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -246,7 +248,34 @@ class CheckpointStore:
             (self._project / relative).unlink(missing_ok=True)
         return [*differs, *created]
 
+    def _listed_by_git(self) -> list[str] | None:
+        if not (self._project / ".git").exists() or shutil.which("git") is None:
+            return None
+        try:
+            done = subprocess.run(
+                ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                cwd=self._project,
+                capture_output=True,
+                timeout=GIT_LIST_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if done.returncode != 0:
+            return None
+        names = [part.decode("utf-8", "replace") for part in done.stdout.split(b"\0") if part]
+        return [
+            name for name in names if not SKIPPED_DIRECTORIES.intersection(Path(name).parts[:-1])
+        ]
+
     def _walk(self):
+        listed = self._listed_by_git()
+        if listed is not None:
+            for relative in sorted(set(listed)):
+                path = self._project / relative
+                if path.is_file() and not path.is_symlink():
+                    yield relative, path
+            return
         for current, directories, names in os.walk(self._project):
             directories[:] = [d for d in directories if d not in SKIPPED_DIRECTORIES]
             for name in names:

@@ -207,7 +207,14 @@ def parser() -> argparse.ArgumentParser:
         help="Read the hooks and MCP servers in this project's settings and approve them.",
     )
     cli.add_argument("-c", "--continue", dest="continue_", action="store_true")
-    cli.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session.")
+    cli.add_argument(
+        "-r",
+        "--resume",
+        metavar="ID",
+        nargs="?",
+        const="",
+        help="Resume a saved session; with no ID, choose one from a list.",
+    )
     cli.add_argument("--fork", metavar="ID", help="Branch a saved session.")
     cli.add_argument("--fork-session", action="store_true", help="With -c or -r: branch instead.")
     cli.add_argument("--at", type=int, metavar="TURN", help="With a fork: branch after this turn.")
@@ -371,7 +378,7 @@ def main(
             return EXIT_USAGE
         try:
             agent = builder.build(setup)
-            session = _session(args, agent)
+            session = _session(args, agent, console)
         except (AgentSdkError, ValueError) as error:
             console.error(str(error))
             _shutdown(runner, builder, parts, worktree, console)
@@ -884,11 +891,29 @@ def _forge(args: argparse.Namespace, console: Console, directory: Path) -> Forge
     return Forge(directory, reviewer=lambda proposal: review_proposal(console, proposal))
 
 
-def _session(args: argparse.Namespace, agent) -> Session:
+def _chosen_session(agent, console) -> str:
+    from .session_hygiene import turn_count
+
+    ids = [i for i in agent.sessions() if turn_count(agent, i)]
+    if not ids:
+        raise ValueError("There is no saved session with a turn in it to resume.")
+    if not console.interactive:
+        raise ValueError(
+            f"-r needs a session id when there is no terminal to choose in; the sessions are {ids}."
+        )
+    for number, session_id in enumerate(ids, 1):
+        console.line(f"  {number}. {session_id}")
+    answer = console.ask("Resume which? (number) > ")
+    if not answer.isdigit() or not 1 <= int(answer) <= len(ids):
+        raise ValueError(f"{answer!r} is not a number from 1 to {len(ids)}.")
+    return ids[int(answer) - 1]
+
+
+def _session(args: argparse.Namespace, agent, console) -> Session:
     if args.fork:
         return agent.resume(args.fork).fork(at_turn=args.at)
-    if args.resume:
-        base = agent.resume(args.resume)
+    if args.resume is not None:
+        base = agent.resume(args.resume or _chosen_session(agent, console))
         return base.fork(at_turn=args.at) if args.fork_session else base
     if args.continue_:
         latest = latest_with_turns(agent)

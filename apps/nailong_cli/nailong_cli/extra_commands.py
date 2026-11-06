@@ -128,10 +128,37 @@ def _login(state, arguments: list[str]) -> bool:
     return True
 
 
+def _rename(state, arguments: list[str]) -> bool:
+    if len(arguments) != 1:
+        state.console.line("  Usage: /rename <new session name>")
+        return True
+    from nailong_agent_sdk.starter.session_store import SessionStore, validate_session_id
+
+    new = validate_session_id(arguments[0])
+    old = state.session.id
+    if new == old:
+        state.console.line(f"  The session is already called {new}.")
+        return True
+    if new in state.agent.sessions():
+        raise ValueError(f'A session called "{new}" already exists; pick another name.')
+    SessionStore(state.agent.services.run_root).fork(old, new, state.agent.name, None)
+    state.session = state.agent.resume(new)
+    state.agent.delete_session(old)
+    state.console.line(f"  Renamed {old} to {new} ({len(state.session.turns)} turn(s) kept).")
+    return True
+
+
 EXTRA_HELP = {
     "hooks": "list the configured hooks and whether the project's are approved",
     "config": "the effective settings and where they come from",
     "login": "choose a model service and save an API key (same as --setup)",
     "image": "attach the image on the clipboard to your next message",
+    "rename": "/rename NAME: give this session a name you can resume it by",
 }
-EXTRA_COMMANDS = {"hooks": _hooks, "config": _config, "login": _login, "image": _image}
+EXTRA_COMMANDS = {
+    "hooks": _hooks,
+    "config": _config,
+    "login": _login,
+    "image": _image,
+    "rename": _rename,
+}
