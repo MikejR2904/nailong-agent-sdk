@@ -73,6 +73,7 @@ from .post_edit import PostEdit, checkers_from_table
 from .render import Renderer
 from .repl import after_plan, command_descriptions, cycle_mode, mode_hint, repl, toolbar_text
 from .rules import DEFAULT_RULES, PermissionRules, Rule, rule_from_table
+from .session_hygiene import discard_if_unused, latest_with_turns
 from .setup import SetupCancelled, run_setup
 from .shell import run_shell
 from .shell_sessions import make_shell_sessions
@@ -423,6 +424,7 @@ def main(
         finally:
             save_history()
             _lifecycle(state, "session_end")
+            discard_if_unused(state.agent, state.session.id)
             parts.events.root = None
             parts.events.end(session_event)
             mark_done(parts.events.path)
@@ -863,7 +865,7 @@ def _session(args: argparse.Namespace, agent) -> Session:
         base = agent.resume(args.resume)
         return base.fork(at_turn=args.at) if args.fork_session else base
     if args.continue_:
-        latest = agent.latest_session()
+        latest = latest_with_turns(agent)
         if latest:
             base = agent.resume(latest)
             return base.fork(at_turn=args.at) if args.fork_session else base

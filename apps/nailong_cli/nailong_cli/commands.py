@@ -14,6 +14,7 @@ from .compaction import compact_session
 from .cost import BudgetReached
 from .custom_tools import create_tool_file, reload_custom_tools
 from .modes import MODE_HELP, parse_rule
+from .session_hygiene import discard_if_unused, turn_count
 from .shell import run_shell
 from .skills import find_skill, invocation_prompt
 from .state import ReplState
@@ -170,6 +171,8 @@ def _sessions(state: ReplState, arguments: list[str]) -> bool:
         state.console.line(f"  deleted {target}")
         return True
     for session_id in state.agent.sessions():
+        if session_id != state.session.id and turn_count(state.agent, session_id) == 0:
+            continue
         mark = "*" if session_id == state.session.id else " "
         state.console.line(f" {mark} {session_id}  {_last_prompt(state, session_id)}")
     return True
@@ -190,7 +193,10 @@ def _resume(state: ReplState, arguments: list[str]) -> bool:
     else:
         state.console.line("Usage: /resume <session id>")
         return True
+    previous = state.session.id
     state.session = state.agent.resume(chosen)
+    if previous != chosen:
+        discard_if_unused(state.agent, previous)
     state.console.line(_session_line(state, "resumed"))
     return True
 
@@ -203,7 +209,9 @@ def _fork(state: ReplState, arguments: list[str]) -> bool:
 
 
 def _new(state: ReplState, arguments: list[str]) -> bool:
+    previous = state.session.id
     state.session = state.agent.session()
+    discard_if_unused(state.agent, previous)
     state.parts.todos.items.clear()
     state.console.line(_session_line(state, "started"))
     return True
