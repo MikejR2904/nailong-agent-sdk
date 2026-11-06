@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..foundations.contracts import (
     EpisodeKind,
@@ -14,9 +14,10 @@ from ..foundations.contracts import (
     ToolDefinition,
     ToolExecutionResult,
 )
-from ..mcp.client import McpClientManager
-from ..mcp.client_bridge import registered_tool_name
 from ..mcp.client_types import McpConnectionState, McpServerConfig
+
+if TYPE_CHECKING:
+    from ..mcp.client import McpClientManager
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,9 @@ class McpTools:
 async def connect_mcp(
     servers: Sequence[McpServerConfig], *, needs_approval: bool = True
 ) -> McpTools:
+    from ..mcp.client import McpClientManager
+    from ..mcp.client_bridge import registered_tool_name
+
     manager = McpClientManager(list(servers))
     await manager.connect_all()
     statuses = manager.list_statuses()
