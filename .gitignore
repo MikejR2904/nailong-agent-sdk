@@ -32,7 +32,8 @@ benchmarks/dfl/results/**/live_*results.json
 benchmarks/dfl/results/live_pilot/
 benchmarks/dfl/results/live_discarded/
 benchmarks/dfl/results/live_degenerate_split/
-examples/
+examples/*
+!examples/multi_agent_*.py
 scripts/
 .env
 __pycache__/

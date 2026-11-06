@@ -79,7 +79,7 @@ from .shell import run_shell
 from .shell_sessions import make_shell_sessions
 from .skills import load_skills
 from .state import ReplState
-from .stream_json import JsonStream
+from .stream_json import ClaudeJsonStream, JsonStream
 from .taskstate import PlanJournal
 from .telemetry_export import TelemetryExport
 from .todo import TodoList
@@ -113,7 +113,12 @@ def parser() -> argparse.ArgumentParser:
         const="",
         help="Run once and exit; with no PROMPT the prompt is read from standard input.",
     )
-    cli.add_argument("--output", choices=["text", "json", "stream-json"], default="text")
+    cli.add_argument(
+        "--output",
+        choices=["text", "json", "stream-json", "claude-stream-json"],
+        default="text",
+        help="claude-stream-json writes the event shapes Claude Code's stream-json uses.",
+    )
     cli.add_argument("--project", type=Path, default=None, help="Project directory.")
     cli.add_argument("--add-dir", action="append", default=[], type=Path, metavar="DIR")
     cli.add_argument("--worktree", nargs="?", const="", default=None, metavar="NAME")
@@ -196,6 +201,11 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report the state of this project's agent files and exit 1 if any is broken.",
     )
+    cli.add_argument(
+        "--trust-project",
+        action="store_true",
+        help="Read the hooks and MCP servers in this project's settings and approve them.",
+    )
     cli.add_argument("-c", "--continue", dest="continue_", action="store_true")
     cli.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session.")
     cli.add_argument("--fork", metavar="ID", help="Branch a saved session.")
@@ -274,6 +284,10 @@ def main(
         shown = report.as_json() if args.output == "json" else "\n".join(report.lines())
         console.write(shown + "\n")
         return EXIT_OK if report.status != "broken" else 1
+    if args.trust_project:
+        from .trust_commands import review_project_settings
+
+        return review_project_settings(console, home, (args.project or cwd or Path.cwd()).resolve())
     if args.daemon or args.daemon_status or args.daemon_stop:
         return _daemon(args, console, environ, home or Path.home(), model_factory)
     if args.backup or args.restore or args.verify_backup or args.migrate:
@@ -644,11 +658,15 @@ def _context(
     )
     before, after = build_hooks(config.hooks, config.project, console, config.hook_env)
     schema = json.loads(args.json_schema.read_text(encoding="utf-8")) if args.json_schema else None
-    renderer = (
-        JsonStream(console)
-        if args.output == "stream-json"
-        else Renderer(console, verbose=args.verbose, show_reasoning=config.show_reasoning)
-    )
+    renderer: JsonStream | Renderer
+    if args.output == "claude-stream-json":
+        renderer = ClaudeJsonStream(
+            console, model=config.model, cwd=str(config.project), mode=config.permission_mode
+        )
+    elif args.output == "stream-json":
+        renderer = JsonStream(console)
+    else:
+        renderer = Renderer(console, verbose=args.verbose, show_reasoning=config.show_reasoning)
     knowledge = KnowledgeBase(
         config.project / ".nailong" / "knowledge",
         {"project": config.project},
@@ -991,7 +1009,7 @@ def _banner(state: ReplState) -> None:
         console.line(
             console.style(
                 f"ignored {list(state.config.ignored_project_keys)} in project settings "
-                "(see /doctor)",
+                "(see /doctor; hooks and MCP servers can be approved with /trust-project)",
                 "yellow",
             )
         )

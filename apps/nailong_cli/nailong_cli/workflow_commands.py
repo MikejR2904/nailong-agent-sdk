@@ -11,6 +11,7 @@ from nailong_agent_sdk.foundations.errors import AgentSdkError
 from .build import effort_parameters
 from .custom_tools import reload_custom_tools, trust
 from .directories import add_directory
+from .extra_commands import EXTRA_COMMANDS, EXTRA_HELP
 from .live_commands import LIVE_COMMANDS, LIVE_HELP
 from .maintenance_commands import MAINTENANCE_COMMANDS, MAINTENANCE_HELP
 from .mcp_config import PRESETS, add_server, remove_server, spec_from_words
@@ -23,6 +24,7 @@ from .shell import run_shell
 from .skills import create_skill, install_skill, load_skills
 from .state import ReplState
 from .token_commands import TOKEN_COMMANDS, TOKEN_HELP
+from .trust_commands import trust_project_command
 from .turns import ask_read_only, switch_agent
 
 MAX_DIFF_CHARS = 30_000
@@ -455,6 +457,7 @@ WORKFLOW_HELP = {
     "variant": "/variant [name|off]: switch to a saved set of model parameters",
     "notes": "/notes [title]: the agent's task notes",
     "trust-tools": "read and approve project tool files (Python the agent may call)",
+    "trust-project": "read and approve the hooks and MCP servers in project settings",
     "export": "/export [file]: this session as markdown",
     "search": "/search TEXT: find text in saved sessions",
     "suggest": "ask for three useful next prompts",
@@ -464,6 +467,7 @@ WORKFLOW_HELP = {
     **TOKEN_HELP,
     **MODEL_HELP,
     **LIVE_HELP,
+    **EXTRA_HELP,
 }
 WORKFLOW_COMMANDS = {
     "plan": plan_command,
@@ -485,6 +489,7 @@ WORKFLOW_COMMANDS = {
     "notes": _notes,
     "variant": _variant,
     "trust-tools": _trust_tools,
+    "trust-project": trust_project_command,
     "export": _export,
     "search": _search,
     "suggest": _suggest,
@@ -494,4 +499,5 @@ WORKFLOW_COMMANDS = {
     **TOKEN_COMMANDS,
     **MODEL_COMMANDS,
     **LIVE_COMMANDS,
+    **EXTRA_COMMANDS,
 }

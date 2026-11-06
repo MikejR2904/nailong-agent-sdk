@@ -126,6 +126,7 @@ class Agent:
                 "the runtime services are opened, and services you pass are already open."
             )
         self._name = name
+        self._recoverable = recoverable_refusals
         self._model_class = output if isinstance(output, type) else None
         self._toolbox = Toolbox(
             tools,
@@ -389,6 +390,7 @@ class Agent:
             self.definition,
             self._model,
             tool_executor=self._toolbox if self._toolbox.definitions else None,
+            recover_from_unknown_tools=self._recoverable,
             verification_gates=self._gates,
             pre_tool_hooks=self._pre_hooks,
             post_tool_hooks=self._post_hooks,

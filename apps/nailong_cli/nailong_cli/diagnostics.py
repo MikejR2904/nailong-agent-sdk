@@ -83,8 +83,8 @@ def doctor_lines(state: ReplState) -> list[str]:
             (
                 False,
                 f"ignored {list(config.ignored_project_keys)} in the project settings: hooks and "
-                "MCP servers run programs, so they are read only from your user settings or "
-                "--mcp-config",
+                "MCP servers run programs, so they load only from your user settings, "
+                "--mcp-config, or after you read and approve them (nailong --trust-project)",
             )
         )
     return [f"  {_mark(ok)} {text}" for ok, text in checks]

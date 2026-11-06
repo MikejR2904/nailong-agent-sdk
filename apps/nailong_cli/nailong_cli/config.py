@@ -13,6 +13,9 @@ from urllib.parse import urlsplit
 
 from nailong_agent_sdk.starter import OPENAI_COMPATIBLE_BASE_URLS
 
+from . import project_trust
+from .hook_protocol import CLAUDE_EVENTS, PROTOCOLS
+from .hook_protocol import normalise as normalise_hook
 from .network import offline_problems
 from .rules import rule_from_table
 
@@ -213,13 +216,17 @@ def load_config(
         "keybinds": {},
     }
     ignored: list[str] = []
+    accepted: dict[str, Any] = {}
     rule_entries: list[dict[str, Any]] = []
     for path, trusted in ((user_config_path(home), True), (project_config_path(project), False)):
         data = _read(path, (environ if environ is not None else os.environ) if trusted else None)
         if not trusted:
-            ignored = [key for key in USER_ONLY if key in data]
-            for key in ignored:
-                del data[key]
+            shared = project_trust.shared_part(data)
+            if shared and project_trust.is_trusted(home, path, shared):
+                accepted = shared
+            ignored = [key for key in USER_ONLY if key in data and key not in accepted]
+            for key in USER_ONLY:
+                data.pop(key, None)
         for name, table in tables.items():
             table.update(data.pop(name, {}))
         entries = data.pop("rules", [])
@@ -240,6 +247,9 @@ def load_config(
         if any(not isinstance(item, dict) for item in entries):
             raise ConfigError(f"rules in {path} must be a list of tables ([[rules]]).")
         merged.update(data)
+    if accepted:
+        merged["hooks"] = [*merged.get("hooks", ()), *accepted.get("hooks", ())]
+        merged["mcp"] = {**merged.get("mcp", {}), **accepted.get("mcp", {})}
     flags = dict(overrides or {})
     tables["parameters"].update(flags.pop("parameters", None) or {})
     merged.update({key: value for key, value in flags.items() if value is not None})
@@ -249,6 +259,9 @@ def load_config(
             f"Missing setting(s): {', '.join(missing)}. Set them in {project_config_path(project)} "
             f"or {user_config_path(home)}, or pass them as flags."
         )
+    merged["hooks"] = [
+        normalise_hook(h) if isinstance(h, dict) else h for h in merged.get("hooks", ())
+    ]
     _validate(merged, tables)
     for position, entry in enumerate(rule_entries, 1):
         try:
@@ -428,8 +441,21 @@ def _validate(values: dict[str, Any], tables: dict[str, dict[str, Any]]) -> None
     for index, hook in enumerate(values.get("hooks", ())):
         if hook.get("event") not in HOOK_EVENTS or not hook.get("command"):
             raise ConfigError(
-                f"hooks entry {index + 1} needs event ({list(HOOK_EVENTS)}) and a command."
+                f"hooks entry {index + 1} needs event ({list(HOOK_EVENTS)}, or Claude Code's "
+                f"{list(CLAUDE_EVENTS)}) and a command."
             )
+        if hook.get("protocol", "env") not in PROTOCOLS:
+            raise ConfigError(
+                f"hooks entry {index + 1} protocol must be one of {list(PROTOCOLS)}, not "
+                f"{hook['protocol']!r}."
+            )
+        if "matcher" in hook:
+            try:
+                re.compile(str(hook["matcher"]))
+            except re.error as error:
+                raise ConfigError(
+                    f"hooks entry {index + 1} matcher is not a valid pattern: {error}."
+                ) from error
         if hook.get("on_failure", "block") not in {"block", "warn"}:
             raise ConfigError(
                 f'hooks entry {index + 1} on_failure must be "block" (a failing hook refuses the '

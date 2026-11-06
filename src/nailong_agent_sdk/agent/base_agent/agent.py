@@ -170,6 +170,7 @@ class BaseAgent:
         price_table: PriceTable | None = None,
         tool_authorizer: ToolAuthorizer | None = None,
         require_tool_authorization: bool | None = None,
+        recover_from_unknown_tools: bool = False,
         inbox: MessageInbox | None = None,
         pause: PauseGate | None = None,
     ) -> None:
@@ -194,6 +195,7 @@ class BaseAgent:
         self.require_tool_authorization = (
             True if require_tool_authorization is None else require_tool_authorization
         )
+        self.recover_from_unknown_tools = recover_from_unknown_tools
         self.verification_gates = verification_gates or VerificationGateRegistry()
         self.pre_tool_hooks = tuple(pre_tool_hooks)
         self.post_tool_hooks = tuple(post_tool_hooks)
@@ -1683,22 +1685,28 @@ class BaseAgent:
     ) -> ToolCallOutcome:
         tool = self._tool_definition(call)
         if tool is None:
+            offered = sorted(item.name for item in self.definition.tools)
             failure = AgentFailure(
                 code="TOOL_NOT_DECLARED",
-                message=f'Tool "{call.name}" is not declared for this agent.',
+                message=(
+                    f'Tool "{call.name}" is not declared for this agent.'
+                    if not self.recover_from_unknown_tools
+                    else f'Tool "{call.name}" is not available in this session. '
+                    f"The tools you can call are: {', '.join(offered)}."
+                ),
                 details={
                     "tool": call.name,
                     "tool_call_id": call.id,
-                    "declared_tools": sorted(item.name for item in self.definition.tools)[
-                        :_DECLARED_TOOLS_LISTED
-                    ],
+                    "declared_tools": offered[:_DECLARED_TOOLS_LISTED],
                 },
             )
             return self._record_unexecuted_result(
                 call,
                 ToolExecutionResult(status="failed", error=failure.message, failure=failure),
                 iteration,
-                terminal_status=AgentRunStatus.FAILED,
+                terminal_status=(
+                    None if self.recover_from_unknown_tools else AgentRunStatus.FAILED
+                ),
             )
         if self.tool_executor is None:
             failure = AgentFailure(

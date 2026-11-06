@@ -1184,3 +1184,45 @@ measured timings in `docs/benchmarks-cli.md`.
 - `/rewind` cannot undo effects outside the project and added directories.
 - Deliberately absent: login/OAuth and accounts, IDE integration, desktop/remote/cloud sessions, a
   plugin marketplace, `/cd`. See [cli-parity.md](cli-parity.md).
+
+## Hooks written for Claude Code
+
+A hook that uses a Claude Code event name or a `matcher` follows Claude Code's conventions:
+
+```toml
+[[hooks]]
+event = "PreToolUse"
+matcher = "Bash"
+command = "python check_command.py"
+```
+
+- The event arrives as JSON on standard input: `session_id`, `hook_event_name`, `cwd`, `tool_name`
+  (`Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep` for our tools of the same job), `tool_input`
+  and, after a call, `tool_response`.
+- Exit code 2 blocks the call and the standard error text goes to the model. Any other non-zero
+  exit is only reported.
+- A hook may print `{"decision": "block", "reason": "..."}`,
+  `{"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "..."}}` or
+  `{"continue": false, "stopReason": "..."}` to block. Rewriting a call's input and `allow`
+  decisions are not supported.
+- Hooks that use our own event names (`pre_tool` and so on) and no `matcher` keep the earlier
+  behaviour: details in environment variables, any non-zero exit blocks. Set
+  `protocol = "claude"` to switch one over.
+- `/hooks` lists the hooks in force.
+
+## Sharing hooks and MCP servers in a project
+
+A project's `.nailong/config.toml` may define `[[hooks]]` and `[mcp.NAME]`, but they run programs,
+so they are ignored until you approve them. Run `nailong --trust-project` (or `/trust-project`
+inside a session): it prints every hook command and MCP server, and on a yes records a hash of
+them in your user directory. They load the next time nailong starts there. If anyone changes the
+file, they are ignored again until you approve the new version. All other project settings that
+could widen access (`offline`, `require_sandbox`, `ssh_hosts`, and so on) stay user-only.
+
+## Output for programs
+
+`--output json` prints one summary object. `--output stream-json` prints this tool's own events.
+`--output claude-stream-json` prints the event shapes Claude Code's stream uses, so programs
+written for it can read the stream: `system` (init), `assistant`, `user` (tool results) and
+`result` with `subtype`, `is_error`, `duration_ms`, `num_turns`, `total_cost_usd` and `usage`.
+`nailong -p` with no prompt reads the prompt from standard input.
