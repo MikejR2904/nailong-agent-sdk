@@ -82,7 +82,7 @@ def test_your_own_commands_and_skills_are_available(project, home):
     assert "use_skill" in tool_names(first) and "- style: Use snake_case." in instructions_text(
         first
     )
-    assert "/ship" in out and "style (15 characters)" in out
+    assert "/ship" in out and "/style  Use snake_case." in out
 
 
 def test_oversized_skills_are_refused_with_what_to_do(project, home):
@@ -307,7 +307,7 @@ def test_status_doctor_context_and_compact_describe_the_setup(project, home):
     assert "mode         default" in out and "model        test-model (anthropic)" in out
     assert "API key: environment variable TEST_KEY" in out and "ok" in out
     assert "earlier turns sent: 0, left out: 0" in out and "nothing new to compact" in err
-    assert "No NAILONG.md" in out and "No skills" in out and "No subagents" in out
+    assert "No NAILONG.md" in out and "built-in:" in out and "No subagents" in out
     assert "No task list yet." in out
 
 

@@ -40,6 +40,16 @@ class SessionStore:
             return []
         return sorted(path.stem for path in self._directory.glob("*.jsonl"))
 
+    def delete(self, session_id: str) -> None:
+        with self._lock:
+            log = self._log(session_id)
+            if not log.exists():
+                raise AgentSdkError(
+                    "SESSION_NOT_FOUND",
+                    f'Session "{session_id}" does not exist; the sessions are {self.ids()}.',
+                )
+            self._directory.joinpath(f"{session_id}.jsonl").unlink()
+
     def latest(self) -> str | None:
         if not self._directory.is_dir():
             return None

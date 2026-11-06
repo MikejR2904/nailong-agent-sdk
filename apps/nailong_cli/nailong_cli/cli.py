@@ -11,17 +11,21 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import io
 import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from nailong_agent_sdk.foundations.errors import AgentSdkError
 from nailong_agent_sdk.starter import Answer, Forge, McpTools, ModelSetup, Session, connect_mcp
 
-from . import __version__, credentials
+from . import __version__, acp, credentials, mcp_serve, schedule, server
+from .agent_files import load_agent_files
 from .approvals import NOT_SANDBOXED, Approver
 from .background import make_background
 from .build import (
@@ -43,28 +47,38 @@ from .config import (
 )
 from .console import Console
 from .cost import BudgetReached, Spending
+from .custom_tools import load_custom_tools
 from .debug import DebugLog
 from .factory import AgentBuilder, Parts
 from .forge_review import review_proposal
 from .history import enable_history
 from .hooks import LifecycleHooks, build_hooks
 from .keys import KeySource, system_keys
-from .mcp_config import servers_from_table, table_from_json_file
+from .knowledge import KnowledgeBase
+from .lsp import LspManager, specs_from_table
+from .mcp_config import load_managed, servers_from_table, table_from_json_file
 from .memory import load_memory
 from .modes import ModeRef, parse_rule
+from .notes import NotesStore
 from .permissions import PermissionStore, permissions_path
 from .plugins import load_plugins, plugin_directories
+from .post_edit import PostEdit, checkers_from_table
 from .render import Renderer
 from .repl import after_plan, command_descriptions, cycle_mode, mode_hint, repl, toolbar_text
+from .rules import DEFAULT_RULES, PermissionRules, Rule, rule_from_table
 from .setup import SetupCancelled, run_setup
 from .shell import run_shell
+from .shell_sessions import make_shell_sessions
 from .skills import load_skills
 from .state import ReplState
 from .stream_json import JsonStream
+from .telemetry_export import TelemetryExport
 from .todo import TodoList
-from .tui import PlainReader, choose, make_reader
+from .tui import PlainReader, choose, load_palette, make_reader
 from .turns import PromptRefused, run_turn, switch_agent
 from .user_commands import load_commands
+from .utilities import SHELLS, completion_script, upgrade_hint
+from .wiki import Wiki
 from .workflow_commands import MAX_DIFF_CHARS, REVIEW_PROMPT
 from .worktree import Worktree, create_worktree, finish_worktree
 
@@ -105,6 +119,18 @@ def parser() -> argparse.ArgumentParser:
         "--setup", action="store_true", help="Choose a model service and save settings."
     )
     cli.add_argument(
+        "--fallback-model",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Try this model when the main one fails (repeatable, in order).",
+    )
+    cli.add_argument(
+        "--otlp-endpoint",
+        metavar="URL",
+        help="Send recorded runs to this OpenTelemetry collector (OTLP/HTTP).",
+    )
+    cli.add_argument(
         "--no-reasoning",
         action="store_true",
         help="Do not show the model's reasoning while it streams.",
@@ -130,6 +156,37 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--review", nargs="?", const="HEAD", default=None, metavar="BASE")
     cli.add_argument("--forge", action="store_true", help="Let the agent propose tools for review.")
     cli.add_argument("--allow-unsandboxed", action="store_true")
+    cli.add_argument(
+        "--acp",
+        action="store_true",
+        help="Speak the Agent Client Protocol on stdio, for editors that can run an agent.",
+    )
+    cli.add_argument(
+        "--completion",
+        choices=list(SHELLS),
+        help="Print a shell completion script for bash, zsh, fish or powershell, then exit.",
+    )
+    cli.add_argument(
+        "--upgrade", action="store_true", help="Say how to upgrade nailong where it is installed."
+    )
+    cli.add_argument(
+        "--serve",
+        action="store_true",
+        help="Run the agent behind a small HTTP service (token in NAILONG_SERVER_TOKEN).",
+    )
+    cli.add_argument("--port", type=int, default=server.DEFAULT_PORT, help="Port for --serve.")
+    cli.add_argument("--hostname", default=server.DEFAULT_HOST, help="Address for --serve.")
+    cli.add_argument("--attach", metavar="URL", help="Talk to a nailong --serve at this address.")
+    cli.add_argument(
+        "--run-schedules",
+        action="store_true",
+        help="Run the scheduled prompts that are due (for cron or Task Scheduler), then exit.",
+    )
+    cli.add_argument(
+        "--mcp-serve",
+        action="store_true",
+        help="Offer this project's file and command tools to another program over MCP (stdio).",
+    )
     cli.add_argument("--verbose", action="store_true", help="Show full tool arguments and results.")
     cli.add_argument("--debug-file", type=Path, metavar="FILE")
     cli.add_argument("--no-color", action="store_true")
@@ -148,6 +205,12 @@ def main(
     keys: KeySource | None = None,
 ) -> int:
     args = parser().parse_args(argv)
+    if args.completion:
+        sys.stdout.write(completion_script(args.completion, parser()))
+        return EXIT_OK
+    if args.upgrade:
+        sys.stdout.write("\n".join(upgrade_hint()) + "\n")
+        return EXIT_OK
     if console is None:
         _tolerate_encoding()
     console = console or Console(
@@ -171,6 +234,56 @@ def main(
                 return EXIT_OK
             if args.setup:
                 return _only_setup(console, home, environ)
+            if args.acp:
+                return acp.serve_acp(
+                    lambda inner, quiet: main(
+                        inner,
+                        environ=environ,
+                        console=quiet,
+                        model_factory=model_factory,
+                        home=home,
+                    ),
+                    server.strip_server_flags(
+                        [
+                            item
+                            for item in (argv if argv is not None else sys.argv[1:])
+                            if item != "--acp"
+                        ]
+                    ),
+                    project=project,
+                    mode=args.permission_mode or "plan",
+                    stdin=sys.stdin,
+                    stdout=sys.stdout,
+                )
+            if args.attach:
+                return server.attach(
+                    args.attach,
+                    args.prompt,
+                    environ=environ,
+                    console=console,
+                    mode=args.permission_mode or "plan",
+                )
+            if args.serve:
+                return server.serve(
+                    lambda inner, quiet: main(
+                        inner,
+                        environ=environ,
+                        console=quiet,
+                        model_factory=model_factory,
+                        home=home,
+                    ),
+                    list(argv if argv is not None else sys.argv[1:]),
+                    project=project,
+                    hostname=args.hostname,
+                    port=args.port,
+                    environ=environ,
+                    console=console,
+                    version=__version__,
+                )
+            if args.run_schedules:
+                return _run_schedules(console, environ, home, model_factory)
+            if args.mcp_serve:
+                return _serve_mcp(runner, args, console, home, project)
             built = _first_run(args, console, environ, home, project, worktree, model_factory)
         except (ConfigError, MissingKeyError, NotADirectoryError, ValueError, OSError) as error:
             console.error(str(error))
@@ -207,18 +320,25 @@ def main(
             plugin_names,
             first_images=list(args.image),
         )
-        state.reader = make_reader(
-            console,
-            project=project,
-            history_file=home / ".local" / "state" / "nailong" / "history",
-            editing_mode=config.editing_mode,
-            theme=config.theme,
-            toolbar=lambda: toolbar_text(state),
-            cycle_mode=lambda: cycle_mode(state),
-            commands=lambda: command_descriptions(state),
-            mode_hint=lambda: mode_hint(state),
-            on_expand=lambda: _show_last_output(state),
-        )
+        try:
+            state.reader = make_reader(
+                console,
+                project=project,
+                history_file=home / ".local" / "state" / "nailong" / "history",
+                editing_mode=config.editing_mode,
+                theme=config.theme,
+                keybinds=config.keybinds,
+                palette=load_palette(config.theme, project, home),
+                toolbar=lambda: toolbar_text(state),
+                cycle_mode=lambda: cycle_mode(state),
+                commands=lambda: command_descriptions(state),
+                mode_hint=lambda: mode_hint(state),
+                on_expand=lambda: _show_last_output(state),
+            )
+        except ValueError as error:
+            console.error(str(error))
+            _shutdown(runner, builder, parts, worktree, console)
+            return EXIT_USAGE
         console.fancy = console.fancy or (
             not isinstance(state.reader, PlainReader) and console.interactive
         )
@@ -239,6 +359,7 @@ def main(
             if not console.interactive:
                 console.error(not_a_terminal_notice(environ))
             _banner(state)
+            _custom_notices(state)
             if args.initial:
                 _first_message(state, args.initial)
             repl(state)
@@ -247,6 +368,55 @@ def main(
             save_history()
             _lifecycle(state, "session_end")
             _shutdown(runner, builder, parts, worktree, console)
+
+
+def _run_schedules(console, environ, home, model_factory) -> int:
+    moment = datetime.now().astimezone()
+
+    def run_one(item):
+        out, err = io.StringIO(), io.StringIO()
+        quiet = Console(io.StringIO(), out, err, color=False, interactive=False)
+        code = main(
+            ["-p", item.prompt, "--project", item.project, "--permission-mode", item.mode],
+            environ=environ,
+            console=quiet,
+            model_factory=model_factory,
+            home=home,
+        )
+        status = "ok" if code == 0 else f"failed (exit {code})"
+        text = out.getvalue() + err.getvalue()
+        path = schedule.record_run(item, status, text, moment)
+        return status, f"{schedule.summary_of(text)} -> {path}"
+
+    try:
+        for line in schedule.run_due(home, run_one, moment):
+            console.line(line)
+    except ValueError as error:
+        console.error(str(error))
+        return EXIT_USAGE
+    return EXIT_OK
+
+
+def _serve_mcp(runner, args, console, home, project) -> int:
+    overrides = {"permission_mode": args.permission_mode, "offline": True if args.offline else None}
+    try:
+        config = load_config(project, home=home, overrides=overrides)
+    except MissingSettingsError:
+        config = load_config(
+            project, home=home, overrides={**overrides, "provider": "anthropic", "model": "unused"}
+        )
+    extra_dirs = _extra_dirs([*config.add_dirs, *map(str, args.add_dir)])
+    sandbox_kwargs, label = choose_sandbox(config, extra_dirs)
+    refused = mcp_serve.refusal(config.permission_mode, label, args.allow_unsandboxed)
+    if refused:
+        console.error(refused)
+        return EXIT_USAGE
+    table = mcp_serve.offered_tools(
+        config.project, config.permission_mode, sandbox_kwargs, extra_dirs
+    )
+    mcp_serve.announce(mcp_serve.describe(config.permission_mode, table))
+    runner.run(mcp_serve.serve_stdio(table, version=__version__, project=config.project))
+    return EXIT_OK
 
 
 def _tolerate_encoding() -> None:
@@ -313,6 +483,7 @@ def _context(
     config = load_config(
         project,
         home=home,
+        environ=environ,
         overrides={
             "provider": args.provider,
             "model": args.model,
@@ -324,18 +495,20 @@ def _context(
             "autocompact": True if args.autocompact else None,
             "show_reasoning": False if args.no_reasoning else None,
             "offline": True if args.offline else None,
+            "fallback_models": list(args.fallback_model) or None,
+            "otlp_endpoint": args.otlp_endpoint,
             "parameters": parameters or None,
         },
     )
     bundle = load_plugins(plugin_directories(home, args.plugin_dir))
-    mcp = {**config.mcp_servers, **bundle.mcp}
+    mcp = {**load_managed(home), **config.mcp_servers, **bundle.mcp}
     for path in args.mcp_config:
         mcp.update(table_from_json_file(path))
     extra_dirs = _extra_dirs([*config.add_dirs, *map(str, args.add_dir)])
     config = dataclasses.replace(
         config,
         mcp_servers=mcp,
-        agents={**bundle.agents, **config.agents},
+        agents={**load_agent_files(config.project, home), **bundle.agents, **config.agents},
         hooks=(*config.hooks, *bundle.hooks),
         project=worktree.path if worktree else config.project,
     )
@@ -343,6 +516,19 @@ def _context(
     sandbox_kwargs, label = choose_sandbox(config, extra_dirs)
     mode = ModeRef(config.permission_mode)
     store = PermissionStore(permissions_path(home))
+    permission_rules = PermissionRules(
+        [
+            *DEFAULT_RULES,
+            *(
+                rule_from_table(item, item["source"], index)
+                for index, item in enumerate(config.rules, 1)
+            ),
+            *(
+                Rule("allow", (tool,), pattern, "--allow")
+                for tool, pattern in (parse_rule(text) for text in args.allow)
+            ),
+        ]
+    )
     approver = Approver(
         console,
         store,
@@ -352,6 +538,7 @@ def _context(
         allow_unsandboxed=args.allow_unsandboxed,
         allow_rules=[parse_rule(text) for text in args.allow],
         deny_rules=[parse_rule(text) for text in args.disallow],
+        rules=permission_rules,
     )
     before, after = build_hooks(config.hooks, config.project, console)
     schema = json.loads(args.json_schema.read_text(encoding="utf-8")) if args.json_schema else None
@@ -370,7 +557,7 @@ def _context(
             config.project, config.project / PROJECT_DIRECTORY / "checkpoints", extra_dirs
         ),
         todos=TodoList(),
-        memory=load_memory(config.project, home),
+        memory=load_memory(config.project, home, config.instruction_files),
         skills=load_skills(config.project, home, bundle.skills),
         sandbox_kwargs=sandbox_kwargs,
         spending=Spending(config.max_budget_usd),
@@ -379,10 +566,41 @@ def _context(
         hooks_after=after,
         lifecycle=LifecycleHooks(config.hooks, config.project),
         background=make_background(sandbox_kwargs, config.project),
+        custom_tools=load_custom_tools(config.project, home),
+        permission_rules=permission_rules,
+        knowledge=KnowledgeBase(
+            config.project / ".nailong" / "knowledge",
+            {"project": config.project},
+            config.workspace,
+        ),
+        wiki=Wiki(config.project / ".nailong" / "wiki"),
+        shells=make_shell_sessions(sandbox_kwargs, config.project, config.ssh_hosts),
+        notes=NotesStore(config.workspace / "notes"),
         debug=DebugLog(args.debug_file) if args.debug_file else None,
         extra_dirs=extra_dirs,
         json_schema=schema,
         system_append=args.system_prompt_append,
+        fallbacks=[
+            model_factory(replace(config, model=name), environ) for name in config.fallback_models
+        ],
+        model_for=lambda name, parameters=None: model_factory(
+            replace(config, model=name, parameters={**config.parameters, **(parameters or {})}),
+            environ,
+        ),
+        exporter=TelemetryExport(
+            console, config.workspace, config.otlp_endpoint, environ, include=config.otlp_include
+        ),
+    )
+    approver.lifecycle = parts.lifecycle
+    parts.post_edit = PostEdit(
+        config.project,
+        console,
+        formatters=checkers_from_table(config.formatters, "formatters"),
+        diagnostics=checkers_from_table(config.diagnostics, "diagnostics"),
+        builtin_format=config.format_on_edit,
+        builtin_diagnostics=config.diagnostics_on_edit,
+        current_agent=lambda: parts.current_agent,
+        lsp=LspManager(config.project, specs_from_table(config.lsp), builtin=config.lsp_on_edit),
     )
     commands = {**load_commands(config.project, home), **bundle.commands}
     return config, setup, parts, commands, bundle.names
@@ -437,8 +655,16 @@ def _shutdown(
     console: Console,
 ) -> None:
     builder.close()
+    if parts.exporter is not None:
+        parts.exporter.finish()
     if parts.background is not None:
         runner.run(parts.background.close())
+    if parts.bg_agents is not None:
+        parts.bg_agents.close()
+    if parts.post_edit is not None:
+        parts.post_edit.close()
+    if parts.shells is not None:
+        runner.run(parts.shells.close())
     for group in parts.mcp_groups:
         runner.run(group.aclose())
     if worktree is not None:
@@ -536,6 +762,12 @@ def _summary(answer: Answer, session_id: str) -> dict[str, object]:
 def _show_last_output(state: ReplState) -> None:
     text = state.parts.renderer.expand(None)
     state.console.line(text if text is not None else "  No tool output yet.")
+
+
+def _custom_notices(state: ReplState) -> None:
+    found = state.parts.custom_tools
+    for notice in found.notices if found is not None else []:
+        state.console.line(state.console.style(f"  {notice}", "yellow"))
 
 
 def _banner(state: ReplState) -> None:

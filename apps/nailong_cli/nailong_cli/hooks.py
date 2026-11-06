@@ -14,7 +14,16 @@ from .console import Console
 from .shell import run_shell
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
-LIFECYCLE_EVENTS = ("session_start", "session_end", "prompt_submit", "turn_end")
+LIFECYCLE_EVENTS = (
+    "session_start",
+    "session_end",
+    "prompt_submit",
+    "turn_end",
+    "assistant_message",
+    "permission_asked",
+    "compacted",
+)
+EDIT_TOOL_NAMES = ("write_file", "edit_file", "notebook_edit", "apply_patch")
 _INPUT_CHARS = 8_000
 
 
@@ -26,8 +35,12 @@ def build_hooks(
     for hook in hooks:
         if hook["event"] == "pre_tool":
             before.append(_Hook(hook, project, console).before)
-        elif hook["event"] == "post_tool":
+        elif hook["event"] in {"post_tool", "tool_failed"}:
             after.append(_Hook(hook, project, console).after)
+        elif hook["event"] == "file_edited":
+            for name in EDIT_TOOL_NAMES:
+                edited = {**hook, "event": "file_edited", "tool": name}
+                after.append(_Hook(edited, project, console).after)
     return before, after
 
 
@@ -80,6 +93,10 @@ class _Hook:
 
     async def after(self, event: ToolEvent) -> None:
         if not fnmatch.fnmatchcase(event.tool, self._pattern):
+            return
+        if self._event == "tool_failed" and (
+            event.result is None or event.result.status == "succeeded"
+        ):
             return
         record = await self._run(event)
         if not record.successful:

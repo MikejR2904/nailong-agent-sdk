@@ -2,7 +2,7 @@
 
 This is a complete, per-file description of `src/nailong_agent_sdk`: what every module is
 for, what each class and function does, and where it sits in the end-to-end workflow. It
-covers **231 files, 712 classes and 2,764 functions** (methods and nested closures included).
+covers **236 files, 732 classes and 2,846 functions** (methods and nested closures included).
 The structure and signatures were extracted from the source with Python's `ast` module and
 every item carries a hand-written description; `tests/test_reference_docs.py` fails if any
 class or function lacks an entry or an entry names one that no longer exists.
@@ -736,7 +736,8 @@ the run options. Everything else is a parameter too:
 | [`observability/merkle.py`](observability.md#observabilitymerklepy---merkle-tree-hashing-with-inclusion-and-consistency-proofs) | 225 | Merkle tree hashing with inclusion and consistency proofs |
 | [`observability/metric_definitions.py`](observability.md#observabilitymetric_definitionspy---the-sdks-standard-metric-catalogue) | 450 | the SDK's standard metric catalogue |
 | [`observability/metrics.py`](observability.md#observabilitymetricspy---record-metric-values-against-the-standard-catalogue) | 131 | record metric values against the standard catalogue |
-| [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 1000 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
+| [`observability/otlp.py`](observability.md#observabilityotlppy---otlphttp-json-export-of-recorded-runs-spans-log-records-and-metric-points) | 1012 | OTLP/HTTP JSON export of recorded runs: spans, log records and metric points |
+| [`observability/otlp_evidence.py`](observability.md#observabilityotlp_evidencepy---otlphttp-json-export-of-a-runs-audit-entries-and-integrity-records) | 322 | OTLP/HTTP JSON export of a run's audit entries and integrity records |
 | [`observability/payload_bounds.py`](observability.md#observabilitypayload_boundspy---size-bounds-on-one-ledger-record-that-keep-the-fields-saying-who-and-what) | 45 | size bounds on one ledger record that keep the fields saying who and what |
 | [`observability/profiler.py`](observability.md#observabilityprofilerpy---privacy-conscious-timing-profile-for-one-agent-run) | 330 | privacy-conscious timing profile for one agent run |
 | [`observability/recorder/__init__.py`](observability.md#observabilityrecorder__init__py---package-entry-for-the-recorder-re-exports-its-public-names) | 136 | package entry for the recorder: re-exports its public names |
@@ -781,6 +782,7 @@ the run options. Everything else is a parameter too:
 | [`starter/hooks.py`](starter.md#starterhookspy---tool-hooks-as-plain-functions-look-at-a-call-before-it-runs-or-at-its-result-after) | 79 | tool hooks as plain functions: look at a call before it runs, or at its result after |
 | [`starter/images.py`](starter.md#starterimagespy---pictures-to-show-the-model-a-file-becomes-a-size-checked-base64-attachment) | 47 | pictures to show the model: a file becomes a size-checked, base64 attachment |
 | [`starter/mcp_tools.py`](starter.md#startermcp_toolspy---tools-from-external-mcp-servers-offered-to-an-agent-like-any-other-tool) | 96 | tools from external MCP servers, offered to an agent like any other tool |
+| [`starter/skill_files.py`](starter.md#starterskill_filespy---agent-skills-as-folders-a-skillmd-header-a-body-and-files-beside-it) | 220 | Agent Skills as folders: a SKILL.md header, a body and files beside it |
 | [`starter/skills.py`](starter.md#starterskillspy---skills-as-files-a-markdown-file-becomes-task-context-the-model-is-given) | 23 | skills as files: a markdown file becomes task context the model is given |
 | [`starter/chain_log.py`](starter.md#starterchain_logpy---an-append-only-jsonl-file-whose-records-are-chained-by-hash) | 79 | an append-only JSONL file whose records are chained by hash |
 | [`starter/dev_tools.py`](starter.md#starterdev_toolspy---coding-tools-for-a-project-directory-read-search-write-edit-and-run-commands) | 228 | coding tools for a project directory: read, search, write, edit and run commands |
@@ -788,6 +790,8 @@ the run options. Everything else is a parameter too:
 | [`starter/forge_execution.py`](starter.md#starterforge_executionpy---run-a-forged-tools-source-in-a-disposable-subprocess-and-read-back-its-json-result) | 131 | run a forged tool's source in a disposable subprocess and read back its JSON result |
 | [`starter/forge_report.py`](starter.md#starterforge_reportpy---what-a-proposed-tools-source-reaches-for-as-a-note-for-the-reviewer) | 54 | what a proposed tool's source reaches for, as a note for the reviewer |
 | [`starter/forge_runner.py`](starter.md#starterforge_runnerpy---standalone-script-a-forged-tool-runs-under) | 29 | standalone script a forged tool runs under |
+| [`starter/notebook_tools.py`](starter.md#starternotebook_toolspy---edit-a-cell-of-a-jupyter-notebook-anywhere-in-a-project-without-running-it) | 60 | edit a cell of a Jupyter notebook anywhere in a project, without running it |
+| [`starter/planner.py`](starter.md#starterplannerpy---turn-a-plain-request-into-a-validated-plan-then-run-it-as-one-agent-or-as-a-team) | 591 | turn a plain request into a validated plan, then run it as one agent or as a team |
 | [`starter/session_store.py`](starter.md#startersession_storepy---a-sessions-turns-on-disk-as-a-hash-chain) | 118 | a session's turns on disk as a hash chain |
 | [`starter/sessions.py`](starter.md#startersessionspy---sessions-continue-a-conversation-across-runs-and-processes-or-fork-it) | 146 | sessions: continue a conversation across runs and processes, or fork it |
 | [`state/__init__.py`](state.md#state__init__py---package-marker-for-durable-run-state) | 3 | package marker for durable run state |
@@ -819,6 +823,7 @@ the run options. Everything else is a parameter too:
 | [`tools/core/services.py`](tools.md#toolscoreservicespy---portable-governed-tools-dispatcher-services-and-web-search) | 501 | portable governed tools: dispatcher, services and web search |
 | [`tools/delegation.py`](tools.md#toolsdelegationpy---delegated-sub-runs-on-isolated-git-worktrees) | 128 | delegated sub-runs on isolated git worktrees |
 | [`tools/elastic_requests.py`](tools.md#toolselastic_requestspy---agent-side-queue-and-tool-executor-for-elastic-spawn-requests) | 164 | agent-side queue and tool executor for elastic spawn requests |
+| [`tools/process_freeze.py`](tools.md#toolsprocess_freezepy---freeze-and-thaw-running-commands-in-place) | 187 | freeze and thaw running commands in place |
 | [`tools/os_sandbox.py`](tools.md#toolsos_sandboxpy---sandbox-backends-built-on-the-operating-systems-own-tools-bubblewrap-and-seatbelt) | 188 | sandbox backends built on the operating system's own tools: bubblewrap and Seatbelt |
 | [`tools/policy.py`](tools.md#toolspolicypy---deny-by-default-capability-policy) | 201 | deny-by-default capability policy |
 | [`tools/registry.py`](tools.md#toolsregistrypy---capability-bound-harness-tool-registry-and-its-baseagent-executor) | 373 | capability-bound harness tool registry and its BaseAgent executor |
@@ -832,7 +837,7 @@ the run options. Everything else is a parameter too:
 | [`tools/worktree_models.py`](tools.md#toolsworktree_modelspy---record-for-an-agents-git-worktree) | 20 | record for an agent's git worktree |
 | [`tools/worktrees.py`](tools.md#toolsworktreespy---git-worktree-isolation-for-concurrent-agents) | 187 | git worktree isolation for concurrent agents |
 
-*Coverage: 231 files, 712 classes and 2764 functions (including methods and nested closures), each with a written description.*
+*Coverage: 236 files, 732 classes and 2846 functions (including methods and nested closures), each with a written description.*
 
 ## Files outside the package
 

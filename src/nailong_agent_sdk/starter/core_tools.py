@@ -13,7 +13,11 @@ from typing import Any
 from ..foundations.contracts import ToolDefinition, ToolExecutionResult
 from ..tools.artifacts import ArtifactStore
 from ..tools.core.definitions import core_tool_definitions
-from ..tools.core.services import CoreToolDispatcher, CoreToolServices
+from ..tools.core.services import (
+    CoreToolDispatcher,
+    CoreToolServices,
+    HumanQuestionResponder,
+)
 
 READ_TOOLS = ("read_file", "glob", "grep")
 WRITE_TOOLS = ("write_draft", "edit_draft")
@@ -55,6 +59,7 @@ def core_tools(
     writable: Sequence[str] = (),
     only: Sequence[str] | None = None,
     needs_approval: bool = False,
+    ask_human: HumanQuestionResponder | None = None,
 ) -> CoreTools:
     names = (
         tuple(only) if only is not None else (*READ_TOOLS, *WRITE_TOOLS) if writable else READ_TOOLS
@@ -62,7 +67,7 @@ def core_tools(
     available = {definition.name: definition for definition in core_tool_definitions()}
     return CoreTools(
         definitions=tuple(available[name] for name in names),
-        dispatcher=_dispatcher(root, writable),
+        dispatcher=_dispatcher(root, writable, ask_human),
         needs_approval=needs_approval,
     )
 
@@ -90,10 +95,13 @@ def multi_root_read_tools(roots: Mapping[str, Path]) -> MultiRootCoreTools:
     )
 
 
-def _dispatcher(root: Path, writable: Sequence[str]) -> CoreToolDispatcher:
+def _dispatcher(
+    root: Path, writable: Sequence[str], ask_human: HumanQuestionResponder | None = None
+) -> CoreToolDispatcher:
     services = CoreToolServices(
         root=root,
         artifacts=ArtifactStore(root, read_only=not writable),
         declared_output_paths=tuple(writable),
+        ask_human=ask_human,
     )
     return CoreToolDispatcher(services)

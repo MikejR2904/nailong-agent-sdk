@@ -17,6 +17,8 @@ A wrapper over the existing parts for a caller who wants a working agent without
 | [`starter/hooks.py`](#starterhookspy---tool-hooks-as-plain-functions-look-at-a-call-before-it-runs-or-at-its-result-after) | 79 | tool hooks as plain functions: look at a call before it runs, or at its result after |
 | [`starter/images.py`](#starterimagespy---pictures-to-show-the-model-a-file-becomes-a-size-checked-base64-attachment) | 47 | pictures to show the model: a file becomes a size-checked, base64 attachment |
 | [`starter/mcp_tools.py`](#startermcp_toolspy---tools-from-external-mcp-servers-offered-to-an-agent-like-any-other-tool) | 96 | tools from external MCP servers, offered to an agent like any other tool |
+| [`starter/notebook_tools.py`](#starternotebook_toolspy---edit-a-cell-of-a-jupyter-notebook-anywhere-in-a-project-without-running-it) | 60 | edit a cell of a Jupyter notebook anywhere in a project, without running it |
+| [`starter/planner.py`](#starterplannerpy---turn-a-plain-request-into-a-validated-plan-then-run-it-as-one-agent-or-as-a-team) | 591 | turn a plain request into a validated plan, then run it as one agent or as a team |
 | [`starter/session_store.py`](#startersession_storepy---a-sessions-turns-on-disk-as-a-hash-chain) | 118 | a session's turns on disk as a hash chain |
 | [`starter/sessions.py`](#startersessionspy---sessions-continue-a-conversation-across-runs-and-processes-or-fork-it) | 146 | sessions: continue a conversation across runs and processes, or fork it |
 | [`starter/skills.py`](#starterskillspy---skills-as-files-a-markdown-file-becomes-task-context-the-model-is-given) | 23 | skills as files: a markdown file becomes task context the model is given |
@@ -59,6 +61,7 @@ A wrapper over the existing parts for a caller who wants a working agent without
   - `Agent.resume(self, name: str, *, history_turns: int=DEFAULT_HISTORY_TURNS, history_chars: int=DEFAULT_HISTORY_CHARS) -> Session` - Opens an existing session after verifying its hash chain; raises `SESSION_NOT_FOUND` or `CHAIN_LOG_BROKEN` naming the session and line.
   - `Agent.sessions(self) -> list[str]` - The ids of the sessions saved in this workspace.
   - `Agent.latest_session(self) -> str | None` - The id of the session written most recently, or none when there are no sessions.
+  - `Agent.delete_session(self, session_id: str) -> None` - Deletes a saved session's log for good; raises `SESSION_NOT_FOUND` naming the saved sessions when there is none by that id. The caller decides whether to ask first and which session is in use.
   - `Agent.run(self, prompt: str, *, input: dict[str, Any] | None=None, criteria: Sequence[str]=(), skills: Sequence[SkillContext]=(), session: str | None=None, resume_from: Answer | None=None, cancellation: CancellationToken | None=None) -> Answer` - Runs one prompt as a `ScopedAgentTask` with a new id on a new `BaseAgent` from the runtime services; `input`, `criteria`, `skills`, `session`, `resume_from` and `cancellation` pass through. Raises only what `BaseAgent.run` raises.
   - `Agent.stream(self, prompt: str, *, input: dict[str, Any] | None=None, criteria: Sequence[str]=(), skills: Sequence[SkillContext]=(), session: str | None=None, resume_from: Answer | None=None, cancellation: CancellationToken | None=None) -> AsyncIterator[ModelStreamEvent | Answer]` - Runs like `run` but yields each model stream event (`ModelTextDelta`, `ModelToolCallDelta`, `ModelStreamCompleted`) as it arrives and the `Answer` last. A model that cannot stream yields only the `Answer`. Leaving the loop early cancels the run.
   - `Agent.stream.listener(event: ModelStreamEvent) -> None` - Passes each event to the `on_stream` callback, then to the queue the generator reads.
@@ -66,6 +69,7 @@ A wrapper over the existing parts for a caller who wants a working agent without
   - `Agent.run_sync(self, prompt: str, *, input: dict[str, Any] | None=None, criteria: Sequence[str]=(), skills: Sequence[SkillContext]=(), session: str | None=None, resume_from: Answer | None=None) -> Answer` - `asyncio.run` of `run` for scripts; inside a running event loop, or with MCP tools whose connections belong to one loop, it raises a `RuntimeError` that says to await `run` instead.
   - `Agent.as_tool(self, *, name: str, description: str, needs_approval: bool=False) -> FunctionTool` - Wraps this agent as a tool for another agent: the call runs a new task and returns its text, and a run that does not complete raises an error naming the agent and the reason, which the parent sees as a failed tool result.
   - `Agent.as_tool.delegate(task: str) -> str` - The function the parent calls: runs the task and returns the answer text.
+  - `Agent.say(self, message: str) -> None` - Tells the running agent something; it reads the message at its next step, or at the start of the next run if none is active. Raises `ValueError` from `MessageInbox.put` when the message is empty, too long or the queue is full.
   - `Agent.close(self) -> None` - Closes the audit-log handles and the telemetry connection so the workspace can be moved or deleted, which Windows refuses while they are open; repeated calls are safe. Tool groups the caller connected, such as MCP, are the caller's to close.
   - `Agent.__enter__(self) -> Agent` - Returns the agent, so `with Agent(...) as agent:` closes it on exit.
   - `Agent.__exit__(self, *exception: object) -> None` - Calls `close`; an exception from the block still propagates.
@@ -269,6 +273,73 @@ A wrapper over the existing parts for a caller who wants a working agent without
 
 ---
 
+### `starter/notebook_tools.py` - edit a cell of a Jupyter notebook anywhere in a project, without running it
+
+*Starter layer · depends on: `tools/core/services.py`, `tools/artifacts.py`, `starter/tools.py` · not re-exported at the package root*
+
+**Role in the workflow.** The core `notebook_edit` tool only edits notebooks declared in advance as output paths. A coding agent works on whichever notebook the project has, so `notebook_tools(root, protected=..., needs_approval=True)` returns one tool that checks the path itself (inside the project, a `.ipynb` file that exists, not under a protected folder) and then runs the core edit with exactly that path declared. A cell is replaced or appended to by index; a far index adds empty cells. The notebook is never executed, and every refusal names the path and the rule.
+
+**Contents**
+
+- `notebook_tools(root: Path, *, protected: Sequence[str]=(), needs_approval: bool=True) -> FunctionTool` - Builds the `notebook_edit` tool for a project directory; protected names are top-level folders or files the agent may not edit.
+  - `notebook_tools.notebook_edit(path: str, new_source: str, cell_index: int=0, mode: str='replace') -> dict[str, Any]` *(async)* - Validates the path, declares it, runs the core edit and returns its record, or raises with the reason.
+
+---
+
+### `starter/planner.py` - turn a plain request into a validated plan, then run it as one agent or as a team
+
+*Starter layer · depends on: `state/planning.py`, `starter/agent.py` · not re-exported at the package root*
+
+**Role in the workflow.** `Planner(model=..., roles=[Role(...)]).plan(request)` asks a model for a small draft: tasks, each with a role, instructions, a done-when and the results it produces and needs. Code, not the model, turns the draft into a core `Plan`: dependencies follow from who produces what, the proofs are generated, and tasks of writable roles are chained so they never run together. `PlanValidator` is the authority; a draft it or the compiler refuses goes back to the model with the exact problems. The architecture is chosen from the finished plan (a team for two or more roles or two independent tasks, else one agent), not from anything the model claims, and the caller decides: `run_team` or `run_solo`. No specification is needed: the request is the specification.
+
+**Contents**
+
+- **class `Role`** - A kind of worker the caller offers the planner: a name, what it is for, optional tools and whether it changes things (`writable`).
+- **class `DraftTask`** - One task as the model writes it: id, role, instructions, done_when, and the results it produces and needs.
+- **class `PlanDraft`** - The model's whole answer: a rationale and the tasks; it never writes dependencies, signals or proofs.
+- **class `PlanDraftError`** - A draft that cannot become a plan; carries every problem found, each naming the task and the rule.
+  - `PlanDraftError.__init__(self, problems: Sequence[str]) -> None` - Keeps the list of problems and joins them as the message.
+- **class `PlannerError`** - Raised when no valid plan came out of the allowed attempts.
+- **class `PlannedTask`** - A task after compiling: its dependencies, and the results it produces and needs including the ordering results added for writers.
+- **class `ArchitectureChoice`** - Whether the plan should run as a team, with the reasons that were found.
+  - `ArchitectureChoice.architecture(self) -> str` - Property: `team` or `single`.
+- **class `TaskOutcome`** - How one task ended: `completed`, `failed` or `skipped`, its text and the reason.
+- **class `TeamResult`** - The result of a team run: whether every task completed, the final text, each outcome and the order tasks started.
+- `_slug(text: str, joiner: str) -> str` - Lowercases text and joins its letters and digits with the given character, so `Read_And Summarize` becomes `read-and-summarize`.
+- `_normalised(draft: PlanDraft, roles: Sequence[Role]) -> PlanDraft` - Fixes harmless naming slips in a draft: task ids to kebab-case, result names to snake_case, role names to the offered spelling.
+- `compile_draft(draft: PlanDraft, request: str, roles: Sequence[Role], max_tasks: int=DEFAULT_MAX_TASKS) -> tuple[Plan, tuple[PlannedTask, ...]]` - Turns a draft into a core `Plan` and its planned tasks, refusing a draft with an unknown role, a duplicate id or producer, a need nobody produces or tasks that wait on each other, then runs `PlanValidator`. The request text stands in for a specification: each signal cites its first 60 characters.
+- `_order(tasks: Sequence[DraftTask], producers: dict[str, str]) -> list[str]` - Orders tasks so every task follows the ones that produce what it needs; names the tasks that wait on each other.
+- `_writer_chain(tasks: Sequence[DraftTask], order: list[str], by_role: dict[str, Role]) -> dict[str, str | None]` - Chains the tasks of writable roles one after another in data order, so two tasks that change things never run together.
+- `_task(tasks: Sequence[DraftTask], task_id: str) -> DraftTask` - Finds a draft task by id.
+- `_turn_signal(task_id: str) -> str` - The name of the ordering result a writer task hands to the next writer.
+- `_planned(task: DraftTask, producers: dict[str, str], chain: dict[str, str | None]) -> PlannedTask` - One compiled task: its ordering result, and its dependencies from the producers of what it needs.
+- `_plan(planned: Sequence[PlannedTask], request: str) -> Plan` - Builds the core `Plan`: locked-interface signals, signal uses, and one dependency proof per producing and consuming pair.
+- `choose_architecture(tasks: Sequence[PlannedTask]) -> ArchitectureChoice` - A team when two or more roles are involved or two tasks are independent of each other; otherwise a single agent, with the reasons.
+- `_ancestors(tasks: Sequence[PlannedTask]) -> dict[str, set[str]]` - For each task, every task it depends on directly or through others.
+  - `_ancestors.visit(task_id: str) -> set[str]` - Collects one task's ancestors, remembering the result.
+- `topological(tasks: Sequence[PlannedTask]) -> tuple[PlannedTask, ...]` - Tasks ordered so a task comes after everything it depends on.
+- **class `PlanProposal`** - A validated plan awaiting a decision: the request, rationale, tasks, core plan, suggested architecture and roles. It runs nothing until `run_team` or `run_solo` is called.
+  - `PlanProposal.gap_metadata(self) -> GapMetadata` - Property: the plan's roles and task count as the `GapMetadata` the core `Orchestrator` expects, for callers who want the governed path.
+  - `PlanProposal.summary(self) -> str` - The plan as text for a person: the rationale, each task with its role and what it waits for, and the suggestion with its reasons.
+  - `PlanProposal.solo_prompt(self) -> str` - The request followed by every task as a numbered step in dependency order, for one agent to work through.
+  - `PlanProposal.run_solo(self, factory: SoloFactory, *, close: bool=True) -> Answer *(async)*` - Runs the steps in one agent built by the caller's factory from all the roles, and closes it.
+  - `PlanProposal.run_team(self, factory: WorkerFactory, *, max_parallel: int=DEFAULT_PARALLEL, on_task: TaskEvent | None=None, close: bool=True) -> TeamResult *(async)*` - Runs the tasks in waves, up to `max_parallel` at once, each in an agent the factory builds for its role; a task whose dependency did not complete is skipped, not run. Reports each start, completion, failure or skip to `on_task`.
+    - `PlanProposal.run_team.work(task: PlannedTask) -> None *(async)*` - Runs one task under the concurrency limit; an exception from the factory or the run fails that task with the exception named.
+  - `PlanProposal._worker_prompt(self, task: PlannedTask, outcomes: dict[str, TaskOutcome], by_id: dict[str, PlannedTask]) -> str` - A task's prompt: the original request, its instructions, when it is done and the results of the tasks it depends on.
+  - `PlanProposal._final_text(self, outcomes: dict[str, TaskOutcome]) -> str` - The answer of the final task, or each final task's answer under its name when there are several.
+- `_skip_reason(task: PlannedTask, outcomes: dict[str, TaskOutcome]) -> str` - Says which dependencies stopped a task from running.
+- `planner_instructions(roles: Sequence[Role], max_tasks: int) -> str` - The planner model's instructions: keep plans small, one task when the job is simple, how to name tasks and results, and the roles available.
+- **class `Planner`** - Asks a model for a plan draft, compiles and validates it, and feeds problems back for a corrected draft, up to `max_attempts` times. Roles come from the caller; with none, a single generic worker.
+  - `Planner.__init__(self, *, model: ModelSetup, roles: Sequence[Role]=(), max_tasks: int=DEFAULT_MAX_TASKS, max_attempts: int=DEFAULT_ATTEMPTS, workspace: Path=DEFAULT_WORKSPACE / 'planner') -> None` - Takes the model, roles, task and attempt limits and the workspace; rejects a limit below one and duplicate role names.
+  - `Planner.plan(self, request: str) -> PlanProposal *(async)*` - Returns a `PlanProposal` for a request, or raises `PlannerError` naming the last problems; an empty request is refused.
+  - `Planner.plan_sync(self, request: str) -> PlanProposal` - `asyncio.run` of `plan`.
+  - `Planner._ask(self, prompt: str, problems: list[str]) -> PlanDraft | None *(async)*` - One planner run for one prompt; returns the draft or records why there was none.
+- `_retry_prompt(request: str, previous: str, problems: Sequence[str]) -> str` - The request, the previous draft and the problems, asking for a corrected plan.
+
+**Algorithms & invariants.** `PlanValidator` accepts a task that needs a result nobody produces, so `compile_draft` rejects that itself. Naming slips (case, underscores, spaces) are fixed rather than retried, because live models repeated them. A task id or result name that has no letters or digits, a role that does not exist, a duplicate producer and a cycle are refused with the task named. Team tasks run in waves of ready tasks; one that fails makes its dependents `skipped`.
+
+---
+
 ### `starter/session_store.py` - a session's turns on disk as a hash chain
 
 **Role in the workflow.** One JSONL file per session under `.agent-sessions/` in the workspace: a start record (agent, time, and where it was forked from) then one record per turn (prompt, status, answer, steps, a one-line summary per tool call). Records are chained, so editing or dropping one is found when the session is resumed. A fork copies the turns up to a point into a new session and records the source, the turn and the source turn's hash. The retention inventory lists this directory as unclassified and retention does not prune it.
@@ -280,6 +351,7 @@ A wrapper over the existing parts for a caller who wants a working agent without
   - `SessionStore.__init__(self, root: Path) -> None` - Remembers the sessions directory; nothing is created until a session is.
   - `SessionStore.exists(self, session_id: str) -> bool` - True when the session's file exists.
   - `SessionStore.ids(self) -> list[str]` - The saved session ids, sorted.
+  - `SessionStore.delete(self, session_id: str) -> None` - Removes one session's log file under the store's lock; raises `SESSION_NOT_FOUND` naming the saved sessions when it is missing.
   - `SessionStore.latest(self) -> str | None` - The id of the session file modified most recently, or none.
   - `SessionStore.create(self, session_id: str, agent: str, forked_from: dict[str, Any] | None=None) -> dict[str, Any]` - Writes the start record; an existing id raises `SESSION_EXISTS`.
   - `SessionStore.append(self, session_id: str, turn: dict[str, Any]) -> dict[str, Any]` - Adds the next numbered turn.
@@ -318,6 +390,25 @@ A wrapper over the existing parts for a caller who wants a working agent without
 
 ---
 
+### `starter/skill_files.py` - Agent Skills as folders: a SKILL.md header, a body and files beside it
+
+*Starter layer · 220 lines · depends on: `foundations/contracts.py` · not re-exported at the package root*
+
+**Role in the workflow.** Reads the open Agent Skills layout that Claude Code and Codex also use, so a skill written for either works here. `<name>/SKILL.md` starts with a `---` header holding `name` (lowercase letters, digits and single hyphens, equal to the folder name) and `description`, and optionally `allowed-tools`, `disable-model-invocation` and `argument-hint`; a Codex `agents/openai.yaml` with `allow_implicit_invocation: false` also makes a skill manual-only. A single `name.md` is still a skill, with its first line as the description. The module only finds, parses and renders; which skills a caller offers and what a skill may use stay with the caller. Every refusal names the file and the problem.
+
+**Contents**
+
+- **class `SkillDefinition`** *(dataclass)* - One skill: name, description, body, path, source label, folder, manual-only flag, allowed tools, argument hint and the bundled files (at most 50, relative paths).
+- `parse_frontmatter(text: str, label: str) -> tuple[dict[str, Any], str]` - Splits a `---` header from the body; understands `key: value`, `[a, b]` and `- item` lists and true/false; an unclosed header or a line that is not `key: value` raises naming `label` and the line.
+- `_scalar(text: str) -> str` - Trims a value and removes one pair of matching quotes.
+- `_value(text: str) -> Any` - Turns a header value into a list, a boolean or a string.
+- `_words(value: Any) -> tuple[str, ...]` - Splits `allowed-tools` into entries, keeping `Tool(pattern)` entries whole.
+- `load_skill_definition(path: Path, source: str) -> SkillDefinition` - Reads and validates one skill file (not empty, at most 20,000 characters, valid name, description of at most 1,024 characters).
+- `discover_skills(roots: Sequence[tuple[str, Path]]) -> list[SkillDefinition]` - Finds folder and single-file skills in each root; a later root overrides an earlier one with the same name; returns them sorted by name.
+- `render_skill(definition: SkillDefinition, arguments: str='') -> str` - The text to give the model: `$ARGUMENTS` and `$1` to `$9` replaced, `ARGUMENTS:` appended when the body does not use them, and the skill folder and its bundled files listed.
+- `skill_file_text(definition: SkillDefinition, relative: str) -> str` - Reads a bundled file; a path that leaves the folder, a missing file or a single-file skill raises naming the choices.
+- `skill_context_of(definition: SkillDefinition, arguments: str='') -> SkillContext` - The rendered text as a run context with a version that follows its content.
+
 ### `starter/skills.py` - skills as files: a markdown file becomes task context the model is given
 
 **Role in the workflow.** `skill(path)` reads a file into the core `SkillContext` (id from the file name, version from a hash of its content). Pass skills to `Agent(skills=[...])` for every run or to a single `run(..., skills=[...])`.
@@ -338,10 +429,10 @@ A wrapper over the existing parts for a caller who wants a working agent without
 
 - **class `CoreTools`** - The declarations and the dispatcher for the chosen core tools, and whether each call needs approval.
   - `CoreTools.run(self, name: str, call_arguments: dict[str, Any]) -> ToolExecutionResult` - Runs one core tool by name through the dispatcher and returns its `ToolExecutionResult`.
-- `core_tools(root: Path, *, writable: Sequence[str]=(), only: Sequence[str] | None=None, needs_approval: bool=False) -> CoreTools` - Builds `CoreTools` for a directory: read tools always, write tools only for the declared writable paths, or exactly the tools named in `only` (for example just `web_fetch`); `needs_approval` makes every call to the group ask first.
+- `core_tools(root: Path, *, writable: Sequence[str]=(), only: Sequence[str] | None=None, needs_approval: bool=False, ask_human: HumanQuestionResponder | None=None) -> CoreTools` - Builds `CoreTools` for a directory: read tools always, write tools only for the declared writable paths, or exactly the tools named in `only` (for example just `web_fetch`); `needs_approval` makes every call to the group ask first.
 - **class `MultiRootCoreTools`** - The governed file tools over several named directories, each call naming its root.
   - `MultiRootCoreTools.run(self, name: str, call_arguments: dict[str, Any]) -> ToolExecutionResult` - Routes a call to the single-root tool group for the root it names.
-- `_dispatcher(root: Path, writable: Sequence[str]) -> CoreToolDispatcher` - Builds the executor that sends each call to the right root's tools.
+- `_dispatcher(root: Path, writable: Sequence[str], ask_human: HumanQuestionResponder | None=None) -> CoreToolDispatcher` - Builds the executor that sends each call to the right root's tools.
 - `multi_root_read_tools(roots: Mapping[str, Path]) -> MultiRootCoreTools` - Read-only file tools over several named roots, with the first named `project`.
 
 ---

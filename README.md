@@ -371,7 +371,7 @@ evidence. How the evidence works, and what it does and does not protect against,
 `apps/nailong_cli` is an interactive command line built on this layer: approvals before writes
 and commands, optional sandboxing, saved and forkable sessions and reviewed tool creation. See
 [apps/nailong_cli/README.md](apps/nailong_cli/README.md) and
-[docs/interactive-cli.md](docs/interactive-cli.md); [docs/cli-parity.md](docs/cli-parity.md); hosting your own model, including an offline mode: [docs/local-models.md](docs/local-models.md)
+[docs/interactive-cli.md](docs/interactive-cli.md); [docs/cli-parity.md](docs/cli-parity.md); hosting your own model, including an offline mode: [docs/local-models.md](docs/local-models.md); building a team of agents: [docs/multi-agent-tutorial.md](docs/multi-agent-tutorial.md)
 compares it with Claude Code and Codex. It has not been run against a live model.
 
 ## Going deeper

@@ -14,6 +14,7 @@ from .render import AnswerStreamer
 
 class JsonStream:
     def __init__(self, console: Console) -> None:
+        self.rationale = None
         self._console = console
         self._streamer = AnswerStreamer()
 
@@ -33,6 +34,9 @@ class JsonStream:
 
     def before_tool(self, event: ToolEvent) -> None:
         self._emit({"type": "tool_use", "tool": event.tool, "arguments": event.arguments})
+
+    def command_output(self, text: str) -> None:
+        return None
 
     def after_tool(self, event: ToolEvent) -> None:
         result = event.result

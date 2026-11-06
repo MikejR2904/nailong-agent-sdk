@@ -37,6 +37,24 @@ in a real terminal. Read [Known limits](#known-limits) before relying on it.
 The CLI is a separate package in `apps/nailong_cli` that depends on the SDK in this repository.
 It needs Python 3.12 or newer.
 
+To use `nailong` from any folder, like `claude` or `codex`, install it as a tool. It is editable,
+so changes to this repository take effect without reinstalling:
+
+```bash
+uv tool install --editable apps/nailong_cli     # run from the repository root
+nailong --help                                  # works in any directory
+```
+
+If `nailong` is not found afterwards, run `uv tool update-shell` and open a new terminal (the
+launcher goes in `~/.local/bin`, or `uv tool dir --bin` shows where). Upgrade with
+`uv tool upgrade nailong-cli` (not needed for an editable install), remove with
+`uv tool uninstall nailong-cli`.
+
+For working on the CLI itself, use a project environment instead; `uv run nailong` then works only
+from inside `apps/nailong_cli`, because `uv run` uses the project it finds above the current folder
+(a test workspace under the repository root finds the SDK's project, which has no `nailong`
+command, hence "program not found"):
+
 ```bash
 cd apps/nailong_cli
 uv sync
@@ -181,8 +199,10 @@ of the last (or Nth) tool call.
 | Ctrl+C | cancel the running turn (twice at an empty prompt to leave) |
 | Ctrl+D | leave |
 
-**While a turn runs:** Esc or Ctrl+C stops it. Other keys typed during a turn are discarded (there
-is no type-ahead queue). **In an approval menu:** ↑/↓ (or j/k, Tab) move, Enter confirms, 1-4 pick
+**While a turn runs:** Esc or Ctrl+C stops it. You can keep typing: the text appears on the spinner
+line after a `▸`, and Enter sends it. A line that is not one of the live commands below is queued
+and runs, in order, when the agent is done; half-typed text you did not send is put back at the
+prompt. **In an approval menu:** ↑/↓ (or j/k, Tab) move, Enter confirms, 1-4 pick
 directly, Esc means no. Without a real terminal (pipes, tests) approvals fall back to typed
 `y/s/a/n` or `1-4`.
 
@@ -207,6 +227,35 @@ before saving it.
 `/mode plan` (or `--permission-mode plan`) removes every tool that changes things. The agent
 investigates and proposes a plan. Afterwards the CLI asks whether to carry it out accepting edits,
 carry it out asking each time, or stay in plan mode.
+
+### Splitting a big request: `/plan`
+
+`/plan Compare these two libraries and write a summary file` asks the model for a plan, shows it,
+and, when it would be a team, asks what you want:
+
+```text
+Plan: Pricing and security are independent; the brief needs both.
+  pricing [explorer]: Compare the two vendors' pricing.
+  security [explorer]: Compare the two vendors' security.
+  brief [worker] (after pricing, security): Write the one-page brief from the notes.
+Suggested: a team - 2 roles are involved (explorer, worker); pricing and security can run at the same time.
+  1. Run as a team (3 tasks: explorer, worker)
+  2. Keep everything in one agent
+  3. Cancel
+```
+
+- **When it asks.** Only for a team suggestion (two or more roles, or two independent tasks). A job
+  the planner judges to be one task or one line of steps just runs, as it would without `/plan`.
+- **Roles.** `explorer` (reads files, searches and fetches; cannot change anything or run commands)
+  and `worker` (can edit and run, with your usual approvals) are built in. Each `[agents.NAME]`
+  in your settings becomes a role too; one whose `tools` is not `read-only` counts as writable.
+- **How a team runs.** One task at a time, in dependency order, each with its own agent and the
+  earlier tasks' results in its prompt. Tasks that change things are never run together. A failed
+  task makes the tasks that need it skip. Everything goes through your normal approvals, budget and
+  `/rewind`.
+- **One agent instead.** Option 2 runs the same steps as a single turn in your current session.
+- **Not recorded in the session.** A team run's tasks are not saved as turns of the session you can
+  `/resume`; the single-agent option is.
 
 ### How the agent keeps its place in a long task
 
@@ -297,6 +346,25 @@ nailong --fork ID --at 3      # branch ID after its turn 3
 nailong -n "login bug"        # name a new session
 ```
 
+**Where they are.** Per project, on your disk, under the project's workspace:
+
+| Path (relative to the project) | Holds |
+|---|---|
+| `.nailong/workspace/.agent-sessions/<id>.jsonl` | the session: one line per turn (prompt, answer, status, tool names), hash-chained |
+| `.nailong/workspace/.agent-audit-logs/` | the tamper-evident audit log of every model and tool step |
+| `.nailong/workspace/.agent-telemetry/telemetry.sqlite3` | telemetry events |
+| `.nailong/workspace/.agent-project-state/` | per-session state records |
+| `.nailong/checkpoints/` | the file snapshots `/rewind` uses |
+
+Your prompt history is in `~/.local/state/nailong/history` and saved permission rules are in
+`~/.config/nailong/permissions.toml`, outside the project. Because the sessions belong to the
+project folder, you resume them by running `nailong` from the same folder (or `--project DIR`).
+The files are plain JSON lines; copy the folder to move a session to another machine.
+
+**What resuming restores.** The model is given the earlier prompts and answers (a bounded digest,
+or your `/compact` summary), so it knows what was discussed. It is not given its past
+reasoning, and the files on disk are whatever they are now; `/rewind` is how you go back.
+
 Inside: `/sessions` lists them, `/resume` shows a picker, `/fork [turn]` branches here, `/new`
 (or `/clear`) starts an empty one, `/verify` checks the hash chains of the session and of forged
 tools, `/search TEXT` finds text across sessions, `/export [file]` writes the session as markdown
@@ -304,7 +372,7 @@ tools, `/search TEXT` finds text across sessions, `/export [file]` writes the se
 
 **Long sessions.** The model is sent a bounded digest of earlier turns, not the transcript.
 `/compact [focus]` has the model write a summary that replaces older turns in what is sent;
-`--autocompact` (or `autocompact = true`) does it automatically. `/context` shows what is sent.
+Old turns are now summarised automatically once they no longer fit (set `autocompact = false` to stop that). `/context` shows what is sent.
 
 ## 8. Undo: `/rewind`
 
@@ -331,18 +399,42 @@ database, a network call).
 | `/context` | what is sent each turn |
 | `/compact [focus]` | summarise the session so far |
 | `/cost` | spending this run (needs prices, section 16) |
-| `/sessions` `/resume` `/fork [N]` `/new` `/clear` | sessions |
+| `/tokens` | where the next request's tokens go (instructions, tool definitions, history), the largest tools, and the last turn's usage |
+| `/sessions` `/resume` `/fork [N]` `/new` `/clear` | sessions; `/sessions delete ID` removes a saved one (asks first; not the one you are in); `/sessions import FILE [name]` turns a Claude Code or Codex transcript (`.jsonl`) into a session you can `/resume` |
+| `/models [text]` | asks the model service which models it offers (`GET /models`, with your key) and switches to the one you pick; `/model NAME` switches directly |
+| `/web [on\|off]` `/web search [on\|off]` | shows or changes web access (page and document fetching; web search) for this session without restarting; refused while `offline` is set. A message with a link while web is off gets a one-line hint |
 | `/search TEXT` `/export [file]` | find in sessions; write markdown |
 | `/init` | draft `AGENTS.md` (asks before saving) |
 | `/diff` `/review` | show your uncommitted changes; have the agent review them (read-only) |
-| `/rewind [N]` | undo changes (section 8) |
+| `/rewind [N]` `/redo` | undo changes (section 8); `/redo` puts back what the last `/rewind` undid, until the next turn |
+| `/editor [text]` | write a long prompt in `$VISUAL` or `$EDITOR` and send it |
+| `/stats [days]` | runs, event statuses and the busiest events over the last days (default 7) |
+| `/connect` | choose a model service, save the settings and switch to it now |
+| `/ci github\|github-review\|gitlab [write]` | a workflow that runs nailong from issue comments, reviews pull requests inline, or runs in a pipeline |
+| `/plan REQUEST` | split a request into tasks; run them as a team or keep it in one agent |
 | `/suggest` | three useful next prompts |
+| `/telemetry [now]` | the OpenTelemetry export: collector, what it sends, last result, send now |
+| `/why` | what the agent is doing and the reasoning it gave for that step (works any time) |
+| `/ps` | running agents and prompts waiting in the queue |
+| `/pause` `/unpause` | freeze the running work where it is, and carry on from exactly there |
+| `/pause JOB` `/unpause JOB` | the same for one background command (`/jobs` shows it as paused) |
+| `/interrupt [text]` | stop what is running; with text, run it next |
+| `/stop ID` | stop one running agent (`main`, or a task id during a `/plan` team run) |
+| `/broadcast TEXT` | tell every running agent something now; it reads it at its next step |
+| `/cleanup [days]` | remove old runs' audit and telemetry records (shows them, asks first) |
 | `/expand [N]` | full output of the last (or Nth) tool call |
 | `/reasoning [on\|off]` | show or hide the model's reasoning as it streams |
-| `/tools` `/memory` `/skills` `/agents` `/mcp` `/todos` `/plugins` | what the agent has |
+| `/tools` `/memory` `/todos` `/plugins` | what the agent has; `/tools new NAME [user]` makes a tool file |
+| `/trust-tools` | read and approve project tool files before they load |
+| `/variant [NAME\|off]` | switch to a saved set of model parameters |
+| `/skills` `/deploy ARGS` `$deploy ARGS` | list skills, make or install one (`/skills new NAME`, `/skills install DIR`), run one by name |
+| `/agents` | subagents (files and settings) and the ones running in the background |
+| `/mcp` | MCP servers and their tools; `/mcp add NAME COMMAND...`, `/mcp add NAME URL`, `/mcp preset browser`, `/mcp remove NAME` |
+| `/schedule` | prompts that run on a timetable: `list`, `add WHEN -- PROMPT`, `remove ID`, `install` |
 | `/sandbox` `/verify` `/forge` | sandbox details; integrity check; forged tools |
 | `/add-dir PATH [name]` | give the agent another directory |
-| `/jobs` `/kill ID` | background commands |
+| `/jobs` `/kill ID` | background commands and persistent shells (`/kill shell:name`) |
+| `/notes [title]` | the task notes the agent keeps |
 | `/exit` (`/quit`) | leave |
 
 Your own commands (section 12) appear in the list too.
@@ -376,11 +468,20 @@ nailong -p PROMPT                run once, print the answer, exit
 | `--web` / `--search` | let the agent fetch pages / search the web |
 | `--offline` | refuse any setting that reaches beyond your network |
 | `-c` / `-r ID` / `--fork ID --at N` / `--fork-session` / `-n NAME` | sessions |
-| `--autocompact` | summarise old turns automatically |
+| `--autocompact` | summarise old turns automatically (already the default) |
 | `--review [BASE]` | print a read-only review of uncommitted changes and exit |
 | `--forge` | let the agent propose tools for your review |
 | `--verbose` | show full tool arguments and results (and reasoning in `-p` mode) |
 | `--no-reasoning` | do not show the model's reasoning |
+| `--fallback-model NAME` | model to try when the main one fails (repeatable, in order) |
+| `--otlp-endpoint URL` | send recorded runs to this OpenTelemetry collector (OTLP/HTTP) |
+| `--mcp-serve` | offer this project's tools to another program over MCP (section 12) |
+| `--run-schedules` | run the scheduled prompts that are due, then exit (for cron or Task Scheduler) |
+| `--serve` `--port N` `--hostname H` | run the agent behind a small HTTP service (section 12) |
+| `--attach URL` | talk to a `--serve` at that address (`-p PROMPT` for one message) |
+| `--acp` | speak the Agent Client Protocol on stdio, for editors (section 12) |
+| `--completion SHELL` | print a completion script for bash, zsh, fish or powershell |
+| `--upgrade` | say how to upgrade nailong where it is installed |
 | `--debug-file FILE` | write a JSON-lines debug log |
 | `--no-color`, `--version` | |
 
@@ -399,6 +500,7 @@ max_tokens = 4096
 allow_insecure_http = false         # true for plain HTTP beyond this machine
 invalid_output_retries = 2          # re-asks after an unusable model reply
 tool_mode = "auto"                  # auto | native | prompted: for models without tool calling
+fallback_models = ["other-model"]   # tried in order when the main model fails (same service and key)
 
 # behaviour
 permission_mode = "default"
@@ -409,7 +511,7 @@ sandbox = "auto"                    # auto | none | docker
 docker_image = "python:3.12-slim"
 web = false
 web_search = false
-autocompact = false
+autocompact = true
 show_reasoning = true             # stream the model's reasoning when it sends any
 notify = false                      # terminal bell when a turn ends
 editing_mode = "emacs"              # or "vi"
@@ -419,6 +521,17 @@ max_budget_usd = 5.0
 # user file only (a project file's copy is ignored, and /doctor says so)
 offline = false
 add_dirs = ["/abs/path/one"]
+otlp_endpoint = "http://localhost:4318"   # send recorded runs to this OpenTelemetry collector
+otlp_include = ["telemetry", "audit", "integrity"]   # what to send (all three by default)
+model_timeout_seconds = 300    # one model call; 0 = no limit
+tool_timeout_seconds = 600     # one tool call; 0 = no limit
+run_deadline_seconds = 0       # a whole turn; 0 = no limit (the default)
+ssh_hosts = []                 # hosts the agent may open remote shells on (user file only)
+small_model = ""               # cheaper model for /compact and /suggest summaries
+instruction_files = []         # extra instruction files or globs, e.g. ["CONTRIBUTING.md", "docs/*.md"]
+format_on_edit = false         # run ruff/prettier/gofmt/rustfmt/shfmt after edits (user file only)
+diagnostics_on_edit = false    # run ruff check after edits and tell the agent (user file only)
+lsp_on_edit = false            # ask language servers found on PATH about edited files (user file only)
 ```
 
 Tables: `[parameters]` (model parameters), `[prices.MODEL]` (section 16), `[agents.NAME]` (section
@@ -433,9 +546,104 @@ lists what was found.
 **Custom commands.** A markdown file `.nailong/commands/ship.md` becomes `/ship`. Its text is sent
 as the prompt; `$ARGUMENTS` is replaced by what you typed after the name.
 
-**Skills.** Markdown files in `.nailong/skills/` (or `~/.config/nailong/skills/`). The agent is
-given a one-line index (the first line of each file is its description) and loads a skill's full
-text with a `use_skill` tool only when the task matches. A skill is limited to 20,000 characters.
+**Skills.** A skill is a folder with a `SKILL.md`, the open Agent Skills layout that Claude Code
+and Codex also read, so a skill written for either works here:
+
+```
+.nailong/skills/deploy/
+  SKILL.md          ---, name: deploy, description: Deploy to an environment, ---, then the steps
+  scripts/go.sh     files beside it, listed to the agent when the skill runs
+```
+
+The header takes `name` (equal to the folder), `description`, and optionally `allowed-tools`
+(`read_file grep`, or Claude's `Read Bash(git status:*)`), `disable-model-invocation: true` and
+`argument-hint`. A single `name.md` is still a skill, with its first line as the description.
+
+Folders searched, later ones winning: `~/.codex/skills`, `~/.claude/skills`,
+`~/.config/nailong/skills`, `<project>/.claude/skills`, `<project>/.nailong/skills`. Plugins can
+bring skills too.
+
+You run a skill by name: `/deploy staging` or `$deploy staging`. The text after the name replaces
+`$ARGUMENTS` (or `$1`, `$2`) in the body. The agent also sees a one-line index of the skills and
+loads one itself with `use_skill` when a task matches; `use_skill` with `file=` reads a file
+bundled with it, and scripts are run by their full path through `run_command` (so the sandbox and
+approvals apply as always). `disable-model-invocation: true` hides a skill from the agent so only
+you can run it. `allowed-tools` restricts the agent to those tools for the length of that turn when *you* run
+the skill with `/name`; anything else is refused with a message naming the skill. When the agent
+loads a skill on its own, the list is not enforced, because it cannot know in advance what the work
+will need. It never grants permission, which
+still comes from the mode and your approvals.
+
+`/skills` lists them with their source; `/skills new NAME` makes a template in the project;
+`/skills install FOLDER` copies a skill folder in. A skill file is limited to 20,000 characters
+and a bad one stops startup with its path and the reason.
+**Your own tools.** Put a Python file in `~/.config/nailong/tools/` (yours, loaded at start) or
+`.nailong/tools/` (this project). `/tools new shout` writes a template:
+
+```python
+from nailong_agent_sdk.starter import tool
+
+@tool
+def shout(text: str) -> str:
+    """Return the text in capitals; the model reads this to decide when to call it."""
+    return text.upper()
+```
+
+The arguments' names and type hints become the tool's schema, and the docstring is its
+description. A file with no `@tool` but a `run(...)` function becomes a tool named after the file.
+Several `@tool` functions in one file are all offered. Names are letters, digits and underscores,
+may not take a built-in's name, and may not repeat across files.
+
+A tool runs in the nailong process with your authority, so the loader is careful. Files in your
+own folder load at start. A **project** file is code someone else may have put there: it is not
+imported until you run `/trust-tools`, which shows the file and asks; the answer is remembered by
+the file's hash, so any edit makes it wait for approval again. Every custom tool asks for approval
+when the agent calls it (unless the author marked it `read_only=True`), and plan mode does not
+offer them. A file that fails to import is named at startup with the error and the rest still
+load. For something that needs its own process, an MCP server is the better home.
+
+**Subagents.** Besides `[agents.NAME]` in your settings, a subagent can be a Markdown file in
+`.nailong/agents/`, `~/.config/nailong/agents/` or the `.claude/agents` folders (project beats user):
+
+```
+---
+name: code-scout
+description: Finds where something is defined and reports file and line
+tools: Read, Grep, Glob        # read-only (default) | edit | all, or Claude's tool names
+model: a-cheaper-model         # optional: another model on the same service
+temperature: 0.2               # optional
+steps: 8                       # optional: most steps for one task
+deny: run_command:rm *, write_file   # optional: tools this agent may never use
+allow: write_file:notes/*             # optional, user-level files only: lets it run in the background
+                                      # with these pre-approved actions (see below)
+---
+You search the code and answer with file:line references. You change nothing.
+```
+
+The main agent calls `agent_code_scout`. Read-only subagents may run side by side: the agent can
+call several in one step. It can also start one with `agent_start` and keep working, then collect
+the answer with `agent_result`; the run shows in `/ps` and can be stopped (`/stop agent-1`),
+paused or told something (`/broadcast`). Read-only subagents run in the background freely. One that
+writes or runs commands may too, but only if its user-level agent file (not a project file) has an
+`allow:` list: a background run never asks anyone, so it may do exactly what that list pre-approves
+and everything else is refused. `/agents` lists them with the file each came
+from and shows background runs.
+
+**Instruction files.** `NAILONG.md`, `AGENTS.md` or `CLAUDE.md` are read from the repository root
+down to the project folder (outermost first), then `NAILONG.local.md` (yours, not for
+version control) and every `.nailong/rules/*.md`. A line may pull in another file with
+`@docs/style.md`: the file is included in place (up to three levels), only from inside the
+project or your settings folder, and a missing, outside or self-including import is replaced by a
+bracketed note saying so. Folders below the project that have their own instruction file are
+listed to the agent, which reads that file before changing things there.
+
+**MCP servers.** Besides `[mcp.NAME]` in your user settings and `--mcp-config`, `/mcp add` saves a
+server in `~/.config/nailong/mcp.json` so it connects at every start (`/mcp remove` undoes it;
+a running session keeps it until restart). `/mcp preset browser` adds the Playwright browser
+server (`npx` fetches its package the first time it runs), which gives the agent a browser to
+click and read pages with. Tools of a server can be limited in its table with
+`allow_tools = ["read"]` or `deny_tools = ["delete"]` (the tool names without the `mcp__server__`
+prefix); anything else is refused with a message naming the setting.
 
 **Hooks.** Shell commands the CLI runs around the agent, set in your **user** file only (a hook is
 a program, so a project cannot add one):
@@ -443,9 +651,17 @@ a program, so a project cannot add one):
 ```toml
 [[hooks]]
 event = "pre_tool"       # pre_tool | post_tool | session_start | session_end | prompt_submit | turn_end
+                         # | file_edited | tool_failed | assistant_message | permission_asked
+                         # | compacted
 tool = "run_command"     # glob, default *; for tool events
 command = "scripts/check.sh"
 ```
+
+`file_edited` runs after each successful write, edit, notebook edit or patch (with the tool input
+in `NAILONG_TOOL_INPUT`); `permission_asked` runs just before you are asked to approve something
+(`NAILONG_TOOL`, `NAILONG_SUBJECT`); `compacted` runs after a summary is saved; `tool_failed` runs after a tool call that did not
+succeed (`NAILONG_TOOL_STATUS` says how); `assistant_message` runs after a completed turn with the
+reply in `NAILONG_MESSAGE`. None of these can refuse anything.
 
 A `pre_tool` hook that exits non-zero refuses the call (the model is told). A failing
 `prompt_submit` hook refuses the message; its output is otherwise added to the prompt. Hooks get
@@ -483,6 +699,285 @@ Plugins you install run with your authority; read them first.
 **More directories and background work.** `--add-dir`, `/add-dir`, and `add_dirs` give the agent
 other directories. The agent can start a long-running command in the background
 (`start_background`, with approval); watch with `/jobs`, stop with `/kill ID`.
+
+### Questions, notebooks, fallbacks, telemetry and cleanup
+
+These are SDK features that the CLI now exposes.
+
+- **The agent can ask you a question.** When only you can decide something, it uses
+  `ask_human_question`; you see `? the question` and type an answer. With no terminal (`-p`, pipes)
+  it is told the question went unanswered and carries on.
+- **Notebook cells.** `notebook_edit` replaces or appends to one cell of any `.ipynb` file in the
+  project by index, without running it. It asks for approval like other edits, is covered by
+  `accept-edits` mode and by `/rewind`, and is absent in plan mode.
+- **Fallback models.** `fallback_models = ["b", "c"]` (or `--fallback-model b`) names models on the
+  same service and key to try, in order, when the main model fails. `/status` lists them. The names
+  must differ from the main model and from each other.
+- **OpenTelemetry export.** Off by default. Set `otlp_endpoint` in your *user* settings (a project
+  file cannot choose where your data goes) or pass `--otlp-endpoint URL`. Records go to
+  `<url>/v1/traces`, `/v1/logs` and `/v1/metrics` over OTLP/HTTP in the background, as they are
+  written (about a second after the last one) and again after each turn and when you leave; a
+  collector that is slow or down never delays you, and a ledger in the workspace means each record
+  is sent once. A run's spans appear when the run ends, because the profile that holds them is
+  written then. What is sent is `otlp_include` (user settings only): `telemetry` (spans, log
+  records and metrics), `audit` (every hash-chained audit entry, scope `nailong.audit`) and
+  `integrity` (each signed run-head checkpoint and a verdict saying whether the checkpoints, the
+  audit chain and the terminal link hold, scope `nailong.integrity`). A collector stores these
+  records; it does not verify them, so each carries its hashes and sequence numbers. `/telemetry`
+  names what is being sent. Credentials go in `OTEL_EXPORTER_OTLP_HEADERS`
+  (`Authorization=Bearer%20token`); the standard endpoint variable is deliberately not read, so a
+  collector set up for other tools does not receive your prompts. `/telemetry` shows the last
+  result, `/telemetry now` sends immediately. `offline` mode refuses a collector that is not on
+  your network.
+- **Cleanup.** `/cleanup [days]` (default 30) lists finished runs older than that, keeping the three
+  most recent, and asks before removing their audit and telemetry records. A tombstone note records
+  that they existed. Sessions you can `/resume` are not touched.
+
+### Pausing and killing
+
+`/pause` (typed while the agent works) stops the work without restarting anything. The agent waits
+at the start of its next step, so a model request already sent finishes first and its answer is
+held; the command the agent is waiting for is frozen in its tracks (POSIX `SIGSTOP`; on Windows its
+process tree is suspended) and carries on from the same instruction at `/unpause` (`/resume` is the saved-session command). Time spent paused
+counts against no limit: not the run deadline, and not the command's own time limit. Background
+commands keep running when you pause the agent; pause one with `/pause job-1`. A tool written as a
+Python function cannot be frozen: it finishes, and the agent pauses after it. Commands in the
+Docker sandbox are not frozen either. Esc, `/interrupt` and `/stop ID` end paused work too, and
+`/kill job-1` kills a background command even if it is paused. The pause is lost if you quit.
+
+### Shells that keep their state, and servers
+
+`run_command` starts a fresh shell every time, so a directory change, a variable or a login does
+not carry over. For work that needs state, the agent opens a persistent shell with `shell_open`
+and runs commands in it with `shell_run`. The shell is one process that stays alive: `cd`, `export`,
+a virtualenv and anything it started persist, and every call returns the exit code and the
+directory it ended in. Up to five can be open; `/jobs` lists them, `/kill shell:name` closes one,
+`/pause shell:name` freezes it, and live output, pauses and time limits work as for any command.
+A command that runs past its limit closes the shell (a hung command cannot be interrupted through
+a pipe) and the error says which state was lost; use `start_background` for long work. Two limits
+of the design: a command that reads from standard input, or that exits the shell, ends the
+session; local shells use `cmd.exe` on Windows and `/bin/sh` elsewhere, inside the sandbox when
+one is active.
+
+**Remote machines.** Remote shells are off until you list hosts in `ssh_hosts` in your *user*
+settings (a project file cannot add any), for example `ssh_hosts = ["admin@server1"]`. The agent
+then calls `shell_open` with `host`, and approval is asked as for any command. The connection is
+one `ssh` process kept for the whole session, so the server sees one login, not one per command;
+on macOS and Linux the connection is also shared and kept ten minutes after the shell closes
+(`ControlMaster`), so reopening is cheap. It never asks for a password: it runs with
+`BatchMode`, so it uses your keys and your ssh-agent, and fails with ssh's own message when they
+do not work. The host must be one you listed, and a name that starts with a dash is refused.
+Windows OpenSSH has no connection sharing, so there the single long-lived process is what keeps
+the login. The remote side is assumed to be a POSIX shell.
+
+**Notes.** For a long task the agent keeps notes (`notes_write`: goal, facts learned, what is done,
+what is next) in files under `.nailong/workspace/notes`, and rereads them (`notes_read`) when the
+task resumes, so the job survives compaction and a restart. `/notes` lists or shows them.
+
+### Scheduled prompts
+
+`/schedule add daily 09:00 -- summarise what changed in the repo since yesterday` saves a prompt
+with a timetable: `every 30m`, `every 2h`, `every 1d`, `daily 09:00`, `weekdays 09:00`, or five
+cron fields (`0 9 * * 1-5`). It runs when `nailong --run-schedules` runs, which checks every
+saved schedule and runs the ones that are due, one after another, each as a one-shot `-p` run in
+its own project. Schedule that command with your system: `/schedule install` prints the `crontab`
+line or the `schtasks` command (it does not install anything itself). Because nobody is there to
+approve things, a schedule runs in `plan` (read-only, the default) or `accept-edits`, never with
+commands, and `mode=accept-edits` goes before the `--`. Each run's output is kept in
+`.nailong/schedules/ID/` and the run is recorded in the audit trail like any other. Two runners
+never overlap, and a schedule that was missed while the machine was off runs once when it is next
+checked, not once per missed time.
+
+### Time limits and long commands
+
+A model call that takes more than `model_timeout_seconds` (300) or a tool call that takes more than
+`tool_timeout_seconds` (600) ends the turn with an error that names the limit; `run_deadline_seconds`
+caps a whole turn and is off by default, since agent tasks can legitimately run long. `0` switches a
+limit off, and `/status` shows the three. A shell command also has its own 120-second limit and is
+killed with its whole process tree when it expires.
+
+A command's output is shown as it is printed (the first 40 lines; `/expand` has all of it after the
+command ends), so a slow command is visibly working. A tool written as an ordinary Python function
+runs in a thread, and a thread cannot be stopped: when such a tool times out or you press Esc, the
+error says it is **still running in the background** and its effects may still happen, and no other
+tool starts until it has finished.
+
+### Permission rules
+
+Besides the five modes, rules decide a tool for a pattern. In your settings (a project file may add
+`ask` and `deny` rules but never `allow`; the CLI ignores its `allow` entries and `/doctor` says so):
+
+```toml
+[[rules]]
+action = "ask"            # allow | ask | deny
+tool = "run_command"      # a name, a comma list, or a wildcard such as mcp__db__*
+pattern = "git push*"     # matched against the command, URL or path
+
+[[rules]]
+action = "deny"
+tool = "read_file, write_file, edit_file, apply_patch"
+pattern = "secrets/*"
+```
+
+The last rule that matches wins, so put broad rules first. `deny` refuses even a read and cannot
+be overridden by any mode. `ask` always asks, even in `bypass` and `accept-edits`; with no
+terminal it refuses. `allow` approves without the mode's own question (it also works for
+`--allow tool:pattern`, which is now a rule too). A command is matched whole and part by part, so
+`ask` on `rm *` catches `echo hi && rm -rf build`, while `allow` on `git *` does not let
+`git status && curl x` through. For `apply_patch` the rules are tried against every file in the
+patch and the strictest result wins. Credential files such as `.env` are already refused by the
+file tools themselves, whatever the rules say.
+
+### Patches, formatters and checks
+
+`apply_patch` changes several files in one step from a patch the model writes
+(`*** Begin Patch` ... `*** End Patch` with `*** Add File`, `*** Update File` (optionally
+`*** Move to`) and `*** Delete File`; hunks start with `@@` and use space, `-` and `+` lines).
+Every hunk must match the file's current text, line endings are kept, and either every file
+changes or none does. It follows the same rules as the other edit tools: `accept-edits` lets it
+through, otherwise it asks; `/rewind` undoes it; it cannot touch the settings folder.
+
+After the agent writes a file you can have it formatted and checked. `format_on_edit = true` runs
+whichever of `ruff format`, `prettier --write` (if `package.json` mentions it), `gofmt -w`,
+`rustfmt` and `shfmt -w` is installed, by file extension. Add your own with
+`[formatters.NAME]` (`command = ["prog", "$FILE"]`, `extensions = [".md"]`). `diagnostics_on_edit
+= true` runs `ruff check` on edited Python, and `[diagnostics.NAME]` adds any linter or type
+checker the same way; when one reports problems, its output reaches the agent as a message at its
+next step. All of these settings are in the user file only, since each runs a program.
+
+**Language servers.** `lsp_on_edit = true` starts whichever of `pyright-langserver`,
+`typescript-language-server`, `gopls` and `rust-analyzer` is on your `PATH`, the first time a
+file of its kind is edited, and keeps it for the session. After each edit the file is sent to the
+server and its errors and warnings (up to 20, with line and column) reach the agent at its next
+step, like the checks above. Add a server with `[lsp.NAME]` (`command = ["server", "--stdio"]`,
+`extensions = [".rb"]`). The client sends the whole file and waits up to six seconds for the
+server's answer; a server that fails to start or stops answering is named once and then left
+alone. With a server active the agent also has `code_navigate` (`definition`, `references` or
+`hover` at a 1-based line and character of a file in the project); results come back as
+project-relative `path:line:column`. There is no rename. It was tested against a stand-in server
+speaking the protocol, not against pyright or gopls themselves.
+
+### Commands with arguments, options and live output
+
+A file in `.nailong/commands/` may start with a header: `description:` (shown in the menu),
+`agent: NAME` (hand the work to that subagent), `model: NAME` (use that model for this command's
+turn only) and `subtask: true` (needs an `agent:`). In the text, `$ARGUMENTS` is everything typed,
+`$1` to `$9` are the words (quotes group), and `` !`git diff --stat` `` is replaced by that
+command's output. A command that only reads (`git status`, `ls`, `echo`...) runs at once; any
+other asks you first, and with no terminal is refused. `@path` attaches a file as usual.
+
+`small_model` names a cheaper model used for `/compact`, auto-compaction and `/suggest`.
+`[variants.deep]` tables (for example `effort = "high"`, `temperature = 0.2`) are named sets of
+model parameters; `/variant deep` switches and `/variant off` goes back. Starting a message with
+`@name` hands it to the subagent of that name, unless a file of that name exists.
+
+### Settings that read the environment or a file
+
+In your **user** settings a value may contain `{env:NAME}` (empty if unset) and `{file:path}`
+(relative to the settings file, or absolute or `~`; the trailing newline is dropped; a missing file
+stops startup naming it). Project settings are never filled in, so a project file cannot ask for
+your environment or your files. `instruction_files = ["CONTRIBUTING.md", "docs/*.md"]` adds more
+instruction files from inside the project.
+
+### Running it as a service: `--serve` and `--attach`
+
+`nailong --serve` listens on `127.0.0.1:4096` (`--port`, `--hostname`). Every request needs the
+token in `NAILONG_SERVER_TOKEN` (24 or more characters); if you set none, one is generated and
+printed once, and a non-loopback address refuses to start without your own. `POST /run` takes
+`{"prompt": "...", "mode": "plan" | "accept-edits", "session": "ID"}` and returns the answer as
+JSON with the session id; add `?stream=1` for a server-sent-event stream of the same events as
+`--output stream-json`. Only `plan` and `accept-edits` are allowed by default, because nobody at
+the server can approve anything else. Runs go one at a time. `GET /health` needs no token. The other flags you give
+`--serve` (model, provider, `--add-dir`...) apply to every run. `nailong --attach URL -p "..."`
+sends one message and prints the stream; without `-p` it is a small prompt loop that keeps the
+session. It refuses to send the token over plain http to another machine. `GET /openapi.json` describes
+the service (OpenAPI 3.1) and `GET /` serves a small page for sending requests from a browser
+(the token you type stays in that tab's session storage; the page writes model output with
+`textContent` only, under a strict content-security policy).
+
+To let the client answer permission questions, send `"mode": "default", "approvals": true` to
+`POST /run?stream=1`. Each tool that needs approval produces an `approval_request` event
+(`id`, `tool`, `subject`, `description`) and the run waits; answer it with
+`POST /approve {"id": "...", "allow": true}` (same token). Only a single yes or no is offered:
+there is no "for this session" or "always" over HTTP, a command is still refused when no sandbox is
+active and `--allow-unsandboxed` was not given, and an approval nobody answers within 300 seconds
+is refused with the reason. `bypass` and `auto` cannot be requested remotely.
+
+`nailong --acp` speaks the Agent Client Protocol on stdio so an editor that can run an agent
+(Zed, for example) can drive it: `initialize`, `session/new` and `session/prompt`, with the answer
+and each tool call sent as `session/update` notifications. Runs are read-only unless you start it
+with `--permission-mode accept-edits`, or with `--permission-mode default`, in which case the
+editor is sent a `session/request_permission` (allow once or reject) for each tool that needs one. It was written from the protocol's shape and tested with
+scripted JSON, not with a real editor. `session/cancel` stops the running prompt (the reply
+says `stopReason: cancelled`); over `--serve`, `POST /cancel` does the same for the run in progress
+(409 when none is running).
+
+### Sharing it with a team, CI and other tools
+
+`/ci github` prints, and `/ci github write` saves, `.github/workflows/nailong.yml`: it answers
+`/nailong <request>` comments, but only from owners, members and collaborators, in read-only
+(plan) mode, passing the comment to the shell through an environment variable and never into the
+script text. It expects `.nailong/config.toml` to be committed and the model key to be a repository
+secret. `/ci gitlab write` saves `.gitlab-ci-nailong.yml`, a manual pipeline job that takes the
+request from a `NAILONG_PROMPT` variable. Both just run `nailong -p`, so the same works in any CI.
+
+`nailong --completion bash|zsh|fish|powershell` prints a completion script for the flags.
+`nailong --upgrade` says which command upgrades the copy you are running (it does not run it).
+
+### Keys and themes
+
+`[keybinds]` rebinds `cycle_mode` (default `s-tab`), `expand_output` (`c-o`) and `newline`
+(`escape enter` and `c-j`) with prompt_toolkit key names, one or a list, for example
+`cycle_mode = ["c-t", "s-tab"]`; an unknown key stops startup naming the action. `theme` may be a
+file: `.nailong/themes/NAME.json` or `~/.config/nailong/themes/NAME.json` holding any of `rule`,
+`hint`, `mode` and `menu` as prompt_toolkit style strings, filling the rest from `default`.
+
+### Offering the tools to another program: `--mcp-serve`
+
+`nailong --mcp-serve` runs an MCP server on stdio instead of a session, so another program (an
+editor, another agent) can use this project's file tools. It needs no model or key and prints
+nothing on stdout but the protocol; the notice of what it offers goes to stderr. There is nobody to
+ask, so the permission mode decides what is offered: the default and `plan` offer reading only
+(`read_file`, `glob`, `grep`); `--permission-mode accept-edits` adds `write_file`, `edit_file`
+and `notebook_edit`; `auto` and `bypass` also add `run_command`, and they refuse to start where
+commands are not sandboxed unless you pass `--allow-unsandboxed`. The settings folder stays
+protected from the edit tools. Register it in another tool as
+`{"command": "nailong", "args": ["--mcp-serve", "--project", "/path"]}`.
+
+### Documents, a knowledge base, a wiki and built-in skills
+
+**Reading files that are not plain text.** `read_document` reads a PDF, Word (`.docx`), Excel
+(`.xlsx`), PowerPoint (`.pptx`, one slide at a time with its tables and speaker notes) or CSV/TSV file inside the project or an added directory: PDFs a page at a time with
+`[page N]` markers, Word headings and tables, one sheet per chunk for Excel (200 rows each). Every
+result carries the file's hash, the total size and a `next` position to continue from.
+`search_document` ranks the pages or sheets that match a query, with snippets, so the agent reads
+only what it needs. `interpret_page` renders one PDF page to a PNG in the workspace and asks the
+session's own model about it (figures, tables, scans); with a model that takes no images it fails
+saying so. Files over 80 MB and credential files are refused.
+
+**Documents at a web address.** With web on (`/web on` in the session, `--web`, or `web = true`), `fetch_document` downloads a PDF,
+Word, Excel, PowerPoint or CSV file from a public URL (an arXiv PDF link, for example) into
+`.nailong/workspace/downloads/` and returns the path for `read_document`. It asks for approval like
+`web_fetch`, refuses private and loopback addresses, follows redirects only to public hosts, checks
+the file really is the type it claims, and caps it at 80 MB. Without web access `read_document` on
+a URL says so and names the setting.
+
+**`/kb`, a cited knowledge base.** `/kb add PATH` indexes a file or folder (text, Markdown, code,
+PDF, Word, Excel, CSV) into passages of about 1,000 characters kept in `.nailong/knowledge`;
+`/kb list` shows each source as current, changed since added, or missing; `/kb refresh` re-reads
+changed sources; `/kb search TEXT` and the agent's `knowledge_search` return passages with file,
+location and source hash, and drop any whose source no longer matches. Search is by words, not
+meaning.
+
+**`/wiki`, what the agent has learned.** Linked Markdown pages in `.nailong/wiki` (`/wiki` lists
+them, `/wiki PAGE` shows one, `/wiki search TEXT` searches). The agent uses `wiki_read`,
+`wiki_search` and `wiki_write`; a write needs a reason, rebuilds `index.md`, appends to `log.md`
+and reports `[[links]]` that point nowhere. Plan mode can read but not write.
+
+**Built-in skills.** `/skills` lists eight skills that ship with the CLI: `paper-summary`,
+`wiki-ingest`, `kb-answer`, `code-review`, `release-notes`, `analyze-spreadsheet`,
+`incident-notes` and `server-health-check` (typed by you only). A skill of the same name in your
+project or home folder replaces the built-in one. Design notes: `docs/documents-and-knowledge.md`.
 
 ## 13. Forge
 

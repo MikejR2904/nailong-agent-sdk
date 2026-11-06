@@ -10,7 +10,9 @@ from pathlib import Path
 
 from nailong_agent_sdk.starter import ToolEvent
 
-TRACKED_TOOLS = frozenset({"write_file", "edit_file"})
+from .apply_patch import patch_paths
+
+TRACKED_TOOLS = frozenset({"write_file", "edit_file", "notebook_edit", "apply_patch"})
 COMMAND_TOOLS = frozenset({"run_command", "start_background"})
 SKIPPED_DIRECTORIES = frozenset(
     {
@@ -32,6 +34,7 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 _MANIFEST = "manifest.json"
 _TREE = "tree.json"
 _BLOBS = "blobs"
+_REDO = "redo"
 
 
 class CheckpointStore:
@@ -48,6 +51,7 @@ class CheckpointStore:
         self._roots[name] = path.resolve()
 
     def begin_turn(self) -> int:
+        shutil.rmtree(self._directory / _REDO, ignore_errors=True)
         existing = [int(path.name.split("-")[1]) for path in self._turns()]
         self.turn = max(existing, default=0) + 1
         return self.turn
@@ -55,7 +59,10 @@ class CheckpointStore:
     def before_tool(self, event: ToolEvent) -> None:
         if self.turn == 0:
             return None
-        if event.tool in TRACKED_TOOLS:
+        if event.tool == "apply_patch":
+            for path in patch_paths(str(event.arguments.get("patch", ""))):
+                self._snapshot_file(ToolEvent(event.tool, {"path": path}, event.iteration))
+        elif event.tool in TRACKED_TOOLS:
             self._snapshot_file(event)
         elif event.tool in COMMAND_TOOLS and self._tree_turn != self.turn:
             self._snapshot_tree()
@@ -84,7 +91,41 @@ class CheckpointStore:
                 delete.update(created)
         return {"restore": sorted(restore), "delete": sorted(delete - restore)}
 
+    def _save_redo(self, to_turn: int) -> None:
+        folder = self._directory / _REDO
+        shutil.rmtree(folder, ignore_errors=True)
+        plan = self.plan(to_turn)
+        manifest: dict[str, dict] = {}
+        folder.mkdir(parents=True, exist_ok=True)
+        for number, key in enumerate(sorted({*plan["restore"], *plan["delete"]}), 1):
+            target = self._resolve(key)
+            blob = f"{number}.bin"
+            if target.is_file():
+                (folder / blob).write_bytes(target.read_bytes())
+            manifest[key] = {"existed": target.is_file(), "blob": blob}
+        (folder / _MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+
+    def can_redo(self) -> bool:
+        return (self._directory / _REDO / _MANIFEST).is_file()
+
+    def redo(self) -> list[str]:
+        folder = self._directory / _REDO
+        if not self.can_redo():
+            raise ValueError("There is nothing to redo: /redo only follows a /rewind.")
+        touched = []
+        for key, entry in self._read(folder).items():
+            target = self._resolve(key)
+            if entry["existed"]:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((folder / entry["blob"]).read_bytes())
+            else:
+                target.unlink(missing_ok=True)
+            touched.append(key)
+        shutil.rmtree(folder)
+        return sorted(touched)
+
     def rewind(self, to_turn: int) -> list[str]:
+        self._save_redo(to_turn)
         touched: set[str] = set()
         for folder in reversed(self._turns()):
             if int(folder.name.split("-")[1]) < to_turn:

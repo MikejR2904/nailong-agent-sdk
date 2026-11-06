@@ -11,6 +11,11 @@ from .config import project_config_path, user_config_path
 from .state import ReplState
 
 
+def _telemetry_host(parts) -> str:
+    exporter = parts.exporter
+    return exporter.host if exporter is not None and exporter.enabled else "off"
+
+
 def status_lines(state: ReplState) -> list[str]:
     config = state.config
     parts = state.parts
@@ -25,11 +30,25 @@ def status_lines(state: ReplState) -> list[str]:
         f"hooks        {len(config.hooks)}",
         f"subagents    {', '.join(config.agents) or 'none'}",
         f"memory       {', '.join(file.path.name for file in parts.memory) or 'none'}",
-        f"skills       {', '.join(item.id for item in parts.skills) or 'none'}",
+        f"skills       {', '.join(item.name for item in parts.skills) or 'none'}",
         f"web fetch    {'on' if config.web else 'off'}",
         f"offline      {'on' if config.offline else 'off'}",
+        f"fallbacks    {', '.join(config.fallback_models) or 'none'}",
+        f"telemetry    {_telemetry_host(parts)}",
+        f"time limits  {_limits(config)}",
+        f"after edits  {parts.post_edit.describe() if parts.post_edit else 'none'}",
         f"forge        {'on' if parts.forge is not None else 'off'}",
     ]
+
+
+def _limits(config) -> str:
+    def show(seconds: float) -> str:
+        return f"{seconds:g}s" if seconds else "none"
+
+    return (
+        f"model turn {show(config.model_timeout_seconds)}, "
+        f"tool {show(config.tool_timeout_seconds)}, whole run {show(config.run_deadline_seconds)}"
+    )
 
 
 def doctor_lines(state: ReplState) -> list[str]:

@@ -27,6 +27,12 @@ OPENAI_COMPATIBLE_BASE_URLS = {
     "vllm": "http://localhost:8000/v1",
     "lmstudio": "http://localhost:1234/v1",
     "llamacpp": "http://localhost:8080/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "together": "https://api.together.xyz/v1",
+    "fireworks": "https://api.fireworks.ai/inference/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
 }
 
 

@@ -122,6 +122,9 @@ class RunCursor(StrictModel):
     traces: int = Field(default=0, ge=0)
     logs: int = Field(default=0, ge=0)
     metrics: list[str] = Field(default_factory=list)
+    audit: int = Field(default=0, ge=0)
+    checkpoints: list[str] = Field(default_factory=list)
+    verdict: str | None = None
 
 
 class _LedgerFile(StrictModel):
@@ -156,6 +159,9 @@ class OtlpExportLedger:
         traces: int | None = None,
         logs: int | None = None,
         metrics: Sequence[str] = (),
+        audit: int | None = None,
+        checkpoints: Sequence[str] = (),
+        verdict: str | None = None,
     ) -> None:
         with self._lock:
             state = self._load()
@@ -167,6 +173,12 @@ class OtlpExportLedger:
                     *current.metrics,
                     *(item for item in metrics if item not in current.metrics),
                 ],
+                audit=max(current.audit, audit or 0),
+                checkpoints=[
+                    *current.checkpoints,
+                    *(item for item in checkpoints if item not in current.checkpoints),
+                ],
+                verdict=verdict if verdict is not None else current.verdict,
             )
             self._save(state)
 

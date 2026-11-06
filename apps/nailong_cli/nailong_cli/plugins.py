@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .skills import SkillEntry, read_skill
+from nailong_agent_sdk.starter import SkillDefinition
+
+from .skills import read_skill
 from .user_commands import UserCommand
 
 
@@ -15,7 +17,7 @@ from .user_commands import UserCommand
 class PluginBundle:
     names: list[str] = field(default_factory=list)
     commands: dict[str, UserCommand] = field(default_factory=dict)
-    skills: dict[str, SkillEntry] = field(default_factory=dict)
+    skills: dict[str, SkillDefinition] = field(default_factory=dict)
     agents: dict[str, dict[str, Any]] = field(default_factory=dict)
     hooks: list[dict[str, Any]] = field(default_factory=list)
     mcp: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -53,6 +55,12 @@ def load_plugins(directories: list[Path]) -> PluginBundle:
         ):
             qualified = f"{name}:{path.stem}"
             bundle.skills[qualified] = read_skill(qualified, path)
+        for folder in (
+            sorted((directory / "skills").iterdir()) if (directory / "skills").is_dir() else []
+        ):
+            if folder.is_dir() and (folder / "SKILL.md").is_file():
+                qualified = f"{name}:{folder.name}"
+                bundle.skills[qualified] = read_skill(qualified, folder / "SKILL.md")
         for agent, spec in manifest.get("agents", {}).items():
             bundle.agents[f"{name}_{agent}"] = spec
         bundle.hooks.extend(manifest.get("hooks", []))

@@ -216,6 +216,10 @@ Layer 0 of the package: nothing here imports from another SDK folder. It holds t
   - `run_detached.deliver(complete: Callable[[Any], None], value: Any) -> None` - Completes the future from the loop thread unless it is already done (cancelled). · *Called by:* `foundations/detached.py::run_detached.work`
   - `run_detached.work() -> None` - The thread body: calls the function, captures its result or exception and schedules `deliver` on the loop; a closed loop is ignored. · *Called within this file by:* `foundations/detached.py::run_detached`
 
+- `run_detached_tracked(label: str, function: Callable[..., T], /, *args: Any, **kwargs: Any) -> T` *(async)* - Like `run_detached`, but remembers the call under `label` while its thread runs; if the awaiting task is cancelled (a watchdog timeout, Esc) and the thread is still running, the call is listed by `abandoned_calls` until it ends.
+  - `run_detached_tracked.finish_after_call(*call_args: Any, **call_kwargs: Any) -> T` - Calls the function and, whatever the outcome, removes the call from the running and abandoned sets.
+- `abandoned_calls() -> list[str]` - Labels of tracked calls whose caller gave up but whose function is still running; a thread cannot be stopped, so these may still change things.
+
 **Algorithms & invariants.** The thread is a daemon, so an abandoned call never keeps the interpreter alive, and it ends when the call returns or its own timeout fires.
 
 ---

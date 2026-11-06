@@ -38,6 +38,7 @@ from ..tools.artifact_anchor import ArtifactLogAnchor, anchor_artifact_log, arti
 from ..tools.artifacts import ArtifactStore
 from ..tools.tools import ToolAuthorizer, ToolExecutor
 from .base_agent import AgentWatchdogPolicy, BaseAgent, PostToolHook, PreToolHook
+from .base_agent.types import MessageInbox, PauseGate
 from .cost_model import PriceTable
 from .evidence_profile import EvidenceProfile
 from .model import AgentModel, ModelStreamListener
@@ -228,6 +229,8 @@ class AgentRuntimeServices:
         on_model_stream: ModelStreamListener | None = None,
         episode_history_limit: int | None = None,
         price_table: PriceTable | None = None,
+        inbox: MessageInbox | None = None,
+        pause: PauseGate | None = None,
     ) -> BaseAgent:
         """Construct a BaseAgent with durable local audit and evidence stores.
 
@@ -259,4 +262,6 @@ class AgentRuntimeServices:
             on_model_stream=on_model_stream,
             episode_history_limit=episode_history_limit,
             price_table=price_table,
+            inbox=inbox,
+            pause=pause,
         )

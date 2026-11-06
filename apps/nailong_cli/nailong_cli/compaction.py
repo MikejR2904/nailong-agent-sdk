@@ -25,8 +25,13 @@ def compact_session(state: ReplState, focus: str = "") -> tuple[int, int]:
             f"Assistant: {turn['answer'][:MAX_TURN_CHARS]}"
         )
     note = f" Pay particular attention to: {focus}." if focus else ""
-    answer = ask_read_only(state, SUMMARY_PROMPT.format(focus=note, turns="\n\n".join(parts)))
+    answer = ask_read_only(
+        state, SUMMARY_PROMPT.format(focus=note, turns="\n\n".join(parts)), small=True
+    )
     if not answer.ok or not answer.text.strip():
         raise ValueError(f"The summary could not be written: {answer}")
     covered = state.session.compact(answer.text)
+    lifecycle = state.parts.lifecycle
+    if lifecycle is not None and lifecycle.has("compacted"):
+        state.runner.run(lifecycle.run("compacted", session=state.session.id, covered=str(covered)))
     return covered, len(answer.text)

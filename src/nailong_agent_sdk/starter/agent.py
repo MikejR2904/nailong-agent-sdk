@@ -16,7 +16,12 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from ..agent.base_agent.types import AgentWatchdogPolicy, CancellationToken
+from ..agent.base_agent.types import (
+    AgentWatchdogPolicy,
+    CancellationToken,
+    MessageInbox,
+    PauseGate,
+)
 from ..agent.cost_model import PriceTable
 from ..agent.evidence_profile import EvidenceProfile
 from ..agent.model import AgentModel, FailoverAgentModel, ModelStreamEvent, ModelStreamListener
@@ -147,6 +152,8 @@ class Agent:
         self.services = services or AgentRuntimeServices.open(workspace, evidence=evidence)
         self._sessions = SessionStore(self.services.run_root)
         self._instructions = instructions
+        self.inbox = MessageInbox()
+        self.pause = PauseGate()
         self._binding = ModelBinding(
             provider=model.provider,
             model=model.name,
@@ -202,6 +209,9 @@ class Agent:
 
     def latest_session(self) -> str | None:
         return self._sessions.latest()
+
+    def delete_session(self, session_id: str) -> None:
+        self._sessions.delete(session_id)
 
     async def run(
         self,
@@ -333,6 +343,9 @@ class Agent:
             read_only=read_only,
         )
 
+    def say(self, message: str) -> None:
+        self.inbox.put(message)
+
     def close(self) -> None:
         self.services.audit_logs.close()
         self.services.telemetry.close()
@@ -385,8 +398,11 @@ class Agent:
             on_model_stream=listener,
             episode_history_limit=self._history_limit,
             price_table=self._prices,
+            inbox=self.inbox,
+            pause=self.pause,
         )
         result = await agent.run(task, cancellation)
+        await self.services.checkpoint_after_run(task_id)
         cost = agent.cost_ledger.to_json() if agent.cost_ledger.calls else None
         return self._answer(result, session or task_id, cost)
 

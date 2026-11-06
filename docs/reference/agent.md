@@ -191,6 +191,7 @@
 - `_verifier_details(decision: VerificationDecision, rejection: AgentFailure | None=None) -> dict[str, Any]` - The `verifier_id`, `verifier_kind` (the authority class) and `evidence` a decision declared, omitting each that it did not, and the `failure_code` of a rejection. · *Called by:* `base_agent/agent.py::BaseAgent._accept_final_turn`
 - `_naming_call(failure: AgentFailure | None, call: ToolCall) -> AgentFailure | None` - A copy of a tool failure whose details name the failing call (`tool` and `tool_call_id`, kept when the failure already set them), rebuilt through `AgentFailure` so the details stay bounded; None for None. · *Called by:* `base_agent/agent.py::BaseAgent._execute_tool_batch`
 - `_batch_outcome(item: ToolCallOutcome) -> dict[str, Any]` - One outcome of a tool batch for the `tool-batch-completed` event: call id, tool and status, and for a call that did not succeed also its failure code (or None) and its error cut to 300 characters, so the reason a call never ran is in the ledger. · *Called by:* `base_agent/agent.py::BaseAgent._execute_tool_batch`
+- `_still_running_note(expired: WatchdogExpired) -> str` - Sentence appended to a tool-timeout failure when tool functions that cannot be stopped are still running in the background; empty otherwise.
 - `_watchdog_detail(expired: WatchdogExpired, label: str) -> str` - Phrase for a watchdog failure message: the run's configured deadline, or `its <n>s <label>`.
 - `_span_attribute_text(value: str) -> str` - Cuts text to 256 characters with a trailing `...` for span attributes, whose total is bounded at 4,096 characters: a model-chosen tool name or call id could otherwise make the span refuse its attributes and fail the run. · *Called by:* `base_agent/agent.py::BaseAgent._execute_profiled_tool_call`, `base_agent/agent.py::BaseAgent._terminate`, `base_agent/agent.py::_model_turn_attributes`
 - `_model_turn_attributes(response: Any) -> dict[str, Any]` - The `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` and `gen_ai.response.id` a response reports, each left out when the adapter returned no usage or did not report that counter. · *Called by:* `base_agent/agent.py::BaseAgent._run`
@@ -214,6 +215,17 @@
 
 - **class `CancellationToken`** *(Protocol; bases: Protocol)* - Protocol for anything with an `is_cancelled()` method; checked at the start of each iteration and polled every 50 ms while a model call, a tool call, a hook or a verification gate is awaited.
   - `CancellationToken.is_cancelled() -> bool` - Return True when the caller wants the run to stop.
+- **class `PauseGate`** *(class)* - A thread-safe pause switch for one agent. While it is paused the agent waits at the top of its next step (no step is replayed) and the wait is not counted against the run deadline; stopping the run ends the wait.
+  - `PauseGate.__init__() -> None` - Creates a gate that is not paused.
+  - `PauseGate.paused(self) -> bool` *(property)* - True while paused.
+  - `PauseGate.pause() -> bool` - Pauses; False if it already was.
+  - `PauseGate.resume() -> bool` - Resumes; False if it was not paused.
+  - `PauseGate.wait_until_resumed(cancellation: CancellationToken | None=None) -> float` *(async)* - Waits (polling every 50 ms) until resumed or cancelled and returns the seconds waited.
+- **class `MessageInbox`** *(class)* - Thread-safe queue of things the user says to a running agent; the agent reads them at the top of its next step as observations of kind `user-message`. Each message is limited to 4000 characters and 20 may wait at once.
+  - `MessageInbox.__init__() -> None` - Creates the empty queue and its lock.
+  - `MessageInbox.put(text: str) -> None` - Queues the stripped message; raises `ValueError` naming the limit when it is empty, too long, or the queue is full.
+  - `MessageInbox.drain() -> list[str]` - Returns every waiting message in order and empties the queue.
+  - `MessageInbox.pending(self) -> int` *(property)* - How many messages are waiting.
 - **class `ToolHookDecision`** *(class)* - Return value of a pre-tool hook: allowed or denied, with a reason.
   - `ToolHookDecision.__init__(allowed: bool, reason: str | None=None) -> None` - Stores `allowed` and `reason`.
 - **class `WatchdogExpired`** *(exception; bases: TimeoutError)* - A watchdog limit ended an awaited operation; carries `source` (`run-deadline` or `operation`) and the configured `seconds`, so callers can tell a watchdog from an unrelated timeout. · *Instantiated by:* `base_agent/agent.py::BaseAgent._await_with_watchdog`

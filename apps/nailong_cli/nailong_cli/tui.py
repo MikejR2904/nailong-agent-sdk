@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from collections.abc import Callable, Iterable
@@ -15,6 +16,61 @@ SKIPPED_DIRECTORIES = frozenset(
 )
 MAX_PATH_SUGGESTIONS = 40
 PROMPT_MARK = "> "
+KEY_ACTIONS = {
+    "cycle_mode": ["s-tab"],
+    "expand_output": ["c-o"],
+    "newline": ["escape enter", "c-j"],
+}
+PALETTE_KEYS = ("rule", "hint", "mode", "menu")
+_PRETTY = {"c": "Ctrl+", "s": "Shift+", "escape": "Alt+"}
+
+
+def load_palette(name: str, project: Path, home: Path) -> dict[str, str]:
+    if name in THEMES:
+        return THEMES[name]
+    for folder in (project / ".nailong" / "themes", home / ".config" / "nailong" / "themes"):
+        path = folder / f"{name}.json"
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError(f"Theme file {path} cannot be read: {error}") from error
+        unknown = (
+            sorted(set(data) - set(PALETTE_KEYS)) if isinstance(data, dict) else ["(not an object)"]
+        )
+        if unknown or not all(isinstance(value, str) for value in data.values()):
+            raise ValueError(
+                f"Theme file {path} must be a JSON object with text values for "
+                f"{list(PALETTE_KEYS)}; it has {unknown or 'a non-text value'}."
+            )
+        return {**THEMES["default"], **data}
+    available = sorted(THEMES)
+    raise ValueError(
+        f'There is no theme "{name}". Built in: {available}; or put NAME.json in '
+        ".nailong/themes/ or ~/.config/nailong/themes/."
+    )
+
+
+def key_chords(action: str, configured: dict[str, Any] | None) -> list[tuple[str, ...]]:
+    value = (configured or {}).get(action, KEY_ACTIONS[action])
+    chords = [value] if isinstance(value, str) else list(value)
+    if not chords or any(not isinstance(item, str) or not item.strip() for item in chords):
+        raise ValueError(f'keybinds.{action} must be a key such as "c-o" or a list of them.')
+    return [tuple(item.split()) for item in chords]
+
+
+def pretty_chord(chord: tuple[str, ...]) -> str:
+    parts = []
+    for key in chord:
+        prefix, _, rest = key.partition("-")
+        if prefix in _PRETTY and rest:
+            parts.append(_PRETTY[prefix] + (rest.upper() if len(rest) == 1 else rest.title()))
+        else:
+            parts.append(key.title())
+    return " ".join(parts)
+
+
 THEMES = {
     "default": {
         "rule": "#585858",
@@ -37,7 +93,7 @@ class PlainReader:
     def __init__(self, console: Console) -> None:
         self._console = console
 
-    def read(self, prompt: str) -> str:
+    def read(self, prompt: str, default: str = "") -> str:
         return self._console.ask(prompt)
 
 
@@ -109,24 +165,24 @@ class ToolkitReader:
         on_expand: Callable[[], None] | None = None,
         input: Any = None,
         output: Any = None,
+        keybinds: dict[str, Any] | None = None,
+        palette: dict[str, str] | None = None,
     ) -> None:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.styles import Style
 
-        colours = THEMES.get(theme, THEMES["default"])
+        colours = palette or THEMES.get(theme, THEMES["default"])
         self._colours = colours
         self._toolbar = toolbar
         self._mode_hint = mode_hint or (lambda: "")
         bindings = KeyBindings()
 
-        @bindings.add("s-tab")
         def _cycle(event: Any) -> None:
             cycle_mode()
             event.app.invalidate()
 
-        @bindings.add("c-o")
         def _expand(event: Any) -> None:
             if on_expand is not None:
                 event.app.run_in_terminal(on_expand)
@@ -142,10 +198,22 @@ class ToolkitReader:
             else:
                 buffer.validate_and_handle()
 
-        @bindings.add("escape", "enter")
-        @bindings.add("c-j")
         def _newline(event: Any) -> None:
             event.current_buffer.insert_text("\n")
+
+        for action, handler in (
+            ("cycle_mode", _cycle),
+            ("expand_output", _expand),
+            ("newline", _newline),
+        ):
+            for chord in key_chords(action, keybinds):
+                try:
+                    bindings.add(*chord)(handler)
+                except ValueError as error:
+                    raise ValueError(
+                        f'keybinds.{action}: "{" ".join(chord)}" is not a key: {error}'
+                    ) from error
+        self._expand_label = pretty_chord(key_chords("expand_output", keybinds)[0])
 
         history_file.parent.mkdir(parents=True, exist_ok=True)
         style = {
@@ -185,16 +253,18 @@ class ToolkitReader:
                 ("class:mode", " " + self._mode_hint() + "\n"),
                 (
                     "class:hint",
-                    " " + self._toolbar() + "  ·  / commands  @ files  Ctrl+O output  \\⏎ new line",
+                    " "
+                    + self._toolbar()
+                    + f"  ·  / commands  @ files  {self._expand_label} output  \\⏎ new line",
                 ),
             ]
         )
 
-    def read(self, prompt: str) -> str:
+    def read(self, prompt: str, default: str = "") -> str:
         from prompt_toolkit.formatted_text import FormattedText
 
         message = FormattedText([("class:rule", "─" * self._width() + "\n"), ("bold", prompt)])
-        return self._session.prompt(message).strip()
+        return self._session.prompt(message, default=default).strip()
 
 
 def toolkit_available() -> bool:
@@ -217,6 +287,8 @@ def make_reader(
     commands: Callable[[], dict[str, str]],
     mode_hint: Callable[[], str] | None = None,
     on_expand: Callable[[], None] | None = None,
+    keybinds: dict[str, Any] | None = None,
+    palette: dict[str, str] | None = None,
 ) -> PlainReader | ToolkitReader:
     if console.interactive and console.stdin is sys.stdin and toolkit_available():
         return ToolkitReader(
@@ -229,6 +301,8 @@ def make_reader(
             commands=commands,
             mode_hint=mode_hint,
             on_expand=on_expand,
+            keybinds=keybinds,
+            palette=palette,
         )
     return PlainReader(console)
 

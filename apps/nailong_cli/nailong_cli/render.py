@@ -29,6 +29,9 @@ VERBOSE_CHARS = 2_000
 PREVIEW_LINES = 3
 PREVIEW_WIDTH = 110
 MAX_REMEMBERED_OUTPUTS = 50
+MAX_REASONING_KEPT = 4_000
+WHY_CHARS = 800
+LIVE_OUTPUT_LINES = 40
 
 
 class AnswerStreamer:
@@ -90,6 +93,13 @@ class AnswerStreamer:
         return chr(code)
 
 
+@dataclass(frozen=True)
+class Rationale:
+    doing: str
+    reasoning: str
+    step: int
+
+
 class Renderer:
     def __init__(
         self, console: Console, *, verbose: bool = False, show_reasoning: bool = True
@@ -104,6 +114,12 @@ class Renderer:
         self._line_open = False
         self._answer_shown = False
         self.outputs: list[ToolOutput] = []
+        self.rationale: Rationale | None = None
+        self._reasoning = ""
+        self._calls = 0
+        self._live_lines = 0
+        self._live_partial = ""
+        self._live_shown = False
 
     def announce(self, session_id: str) -> None:
         return None
@@ -114,6 +130,8 @@ class Renderer:
         self._line_open = False
         self._answer_shown = False
         self._thinking = False
+        self._reasoning = ""
+        self._calls = 0
         self._console.start_spinner("Thinking…")
 
     def on_stream(self, event: ModelStreamEvent) -> None:
@@ -136,6 +154,14 @@ class Renderer:
 
     def before_tool(self, event: ToolEvent) -> None:
         self._end_streamed_line()
+        self._calls += 1
+        self._live_lines = 0
+        self._live_partial = ""
+        self._live_shown = False
+        self.rationale = Rationale(
+            _summary(event), self._reasoning.strip()[-WHY_CHARS:], self._calls
+        )
+        self._reasoning = ""
         shown = _full(event) if self._verbose else _summary(event)
         if self._console.fancy:
             self._console.line(self._console.style(f"● {shown}", "bold"))
@@ -143,8 +169,29 @@ class Renderer:
         else:
             self._console.line(self._console.style(f"  > {shown}", "cyan"))
 
+    def command_output(self, text: str) -> None:
+        if not (self._console.fancy or self._verbose):
+            return
+        self._live_shown = True
+        joined = (self._live_partial + text).replace("\r\n", "\n").replace("\r", "\n")
+        *lines, self._live_partial = joined.split("\n")
+        for line in lines:
+            self._live_line(line)
+
+    def _live_line(self, line: str) -> None:
+        self._live_lines += 1
+        console = self._console
+        if self._live_lines <= LIVE_OUTPUT_LINES:
+            console.line(console.style(f"    {_clip(line, PREVIEW_WIDTH)}", "dim"))
+        elif self._live_lines == LIVE_OUTPUT_LINES + 1:
+            note = "    … more output is not shown live; /expand shows it all afterwards"
+            console.line(console.style(note, "dim"))
+
     def after_tool(self, event: ToolEvent) -> None:
         result = event.result
+        if self._live_partial:
+            self._live_line(self._live_partial)
+            self._live_partial = ""
         if result is None:
             return
         text = output_text(event.tool, result)
@@ -201,6 +248,8 @@ class Renderer:
         headline, preview = headline_and_preview(event.tool, result, text)
         console = self._console
         console.line(console.style(f"  ⎿ {headline}", colour))
+        if self._live_shown:
+            return
         for line in preview[:PREVIEW_LINES]:
             console.line(console.style(f"    {_clip(line, PREVIEW_WIDTH)}", "dim"))
         hidden = len(preview) - PREVIEW_LINES
@@ -214,6 +263,7 @@ class Renderer:
         return self._console.style(f" (Ctrl+O or /expand {len(self.outputs)} for all)", "dim")
 
     def _show_thought(self, text: str) -> None:
+        self._reasoning = (self._reasoning + text)[-MAX_REASONING_KEPT:]
         if not self.show_reasoning or not (self._console.fancy or self._verbose):
             return
         console = self._console

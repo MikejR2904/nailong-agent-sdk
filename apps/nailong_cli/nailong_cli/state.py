@@ -13,6 +13,7 @@ from nailong_agent_sdk.starter import Agent, Answer, ModelSetup, Session
 from .config import CliConfig
 from .console import Console
 from .factory import AgentBuilder, Parts
+from .live import LiveWork
 from .permissions import PermissionStore
 from .user_commands import UserCommand
 
@@ -38,6 +39,12 @@ class ReplState:
     turns_run: int = 0
     mode_dirty: bool = False
     first_images: list[Path] = field(default_factory=list)
+    typed_leftover: str = ""
+    variant: str | None = None
+
+    @property
+    def live(self) -> LiveWork:
+        return self.builder.parts.live
 
     @property
     def parts(self) -> Parts:

@@ -40,3 +40,39 @@ async def run_detached[T](function: Callable[..., T], /, *args: Any, **kwargs: A
         target=work, name=f"detached-{getattr(function, '__name__', 'call')}", daemon=True
     ).start()
     return await future
+
+
+_tracked_lock = threading.Lock()
+_running_calls: dict[object, str] = {}
+_abandoned_calls: set[object] = set()
+
+
+async def run_detached_tracked[T](
+    label: str, function: Callable[..., T], /, *args: Any, **kwargs: Any
+) -> T:
+    token = object()
+    with _tracked_lock:
+        _running_calls[token] = label
+
+    def finish_after_call(*call_args: Any, **call_kwargs: Any) -> T:
+        try:
+            return function(*call_args, **call_kwargs)
+        finally:
+            with _tracked_lock:
+                _running_calls.pop(token, None)
+                _abandoned_calls.discard(token)
+
+    try:
+        return await run_detached(finish_after_call, *args, **kwargs)
+    except asyncio.CancelledError:
+        with _tracked_lock:
+            if token in _running_calls:
+                _abandoned_calls.add(token)
+        raise
+
+
+def abandoned_calls() -> list[str]:
+    with _tracked_lock:
+        return sorted(
+            _running_calls[token] for token in _abandoned_calls if token in _running_calls
+        )

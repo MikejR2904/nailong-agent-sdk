@@ -30,6 +30,9 @@ Start from the symptom, open the file named, and you are in the right place. Eac
 | Change what a sandboxed command can reach | `tools/os_sandbox.py` (bubblewrap, Seatbelt), `tools/sandbox.py` (Docker, native) |
 | Decide where an interactive CLI belongs and how it should behave | `docs/interactive-cli.md` |
 | Learn to use the CLI (install, modes, sessions, hooks, scripts) | `docs/cli-guide.md` |
+| See what Claude Code and Codex have that we do not, and the suggested order to close it | `docs/feature-gap-analysis.md` (the shorter list of decisions is `docs/cli-parity.md`) |
+| Change how a request is split into tasks, or the team-or-one-agent suggestion | `starter/planner.py` (`Planner`, `compile_draft`, `choose_architecture`); the CLI side is `apps/nailong_cli/nailong_cli/plan_command.py` |
+| Build a team of agents (supervisor, fan-out, governed plan with approval and recovery) | `docs/multi-agent-tutorial.md`, `examples/multi_agent_starter.py`, `examples/multi_agent_pipeline.py` |
 | Use a model you host yourself, or keep a run inside your network | `docs/local-models.md`, `apps/nailong_cli/nailong_cli/network.py` (offline check), `starter/models.py` (`openai_chat`, shortcuts) |
 | Change resume, fork or the history the model gets | `starter/sessions.py` (storage and chain in `starter/session_store.py`, `starter/chain_log.py`) |
 | Change how model-written tools are proposed, approved, tested or rolled back | `starter/forge.py` (execution in `starter/forge_execution.py`, the reviewer note in `starter/forge_report.py`, the subprocess script `starter/forge_runner.py`) |

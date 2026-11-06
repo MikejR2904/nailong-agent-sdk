@@ -96,7 +96,8 @@ def test_jobs_and_kill_report_when_there_is_nothing_running(project, home):
     _, out, _, _ = run_cli(
         project, home, [], lines="/jobs\n/kill\n/plugins\n/exit\n", interactive=True
     )
-    assert "No background commands." in out and "Usage: /kill <job id>" in out
+    assert "No background commands or shells." in out
+    assert "Usage: /kill <job id or shell:name>" in out
     assert "No plugins." in out
 
 

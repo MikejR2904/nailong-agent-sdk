@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import math
 import os
 import signal
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -19,11 +22,15 @@ from typing import Any
 from pydantic import Field
 
 from ..foundations.contracts import StrictModel
+from ..foundations.logging import get_logger
 from ..observability.telemetry_models import TelemetryActor, TelemetryAuthority, TelemetryContext
 from ..observability.telemetry_store import TelemetryStore
+from .process_freeze import FREEZER, FrozenCommand
 from .sandbox_models import EnvironmentPolicy
 
 _OUTPUT_DRAIN_GRACE_SECONDS = 1.0
+_READ_CHUNK_BYTES = 65_536
+_logger = get_logger("supervisor")
 
 
 class ProcessExitKind(StrEnum):
@@ -244,8 +251,9 @@ class ProcessSupervisor:
         termination_path: list[str] = []
         exit_kind = ProcessExitKind.SUCCEEDED
         error_code: str | None = None
+        frozen_state = FREEZER.register(process.pid, template.name, foreground=True)
         try:
-            await asyncio.wait_for(_wait_for_exit(process), timeout=template.timeout_seconds)
+            await _wait_for_exit_unless_frozen(process, template.timeout_seconds, frozen_state)
         except TimeoutError:
             exit_kind = ProcessExitKind.TIMED_OUT
             error_code = "PROCESS_TIMEOUT"
@@ -272,6 +280,8 @@ class ProcessSupervisor:
                 payload={"template": template.name, "termination_path": termination_path},
             )
             raise
+        finally:
+            FREEZER.unregister(process.pid)
         termination_path.extend(await _drain_output(output_task, process))
         output, total_bytes = bytes(capture.retained), capture.total
         return_code = process.returncode
@@ -324,6 +334,7 @@ class ProcessSupervisor:
     async def _terminate_process_group(process: asyncio.subprocess.Process) -> list[str]:
         if process.returncode is not None:
             return ["already-exited"]
+        FREEZER.thaw_pid(process.pid)
         if os.name == "nt":
             return await _terminate_windows_process_tree(process)
         termination_path: list[str] = []
@@ -387,21 +398,73 @@ async def _terminate_windows_process_tree(process: asyncio.subprocess.Process) -
     return [f"TASKKILL_EXIT_{taskkill.returncode}"]
 
 
+command_output_listener: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "command_output_listener", default=None
+)
+
+
+@contextmanager
+def listening_to_command_output(listener: Callable[[str], None]) -> Iterator[None]:
+    token = command_output_listener.set(listener)
+    try:
+        yield
+    finally:
+        command_output_listener.reset(token)
+
+
 class _OutputCapture:
     def __init__(self, stream: asyncio.StreamReader | None, limit: int) -> None:
         self._stream = stream
         self._limit = limit
+        self._listener = command_output_listener.get()
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self.retained = bytearray()
         self.total = 0
 
     async def run(self) -> None:
         if self._stream is None:
             return
-        while chunk := await self._stream.read(65_536):
+        while chunk := await self._stream.read(_READ_CHUNK_BYTES):
             self.total += len(chunk)
             remaining = self._limit - len(self.retained)
             if remaining > 0:
                 self.retained.extend(chunk[:remaining])
+            self._announce(chunk)
+
+    def _announce(self, chunk: bytes) -> None:
+        if self._listener is None:
+            return
+        text = self._decoder.decode(chunk)
+        if not text:
+            return
+        try:
+            self._listener(text)
+        except Exception as error:
+            _logger.warning(
+                "The command output listener raised %s: %s; live output is switched off for "
+                "this command.",
+                type(error).__name__,
+                error,
+            )
+            self._listener = None
+
+
+async def _wait_for_exit_unless_frozen(
+    process: asyncio.subprocess.Process, timeout: float, state: FrozenCommand
+) -> None:
+    loop = asyncio.get_running_loop()
+    remaining = timeout
+    last = loop.time()
+    delay = 0.005
+    while process.returncode is None:
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 0.05)
+        now = loop.time()
+        if not state.frozen:
+            remaining -= now - last
+        last = now
+        if remaining <= 0:
+            raise TimeoutError
 
 
 async def _wait_for_exit(process: asyncio.subprocess.Process) -> None:

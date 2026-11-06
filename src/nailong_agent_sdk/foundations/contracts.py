@@ -353,7 +353,7 @@ class CompactedEpisodeStub(StrictModel):
 
 
 class ModelObservation(StrictModel):
-    kind: Literal["tool-result", "agent-error"]
+    kind: Literal["tool-result", "agent-error", "user-message"]
     iteration: int = Field(ge=1)
     message: str
     tool_call_id: str | None = None
@@ -409,6 +409,9 @@ class AgentLifecycleEvent(StrictModel):
         "provider-tool-results-forwarded",
         "model-turn-retrying",
         "model-output-rejected",
+        "user-message-received",
+        "run-paused",
+        "run-resumed",
         "model-turn-cancelled",
         "stream-listener-failed",
         "output-rejected",

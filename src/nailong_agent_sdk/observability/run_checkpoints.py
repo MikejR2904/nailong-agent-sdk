@@ -285,6 +285,12 @@ def check_run_heads(
     )
 
 
+def checkpoints_from_lines(lines: Sequence[str], label: str) -> list[RunHeadCheckpoint]:
+    """Parse the lines a checkpoint sink returned; ``label`` names their source in errors."""
+
+    return _parse(lines, label)
+
+
 def _parse(lines: Sequence[str], label: str) -> list[RunHeadCheckpoint]:
     checkpoints: list[RunHeadCheckpoint] = []
     for number, line in enumerate(lines, start=1):

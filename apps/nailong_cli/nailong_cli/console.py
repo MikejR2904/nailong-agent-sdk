@@ -35,7 +35,11 @@ class Console:
         self._color = self.interactive if color is None else color
         self.fancy = False
         self.chooser: Chooser | None = None
+        self.remote_approval: Callable[[dict[str, str]], bool] | None = None
+        self.remote_cancel: threading.Event | None = None
         self.reading = 0
+        self.typeahead = False
+        self._typed = ""
         self.key_hooks: tuple[Callable[[], None], Callable[[], None]] | None = None
         self._lock = threading.RLock()
         self._label: str | None = None
@@ -76,6 +80,11 @@ class Console:
                 self._label = label
                 self._draw()
 
+    def set_typed(self, text: str) -> None:
+        with self._lock:
+            self._typed = text
+            self._draw()
+
     def stop_spinner(self) -> None:
         with self._lock:
             self._label = None
@@ -96,7 +105,10 @@ class Console:
             return
         seconds = int(time.monotonic() - self._started)
         frame = SPINNER_FRAMES[self._frame % len(SPINNER_FRAMES)]
-        text = f"{frame} {self._label} ({seconds}s · Esc to interrupt)"
+        hint = "Esc to interrupt · type to queue" if self.typeahead else "Esc to interrupt"
+        text = f"{frame} {self._label} ({seconds}s · {hint})"
+        if self._typed:
+            text += "  ▸ " + self._typed[-60:]
         self.stdout.write(_ERASE_LINE + self.style(text, "dim"))
         self.stdout.flush()
         self._drawn = True

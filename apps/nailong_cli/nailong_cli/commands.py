@@ -3,33 +3,92 @@
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 from nailong_agent_sdk.foundations.errors import AgentSdkError
 
 from . import diagnostics
 from .approvals import NOT_SANDBOXED
+from .commandline import is_read_only_command
 from .compaction import compact_session
 from .cost import BudgetReached
+from .custom_tools import create_tool_file, reload_custom_tools
 from .modes import MODE_HELP, parse_rule
+from .shell import run_shell
+from .skills import find_skill, invocation_prompt
 from .state import ReplState
 from .turns import PromptRefused, run_turn, switch_agent
+from .user_commands import fill_injections, injected_commands
 from .workflow_commands import WORKFLOW_COMMANDS, WORKFLOW_HELP
 
 
 def handle(state: ReplState, line: str) -> bool:
     name, *arguments = line[1:].split()
     handler = COMMANDS.get(name)
-    if handler is None and name in state.user_commands:
-        text = state.user_commands[name].render(" ".join(arguments))
-        return _guarded_turn(state, text)
-    if handler is None:
-        state.console.line(f"Unknown command /{name}. Type /help for the list.")
-        return True
     try:
+        if handler is None and name in state.user_commands:
+            return run_user_command(state, state.user_commands[name], " ".join(arguments))
+        if handler is None:
+            skill = find_skill(state.parts.skills, name)
+            if skill is not None:
+                return run_skill(state, skill, " ".join(arguments))
+            state.console.line(f"Unknown command /{name}. Type /help for the list.")
+            return True
         return handler(state, arguments)
     except (AgentSdkError, ValueError, OSError, BudgetReached, PromptRefused) as error:
         state.console.error(str(error))
         return True
+
+
+def _injected_output(state: ReplState, command: str) -> str:
+    console = state.console
+    if not is_read_only_command(command):
+        if not console.interactive:
+            raise ValueError(
+                f"The command file runs {command!r} to build its prompt. That is not a "
+                "read-only command, and approving it needs a terminal."
+            )
+        answer = console.ask(
+            f"  The command file wants to run `{command}` to build its prompt. Run it? [y/N] "
+        )
+        if answer.lower() not in {"y", "yes"}:
+            raise ValueError(f"You did not approve running {command!r}, so the command stopped.")
+    record = state.runner.run(run_shell(command, state.project))
+    suffix = "" if record.successful else f"\n(exit {record.return_code})"
+    return record.output + suffix
+
+
+def run_user_command(state: ReplState, command, arguments: str) -> bool:
+    options = command.options()
+    text = command.render(arguments)
+    found = injected_commands(text)
+    if found:
+        text = fill_injections(text, {item: _injected_output(state, item) for item in found})
+    if options.agent:
+        if options.agent not in state.config.agents:
+            raise ValueError(
+                f'The command file {command.path} names the agent "{options.agent}", but the '
+                f"subagents are {sorted(state.config.agents)}."
+            )
+        text = f"Hand this to the agent_{options.agent} tool and report what it returns:\n\n{text}"
+    if not options.model:
+        return _guarded_turn(state, text)
+    if state.parts.model_for is None:
+        raise ValueError("This session cannot switch models.")
+    original = state.setup
+    switch_agent(state, setup=state.parts.model_for(options.model))
+    try:
+        return _guarded_turn(state, text)
+    finally:
+        switch_agent(state, setup=original)
+
+
+def run_skill(state: ReplState, skill, arguments: str) -> bool:
+    state.parts.skill_scope.activate(skill)
+    try:
+        return _guarded_turn(state, invocation_prompt(skill, arguments))
+    finally:
+        state.parts.skill_scope.clear()
 
 
 def _guarded_turn(state: ReplState, text: str) -> bool:
@@ -51,12 +110,65 @@ def _help(state: ReplState, arguments: list[str]) -> bool:
 
 
 def _tools(state: ReplState, arguments: list[str]) -> bool:
+    if arguments[:1] == ["new"]:
+        names = [word for word in arguments[1:] if word != "user"]
+        if len(names) != 1:
+            state.console.line("Usage: /tools new <name> [user]")
+            return True
+        path = create_tool_file(state.project, state.home, names[0], user="user" in arguments)
+        trusted = "user" in arguments
+        state.console.line(
+            f"  created {path}; edit it" + ("" if trusted else ", then /trust-tools")
+        )
+        if trusted:
+            reload_custom_tools(state)
+        return True
+    custom = state.parts.custom_tools.sources if state.parts.custom_tools is not None else {}
     for definition in state.agent.definition.tools:
-        state.console.line(f"  {definition.name}: {definition.description[:80]}")
+        where = f"  [{custom[definition.name]}]" if definition.name in custom else ""
+        state.console.line(f"  {definition.name}: {definition.description[:80]}{where}")
     return True
 
 
 def _sessions(state: ReplState, arguments: list[str]) -> bool:
+    if arguments[:1] == ["import"]:
+        if len(arguments) not in {2, 3}:
+            state.console.line("Usage: /sessions import <transcript.jsonl> [new session name]")
+            return True
+        from nailong_agent_sdk.starter.session_store import SessionStore
+
+        from .session_import import import_transcript
+
+        session_id, source, count, skipped = import_transcript(
+            SessionStore(state.agent.services.run_root),
+            state.agent.name,
+            Path(arguments[1]).expanduser(),
+            arguments[2] if len(arguments) == 3 else None,
+        )
+        tail = f" ({skipped} older turn(s) left out)" if skipped else ""
+        state.console.line(
+            f"  imported {count} turn(s) from a {source} transcript as {session_id}{tail}; "
+            f"/resume {session_id} to continue it"
+        )
+        return True
+    if arguments[:1] == ["delete"]:
+        if len(arguments) != 2:
+            state.console.line("Usage: /sessions delete <session id>")
+            return True
+        target = arguments[1]
+        if target == state.session.id:
+            raise ValueError("That is the session you are in; /new first, then delete it.")
+        if target not in state.agent.sessions():
+            raise ValueError(
+                f'Session "{target}" does not exist; the sessions are {state.agent.sessions()}.'
+            )
+        if state.console.interactive:
+            reply = state.console.ask(f"Delete session {target} for good? [y/N] ")
+            if reply.lower() not in {"y", "yes"}:
+                return True
+        state.agent.delete_session(target)
+        state.console.line(f"  deleted {target}")
+        return True
     for session_id in state.agent.sessions():
         mark = "*" if session_id == state.session.id else " "
         state.console.line(f" {mark} {session_id}  {_last_prompt(state, session_id)}")
@@ -178,7 +290,7 @@ def _context(state: ReplState, arguments: list[str]) -> bool:
     digest = state.session.history()
     state.console.line(f"  instructions + memory: {len(instructions)} characters")
     state.console.line(f"  tools: {len(state.agent.definition.tools)}")
-    state.console.line(f"  skills: {sum(len(s.content) for s in state.parts.skills)} characters")
+    state.console.line(f"  skills: {sum(len(s.body) for s in state.parts.skills)} characters")
     state.console.line(
         f"  earlier turns sent: {len(digest['turns'])}, left out: {digest['omitted_turns']}"
     )

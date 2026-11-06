@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import time
 
-from .commands import COMMANDS, HELP, handle
+from .commands import COMMANDS, HELP, handle, run_skill
 from .cost import BudgetReached
 from .modes import MODE_HELP
 from .shell import run_shell
+from .skills import find_skill
 from .state import ReplState
 from .turns import PromptRefused, run_turn, switch_agent
 
@@ -34,12 +35,21 @@ def toolbar_text(state: ReplState) -> str:
 
 
 def command_names(state: ReplState) -> list[str]:
-    return sorted({f"/{name}" for name in COMMANDS} | {f"/{name}" for name in state.user_commands})
+    skills = {f"/{item.name}" for item in state.parts.skills}
+    return sorted(
+        {f"/{name}" for name in COMMANDS} | {f"/{name}" for name in state.user_commands} | skills
+    )
 
 
 def command_descriptions(state: ReplState) -> dict[str, str]:
     described = {f"/{name}": text.split(":", 1)[-1].strip() for name, text in HELP.items()}
-    described.update({f"/{name}": "your command" for name in state.user_commands})
+    for name, command in state.user_commands.items():
+        try:
+            summary = command.options().description
+        except ValueError:
+            summary = ""
+        described[f"/{name}"] = summary or "your command"
+    described.update({f"/{item.name}": item.description[:70] for item in state.parts.skills})
     return {name: described.get(name, "") for name in command_names(state)}
 
 
@@ -98,12 +108,29 @@ def after_plan(state: ReplState) -> None:
     guarded_turn(state, "Carry out the plan you just proposed.")
 
 
+def read_line(state: ReplState) -> str:
+    leftover, state.typed_leftover = state.typed_leftover, ""
+    if leftover:
+        return state.reader.read(PROMPT, default=leftover)
+    return state.reader.read(PROMPT)
+
+
+def _skill_named(state: ReplState, line: str):
+    name = line[1:].split(" ", 1)[0]
+    return find_skill(state.parts.skills, name) if name else None
+
+
 def repl(state: ReplState) -> None:
     console = state.console
     last_interrupt = float("-inf")
     while True:
+        queued = state.live.pop()
         try:
-            line = state.reader.read(PROMPT)
+            if queued is not None:
+                console.line(console.style(f"> {queued}", "dim"))
+                line = queued
+            else:
+                line = read_line(state)
         except EOFError:
             return
         except KeyboardInterrupt:
@@ -123,6 +150,9 @@ def repl(state: ReplState) -> None:
         elif line.startswith("/"):
             if not handle(state, line):
                 return
+        elif line.startswith("$") and _skill_named(state, line) is not None:
+            name, _, rest = line[1:].partition(" ")
+            run_skill(state, _skill_named(state, line), rest.strip())
         else:
             answer = guarded_turn(state, line)
             if answer is not None:

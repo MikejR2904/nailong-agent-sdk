@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from .config import MODES
 
-EDIT_TOOLS = frozenset({"write_file", "edit_file"})
+EDIT_TOOLS = frozenset({"write_file", "edit_file", "notebook_edit", "apply_patch"})
 MODE_HELP = {
     "default": "ask before every write and command",
     "accept-edits": "writes and edits go through; commands still ask",

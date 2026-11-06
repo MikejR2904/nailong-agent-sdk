@@ -57,7 +57,7 @@ def test_an_existing_key_is_reused_without_asking(tmp_path, fake_keyring):
 
 
 def test_setup_for_a_local_server_asks_whether_it_needs_a_key(tmp_path):
-    console, _, _ = make_console("7\nserved-model\n1\n", interactive=True)
+    console, _, _ = make_console("13\nserved-model\n1\n", interactive=True)
     run_setup(console, tmp_path, {})
     assert saved(tmp_path) == {
         "provider": "openai-compatible",
@@ -68,7 +68,7 @@ def test_setup_for_a_local_server_asks_whether_it_needs_a_key(tmp_path):
 
 
 def test_setup_for_a_url_on_your_network_allows_plain_http(tmp_path, fake_keyring):
-    answers = "10\nnot-a-url\nhttp://gpu-box:8000/v1\nm\n2\nsecret-key\n"
+    answers = "16\nnot-a-url\nhttp://gpu-box:8000/v1\nm\n2\nsecret-key\n"
     console, _, _ = make_console(answers, interactive=True)
     run_setup(console, tmp_path, {})
     settings = saved(tmp_path)
@@ -154,7 +154,7 @@ def first_run(tmp_path, lines, captured=None):
 
 
 def test_first_run_without_settings_offers_setup_then_starts(tmp_path):
-    code, out, _, project, home = first_run(tmp_path, "y\n6\nllama3\n1\nHello\n/exit\n")
+    code, out, _, project, home = first_run(tmp_path, "y\n12\nllama3\n1\nHello\n/exit\n")
     assert code == 0 and "No settings found" in out and "hi there" in out
     assert load_config(project, home=home).base_url == "ollama"
 

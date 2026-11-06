@@ -406,6 +406,30 @@ Everything between a model's tool request and the real world. `tools.py` defines
 
 ---
 
+### `tools/process_freeze.py` - freeze and thaw running commands in place
+
+*187 lines · depends on: `foundations/errors.py` · used by: `tools/supervisor.py` · not re-exported at the package root*
+
+**Role in the workflow.** A pause that restarts nothing. A frozen command keeps its memory, open files and position. POSIX sends `SIGSTOP`/`SIGCONT` to the command's process group; Windows suspends every process of its tree with `NtSuspendProcess` (an undocumented but long-stable call) and resumes them with `NtResumeProcess`, rolling back any it had already suspended if one fails. The supervisor registers each foreground command here and does not count frozen time against its time limit; a caller may register a background command (`foreground=False`), which `freeze()` leaves alone unless it is named. Cancelling or killing a frozen command thaws it first, because a stopped POSIX group does not act on `SIGTERM`.
+
+**Contents**
+
+- **class `FrozenCommand`** *(dataclass)* - One registered command: its pid, label, whether it is a foreground command, whether it is frozen and the pids suspended on Windows.
+- **class `CommandFreezer`** *(class)* - The registry and the freeze/thaw operations, safe to call from another thread.
+  - `CommandFreezer.__init__() -> None` - Creates the empty registry and its lock.
+  - `CommandFreezer.register(pid: int, label: str, *, foreground: bool) -> FrozenCommand` - Adds a running command.
+  - `CommandFreezer.unregister(pid: int) -> None` - Removes a command that ended.
+  - `CommandFreezer.entries() -> list[FrozenCommand]` - Every registered command.
+  - `CommandFreezer.freeze(*, foreground_only: bool=True, label: str | None=None) -> list[str]` - Freezes foreground commands, or the one named `label`; returns the labels frozen.
+  - `CommandFreezer.thaw_pid(pid: int) -> None` - Thaws one command by pid if it is frozen.
+  - `CommandFreezer.thaw(*, label: str | None=None) -> list[str]` - Thaws every frozen command, or the one named; returns the labels thawed.
+- `_suspend(entry: FrozenCommand) -> None` - `killpg(SIGSTOP)` on POSIX; on Windows suspends the tree and keeps the pids for the thaw.
+- `_resume(entry: FrozenCommand) -> None` - `killpg(SIGCONT)` on POSIX; resumes the recorded Windows pids.
+- `_failure(action: str, label: str, error: BaseException) -> AgentSdkError` - The `COMMAND_FREEZE_FAILED` error naming the command, the action and the cause.
+- `_windows_tree(root: int) -> list[int]` - The pids of a process and its descendants, read from a toolhelp snapshot.
+  - **class `_windows_tree.ProcessEntry`** *(ctypes structure)* - The Windows `PROCESSENTRY32` record read from the process snapshot (pid, parent pid, executable name).
+- `_windows_call(function: str, pid: int, label: str) -> None` - Opens the process with suspend/resume rights and calls the named ntdll function, raising on any failure.
+
 ### `tools/os_sandbox.py` - sandbox backends built on the operating system's own tools: bubblewrap and Seatbelt
 
 *188 lines · depends on: `foundations/contracts.py`, `tools/sandbox.py`, `tools/sandbox_models.py`, `tools/supervisor.py` · used by: tests · not re-exported at the package root*
@@ -607,7 +631,10 @@ Everything between a model's tool request and the real world. `tools.py` defines
 - `_terminate_windows_process_tree(process: asyncio.subprocess.Process) -> list[str]` *(async)* - Runs `taskkill /T /F` on the process and always returns an auditable outcome string. · *Called by:* `tools/supervisor.py::ProcessSupervisor._terminate_process_group`
 - **class `_OutputCapture`** *(class)* - Bounded reader of a process's combined output: keeps the first `limit` bytes in `retained` and counts every byte in `total`, so partial output survives even if the reader is abandoned.
   - `_OutputCapture.__init__(stream: asyncio.StreamReader | None, limit: int) -> None` - Stores the stream and limit and starts with empty buffers.
-  - `_OutputCapture.run() -> None` *(async)* - Reads 64 KiB chunks until end of stream, retaining up to the limit.
+  - `_OutputCapture.run() -> None` *(async)* - Reads 64 KiB chunks until end of stream, retaining up to the limit and passing each chunk on to the output listener.
+  - `_OutputCapture._announce(chunk: bytes) -> None` - Decodes the chunk (UTF-8, incomplete characters carried over) and gives it to the listener; a listener that raises is logged by name and dropped for this command.
+- `listening_to_command_output(listener: Callable[[str], None]) -> Iterator[None]` - Context manager: while it is open, commands started from this context pass their output to `listener` as it arrives, so a caller can show it live. Final records are unchanged.
+- `_wait_for_exit_unless_frozen(process: asyncio.subprocess.Process, timeout: float, state: FrozenCommand) -> None` *(async)* - Waits for the process to exit and raises `TimeoutError` after `timeout` seconds of running time; seconds spent frozen are not counted.
 - `_wait_for_exit(process: asyncio.subprocess.Process) -> None` *(async)* - Polls `returncode` (5 ms backing off to 50 ms) instead of `Process.wait`, which would also wait for every inherited pipe to close.
 - `_drain_output(output_task: asyncio.Task[None], process: asyncio.subprocess.Process) -> list[str]` *(async)* - Waits up to a second for the reader to finish; otherwise abandons it and reports `OUTPUT_PIPE_HELD_BY_DESCENDANT` (a surviving child still holds the pipe).
 - `_abandon_output(output_task: asyncio.Task[None], process: asyncio.subprocess.Process) -> None` *(async)* - Cancels the reader and closes the process transport so no pipe handle leaks.

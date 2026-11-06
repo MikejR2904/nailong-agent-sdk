@@ -17,7 +17,17 @@ from .forge import Forge, Reviewer, ToolProposal
 from .hooks import AfterTool, BeforeTool, ToolEvent
 from .mcp_tools import McpTools, connect_mcp
 from .models import OPENAI_COMPATIBLE_BASE_URLS, ModelSetup, anthropic_messages, openai_chat
+from .notebook_tools import notebook_tools
+from .planner import Planner, PlannerError, PlanProposal, Role, TeamResult
 from .sessions import Session
+from .skill_files import (
+    SkillDefinition,
+    discover_skills,
+    load_skill_definition,
+    render_skill,
+    skill_context_of,
+    skill_file_text,
+)
 from .skills import skill
 from .toolbox import ApprovalRequest, Approver, Toolbox, ToolGroup
 from .tools import FunctionTool, tool
@@ -37,8 +47,13 @@ __all__ = [
     "McpTools",
     "ModelSetup",
     "OutputCheck",
+    "PlanProposal",
+    "Planner",
+    "PlannerError",
     "Reviewer",
+    "Role",
     "Session",
+    "TeamResult",
     "ToolEvent",
     "ToolProposal",
     "ToolGroup",
@@ -47,7 +62,14 @@ __all__ = [
     "connect_mcp",
     "core_tools",
     "dev_tools",
+    "notebook_tools",
     "openai_chat",
     "skill",
+    "SkillDefinition",
+    "discover_skills",
+    "load_skill_definition",
+    "render_skill",
+    "skill_context_of",
+    "skill_file_text",
     "tool",
 ]

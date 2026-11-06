@@ -46,6 +46,8 @@ SYSTEM_PROMPT = (
     "calls that are no longer listed individually: they carry facts, decisions and "
     "unresolved_issues with the episode ids they came from. A digest is derived, "
     "not evidence; fetch a source handle in source_handles when its detail matters. "
+    "An observation of kind user-message is something the user told you while you were "
+    "working: read it and follow it from your next step. "
     "The volatile message lists slowly changing sections first and project_state and "
     "iteration last."
 )

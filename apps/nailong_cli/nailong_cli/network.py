@@ -41,6 +41,7 @@ def offline_problems(
     web: bool,
     web_search: bool,
     mcp_servers: dict[str, dict],
+    otlp_endpoint: str | None = None,
 ) -> list[str]:
     problems = []
     if base_url is None:
@@ -57,6 +58,8 @@ def offline_problems(
         problems.append("web is on, which fetches public pages")
     if web_search:
         problems.append("web_search is on, which queries a public search service")
+    if otlp_endpoint and not is_private_host(host_of(otlp_endpoint)):
+        problems.append(f'otlp_endpoint host "{host_of(otlp_endpoint)}" is not on your network')
     for name, server in mcp_servers.items():
         url = server.get("url")
         if url and not is_private_host(host_of(url)):

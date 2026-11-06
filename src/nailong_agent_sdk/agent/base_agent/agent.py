@@ -36,7 +36,7 @@ from ...foundations.contracts import (
     validate_task_input,
     validate_tool_arguments,
 )
-from ...foundations.detached import run_detached
+from ...foundations.detached import abandoned_calls, run_detached
 from ...foundations.errors import (
     AgentSdkError,
     InvalidModelOutputError,
@@ -112,6 +112,8 @@ from ..verification import VerificationDecision, VerificationGateRegistry
 from .types import (
     AgentWatchdogPolicy,
     CancellationToken,
+    MessageInbox,
+    PauseGate,
     PostToolHook,
     PreToolHook,
     RunCancelled,
@@ -168,6 +170,8 @@ class BaseAgent:
         price_table: PriceTable | None = None,
         tool_authorizer: ToolAuthorizer | None = None,
         require_tool_authorization: bool | None = None,
+        inbox: MessageInbox | None = None,
+        pause: PauseGate | None = None,
     ) -> None:
         if episode_history_limit is not None and episode_history_limit < 1:
             raise ValueError(
@@ -185,6 +189,8 @@ class BaseAgent:
         self.model = model
         self.tool_executor = tool_executor
         self.tool_authorizer = tool_authorizer
+        self.inbox = inbox
+        self.pause = pause
         self.require_tool_authorization = (
             True if require_tool_authorization is None else require_tool_authorization
         )
@@ -396,6 +402,12 @@ class BaseAgent:
         transient_failures = 0
         invalid_outputs = 0
         for iteration in range(1, self.definition.termination_policy.max_iterations + 1):
+            if self.pause is not None and self.pause.paused:
+                emit("run-paused", iteration)
+                waited = await self.pause.wait_until_resumed(cancellation)
+                if deadline is not None:
+                    deadline += waited
+                emit("run-resumed", iteration, paused_seconds=round(waited, 3))
             if deadline is not None and asyncio.get_running_loop().time() >= deadline:
                 run_deadline_seconds = self.watchdog_policy.run_deadline_seconds
                 failure = AgentFailure(
@@ -432,6 +444,12 @@ class BaseAgent:
                     emit,
                     projection_history,
                 )
+            if self.inbox is not None:
+                for message in self.inbox.drain():
+                    observations.append(
+                        ModelObservation(kind="user-message", iteration=iteration, message=message)
+                    )
+                    emit("user-message-received", iteration, characters=len(message))
 
             projection_span = self.profiler.start_span(
                 ProfileSpanKind.CONTEXT_PROJECTION,
@@ -1821,7 +1839,7 @@ class BaseAgent:
             failure = AgentFailure(
                 code="WATCHDOG_TOOL_TIMEOUT",
                 message=f'Tool "{call.name}" (pre-tool hook, execution, or post-tool hook) '
-                f"exceeded {timeout_detail}.",
+                f"exceeded {timeout_detail}." + _still_running_note(expired),
                 details={
                     "tool": call.name,
                     "limit": expired.source,
@@ -2137,10 +2155,12 @@ class BaseAgent:
                 result = await awaited
         except TimeoutError as error:
             if scope.expired():
-                raise WatchdogExpired(source, operation_timeout_seconds) from error
+                raise WatchdogExpired(
+                    source, operation_timeout_seconds, abandoned_calls()
+                ) from error
             raise
         if scope.expired():
-            raise WatchdogExpired(source, operation_timeout_seconds)
+            raise WatchdogExpired(source, operation_timeout_seconds, abandoned_calls())
         return result
 
     def _model_cancellation_outcome(self, task_id: str) -> ModelCancellationOutcome:
@@ -2715,6 +2735,16 @@ def _batch_outcome(item: ToolCallOutcome) -> dict[str, Any]:
             else f"{error[: _OUTCOME_ERROR_CHARS - 3]}..."
         )
     return outcome
+
+
+def _still_running_note(expired: WatchdogExpired) -> str:
+    if not expired.still_running:
+        return ""
+    return (
+        f" The tool function(s) {', '.join(expired.still_running)} cannot be stopped and are "
+        "still running in the background, so their effects may still happen; no other tool "
+        "starts until they finish."
+    )
 
 
 def _watchdog_detail(expired: WatchdogExpired, label: str) -> str:

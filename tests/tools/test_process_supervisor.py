@@ -335,3 +335,33 @@ def test_concurrent_executions(tmp_path):
     records = run(scenario(), timeout=120)
     assert all(r.successful for r in records)
     assert len({r.output.strip() for r in records}) == 24
+
+
+def test_output_reaches_a_listener_while_the_command_runs(tmp_path):
+    from nailong_agent_sdk.tools.supervisor import listening_to_command_output
+
+    code = (
+        "import sys, time\n"
+        "print('first', flush=True)\n"
+        "time.sleep(0.6)\n"
+        "print('second', flush=True)\n"
+    )
+    seen = []
+    with listening_to_command_output(lambda text: seen.append((time.monotonic(), text))):
+        record = execute(tmp_path, template("live", code))
+    text = "".join(piece for _, piece in seen)
+    assert "first" in text and "second" in text and record.output.count("second") == 1
+    first = next(at for at, piece in seen if "first" in piece)
+    last = next(at for at, piece in seen if "second" in piece)
+    assert last - first >= 0.4
+
+
+def test_a_listener_that_raises_is_dropped_and_the_command_still_completes(tmp_path):
+    from nailong_agent_sdk.tools.supervisor import listening_to_command_output
+
+    def broken(text):
+        raise RuntimeError("listener bug")
+
+    with listening_to_command_output(broken):
+        record = execute(tmp_path, template("live2", "print('kept')"))
+    assert record.successful and "kept" in record.output

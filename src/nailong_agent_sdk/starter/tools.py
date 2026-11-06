@@ -19,7 +19,7 @@ from ..foundations.contracts import (
     ToolDefinition,
     ToolExecutionResult,
 )
-from ..foundations.detached import run_detached
+from ..foundations.detached import abandoned_calls, run_detached_tracked
 
 _VALUE_KEYS = frozenset({"default", "const", "enum", "examples"})
 
@@ -36,13 +36,23 @@ class FunctionTool:
         return self.definition.name
 
     async def run(self, call_arguments: dict[str, Any]) -> ToolExecutionResult:
+        blocking = abandoned_calls()
+        if blocking:
+            return ToolExecutionResult(
+                status="failed",
+                error=(
+                    f'Tool "{self.name}" was not started: an earlier call to '
+                    f"{', '.join(blocking)} was cancelled or timed out but its function is still "
+                    "running in the background and cannot be stopped. Wait for it to finish."
+                ),
+            )
         try:
             parsed = self.arguments.model_validate(call_arguments)
             values = {field: getattr(parsed, field) for field in self.arguments.model_fields}
             if inspect.iscoroutinefunction(self.function):
                 returned = await self.function(**values)
             else:
-                returned = await run_detached(self.function, **values)
+                returned = await run_detached_tracked(self.name, self.function, **values)
             return ToolExecutionResult(status="succeeded", output=to_jsonable_python(returned))
         except Exception as error:
             message = f'Tool "{self.name}" raised {type(error).__name__}: {error}'

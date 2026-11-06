@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import difflib
 from pathlib import Path
+from typing import Any
 
 from nailong_agent_sdk.starter import ApprovalRequest
 
+from .apply_patch import patch_paths
 from .commandline import allowed_by, denied_by, is_read_only_command
 from .console import Console
 from .modes import EDIT_TOOLS, ModeRef
 from .permissions import PermissionStore
+from .rules import PermissionRules
 
 NOT_SANDBOXED = "NOT SANDBOXED"
-COMMAND_TOOLS = frozenset({"run_command", "start_background"})
+COMMAND_TOOLS = frozenset({"run_command", "start_background", "shell_open", "shell_run"})
 _DIFF_LINES = 40
 
 
@@ -30,6 +33,7 @@ class Approver:
         allow_unsandboxed: bool = False,
         allow_rules: list[tuple[str, str]] | None = None,
         deny_rules: list[tuple[str, str]] | None = None,
+        rules: PermissionRules | None = None,
     ) -> None:
         self._console = console
         self._store = store
@@ -39,7 +43,9 @@ class Approver:
         self._allow_unsandboxed = allow_unsandboxed
         self._allow = allow_rules or []
         self._deny = deny_rules or []
+        self._rules = rules
         self._session_tools: set[str] = set()
+        self.lifecycle: Any = None
 
     @property
     def session_tools(self) -> set[str]:
@@ -55,25 +61,54 @@ class Approver:
             return self._refuse(
                 request, "no sandbox is active and --allow-unsandboxed was not given"
             )
-        if self._mode.value == "bypass" and (not unsandboxed or self._allow_unsandboxed):
+        verdict = self._rules.decide(request.tool, subject) if self._rules is not None else None
+        if verdict is not None and verdict.action == "deny":
+            return self._refuse(
+                request, f"a deny rule forbids it ({verdict.pattern} from {verdict.source})"
+            )
+        forced_ask = verdict is not None and verdict.action == "ask"
+        if verdict is not None and verdict.action == "allow":
             return True
-        if self._mode.value in {"accept-edits", "auto"} and request.tool in EDIT_TOOLS:
-            return True
-        if (
-            self._mode.value == "auto"
-            and request.tool == "run_command"
-            and is_read_only_command(subject)
-        ):
-            return True
-        if _matches(self._allow, request.tool, subject, allowed_by):
-            return True
-        if self._store.allows(self._project, request.tool, subject):
-            return True
-        if request.tool in self._session_tools and not unsandboxed:
-            return True
-        if not attended:
+        if not forced_ask:
+            if self._mode.value == "bypass" and (not unsandboxed or self._allow_unsandboxed):
+                return True
+            if self._mode.value in {"accept-edits", "auto"} and request.tool in EDIT_TOOLS:
+                return True
+            if (
+                self._mode.value == "auto"
+                and request.tool == "run_command"
+                and is_read_only_command(subject)
+            ):
+                return True
+            if _matches(self._allow, request.tool, subject, allowed_by):
+                return True
+            if self._store.allows(self._project, request.tool, subject):
+                return True
+            if request.tool in self._session_tools and not unsandboxed:
+                return True
+        remote = self._console.remote_approval
+        if not attended and remote is None:
             return self._refuse(request, "it needs approval and there is no terminal")
+        if self.lifecycle is not None and self.lifecycle.has("permission_asked"):
+            await self.lifecycle.run("permission_asked", tool=request.tool, subject=subject)
+        if not attended:
+            assert remote is not None
+            return await asyncio.to_thread(self._ask_remote, remote, request, subject)
         return await asyncio.to_thread(self._ask, request, subject, unsandboxed)
+
+    def _ask_remote(self, remote, request: ApprovalRequest, subject: str) -> bool:
+        asked = {
+            "tool": request.tool,
+            "subject": subject,
+            "description": describe(request, self._project),
+        }
+        try:
+            allowed = remote(asked)
+        except Exception as error:
+            return self._refuse(
+                request, f"the client could not be asked ({type(error).__name__}: {error})"
+            )
+        return allowed
 
     def _choose(self, request: ApprovalRequest, subject: str, unsandboxed: bool) -> bool:
         console = self._console
@@ -154,10 +189,12 @@ def subject_of(request: ApprovalRequest) -> str:
     arguments = request.arguments
     if request.tool in COMMAND_TOOLS:
         return str(arguments.get("command", ""))
-    if request.tool == "web_fetch":
+    if request.tool in {"web_fetch", "fetch_document"}:
         return str(arguments.get("url", ""))
     if request.tool == "web_search":
         return str(arguments.get("query", ""))
+    if request.tool == "apply_patch":
+        return "\n".join(patch_paths(str(arguments.get("patch", ""))))
     return str(arguments.get("path", ""))
 
 
@@ -171,6 +208,8 @@ def describe(request: ApprovalRequest, project: Path) -> str:
         )
     if request.tool == "edit_file":
         return _edit_preview(arguments)
+    if request.tool == "apply_patch":
+        return "\n".join(["  patch:", *_clip(str(arguments.get("patch", "")).splitlines())])
     return "  " + ", ".join(f"{key}={value!r}" for key, value in arguments.items())
 
 

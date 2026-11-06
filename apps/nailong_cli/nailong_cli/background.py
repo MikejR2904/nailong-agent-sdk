@@ -18,6 +18,7 @@ from nailong_agent_sdk.tools.os_sandbox import (
     bubblewrap_argv,
     seatbelt_profile,
 )
+from nailong_agent_sdk.tools.process_freeze import FREEZER
 from nailong_agent_sdk.tools.sandbox_models import default_native_environment
 from nailong_agent_sdk.tools.supervisor import CommandTemplate
 
@@ -92,6 +93,7 @@ class BackgroundJobs:
             **options,
         )
         job = Job(job_id, command, process, script)
+        FREEZER.register(process.pid, job_id, foreground=False)
         job.reader = asyncio.create_task(self._read(job))
         self._jobs[job_id] = job
         return {"job": job_id, "pid": process.pid, "note": "Use background_output to read it."}
@@ -114,9 +116,13 @@ class BackgroundJobs:
         return {"job": job_id, "exit_code": job.process.returncode}
 
     def listing(self) -> list[str]:
+        paused = {entry.label for entry in FREEZER.entries() if entry.frozen}
+
         def state(job: Job) -> str:
             code = job.process.returncode
-            return "running" if code is None else f"exit {code}"
+            if code is not None:
+                return f"exit {code}"
+            return "paused" if job.id in paused else "running"
 
         return [f"{job.id}: {state(job)}  {job.command}" for job in self._jobs.values()]
 
@@ -156,11 +162,13 @@ class BackgroundJobs:
                 job.size -= len(removed)
                 job.dropped += len(removed)
         await job.process.wait()
+        FREEZER.unregister(job.process.pid)
         if job.script is not None:
             job.script.unlink(missing_ok=True)
 
     async def _terminate(self, job: Job) -> None:
         if job.process.returncode is None:
+            FREEZER.thaw_pid(job.process.pid)
             _kill_tree(job.process.pid)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(job.process.wait(), 5)
