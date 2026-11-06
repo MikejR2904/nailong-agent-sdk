@@ -38,3 +38,8 @@ scripts/
 __pycache__/
 .nailong-agent/
 .nailong/
+
+# Runtime state written by running the CLI (never source)
+**/.nailong/checkpoints/
+**/.nailong/workspace/
+**/.nailong/knowledge/
