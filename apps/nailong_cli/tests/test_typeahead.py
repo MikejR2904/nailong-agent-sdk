@@ -187,20 +187,56 @@ class Delayed:
         return getattr(self.inner, name)
 
 
+class HeldUntilTyped:
+    def __init__(self, inner: ScriptedModel) -> None:
+        self.inner = inner
+        self.started = 0
+        self.typed = threading.Event()
+
+    async def next_turn(self, context):
+        self.started += 1
+        if self.started == 2:
+            waited = 0.0
+            while not self.typed.is_set() and waited < 60:
+                await asyncio.sleep(0.05)
+                waited += 0.05
+            await asyncio.sleep(0.5)
+        return await self.inner.next_turn(context)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+class KeysAfterSecondCall(Keys):
+    def __init__(self, held: HeldUntilTyped, *script) -> None:
+        super().__init__(*script)
+        self.held = held
+
+    def poll(self, timeout):
+        if self.held.started < 2:
+            time.sleep(0.01)
+            return None
+        key = super().poll(timeout)
+        if not self.script:
+            self.held.typed.set()
+        return key
+
+
 def test_typing_during_a_turn_runs_live_commands_queues_prompts_and_tells_the_agent(project, home):
     (project / "a.txt").write_text("hello\n", encoding="utf-8")
     inner = ScriptedModel(
         [call("read_file", path="a.txt"), call("read_file", path="a.txt"), final("done")]
     )
-    setup = ModelSetup(Delayed(inner, 0.2, 2.0), "scripted", "scripted-1")
-    script = [None] * 60
+    held = HeldUntilTyped(inner)
+    setup = ModelSetup(held, "scripted", "scripted-1")
+    script: list = []
     for line in ("/why", "/broadcast use the blue theme", "also write the docs"):
         script += typed(line)
     code, out, err = run_fancy(
         project,
         home,
         lines="Do the job\n/exit\n",
-        keys=Keys(*script),
+        keys=KeysAfterSecondCall(held, *script),
         build=lambda config, environ: setup,
     )
     assert code == 0, err
